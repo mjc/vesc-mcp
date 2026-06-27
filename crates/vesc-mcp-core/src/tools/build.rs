@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
-use vesc_mcp_adapters::build::locate_pkgdesc;
+use vesc_mcp_adapters::locate_pkgdesc;
 
 use crate::config::{McpConfig, allowed_package_roots, validate_sandbox_path};
 

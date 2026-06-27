@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use vesc_domain::{LayoutIssue, parse_pkgdesc_qml, validate_package_layout};
+use vesc_mcp_adapters::locate_pkgdesc;
 
 use crate::config::{allowed_package_roots, validate_sandbox_path};
 
@@ -28,21 +29,6 @@ pub struct ValidatePackageLayoutResponse {
     pub issues: Vec<LayoutIssueJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-fn locate_pkgdesc(root: &Path) -> Result<(PathBuf, PathBuf), String> {
-    const CANDIDATES: [&str; 2] = ["pkgdesc.qml", "package/pkgdesc.qml"];
-    for relative in CANDIDATES {
-        let path = root.join(relative);
-        if path.is_file() {
-            let package_root = path
-                .parent()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| format!("pkgdesc path has no parent: {}", path.display()))?;
-            return Ok((path, package_root));
-        }
-    }
-    Err(format!("no pkgdesc.qml under {}", root.display()))
 }
 
 fn issue_to_json(issue: &LayoutIssue) -> LayoutIssueJson {
@@ -85,7 +71,7 @@ fn validate_package_layout_at_root(root_path: &Path) -> ValidatePackageLayoutRes
             return ValidatePackageLayoutResponse {
                 ok: false,
                 issues: Vec::new(),
-                error: Some(err),
+                error: Some(err.to_string()),
             };
         }
     };

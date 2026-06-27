@@ -257,4 +257,3 @@ mod tests {
         assert!(response.error.is_some());
     }
 }
-
