@@ -9,6 +9,11 @@ fn dynamic_manifest_uri(relative: &str) -> String {
     format!("vescpkg://manifest/{relative}")
 }
 
+fn parse_manifest_json(body: &str) -> Value {
+    let json_part = body.split("\n---\n").next().expect("manifest JSON body");
+    serde_json::from_str(json_part).expect("resource returns JSON")
+}
+
 #[test]
 fn resource_manifest_matches_tool_output() {
     let allowed = fixture_sandbox_roots();
@@ -20,7 +25,7 @@ fn resource_manifest_matches_tool_output() {
     let fixture_uri = "vescpkg://fixture/refloat-minimal/manifest";
     let resource_body = read_manifest(fixture_uri, &allowed)
         .unwrap_or_else(|err| panic!("read fixture manifest: {err}"));
-    let resource_json: Value = serde_json::from_str(&resource_body).expect("resource returns JSON");
+    let resource_json = parse_manifest_json(&resource_body);
 
     assert_eq!(
         resource_json["ok"], tool_body["ok"],
@@ -34,6 +39,10 @@ fn resource_manifest_matches_tool_output() {
             .is_some_and(|raw| raw.contains("Refloat Minimal")),
         "missing raw pkgdesc text:\n{resource_json}"
     );
+    assert!(
+        resource_body.contains("Source: vesc-mcp/tests/fixtures/refloat-minimal/pkgdesc.qml"),
+        "missing manifest attribution footer:\n{resource_body}"
+    );
 }
 
 #[test]
@@ -41,7 +50,7 @@ fn resource_fixture_poc_native_lib_manifest_valid() {
     let allowed = fixture_sandbox_roots();
     let uri = "vescpkg://fixture/poc-native-lib-minimal/manifest";
     let body = read_manifest(uri, &allowed).unwrap_or_else(|err| panic!("read poc fixture: {err}"));
-    let json: Value = serde_json::from_str(&body).expect("resource returns JSON");
+    let json = parse_manifest_json(&body);
 
     assert_eq!(json["ok"], true, "response: {json}");
     assert_eq!(json["dialect"], "vesc_tool");
@@ -65,7 +74,7 @@ fn resource_dynamic_manifest_matches_fixture_path() {
     let uri = dynamic_manifest_uri("refloat-minimal/pkgdesc.qml");
     let body =
         read_manifest(&uri, &allowed).unwrap_or_else(|err| panic!("read dynamic manifest: {err}"));
-    let json: Value = serde_json::from_str(&body).expect("resource returns JSON");
+    let json = parse_manifest_json(&body);
 
     assert_eq!(json["ok"], true, "response: {json}");
     assert_eq!(json["parsed"]["pkg_name"], "Refloat Minimal");

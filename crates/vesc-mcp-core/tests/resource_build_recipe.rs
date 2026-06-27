@@ -12,6 +12,20 @@ fn catalog_root() -> PathBuf {
 }
 
 #[test]
+fn resource_footer_contains_source_path() {
+    let body = read_build_recipe(REFLOAT_VESC_TOOL_URI, &catalog_root())
+        .unwrap_or_else(|err| panic!("read refloat recipe: {err}"));
+    assert!(
+        body.contains("Source: refloat/Makefile"),
+        "missing source path in footer:\n{body}"
+    );
+    assert!(
+        body.contains("\n---\n"),
+        "missing footer separator:\n{body}"
+    );
+}
+
+#[test]
 fn resource_build_recipe_refloat_contains_vesc_tool() {
     let body = read_build_recipe(REFLOAT_VESC_TOOL_URI, &catalog_root())
         .unwrap_or_else(|err| panic!("read refloat recipe: {err}"));

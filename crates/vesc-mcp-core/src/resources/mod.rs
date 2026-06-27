@@ -6,6 +6,7 @@
 //! - `vescpkg://manifest/{path}` — dynamic manifests (sandboxed at read time)
 
 mod abi;
+mod attribution;
 mod catalog;
 mod manifest;
 mod refloat_command;

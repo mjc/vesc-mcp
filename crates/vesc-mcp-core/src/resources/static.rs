@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::attribution::{SourceRef, append_source_footer};
 use super::{
     ParsedResourceUri, ResourceMeta, ResourceReadError, ResourceReadHandler, ResourceRegistry,
     ResourceRegistryError,
@@ -103,24 +104,28 @@ pub fn read_doc_topic(uri: &str, catalog_root: &Path) -> Result<String, Resource
 
 fn render_pkgdesc_dialects() -> String {
     let mut out = PKGDESC_DIALECTS_BODY.to_owned();
-    append_attribution(
+    append_source_footer(
         &mut out,
-        "vesc-mcp",
-        "catalog/gap-analysis.md",
-        Some(16),
-        Some("catalog/gap-analysis.md"),
+        &[
+            SourceRef::new("vesc-mcp", "catalog/gap-analysis.md").with_line(16),
+            SourceRef::literal("catalog/gap-analysis.md"),
+        ],
     );
     out
 }
 
 fn render_lisp_imports() -> String {
     let mut out = LISP_IMPORTS_BODY.to_owned();
-    append_attribution(
+    append_source_footer(
         &mut out,
-        "vesc-rust-poc",
-        "crates/vesc-rust-poc/src/package_format.rs",
-        Some(337),
-        Some("crates/vesc-domain/src/wire/mod.rs"),
+        &[
+            SourceRef::new(
+                "vesc-rust-poc",
+                "crates/vesc-rust-poc/src/package_format.rs",
+            )
+            .with_line(337),
+            SourceRef::literal("crates/vesc-domain/src/wire/mod.rs"),
+        ],
     );
     out
 }
@@ -155,13 +160,15 @@ fn render_vesc_c_if(catalog_root: &Path) -> Result<String, String> {
     let _ = writeln!(out);
 
     let line = group.lines.map(|lines| lines[0]);
-    append_attribution(
-        &mut out,
-        &doc.source_repo,
-        &doc.header.path,
-        line,
-        Some(&format!("catalog/{VESC_C_IF_CATALOG_REL}")),
-    );
+    let sources = vec![
+        if let Some(line_no) = line {
+            SourceRef::new(&doc.source_repo, &doc.header.path).with_line(line_no)
+        } else {
+            SourceRef::new(&doc.source_repo, &doc.header.path)
+        },
+        SourceRef::literal(format!("catalog/{VESC_C_IF_CATALOG_REL}")),
+    ];
+    append_source_footer(&mut out, &sources);
     Ok(out)
 }
 
@@ -170,27 +177,6 @@ fn load_vesc_c_if_catalog(catalog_root: &Path) -> Result<VescCIfCatalog, String>
     let content =
         std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}", path.display()))?;
     serde_yaml::from_str(&content).map_err(|err| format!("parse {}: {err}", path.display()))
-}
-
-fn append_attribution(
-    out: &mut String,
-    repo: &str,
-    path: &str,
-    line: Option<u64>,
-    catalog_ref: Option<&str>,
-) {
-    let _ = writeln!(out, "\n---");
-    match line {
-        Some(line_no) => {
-            let _ = writeln!(out, "Source: {repo}/{path}#L{line_no}");
-        }
-        None => {
-            let _ = writeln!(out, "Source: {repo}/{path}");
-        }
-    }
-    if let Some(catalog) = catalog_ref {
-        let _ = writeln!(out, "Source: {catalog}");
-    }
 }
 
 /// Handler dispatching catalog doc topic URIs.

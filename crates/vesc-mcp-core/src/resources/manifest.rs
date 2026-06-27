@@ -10,6 +10,7 @@ use crate::config::{allowed_package_roots, validate_sandbox_file};
 use crate::tools::inspect::ParsedPkgdescJson;
 use crate::tools::list_packages::dialect_label;
 
+use super::attribution::{SourceRef, append_source_footer};
 use super::{
     ParsedResourceUri, ResourceMeta, ResourceReadError, ResourceReadHandler, ResourceRegistry,
     ResourceRegistryError, parse_resource_uri,
@@ -134,10 +135,15 @@ fn read_manifest_at_path(path: &Path, uri: &str) -> Result<String, ResourceReadE
         },
     };
 
-    serde_json::to_string(&body).map_err(|err| ResourceReadError::ReadFailed {
+    let json = serde_json::to_string(&body).map_err(|err| ResourceReadError::ReadFailed {
         uri: uri.into(),
         message: format!("serialize manifest JSON: {err}"),
-    })
+    })?;
+
+    let mut out = json;
+    let source_path = manifest_source_path(path);
+    append_source_footer(&mut out, &[SourceRef::new("vesc-mcp", source_path)]);
+    Ok(out)
 }
 
 fn parsed_to_body(parsed: ParsedPkgDesc, raw_qml: String) -> ManifestResourceBody {
@@ -199,6 +205,13 @@ fn fixtures_root() -> PathBuf {
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn manifest_source_path(path: &Path) -> String {
+    path.strip_prefix(workspace_root()).map_or_else(
+        |_| path.to_string_lossy().into_owned(),
+        |relative| relative.to_string_lossy().into_owned(),
+    )
 }
 
 #[cfg(test)]

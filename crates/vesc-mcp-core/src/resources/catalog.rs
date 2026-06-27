@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use super::attribution::{SourceRef, append_source_footer};
 use super::{
     ParsedResourceUri, ResourceMeta, ResourceReadError, ResourceReadHandler, ResourceRegistry,
     ResourceRegistryError,
@@ -169,7 +170,13 @@ fn render_refloat_vesc_tool(doc: &BuildFlowDoc) -> String {
         render_target(&mut out, doc, target);
     }
 
-    append_attribution(&mut out, &doc.source_repo, &doc.makefile.path, None);
+    append_source_footer(
+        &mut out,
+        &[
+            SourceRef::new(&doc.source_repo, &doc.makefile.path),
+            SourceRef::literal(format!("catalog/{BUILD_FLOW_CATALOG_REL}")),
+        ],
+    );
     out
 }
 
@@ -194,7 +201,13 @@ fn render_poc_rust_packer(doc: &BuildFlowDoc, poc: &PocEquivalent) -> String {
         doc = poc.doc,
     );
 
-    append_attribution(&mut out, &poc.repo, &poc.doc, None);
+    append_source_footer(
+        &mut out,
+        &[
+            SourceRef::new(&poc.repo, &poc.doc),
+            SourceRef::literal(format!("catalog/{BUILD_FLOW_CATALOG_REL}")),
+        ],
+    );
     out
 }
 
@@ -276,19 +289,6 @@ impl ResourceReadHandler for BuildRecipeResourceHandler {
 
 fn repo_catalog_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog")
-}
-
-fn append_attribution(out: &mut String, repo: &str, path: &str, line: Option<u64>) {
-    let _ = writeln!(out, "\n---");
-    match line {
-        Some(line_no) => {
-            let _ = writeln!(out, "Source: {repo}/{path}#L{line_no}");
-        }
-        None => {
-            let _ = writeln!(out, "Source: {repo}/{path}");
-        }
-    }
-    let _ = writeln!(out, "Source: catalog/{BUILD_FLOW_CATALOG_REL}");
 }
 
 #[cfg(test)]
