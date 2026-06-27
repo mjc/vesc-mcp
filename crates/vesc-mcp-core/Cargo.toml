@@ -1,0 +1,25 @@
+[package]
+name = "vesc-mcp-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared MCP server logic, config, and error types for vesc-mcp"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+vesc-domain = { path = "../vesc-domain" }
+
+[dev-dependencies]
+serde_json.workspace = true
