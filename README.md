@@ -41,7 +41,9 @@ Add a stdio server entry (Cursor, Claude Desktop, etc.). Prefer `nix develop` so
 
 Fallback without Nix: build `vesc-mcp-server` and point `command` at the binary; see [docs/configuration.md](docs/configuration.md).
 
-Verify the connection with the `ping` tool (optional `message` echoes back). Then use `list_vesc_packages` and `inspect_pkgdesc` on paths under your configured sandbox — offline examples live in [`tests/fixtures/`](tests/fixtures/README.md).
+Verify the connection with the `ping` tool (optional `message` echoes back). Then use `list_vesc_packages` and `inspect_pkgdesc` on paths under your configured sandbox — offline examples live in [`tests/fixtures/`](tests/fixtures/README.md) and [docs/examples/](docs/examples/).
+
+Optional CI smoke: `./scripts/docs-smoke.sh` (spawns server, checks `tools/list` count).
 
 ## Architecture overview
 
@@ -74,6 +76,9 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/architecture.md](docs/architecture.md) | Crate diagram and boundaries |
 | [docs/testing.md](docs/testing.md) | Red/green/refactor workflow |
 | [docs/poc-integration.md](docs/poc-integration.md) | vesc-rust-poc path dependency |
+| [docs/safety.md](docs/safety.md) | Flash/upload gates and device hygiene |
+| [docs/examples/inspect-refloat-session.md](docs/examples/inspect-refloat-session.md) | Agent walkthrough: refloat-minimal fixture |
+| [docs/examples/build-poc-package-session.md](docs/examples/build-poc-package-session.md) | Agent walkthrough: POC rust build |
 
 ## External repos (optional)
 

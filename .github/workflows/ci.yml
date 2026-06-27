@@ -19,3 +19,14 @@ jobs:
 
       - name: Verify fixture suite
         run: nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
+
+  docs-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Docs MCP smoke
+        run: nix develop -c ./scripts/docs-smoke.sh
