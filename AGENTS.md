@@ -22,7 +22,7 @@ All tools return JSON text payloads.
 | `inspect_pkgdesc` | Parse `pkgdesc.qml` | `path` — file path |
 | `inspect_vescpkg` | Read `.vescpkg` wire artifact | `path` — file path |
 | `validate_package_layout` | Check pkgdesc asset references exist | `root` — package directory |
-| `build_vescpkg` | Build `.vescpkg` | `root`, `mode` (`rust` \| `vesc_tool`), `timeout_secs` (default 120) |
+| `build_vescpkg` | Build `.vescpkg` via `vesc_tool` | `root`, `timeout_secs` (default 120) |
 | `run_package_checks` | Run fmt/clippy/test in package sandbox | `root` |
 | `search_vesc_knowledge` | Search embedded knowledge index | `query`, `category` (optional), `limit` (default 10) |
 
@@ -35,7 +35,7 @@ Tools that read or write package trees require paths under **`VESC_PACKAGE_ROOTS
 | Fixture | Use with |
 |---------|----------|
 | `tests/fixtures/refloat-minimal/` | `inspect_pkgdesc`, `validate_package_layout`, `build_vescpkg` |
-| `tests/fixtures/poc-native-lib-minimal/` | native-lib layout, rust packer |
+| `tests/fixtures/poc-native-lib-minimal/` | native-lib layout, `build_vescpkg` with `vesc_tool` |
 | `tests/fixtures/broken-*` | negative / error-path tests |
 | `tests/fixtures/golden/` | deterministic wire bytes |
 
@@ -50,7 +50,6 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 | URI | Description |
 |-----|-------------|
 | `vesc://catalog/build-recipe/refloat-vesc-tool` | Refloat Makefile + vesc_tool build flow |
-| `vesc://catalog/build-recipe/poc-rust-packer` | MCP fixture build (`build_vescpkg` rust mode; not production) |
 
 **Doc topics** (`text/markdown`):
 

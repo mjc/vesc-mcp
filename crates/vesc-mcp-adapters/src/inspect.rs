@@ -46,25 +46,21 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::build::build_package_from_root;
 
-    fn fixtures_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
+    fn golden_vescpkg() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/golden/poc-minimal.vescpkg")
     }
 
     #[test]
     fn adapter_inspect_extracts_package_name() {
-        let root = fixtures_root().join("poc-native-lib-minimal");
-        let built = build_package_from_root(&root).expect("build");
-        let inspection = inspect_vescpkg(&built.artifact_path).expect("inspect");
+        let inspection = inspect_vescpkg(&golden_vescpkg()).expect("inspect");
         assert_eq!(inspection.name, "POC native-lib minimal fixture");
     }
 
     #[test]
     fn adapter_inspect_reports_lisp_import_count() {
-        let root = fixtures_root().join("poc-native-lib-minimal");
-        let built = build_package_from_root(&root).expect("build");
-        let inspection = inspect_vescpkg(&built.artifact_path).expect("inspect");
+        let inspection = inspect_vescpkg(&golden_vescpkg()).expect("inspect");
         assert!(inspection.lisp_import_count >= 1);
     }
 }

@@ -1,6 +1,4 @@
-//! Integration tests for the `build_vescpkg` MCP tool (rust mode).
-
-use std::fs;
+//! Integration tests for the `build_vescpkg` MCP tool (`vesc_tool` only).
 
 use serde_json::Value;
 use vesc_mcp_core::test_support::{McpTestHarness, TempWorkspace, fixture_path};
@@ -15,50 +13,13 @@ fn structured_error(body: &Value) -> &Value {
 }
 
 #[test]
-fn tool_build_rust_mode_creates_artifact() {
-    let harness = McpTestHarness::new();
-    let root = fixture_path("poc-native-lib-minimal");
-    let response = harness.call_tool(
-        "build_vescpkg",
-        serde_json::json!({
-            "root": root.to_string_lossy(),
-            "mode": "rust",
-        }),
-    );
-
-    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
-    assert_eq!(body["ok"], true, "response: {body}");
-
-    let artifact_path = body["artifact_path"].as_str().expect("artifact_path");
-    assert!(artifact_path.ends_with("poc-native-lib-minimal.vescpkg"));
-    assert!(std::path::Path::new(artifact_path).is_file());
-
-    let sha256 = body["sha256"].as_str().expect("sha256");
-    assert_eq!(sha256.len(), 64);
-    assert!(sha256.chars().all(|ch| ch.is_ascii_hexdigit()));
-
-    let golden_hash =
-        fs::read_to_string(fixture_path("golden/poc-minimal.sha256")).expect("golden sha256");
-    let expected = golden_hash
-        .split_whitespace()
-        .next()
-        .expect("hash column")
-        .to_ascii_lowercase();
-    assert_eq!(sha256, expected);
-
-    let size_bytes = body["size_bytes"].as_u64().expect("size_bytes");
-    assert!(size_bytes > 0);
-}
-
-#[test]
-fn tool_build_rust_mode_missing_pkgdesc_fails() {
+fn tool_build_outside_sandbox_fails() {
     let harness = McpTestHarness::new();
     let workspace = TempWorkspace::new();
     let response = harness.call_tool(
         "build_vescpkg",
         serde_json::json!({
             "root": workspace.root.to_string_lossy(),
-            "mode": "rust",
         }),
     );
 
@@ -66,43 +27,16 @@ fn tool_build_rust_mode_missing_pkgdesc_fails() {
     assert_eq!(body["ok"], false, "response: {body}");
     let err = structured_error(&body);
     assert_eq!(err["code"], "SANDBOX_DENIED");
-    assert!(
-        err["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("outside configured VESC_PACKAGE_ROOTS")),
-        "response: {body}"
-    );
-    assert!(err["hint"].as_str().is_some());
 }
 
 #[test]
-fn tool_build_rust_mode_invalid_layout_fails() {
+fn tool_build_invalid_layout_fails_before_spawn() {
     let harness = McpTestHarness::new();
     let root = fixture_path("broken-missing-lisp");
     let response = harness.call_tool(
         "build_vescpkg",
         serde_json::json!({
             "root": root.to_string_lossy(),
-            "mode": "rust",
-        }),
-    );
-
-    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
-    assert_eq!(body["ok"], false, "response: {body}");
-    let err = structured_error(&body);
-    assert_eq!(err["code"], "LAYOUT_INVALID");
-    assert!(err["hint"].as_str().is_some());
-}
-
-#[test]
-fn tool_build_vesc_tool_invalid_layout_fails_before_spawn() {
-    let harness = McpTestHarness::new();
-    let root = fixture_path("broken-missing-lisp");
-    let response = harness.call_tool(
-        "build_vescpkg",
-        serde_json::json!({
-            "root": root.to_string_lossy(),
-            "mode": "vesc_tool",
         }),
     );
 
@@ -119,45 +53,19 @@ fn tool_build_vesc_tool_invalid_layout_fails_before_spawn() {
 }
 
 #[test]
-fn tool_build_vesc_tool_mocked_via_harness() {
+fn tool_build_vesc_tool_spawn_fails_without_binary() {
     let harness = McpTestHarness::new();
     let root = fixture_path("refloat-minimal");
     let response = harness.call_tool(
         "build_vescpkg",
         serde_json::json!({
             "root": root.to_string_lossy(),
-            "mode": "vesc_tool",
         }),
     );
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
-    // Without vesc_tool on PATH the real subprocess fails; integration harness uses production runner.
     assert_eq!(body["ok"], false, "response: {body}");
     let err = structured_error(&body);
     assert_eq!(err["code"], "VESC_TOOL_SPAWN_FAILED");
     assert!(err["hint"].as_str().is_some());
-}
-
-#[test]
-fn tool_build_unsupported_mode_fails() {
-    let harness = McpTestHarness::new();
-    let root = fixture_path("poc-native-lib-minimal");
-    let response = harness.call_tool(
-        "build_vescpkg",
-        serde_json::json!({
-            "root": root.to_string_lossy(),
-            "mode": "cmake",
-        }),
-    );
-
-    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
-    assert_eq!(body["ok"], false, "response: {body}");
-    let err = structured_error(&body);
-    assert_eq!(err["code"], "UNSUPPORTED_MODE");
-    assert!(
-        err["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("unsupported build mode")),
-        "response: {body}"
-    );
 }

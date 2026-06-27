@@ -173,7 +173,7 @@ impl McpTestHarness {
             }
             "build_vescpkg" => {
                 let params: BuildVescpkgParams = serde_json::from_value(arguments)
-                    .expect("build_vescpkg requires { \"root\": \"...\", \"mode\": \"rust\" | \"vesc_tool\" }");
+                    .expect("build_vescpkg requires { \"root\": \"...\" }");
                 let response = build_vescpkg_tool_with_runner(
                     &params,
                     &RealVescToolRunner,

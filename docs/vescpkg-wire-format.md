@@ -1,6 +1,6 @@
 # `.vescpkg` wire format
 
-Byte-level specification for VESC custom package wire artifacts. Canonical behavior is implemented in `vesc-domain::wire` (reader and writer) and mirrored by `vesc_tool` `codeloader.cpp` (reference writer).
+Byte-level specification for VESC custom package wire artifacts. Canonical packing behavior is in `vesc_tool` `codeloader.cpp`; `vesc-domain::wire` implements the read-side parser and tests.
 
 ## File anatomy
 
@@ -86,8 +86,8 @@ Empty `qmlFile` is omitted — not written as a zero-length field. Test: `packag
 
 Parity tests:
 
-- `vesc-domain::wire`: `characterization_package_uses_vesc_tool_field_spine`
-- `vesc-mcp-adapters`: `characterization_package_uses_vesc_tool_field_spine`
+- `vesc-domain::wire`: golden round-trip and field-spine tests on `tests/fixtures/golden/poc-minimal.vescpkg`
+- `vesc-mcp-core`: optional `tool_build_poc_native_lib_minimal_matches_golden_when_vesc_tool_available` when `VESC_TOOL_PATH` is set
 
 ## lispData binary structure
 
@@ -107,7 +107,7 @@ Offset  Type        Field
         bytes       embedded payloads at recorded offsets
 ```
 
-Reference: `vesc-domain::parse_lisp_imports`, `vesc-domain::wire::pack_lisp_imports` (private; see `write.rs`).
+Reference: `vesc-domain::parse_lisp_imports`; authoritative writer is `vesc_tool` `lispPackImports` in `codeloader.cpp`.
 
 ### Payload placement rule (critical)
 
@@ -118,7 +118,7 @@ Embedded file bytes live **inside the same `lispData` buffer**.
 - The `+2` skips the leading i16 header when locating payload bytes.
 - Payloads are **4-byte aligned** in POC/vesc_tool builds; trailing NUL padding after native `.bin` content is allowed.
 
-Example from characterization test (`characterization_lisp_imports_embed_native_payload_bytes`):
+Example from golden fixture (`tests/fixtures/golden/poc-minimal.vescpkg`):
 
 - Native bytes: `[0, 1, 2, 3, 0xff]` (5 bytes)
 - Stored size: **6** (one trailing NUL pad)
@@ -138,15 +138,15 @@ Typical loader (`tests/fixtures/poc-native-lib-minimal/package/code.lisp`):
 
 | Concept | Rule |
 |---------|------|
-| Import path | Resolved relative to **`lisp_editor_path`** (package root), not the `.lisp` file directory |
+| Import path | Resolved by `vesc_tool` relative to lisp file directory (`codeloader.cpp`) |
 | Tag (`package-lib`) | Becomes the import table entry name; argument to `(load-native-lib …)` |
 | `(load-native-lib …)` | Firmware extension — see [vesc-pkg-lib-abi.md](vesc-pkg-lib-abi.md) |
 
-Packer algorithm (`pack_lisp_imports`):
+Packer algorithm (`vesc_tool` `lispPackImports` in `codeloader.cpp`):
 
 1. Write header `i16` 0 + null-terminated source.
-2. Scan source lines for `(import "path" 'tag)` via `parse_import_line`.
-3. Read each path relative to `lisp_editor_path`; append trailing NUL to file bytes if missing.
+2. Scan source lines for `(import "path" 'tag)`.
+3. Read each path relative to the lisp file directory; append trailing NUL to file bytes if missing.
 4. Write import count, then each tag/offset/size; align and append payload bytes.
 
 ## Wire format failure taxonomy
@@ -182,33 +182,18 @@ Integration tests: `tool_inspect_vescpkg_rejects_bad_magic`, `tool_inspect_vescp
 | Compression | Qt `qCompress` |
 | Legacy | `--buildPkg` colon format (`OLDVT=1`) |
 
-**MCP fixtures only:** `vesc-domain::wire::write.rs` implements a parity writer for offline CI (`build_vescpkg` mode `rust`). It is not a supported production packer.
+In-repo reader: `crates/vesc-domain/src/wire/mod.rs`.
 
-### Upstream citations
-
-| Repo | Path | Lines | Content |
-|------|------|-------|---------|
-| vesc_tool | `codeloader.cpp` | 817–864 | `packVescPackage` — magic + fields |
-| vesc_tool | `codeloader.cpp` | 879–916 | Unpack mirror |
-| vesc_tool | `codeloader.cpp` | 173–252 | `lispPackImports` |
-| vesc_tool | `codeloader.cpp` | 1174–1252 | pkgdesc QML property reads |
-| vesc-mcp | `crates/vesc-domain/src/wire/mod.rs` | full module | Reader + tests |
-| vesc-mcp | `crates/vesc-domain/src/wire/write.rs` | full module | Parity writer (fixtures) |
-
-Set `$VESC_POC_ROOT`, `$VESC_TOOL_ROOT` (or sibling checkout paths) per [configuration.md](configuration.md).
+Set `$VESC_TOOL_ROOT` (or sibling checkout paths) per [configuration.md](configuration.md).
 
 ## Parity strategy
 
-1. **Golden vector** — `tests/fixtures/golden/poc-minimal.vescpkg` SHA-256: `34e95e3628a810efc9bfd3cdf23d80dea193f9a11c65b4a5da6f8a23163b7207`
-2. **Characterization** — `characterization_matches_golden_sha256` builds from `poc-native-lib-minimal` fixture
-3. **Field spine** — built packages must expose keys in `FIELD_SPINE` order when all fields present
-4. **Import geometry** — offset/size/payload round-trip via `parse_lisp_imports`
+1. **Golden vector** — `tests/fixtures/golden/poc-minimal.vescpkg` SHA-256: `5148d649a6da7abb8deb5a4bdca38f9fe7bd1b9d918f9e06001e0f20e2cedba9`
+2. **Field spine** — packages must expose keys in `FIELD_SPINE` order when all fields present
+3. **Import geometry** — offset/size/payload round-trip via `parse_lisp_imports`
+4. **Optional live build** — when `VESC_TOOL_PATH` is set, `build_vescpkg` + parity tests compare against golden
 
-Regenerate golden after POC packer changes:
-
-```bash
-nix develop -c cargo run -p vesc-mcp-adapters --bin gen-poc-minimal-golden
-```
+Regenerate golden with `vesc_tool` — see `tests/fixtures/golden/README.md`.
 
 ## Import table geometry (diagram)
 
@@ -227,7 +212,7 @@ When hand-decoding: always verify `2 + offset + size ≤ lispData.len()`.
 
 ## Appendix — annotated golden hex walkthrough
 
-Hand-decode anchor: `tests/fixtures/golden/poc-minimal.vescpkg` (406 bytes on disk, SHA-256 `34e95e36…`). Built from `tests/fixtures/poc-native-lib-minimal/` via `gen-poc-minimal-golden`.
+Hand-decode anchor: `tests/fixtures/golden/poc-minimal.vescpkg` (406 bytes on disk, SHA-256 `5148d649…`). Produced by `vesc_tool --buildPkgFromDesc` from `tests/fixtures/poc-native-lib-minimal/package/pkgdesc.qml`.
 
 ### Outer container (bytes 0–405)
 
@@ -290,7 +275,7 @@ Representative hex (lispData only):
 5. For `lispData`: verify header 0, parse source cstring, read import table, confirm `2 + offset + size ≤ lispData.len()`.
 6. Confirm golden SHA-256 after any packer change.
 
-Offline tools: MCP `inspect_vescpkg` on this path; `vesc-domain` wire tests; regenerate via `gen-poc-minimal-golden`.
+Offline tools: MCP `inspect_vescpkg` on this path; `vesc-domain` wire tests; regenerate via [tests/fixtures/golden/README.md](../tests/fixtures/golden/README.md).
 
 ## Related documents
 

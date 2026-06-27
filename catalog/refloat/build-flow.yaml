@@ -89,11 +89,5 @@ artifacts:
   - ui.qml
   - src/package_lib.bin
 
-poc_equivalent:
-  repo: vesc-mcp
-  doc: docs/poc-integration.md
-  makefile_target: build_vescpkg (mode=rust, fixtures only)
-  packer: vesc-domain parity writer (mirrors vesc_tool; not production packaging)
-
 related_bldc:
   - lispBM/c_libs/vesc_c_if.h

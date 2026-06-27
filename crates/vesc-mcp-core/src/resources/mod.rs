@@ -17,8 +17,8 @@ pub use abi::{
     AbiResourceHandler, MINIMAL_TEST_PACKAGE_ABI_URI, read_abi_resource, register_abi_resources,
 };
 pub use catalog::{
-    BuildFlowDoc, BuildRecipeResourceHandler, POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI,
-    load_build_flow, read_build_recipe, register_build_recipe_resources,
+    BuildFlowDoc, BuildRecipeResourceHandler, REFLOAT_VESC_TOOL_URI, load_build_flow,
+    read_build_recipe, register_build_recipe_resources,
 };
 pub use manifest::{
     ManifestResourceHandler, POC_NATIVE_LIB_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
@@ -302,7 +302,7 @@ mod tests {
     fn register_rejects_duplicate_uri() {
         let mut registry = ResourceRegistry::new();
         let meta = ResourceMeta {
-            uri: "vesc://catalog/build-recipe/poc-rust-packer".into(),
+            uri: "vesc://catalog/build-recipe/refloat-vesc-tool".into(),
             name: "poc".into(),
             description: None,
             mime_type: "text/markdown".into(),

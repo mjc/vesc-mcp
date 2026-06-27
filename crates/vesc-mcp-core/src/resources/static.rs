@@ -133,7 +133,6 @@ fn render_lisp_imports() -> String {
     append_source_footer(
         &mut out,
         &[
-            SourceRef::new("vesc-mcp", "crates/vesc-domain/src/wire/write.rs").with_line(1),
             SourceRef::new("vesc_tool", "codeloader.cpp").with_line(173),
             SourceRef::literal("crates/vesc-domain/src/wire/mod.rs"),
         ],

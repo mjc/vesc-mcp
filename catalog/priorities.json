@@ -62,7 +62,7 @@
       "priority": "P1",
       "category": "package_build",
       "catalog_ref": "catalog/gap-analysis.md#packer",
-      "summary": "vesc_tool wire format vs MCP parity-writer fixture tests"
+      "summary": "vesc_tool wire format vs committed golden fixture bytes"
     },
     {
       "id": "gap-descriptor-dialect",

@@ -51,8 +51,8 @@ Optional CI smoke: `./scripts/docs-smoke.sh` (spawns server, checks `tools/list`
 MCP Client  →  vesc-mcp-server (stdio)  →  vesc-mcp-core
                                               ├─ tools (ping, list, inspect, build, …)
                                               ├─ resources (vesc://catalog/*, vescpkg://…)
-                                              ├─ vesc-domain (parse / validate / pack vescpkg)
-                                              ├─ vesc-mcp-adapters (stage + write)
+                                              ├─ vesc-domain (parse / validate / read vescpkg wire)
+                                              ├─ vesc-mcp-adapters (inspect + pkgdesc discovery)
                                               ├─ vesc-knowledge-index (embedded search)
                                               └─ catalog/ YAML + tests/fixtures/
 ```
@@ -62,7 +62,7 @@ MCP Client  →  vesc-mcp-server (stdio)  →  vesc-mcp-core
 | `vesc-mcp-server` | stdio MCP binary |
 | `vesc-mcp-core` | tools, resources, config, MCP service |
 | `vesc-domain` | VESC / vescpkg domain types and parsers |
-| `vesc-mcp-adapters` | Host-side staging and `.vescpkg` write via `vesc-domain` |
+| `vesc-mcp-adapters` | Host-side pkgdesc discovery and `.vescpkg` inspect |
 | `vesc-knowledge-index` | Embedded firmware/package knowledge index |
 
 See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data-flow notes.
@@ -75,13 +75,12 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/configuration.md](docs/configuration.md) | Environment variables and `config.toml` |
 | [docs/architecture.md](docs/architecture.md) | Crate diagram and boundaries |
 | [docs/testing.md](docs/testing.md) | Red/green/refactor workflow |
-| [docs/poc-integration.md](docs/poc-integration.md) | MCP fixture builds (parity writer; production uses vesc_tool) |
 | [docs/vescpackage-reference.md](docs/vescpackage-reference.md) | End-to-end package lifecycle index |
 | [docs/vescpkg-wire-format.md](docs/vescpkg-wire-format.md) | `.vescpkg` byte-level wire spec |
 | [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) | Native loader ABI (vesc_pkg_lib) |
 | [docs/safety.md](docs/safety.md) | Flash/upload gates and device hygiene |
 | [docs/examples/inspect-refloat-session.md](docs/examples/inspect-refloat-session.md) | Agent walkthrough: refloat-minimal fixture |
-| [docs/examples/build-poc-package-session.md](docs/examples/build-poc-package-session.md) | Agent walkthrough: POC rust build |
+| [docs/examples/build-poc-package-session.md](docs/examples/build-poc-package-session.md) | Agent walkthrough: fixture build via `vesc_tool` |
 
 ## External repos (optional)
 

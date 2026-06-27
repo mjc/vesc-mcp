@@ -37,7 +37,7 @@ Relative paths in config (e.g. `vendor/refloat`) resolve against the vesc-mcp wo
 
 | Variable | Config key | Default | Description |
 |----------|------------|---------|-------------|
-| `VESC_TOOL_PATH` | `vesc_tool` | `vesc_tool` | Path to the `vesc_tool` binary for `build_vescpkg` with `mode: "vesc_tool"`. |
+| `VESC_TOOL_PATH` | `vesc_tool` | `vesc_tool` | Path to the `vesc_tool` binary for `build_vescpkg`. |
 
 ### Server features
 

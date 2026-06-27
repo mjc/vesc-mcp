@@ -6,7 +6,7 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 | Area | refloat | vesc-mcp (fixtures) | Impact |
 |------|---------|---------------------|--------|
-| Package packer | vesc_tool CLI | Parity writer in CI only | Production uses vesc_tool; MCP tests offline |
+| Package packer | vesc_tool CLI | `build_vescpkg` + committed golden bytes | Same packer; golden is read-only offline anchor |
 | Descriptor dialect | vesc_tool (`pkgName`, …) | Legacy POC mistake (`packageName`, …) | POC must migrate to vesc_tool schema |
 | Native payload | C via vesc_pkg_lib | Rust staticlib + C shim | Toolchain and symbol audit differ |
 | BLE / device test | Manual VESC Tool upload | Host `loopback` CLI | POC has automated hw path; refloat docs none |
@@ -33,11 +33,11 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 **refloat:** `make` → `vesc_tool --buildPkgFromDesc pkgdesc.qml` (or legacy `--buildPkg` colon string when `OLDVT=1`). This matches official VESC Tool behavior (`codeloader.cpp`).
 
-**vesc-mcp (fixtures only):** `build_vescpkg` mode `rust` writes `.vescpkg` via `vesc-domain::wire` parity code for offline CI — not a packaging workflow for real packages.
+**vesc-mcp:** `build_vescpkg` spawns `vesc_tool` only. Golden `poc-minimal.vescpkg` is a read-only wire reference for offline tests.
 
-**Gap:** Hosts without `vesc_tool` cannot pack real packages through MCP; fixture tests use the parity writer instead.
+**Gap:** CI hosts without `vesc_tool` cannot run live build tests; wire parsing tests use committed golden bytes.
 
-**Mitigation:** Characterization tests and golden SHA-256 pin parity writer output against the wire spec; use `mode: vesc_tool` when the binary is available.
+**Mitigation:** Optional parity tests when `VESC_TOOL_PATH` is set; golden regeneration documented in `tests/fixtures/golden/README.md`.
 
 ## Native library build {#native}
 

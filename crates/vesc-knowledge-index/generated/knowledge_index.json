@@ -1067,21 +1067,21 @@
     "id": "priority.gap-packer-divergence",
     "name": "gap_packer_divergence",
     "category": "package_build",
-    "summary": "vesc_tool wire format vs MCP parity-writer fixture tests",
+    "summary": "vesc_tool wire format vs committed golden fixture bytes",
     "source": {
       "repo": "catalog",
       "path": "catalog/gap-analysis.md#packer",
       "line": 1
     },
     "keywords": [
-      "MCP",
+      "bytes",
+      "committed",
       "divergence",
       "fixture",
       "format",
       "gap",
+      "golden",
       "packer",
-      "parity-writer",
-      "tests",
       "vesc_tool",
       "vs",
       "wire"

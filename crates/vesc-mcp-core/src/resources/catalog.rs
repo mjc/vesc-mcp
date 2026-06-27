@@ -19,9 +19,6 @@ pub const BUILD_FLOW_CATALOG_REL: &str = "refloat/build-flow.yaml";
 /// `vesc://catalog/build-recipe/refloat-vesc-tool`
 pub const REFLOAT_VESC_TOOL_URI: &str = "vesc://catalog/build-recipe/refloat-vesc-tool";
 
-/// `vesc://catalog/build-recipe/poc-rust-packer`
-pub const POC_RUST_PACKER_URI: &str = "vesc://catalog/build-recipe/poc-rust-packer";
-
 /// Parsed build-flow catalog document used to render build-recipe resources.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BuildFlowDoc {
@@ -29,7 +26,6 @@ pub struct BuildFlowDoc {
     pub source_repo: String,
     pub makefile: MakefileSection,
     pub targets: Vec<TargetEntry>,
-    pub poc_equivalent: Option<PocEquivalent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -70,16 +66,6 @@ pub struct BuildMode {
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct PocEquivalent {
-    pub repo: String,
-    pub doc: String,
-    #[serde(default)]
-    pub lines: Option<[u64; 2]>,
-    pub makefile_target: String,
-    pub packer: String,
-}
-
 /// Load `catalog/refloat/build-flow.yaml` from a catalog root directory.
 ///
 /// # Errors
@@ -105,14 +91,6 @@ pub fn register_build_recipe_resources(
         name: "Refloat vesc_tool build recipe".into(),
         description: Some("Build Refloat .vescpkg packages via Makefile and vesc_tool".into()),
         mime_type: "text/markdown".into(),
-    })?;
-    registry.register(ResourceMeta {
-        uri: POC_RUST_PACKER_URI.into(),
-        name: "MCP fixture build (offline CI)".into(),
-        description: Some(
-            "build_vescpkg rust mode on fixtures — parity writer only; production packaging uses vesc_tool".into(),
-        ),
-        mime_type: "text/markdown".into(),
     })
 }
 
@@ -129,16 +107,6 @@ pub fn read_build_recipe(uri: &str, catalog_root: &Path) -> Result<String, Resou
 
     match uri {
         REFLOAT_VESC_TOOL_URI => Ok(render_refloat_vesc_tool(&doc)),
-        POC_RUST_PACKER_URI => {
-            let poc = doc
-                .poc_equivalent
-                .as_ref()
-                .ok_or_else(|| ResourceReadError::ReadFailed {
-                    uri: uri.into(),
-                    message: format!("missing poc_equivalent in catalog/{BUILD_FLOW_CATALOG_REL}"),
-                })?;
-            Ok(render_poc_rust_packer(&doc, poc))
-        }
         other => Err(ResourceReadError::NotFound { uri: other.into() }),
     }
 }
@@ -180,38 +148,6 @@ fn render_refloat_vesc_tool(doc: &BuildFlowDoc) -> String {
         ],
     );
     out
-}
-
-fn render_poc_rust_packer(_doc: &BuildFlowDoc, poc: &PocEquivalent) -> String {
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "# MCP fixture build (offline CI)\n\n**Not production packaging.** Refloat and official VESC packages use `vesc_tool` — see `vesc://catalog/build-recipe/refloat-vesc-tool`.\n\nFor sandbox fixtures and CI, `build_vescpkg` with `mode: \"rust\"` writes `.vescpkg` using an in-repo parity writer that mirrors `vesc_tool` `codeloader.cpp`.\n",
-    );
-    let _ = writeln!(
-        out,
-        "## MCP tool\n\n```json\n{{ \"root\": \"tests/fixtures/…\", \"mode\": \"rust\" }}\n```\n\nPacker note: {packer}\n\nReference: `{repo}/{doc}`\n",
-        packer = poc.packer,
-        repo = poc.repo,
-        doc = poc.doc,
-    );
-
-    append_source_footer(
-        &mut out,
-        &[
-            poc_source_ref(poc),
-            SourceRef::literal(format!("catalog/{BUILD_FLOW_CATALOG_REL}")),
-        ],
-    );
-    out
-}
-
-fn poc_source_ref(poc: &PocEquivalent) -> SourceRef {
-    let mut source = SourceRef::new(&poc.repo, &poc.doc);
-    if let Some([start, ..]) = poc.lines {
-        source = source.with_line(start);
-    }
-    source
 }
 
 fn render_target(out: &mut String, doc: &BuildFlowDoc, target: &TargetEntry) {
@@ -307,9 +243,6 @@ mod tests {
     fn load_build_flow_parses_catalog_fixture() {
         let doc = load_build_flow(&default_catalog_root()).expect("load build-flow");
         assert_eq!(doc.id, "refloat-build-flow");
-        let poc = doc.poc_equivalent.expect("poc_equivalent");
-        assert_eq!(poc.repo, "vesc-mcp");
-        assert!(poc.packer.contains("parity"));
     }
 
     #[test]

@@ -1,17 +1,16 @@
-# Example agent session: build fixture package (offline)
+# Example agent session: build fixture package via vesc_tool
 
-Walkthrough for `build_vescpkg` in **rust** mode on `tests/fixtures/poc-native-lib-minimal/` — an **MCP/CI parity path only**. Production refloat packages use `vesc_tool --buildPkgFromDesc` (see [inspect-refloat-session.md](inspect-refloat-session.md) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
+Walkthrough for `build_vescpkg` on `tests/fixtures/poc-native-lib-minimal/` using the official `vesc_tool` packer. Production refloat packages follow the same `--buildPkgFromDesc` path (see [inspect-refloat-session.md](inspect-refloat-session.md) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
 
 **Prerequisites**
 
 | Requirement | Notes |
 |-------------|-------|
 | `VESC_PACKAGE_ROOTS` | Must include `tests/fixtures/` (or the fixture parent path). |
+| `VESC_TOOL_PATH` | Path to a `vesc_tool` binary with `--buildPkgFromDesc` support (or `vesc_tool` on PATH). |
 | Build toolchain | `nix develop -c make check` in vesc-mcp. No sibling repos required. |
 
-The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). Adapters resolve `lisp_editor_path` to the package root — see [poc-integration.md](../poc-integration.md).
-
-When `VESC_TOOL_PATH` is set, prefer `mode: "vesc_tool"` for the same layout using the official packer.
+The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). `build_vescpkg` resolves the descriptor via `locate_pkgdesc` and runs `vesc_tool` with the package directory as cwd.
 
 ---
 
@@ -37,16 +36,15 @@ When `VESC_TOOL_PATH` is set, prefer `mode: "vesc_tool"` for the same layout usi
 
 ---
 
-## Prompt 2 — build with parity writer (fixtures)
+## Prompt 2 — build with vesc_tool
 
-> Build a `.vescpkg` for the native-lib minimal fixture using `build_vescpkg` with `mode: "rust"`.
+> Build a `.vescpkg` for the native-lib minimal fixture using `build_vescpkg`.
 
 **Tool call**
 
 ```json
 {
   "root": "tests/fixtures/poc-native-lib-minimal",
-  "mode": "rust",
   "timeout_secs": 120
 }
 ```
@@ -62,9 +60,9 @@ When `VESC_TOOL_PATH` is set, prefer `mode: "vesc_tool"` for the same layout usi
 }
 ```
 
-The SHA-256 must match the golden vector in `tests/fixtures/golden/poc-minimal.sha256`.
+The SHA-256 must match the committed golden vector in `tests/fixtures/golden/poc-minimal.sha256`.
 
-On layout or I/O failure the tool returns `{ "ok": false, "error": { "code": "…", "message": "…", "hint": "…" } }`.
+On layout, missing `vesc_tool`, or I/O failure the tool returns `{ "ok": false, "error": { "code": "…", "message": "…", "hint": "…" } }`.
 
 ---
 
@@ -126,19 +124,17 @@ vescpkg://fixture/poc-native-lib-minimal/manifest
 
 ```bash
 export VESC_PACKAGE_ROOTS="$PWD/tests/fixtures"
-# Optional — use official packer instead of rust parity mode:
-# export VESC_TOOL_PATH=/path/to/vesc_tool
+export VESC_TOOL_PATH=/path/to/vesc_tool   # or ensure vesc_tool is on PATH
 ```
 
-Build recipe resources:
+Build recipe resource:
 
 - Production (refloat): `vesc://catalog/build-recipe/refloat-vesc-tool`
-- Fixture parity (CI): `vesc://catalog/build-recipe/poc-rust-packer`
 
 ---
 
 ## Related docs
 
 - [inspect-refloat-session.md](inspect-refloat-session.md) — discovery and layout checks with vesc_tool workflow
-- [poc-integration.md](../poc-integration.md) — parity writer vs production vesc_tool
 - [configuration.md](../configuration.md) — `VESC_PACKAGE_ROOTS`, `VESC_TOOL_PATH`
+- [tests/fixtures/golden/README.md](../../tests/fixtures/golden/README.md) — regenerate committed golden bytes

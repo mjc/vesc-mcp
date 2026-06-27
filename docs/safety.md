@@ -47,7 +47,7 @@ Example confirmation block for future upload tools:
 | Never upload to unknown or guessed device paths | Wrong port can disrupt unrelated USB serial devices |
 | Do not scan `/dev` and pick the first match | Multiple VESCs, BMS, or debug adapters may be present |
 | Prefer user-supplied paths or VESC Tool–verified connections | MCP has no hardware discovery in v1 |
-| Treat `VESC_TOOL_PATH` subprocess builds separately from device I/O | `build_vescpkg` `vesc_tool` mode only writes local `.vescpkg` files |
+| Treat `VESC_TOOL_PATH` subprocess builds separately from device I/O | `build_vescpkg` only writes local `.vescpkg` files via `vesc_tool` |
 
 Sandbox rules for **package trees** (`VESC_PACKAGE_ROOTS`) are independent of device gates — see [configuration.md](configuration.md).
 

@@ -4,7 +4,6 @@ expression: uris
 ---
 [
   "vesc://catalog/abi/minimal-test-package",
-  "vesc://catalog/build-recipe/poc-rust-packer",
   "vesc://catalog/build-recipe/refloat-vesc-tool",
   "vesc://catalog/commands/refloat/ALERTS_CONTROL",
   "vesc://catalog/commands/refloat/ALERTS_LIST",

@@ -1,8 +1,7 @@
-//! `build_vescpkg` — build `.vescpkg` wire artifacts from on-disk package roots.
+//! `build_vescpkg` — build `.vescpkg` wire artifacts via `vesc_tool`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,19 +12,17 @@ use vesc_mcp_adapters::locate_pkgdesc;
 
 use crate::config::{McpConfig, allowed_package_roots, validate_sandbox_path};
 use crate::tools::tool_error::{
-    ToolError, tool_error_from_adapter, tool_error_from_build_timeout, tool_error_from_domain,
-    tool_error_from_sandbox, tool_error_from_vesc_tool,
+    ToolError, tool_error_from_adapter, tool_error_from_domain, tool_error_from_sandbox,
+    tool_error_from_vesc_tool,
 };
 
-/// Default build timeout in seconds (applied when subprocess modes land).
+/// Default build timeout in seconds.
 pub const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BuildVescpkgParams {
     /// Package root directory containing `pkgdesc.qml` (or `package/pkgdesc.qml`).
     pub root: String,
-    /// Build backend: `rust` uses the in-tree adapter; `vesc_tool` spawns the CLI.
-    pub mode: String,
     /// Maximum seconds to allow for the build (default 120).
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
@@ -127,32 +124,6 @@ impl VescToolRunner for RealVescToolRunner {
     }
 }
 
-/// In-process build backend for `rust` mode (mockable in unit tests).
-pub trait RustPackageBuilder: Send + Sync {
-    /// Build a `.vescpkg` from an on-disk package root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an adapter error when layout validation or I/O fails.
-    fn build_from_root(
-        &self,
-        root: &Path,
-    ) -> Result<vesc_mcp_adapters::BuiltPackage, vesc_mcp_adapters::AdapterError>;
-}
-
-/// Production builder that delegates to [`vesc_mcp_adapters::build_package_from_root`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RealRustPackageBuilder;
-
-impl RustPackageBuilder for RealRustPackageBuilder {
-    fn build_from_root(
-        &self,
-        root: &Path,
-    ) -> Result<vesc_mcp_adapters::BuiltPackage, vesc_mcp_adapters::AdapterError> {
-        vesc_mcp_adapters::build_package_from_root(root)
-    }
-}
-
 #[must_use]
 pub fn build_vescpkg_tool(params: &BuildVescpkgParams) -> BuildVescpkgResponse {
     build_vescpkg_tool_with_runner(params, &RealVescToolRunner, None, None)
@@ -165,64 +136,13 @@ pub fn build_vescpkg_tool_with_runner(
     vesc_tool_override: Option<&Path>,
     allowed_roots_override: Option<&[PathBuf]>,
 ) -> BuildVescpkgResponse {
-    build_vescpkg_tool_with_builders(
-        params,
-        runner,
-        Arc::new(RealRustPackageBuilder),
-        vesc_tool_override,
-        allowed_roots_override,
-    )
-}
-
-#[must_use]
-pub fn build_vescpkg_tool_with_builders(
-    params: &BuildVescpkgParams,
-    runner: &dyn VescToolRunner,
-    rust_builder: Arc<dyn RustPackageBuilder>,
-    vesc_tool_override: Option<&Path>,
-    allowed_roots_override: Option<&[PathBuf]>,
-) -> BuildVescpkgResponse {
     let root_path = PathBuf::from(&params.root);
     let allowed_roots = allowed_package_roots(allowed_roots_override);
     if let Err(err) = validate_sandbox_path(&root_path, &allowed_roots) {
         return build_error(tool_error_from_sandbox(err));
     }
 
-    match params.mode.as_str() {
-        "rust" => build_vescpkg_rust(params, rust_builder),
-        "vesc_tool" => build_vescpkg_vesc_tool(params, runner, vesc_tool_override),
-        other => build_error(
-            ToolError::new(
-                "UNSUPPORTED_MODE",
-                format!("unsupported build mode {other:?}; expected \"rust\" or \"vesc_tool\""),
-            )
-            .with_hint("use mode \"rust\" or \"vesc_tool\""),
-        ),
-    }
-}
-
-fn build_vescpkg_rust(
-    params: &BuildVescpkgParams,
-    builder: Arc<dyn RustPackageBuilder>,
-) -> BuildVescpkgResponse {
-    let root = PathBuf::from(&params.root);
-    let timeout_secs = params.timeout_secs;
-    let build_root = root.clone();
-
-    match run_with_timeout(timeout_secs, "rust build", &root, move || {
-        builder
-            .build_from_root(&build_root)
-            .map_err(tool_error_from_adapter)
-    }) {
-        Ok(built) => BuildVescpkgResponse {
-            ok: true,
-            artifact_path: Some(built.artifact_path.display().to_string()),
-            sha256: Some(built.sha256),
-            size_bytes: Some(built.bytes_len),
-            error: None,
-        },
-        Err(err) => build_error(err),
-    }
+    build_vescpkg_vesc_tool(params, runner, vesc_tool_override)
 }
 
 #[allow(clippy::missing_const_for_fn)]
@@ -233,35 +153,6 @@ fn build_error(error: ToolError) -> BuildVescpkgResponse {
         sha256: None,
         size_bytes: None,
         error: Some(error),
-    }
-}
-
-fn run_with_timeout<T: Send + 'static>(
-    timeout_secs: u64,
-    label: &str,
-    root: &Path,
-    work: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
-) -> Result<T, ToolError> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(work());
-    });
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match rx.try_recv() {
-            Ok(result) => return result,
-            Err(mpsc::TryRecvError::Empty) if Instant::now() >= deadline => {
-                return Err(tool_error_from_build_timeout(label, root, timeout_secs));
-            }
-            Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(50)),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(ToolError::new(
-                    "BUILD_FAILED",
-                    format!("{label} worker panicked (root {})", root.display()),
-                )
-                .with_path(root.display().to_string()));
-            }
-        }
     }
 }
 
@@ -318,12 +209,6 @@ fn build_vescpkg_vesc_tool(
 }
 
 /// Locate the `.vescpkg` written by `vesc_tool --buildPkgFromDesc`.
-///
-/// `vesc_tool` runs with `package_root` (the directory containing `pkgdesc.qml`) as cwd
-/// and writes `pkgOutput` relative to that directory. Refloat-style trees place `pkgdesc.qml`
-/// at the package root, so the artifact usually appears at `root/output_name`. Nested layouts
-/// such as `poc-native-lib-minimal/package/pkgdesc.qml` may write under `package/` while the
-/// caller passes the parent directory as `root`; probe both locations.
 fn resolve_vesc_tool_artifact_path(
     root: &Path,
     package_root: &Path,
@@ -395,26 +280,8 @@ pub fn build_vescpkg_json(params: &BuildVescpkgParams) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
     use crate::test_support::{TempWorkspace, fixture_path, fixture_sandbox_roots};
-
-    struct SlowRustBuilder {
-        delay: Duration,
-    }
-
-    impl RustPackageBuilder for SlowRustBuilder {
-        fn build_from_root(
-            &self,
-            _root: &Path,
-        ) -> Result<vesc_mcp_adapters::BuiltPackage, vesc_mcp_adapters::AdapterError> {
-            thread::sleep(self.delay);
-            Err(vesc_mcp_adapters::AdapterError::message(
-                "slow builder should have timed out",
-            ))
-        }
-    }
 
     struct MockVescToolRunner {
         artifact_bytes: Vec<u8>,
@@ -452,125 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_build_rust_mode_creates_artifact() {
-        let root = fixture_path("poc-native-lib-minimal");
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: root.display().to_string(),
-            mode: "rust".into(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
-
-        assert!(response.ok, "error: {:?}", response.error);
-        let artifact_path = response.artifact_path.expect("artifact_path");
-        assert!(artifact_path.ends_with("poc-native-lib-minimal.vescpkg"));
-        assert!(std::path::Path::new(&artifact_path).is_file());
-        assert!(
-            response
-                .sha256
-                .as_ref()
-                .is_some_and(|hash| hash.len() == 64)
-        );
-        assert!(response.size_bytes.is_some_and(|size| size > 0));
-    }
-
-    #[test]
-    fn tool_build_rust_mode_missing_pkgdesc_fails() {
-        let workspace = TempWorkspace::new();
-        let allowed = vec![workspace.root.clone()];
-        let response = build_vescpkg_tool_with_runner(
-            &BuildVescpkgParams {
-                root: workspace.root.display().to_string(),
-                mode: "rust".into(),
-                timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-            },
-            &RealVescToolRunner,
-            None,
-            Some(&allowed),
-        );
-
-        assert!(!response.ok);
-        assert!(response.error.as_ref().is_some_and(|err| {
-            err.code == "MISSING_PKGDESC" || err.message.contains("pkgdesc")
-        }));
-    }
-
-    #[test]
-    fn tool_build_rust_mode_respects_timeout() {
-        let root = fixture_path("poc-native-lib-minimal");
-        let response = build_vescpkg_tool_with_builders(
-            &BuildVescpkgParams {
-                root: root.display().to_string(),
-                mode: "rust".into(),
-                timeout_secs: 1,
-            },
-            &RealVescToolRunner,
-            Arc::new(SlowRustBuilder {
-                delay: Duration::from_secs(5),
-            }),
-            None,
-            Some(&fixture_sandbox_roots()),
-        );
-
-        assert!(!response.ok);
-        assert_eq!(
-            response.error.as_ref().map(|err| err.code.as_str()),
-            Some("BUILD_TIMEOUT"),
-            "error: {:?}",
-            response.error
-        );
-    }
-
-    #[test]
-    fn tool_build_rust_mode_invalid_layout_fails() {
-        let root = fixture_path("broken-missing-lisp");
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: root.display().to_string(),
-            mode: "rust".into(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
-
-        assert!(!response.ok);
-        let err = response.error.expect("structured error");
-        assert_eq!(err.code, "LAYOUT_INVALID");
-        assert!(err.hint.is_some());
-    }
-
-    #[test]
-    fn tool_build_errors_include_hint() {
-        let root = fixture_path("broken-missing-lisp");
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: root.display().to_string(),
-            mode: "rust".into(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
-
-        let err = response.error.expect("structured error");
-        assert!(
-            err.hint
-                .as_ref()
-                .is_some_and(|hint| hint.contains("validate_package_layout"))
-        );
-    }
-
-    #[test]
-    fn tool_build_unsupported_mode_fails() {
-        let root = fixture_path("poc-native-lib-minimal");
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: root.display().to_string(),
-            mode: "cmake".into(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
-
-        assert!(!response.ok);
-        assert_eq!(
-            response.error.as_ref().map(|err| err.code.as_str()),
-            Some("UNSUPPORTED_MODE"),
-            "error: {:?}",
-            response.error
-        );
-    }
-
-    #[test]
     fn tool_build_vesc_tool_mocked() {
         let root = fixture_path("refloat-minimal");
         let artifact_bytes = b"mock-vescpkg-bytes".to_vec();
@@ -580,7 +328,6 @@ mod tests {
         let response = build_vescpkg_tool_with_runner(
             &BuildVescpkgParams {
                 root: root.display().to_string(),
-                mode: "vesc_tool".into(),
                 timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
             },
             &runner,
@@ -640,7 +387,6 @@ mod tests {
         let response = build_vescpkg_tool_with_runner(
             &BuildVescpkgParams {
                 root: root.display().to_string(),
-                mode: "vesc_tool".into(),
                 timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
             },
             &runner,
@@ -668,7 +414,6 @@ mod tests {
         let response = build_vescpkg_tool_with_runner(
             &BuildVescpkgParams {
                 root: root.display().to_string(),
-                mode: "vesc_tool".into(),
                 timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
             },
             &runner,
@@ -695,7 +440,6 @@ mod tests {
         let response = build_vescpkg_tool_with_runner(
             &BuildVescpkgParams {
                 root: root.display().to_string(),
-                mode: "vesc_tool".into(),
                 timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
             },
             &RealVescToolRunner,
@@ -709,6 +453,22 @@ mod tests {
             Some("VESC_TOOL_SPAWN_FAILED"),
             "error: {:?}",
             response.error
+        );
+    }
+
+    #[test]
+    fn tool_build_errors_include_hint() {
+        let root = fixture_path("broken-missing-lisp");
+        let response = build_vescpkg_tool(&BuildVescpkgParams {
+            root: root.display().to_string(),
+            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
+        });
+
+        let err = response.error.expect("structured error");
+        assert!(
+            err.hint
+                .as_ref()
+                .is_some_and(|hint| hint.contains("validate_package_layout"))
         );
     }
 }

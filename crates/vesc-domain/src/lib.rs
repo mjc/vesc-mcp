@@ -19,7 +19,6 @@ pub use pkgdesc::{
 };
 pub use validate::{LayoutIssue, LayoutValidationReport, validate_package_layout};
 pub use wire::{
-    LispImport, PackageField, VescPackageBuildInput, VescPackageFields, build_vescpkg_bytes,
-    parse_lisp_imports, parse_vescpkg_fields, payload_matches_native_with_only_nul_tail,
-    read_vescpkg_fields, write_vescpkg_file,
+    LispImport, PackageField, VescPackageFields, parse_lisp_imports, parse_vescpkg_fields,
+    payload_matches_native_with_only_nul_tail, read_vescpkg_fields,
 };

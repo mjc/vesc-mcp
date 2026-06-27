@@ -26,11 +26,11 @@ Related MCP doc topics: `pkgdesc_dialects`, `lisp_imports`, `vesc_c_if`.
 
 | Edge | Detail |
 |------|--------|
-| `lisp_editor_path` | Package **root**, not the `.lisp` file path. Import paths resolve relative to this root. |
+| `lisp_editor_path` | In `vesc_tool`, import paths resolve relative to the lisp file directory (`codeloader.cpp`). |
 | Legacy POC pkgdesc | Keys like `packageName`, `nativeLibraryPath` are **invalid** — use vesc_tool schema (`pkgName`, `pkgLisp`, …). |
 | Empty wire fields | May be **omitted** from the spine, not zero-length placeholders. |
 | `pkgOutput` | Output filename on disk only — **not** a wire field. |
-| MCP rust mode | **Fixture/CI only** — parity writer mirrors vesc_tool; not a production packer. |
+| Wire read | `vesc-domain::wire` is read-only; packing is always `vesc_tool`. |
 
 ## Wire field spine (vesc_tool order)
 
@@ -52,6 +52,6 @@ See `lisp_imports` topic for `lispData` binary layout and offset arithmetic.
 | `inspect_pkgdesc` | Parse `pkgdesc.qml` under sandbox roots |
 | `inspect_vescpkg` | Decode wire fields and lisp imports |
 | `validate_package_layout` | Pre-build asset checks |
-| `build_vescpkg` | `mode: vesc_tool` when binary available; `mode: rust` on fixtures only |
+| `build_vescpkg` | Spawn `vesc_tool --buildPkgFromDesc` (`VESC_TOOL_PATH`) |
 
-Offline fixtures: `tests/fixtures/refloat-minimal/`, `poc-native-lib-minimal/`, `golden/poc-minimal.vescpkg`.
+Offline fixtures: `tests/fixtures/refloat-minimal/`, `poc-native-lib-minimal/`, read-only `golden/poc-minimal.vescpkg`.

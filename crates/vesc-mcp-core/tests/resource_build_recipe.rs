@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 
 use vesc_mcp_core::resources::{
-    POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI, ResourceRegistry, read_build_recipe,
-    register_build_recipe_resources,
+    REFLOAT_VESC_TOOL_URI, ResourceRegistry, read_build_recipe, register_build_recipe_resources,
 };
 
 fn catalog_root() -> PathBuf {
@@ -44,42 +43,14 @@ fn resource_build_recipe_refloat_contains_vesc_tool() {
 }
 
 #[test]
-fn resource_build_recipe_poc_contains_package_target() {
-    let body = read_build_recipe(POC_RUST_PACKER_URI, &catalog_root())
-        .unwrap_or_else(|err| panic!("read poc recipe: {err}"));
-    assert!(
-        body.contains("build_vescpkg") || body.contains("rust"),
-        "missing MCP fixture build command:\n{body}"
-    );
-    assert!(
-        body.contains("vesc_tool") || body.contains("parity"),
-        "missing production vs fixture packer context:\n{body}"
-    );
-    assert!(
-        body.contains("vesc-mcp") || body.contains("build_vescpkg"),
-        "missing MCP fixture build info:\n{body}"
-    );
-    assert!(
-        body.contains("Source:"),
-        "missing attribution footer:\n{body}"
-    );
-    assert!(
-        body.contains("Source: vesc-mcp/docs/poc-integration.md"),
-        "missing MCP doc reference in footer:\n{body}"
-    );
-}
-
-#[test]
-fn resource_build_recipe_registers_two_static_resources() {
+fn resource_build_recipe_registers_one_static_resource() {
     let mut registry = ResourceRegistry::new();
     register_build_recipe_resources(&mut registry).expect("register build-recipe resources");
-    assert_eq!(registry.list_static().len(), 2);
-
-    let uris: Vec<_> = registry
-        .list_static()
-        .iter()
-        .map(|meta| meta.uri.as_str())
-        .collect();
-    assert!(uris.contains(&REFLOAT_VESC_TOOL_URI));
-    assert!(uris.contains(&POC_RUST_PACKER_URI));
+    assert_eq!(registry.list_static().len(), 1);
+    assert!(
+        registry
+            .list_static()
+            .iter()
+            .any(|meta| meta.uri == REFLOAT_VESC_TOOL_URI)
+    );
 }
