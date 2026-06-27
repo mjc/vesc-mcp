@@ -92,6 +92,7 @@ artifacts:
 poc_equivalent:
   repo: vesc-rust-poc
   doc: docs/package-flow.md
+  lines: [19, 37]
   makefile_target: package
   packer: Rust vesc-pkg-build (not vesc_tool)
 

@@ -59,6 +59,10 @@ fn resource_build_recipe_poc_contains_package_target() {
         body.contains("Source:"),
         "missing attribution footer:\n{body}"
     );
+    assert!(
+        body.contains("Source: vesc-rust-poc/docs/package-flow.md#L19"),
+        "missing POC doc line anchor in footer:\n{body}"
+    );
 }
 
 #[test]

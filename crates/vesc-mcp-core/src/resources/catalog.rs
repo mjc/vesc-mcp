@@ -74,6 +74,8 @@ pub struct BuildMode {
 pub struct PocEquivalent {
     pub repo: String,
     pub doc: String,
+    #[serde(default)]
+    pub lines: Option<[u64; 2]>,
     pub makefile_target: String,
     pub packer: String,
 }
@@ -204,11 +206,19 @@ fn render_poc_rust_packer(doc: &BuildFlowDoc, poc: &PocEquivalent) -> String {
     append_source_footer(
         &mut out,
         &[
-            SourceRef::new(&poc.repo, &poc.doc),
+            poc_source_ref(poc),
             SourceRef::literal(format!("catalog/{BUILD_FLOW_CATALOG_REL}")),
         ],
     );
     out
+}
+
+fn poc_source_ref(poc: &PocEquivalent) -> SourceRef {
+    let mut source = SourceRef::new(&poc.repo, &poc.doc);
+    if let Some([start, ..]) = poc.lines {
+        source = source.with_line(start);
+    }
+    source
 }
 
 fn render_target(out: &mut String, doc: &BuildFlowDoc, target: &TargetEntry) {
@@ -304,7 +314,8 @@ mod tests {
     fn load_build_flow_parses_catalog_fixture() {
         let doc = load_build_flow(&default_catalog_root()).expect("load build-flow");
         assert_eq!(doc.id, "refloat-build-flow");
-        assert!(doc.poc_equivalent.is_some());
+        let poc = doc.poc_equivalent.expect("poc_equivalent");
+        assert_eq!(poc.lines, Some([19, 37]));
     }
 
     #[test]
