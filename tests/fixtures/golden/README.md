@@ -10,6 +10,7 @@ Deterministic `.vescpkg` bytes for offline domain tests (no live POC build in CI
 ## Regenerate
 
 ```bash
-python3 scripts/gen_poc_minimal_golden.py
-nix develop -c cargo nextest run -p vesc-domain
+nix develop -c cargo run -p vesc-mcp-adapters --bin gen-poc-minimal-golden
+# or: nix develop -c python3 scripts/gen_poc_minimal_golden.py
+nix develop -c cargo nextest run -p vesc-domain -p vesc-mcp-adapters
 ```

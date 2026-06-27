@@ -54,7 +54,7 @@ POC `PackageBuildPlan` remains documented for native-lib-baseline workflows insi
 
 5. **No cross-compile in adapters.** Builds assume host-native `vesc-pkg-build`; target triple selection belongs in POC/device workflows, not MCP tooling.
 
-6. **Golden vectors.** Committed `tests/fixtures/golden/poc-minimal.vescpkg` must match adapter output SHA-256. Regenerate via `scripts/gen_poc_minimal_golden.py` when pack format or fixture layout changes (`br-integrate-poc-5tu.11`).
+6. **Golden vectors.** Committed `tests/fixtures/golden/poc-minimal.vescpkg` must match adapter output SHA-256. Regenerate via `nix develop -c cargo run -p vesc-mcp-adapters --bin gen-poc-minimal-golden` (or `python3 scripts/gen_poc_minimal_golden.py`, which delegates to the same Rust path).
 
 ## License
 

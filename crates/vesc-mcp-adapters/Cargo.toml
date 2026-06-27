@@ -21,3 +21,7 @@ vesc-pkg-build = { path = "../../../vesc-rust-poc/crates/vesc-pkg-build" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "gen-poc-minimal-golden"
+path = "src/bin/gen_poc_minimal_golden.rs"
