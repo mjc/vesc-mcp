@@ -1,0 +1,93 @@
+# Refloat package command protocol index
+# Source: refloat/doc/commands/
+id: refloat-commands
+source_repo: refloat
+source_repo_env: VESC_REFLOAT_ROOT
+version: 1
+
+transport:
+  vesc_command: COMM_CUSTOM_APP_DATA
+  vesc_command_id: 36
+  package_interface_id: 101
+  header_bytes: 2
+  doc_index: doc/commands/index.md
+
+public_commands:
+  - name: INFO
+    command_id: 0
+    path: doc/commands/INFO.md
+    summary: Versioned handshake; returns package information to client
+    status: stable
+
+  - name: LIGHTS_CONTROL
+    command_id: 20
+    path: doc/commands/LIGHTS_CONTROL.md
+    summary: Control lights and read current lighting state
+    status: stable
+
+  - name: REMOTE
+    command_id: 15
+    path: doc/commands/REMOTE.md
+    summary: One-way remote tilt/drive input; overrides PPM/UART for 0.5s
+    status: stable
+
+  - name: REALTIME_DATA
+    command_id: 33
+    path: doc/commands/REALTIME_DATA.md
+    summary: Selectable realtime fields via bitmask; float16 or float32 encoding
+    status: stable
+
+  - name: DATA_RECORD
+    command_id: 41
+    path: doc/commands/DATA_RECORD.md
+    summary: Compound command for data recording control (request + two response modes)
+    status: stable
+    sub_ids: [41, 42, 43]
+
+  - name: ALERTS_LIST
+    command_id: 35
+    path: doc/commands/ALERTS_LIST.md
+    summary: Active alerts and circular-buffer history with optional since timestamp
+    status: unstable
+
+  - name: ALERTS_CONTROL
+    command_id: 36
+    path: doc/commands/ALERTS_CONTROL.md
+    summary: Alerts control interface
+    status: unstable
+
+internal_commands:
+  - name: REALTIME_DATA_INTERNAL
+    command_id: 31
+    path: doc/commands/REALTIME_DATA_INTERNAL.md
+    summary: Internal realtime data; compatibility not guaranteed
+    status: internal
+
+  - name: REALTIME_DATA_INTERNAL_IDS
+    command_id: 32
+    path: doc/commands/REALTIME_DATA_INTERNAL_IDS.md
+    summary: String IDs for REALTIME_DATA mask fields
+    status: internal
+
+supporting_docs:
+  - path: doc/commands/float16.md
+    summary: IEEE-754-like 16-bit float wire encoding used on package interface
+
+  - path: doc/commands/string.md
+    summary: Length-prefixed string wire format
+
+  - path: doc/commands/alert_id.md
+    summary: Alert ID constants (e.g. ALERT_FW_FAULT)
+
+deprecated:
+  - name: GET_RTDATA
+    command_id: 1
+    replacement: REALTIME_DATA
+
+  - name: GET_ALLDATA
+    command_id: 10
+    replacement: REALTIME_DATA
+
+related_bldc:
+  - vesc_c_if.send_app_data
+  - vesc_c_if.set_app_data_handler
