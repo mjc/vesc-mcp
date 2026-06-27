@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{allowed_package_roots, validate_sandbox_path};
 
-/// Ordered package checks run under a sandboxed root.
-const PACKAGE_CHECKS: &[(&str, &str, &[&str])] = &[
+/// Default cargo checks when no Makefile targets are present.
+const CARGO_PACKAGE_CHECKS: &[(&str, &str, &[&str])] = &[
     ("fmt", "cargo", &["fmt", "--all", "--check"]),
     (
         "clippy",
@@ -24,6 +24,15 @@ const PACKAGE_CHECKS: &[(&str, &str, &[&str])] = &[
     ),
     ("test", "cargo", &["test"]),
 ];
+
+/// Make targets used when a root Makefile defines fmt/clippy/test.
+const MAKE_PACKAGE_CHECKS: &[(&str, &str, &[&str])] = &[
+    ("fmt", "make", &["fmt"]),
+    ("clippy", "make", &["clippy"]),
+    ("test", "make", &["test"]),
+];
+
+const MAKE_CHECK_TARGETS: &[&str] = &["fmt", "clippy", "test"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RunPackageChecksParams {
@@ -109,8 +118,8 @@ pub fn run_package_checks_tool_with_runner(
         }
     };
 
-    let mut checks = Vec::with_capacity(PACKAGE_CHECKS.len());
-    for (name, program, args) in PACKAGE_CHECKS {
+    let mut checks = Vec::with_capacity(CARGO_PACKAGE_CHECKS.len());
+    for (name, program, args) in package_checks_for_root(&canonical_root) {
         checks.push(runner.run_check(&canonical_root, name, program, args));
     }
 
@@ -120,6 +129,35 @@ pub fn run_package_checks_tool_with_runner(
         checks,
         error: None,
     }
+}
+
+fn package_checks_for_root(
+    root: &Path,
+) -> &'static [(&'static str, &'static str, &'static [&'static str])] {
+    let makefile = root.join("Makefile");
+    if !makefile.is_file() {
+        return CARGO_PACKAGE_CHECKS;
+    }
+    let Ok(content) = std::fs::read_to_string(&makefile) else {
+        return CARGO_PACKAGE_CHECKS;
+    };
+    if MAKE_CHECK_TARGETS
+        .iter()
+        .all(|target| makefile_has_target(&content, target))
+    {
+        MAKE_PACKAGE_CHECKS
+    } else {
+        CARGO_PACKAGE_CHECKS
+    }
+}
+
+fn makefile_has_target(content: &str, target: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.split('#').next().unwrap_or("").trim();
+        trimmed.starts_with(&format!("{target}:"))
+            || (trimmed.starts_with(".PHONY:")
+                && trimmed.split_whitespace().any(|token| token == target))
+    })
 }
 
 /// Serialize a tool response as JSON text for rmcp handlers.
@@ -303,5 +341,35 @@ mod tests {
         let sibling = PathBuf::from("/tmp/vesc-other");
         assert!(!path_within_root(&sibling, &root));
         assert!(path_within_root(&root.join("pkg"), &root));
+    }
+
+    #[test]
+    fn package_checks_prefers_makefile_when_targets_present() {
+        let workspace = TempWorkspace::new();
+        std::fs::write(
+            workspace.root.join("Makefile"),
+            ".PHONY: fmt clippy test\nfmt:\nclippy:\ntest:\n",
+        )
+        .expect("write makefile");
+
+        let checks = package_checks_for_root(&workspace.root);
+        assert_eq!(checks[0], ("fmt", "make", &["fmt"][..]));
+        assert_eq!(checks[1], ("clippy", "make", &["clippy"][..]));
+        assert_eq!(checks[2], ("test", "make", &["test"][..]));
+    }
+
+    #[test]
+    fn package_checks_falls_back_to_cargo_without_makefile() {
+        let workspace = TempWorkspace::new();
+        let checks = package_checks_for_root(&workspace.root);
+        assert_eq!(checks, CARGO_PACKAGE_CHECKS);
+    }
+
+    #[test]
+    fn package_checks_falls_back_when_makefile_missing_targets() {
+        let workspace = TempWorkspace::new();
+        std::fs::write(workspace.root.join("Makefile"), "all:\n").expect("write makefile");
+        let checks = package_checks_for_root(&workspace.root);
+        assert_eq!(checks, CARGO_PACKAGE_CHECKS);
     }
 }
