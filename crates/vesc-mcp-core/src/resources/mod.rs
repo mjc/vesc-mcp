@@ -8,6 +8,7 @@
 mod abi;
 mod catalog;
 mod manifest;
+mod refloat_command;
 mod r#static;
 mod uri;
 
@@ -22,6 +23,10 @@ pub use manifest::{
     ManifestResourceHandler, POC_NATIVE_LIB_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
     read_manifest, register_manifest_resources,
 };
+pub use refloat_command::{
+    REALTIME_DATA_COMMAND_URI, RefloatCommandResourceHandler, read_refloat_command,
+    refloat_command_uri, register_refloat_command_resources,
+};
 pub use r#static::{
     DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI, read_doc_topic,
     register_doc_topic_resources,
@@ -32,6 +37,7 @@ pub use uri::{
 };
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use rmcp::model::{RawResource, RawResourceTemplate};
 
@@ -204,13 +210,16 @@ impl ResourceRegistry {
     /// Returns [`ResourceRegistryError`] when static resource registration fails.
     pub fn with_defaults() -> Result<Self, ResourceRegistryError> {
         let mut registry = Self::new();
+        let catalog_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog");
         register_build_recipe_resources(&mut registry)?;
         register_doc_topic_resources(&mut registry)?;
         register_abi_resources(&mut registry)?;
+        register_refloat_command_resources(&mut registry, &catalog_root)?;
         register_manifest_resources(&mut registry)?;
         registry.register_handler(BuildRecipeResourceHandler::new());
         registry.register_handler(DocTopicResourceHandler::new());
         registry.register_handler(AbiResourceHandler::new());
+        registry.register_handler(RefloatCommandResourceHandler::new());
         registry.register_handler(ManifestResourceHandler::from_config());
         Ok(registry)
     }
