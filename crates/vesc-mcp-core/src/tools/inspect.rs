@@ -76,7 +76,7 @@ fn inspect_pkgdesc_at_path(path_buf: &Path) -> InspectPkgdescResponse {
     };
 
     match parse_pkgdesc_qml(&content, path_buf) {
-        Ok(parsed) => parsed_to_response(parsed),
+        Ok(parsed) => parsed_to_response(&parsed),
         Err(err) => InspectPkgdescResponse {
             ok: false,
             dialect: None,
@@ -86,7 +86,20 @@ fn inspect_pkgdesc_at_path(path_buf: &Path) -> InspectPkgdescResponse {
     }
 }
 
-fn parsed_to_response(parsed: ParsedPkgDesc) -> InspectPkgdescResponse {
+fn parsed_to_response(parsed: &ParsedPkgDesc) -> InspectPkgdescResponse {
+    let (dialect, parsed_json) = pkgdesc_to_json(parsed);
+
+    InspectPkgdescResponse {
+        ok: true,
+        dialect: Some(dialect),
+        parsed: Some(parsed_json),
+        error: None,
+    }
+}
+
+/// Shared pkgdesc JSON projection for `inspect_pkgdesc` and manifest resources.
+#[must_use]
+pub fn pkgdesc_to_json(parsed: &ParsedPkgDesc) -> (String, ParsedPkgdescJson) {
     let dialect = dialect_label(parsed.dialect()).into();
     let parsed_json = match parsed {
         ParsedPkgDesc::VescTool(desc) => ParsedPkgdescJson {
@@ -98,13 +111,7 @@ fn parsed_to_response(parsed: ParsedPkgDesc) -> InspectPkgdescResponse {
             qml_is_fullscreen: desc.qml_is_fullscreen,
         },
     };
-
-    InspectPkgdescResponse {
-        ok: true,
-        dialect: Some(dialect),
-        parsed: Some(parsed_json),
-        error: None,
-    }
+    (dialect, parsed_json)
 }
 
 /// Serialize a tool response as JSON text for rmcp handlers.
@@ -199,6 +206,17 @@ pub fn inspect_vescpkg_json(params: &InspectVescpkgParams) -> String {
 mod tests {
     use super::*;
     use crate::test_support::{fixture_path, fixture_sandbox_roots};
+
+    #[test]
+    fn pkgdesc_to_json_matches_refloat_fixture() {
+        let path = fixture_path("refloat-minimal").join("pkgdesc.qml");
+        let content = std::fs::read_to_string(&path).expect("read pkgdesc");
+        let parsed = parse_pkgdesc_qml(&content, &path).expect("parse");
+        let (dialect, json) = pkgdesc_to_json(&parsed);
+        assert_eq!(dialect, "vesc_tool");
+        assert_eq!(json.pkg_name, "Refloat Minimal");
+        assert_eq!(json.output_name, "refloat-minimal.vescpkg");
+    }
 
     #[test]
     fn inspect_refloat_minimal_fixture() {

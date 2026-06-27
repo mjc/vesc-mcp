@@ -7,8 +7,7 @@ use serde::Serialize;
 use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
 
 use crate::config::{allowed_package_roots, validate_sandbox_file};
-use crate::tools::inspect::ParsedPkgdescJson;
-use crate::tools::list_packages::dialect_label;
+use crate::tools::inspect::{ParsedPkgdescJson, pkgdesc_to_json};
 
 use super::attribution::{SourceRef, append_source_footer};
 use super::{
@@ -125,7 +124,7 @@ fn read_manifest_at_path(path: &Path, uri: &str) -> Result<String, ResourceReadE
     })?;
 
     let body = match parse_pkgdesc_qml(&raw_qml, path) {
-        Ok(parsed) => parsed_to_body(parsed, raw_qml),
+        Ok(parsed) => parsed_to_body(&parsed, raw_qml),
         Err(err) => ManifestResourceBody {
             ok: false,
             dialect: None,
@@ -146,18 +145,8 @@ fn read_manifest_at_path(path: &Path, uri: &str) -> Result<String, ResourceReadE
     Ok(out)
 }
 
-fn parsed_to_body(parsed: ParsedPkgDesc, raw_qml: String) -> ManifestResourceBody {
-    let dialect = dialect_label(parsed.dialect()).into();
-    let parsed_json = match parsed {
-        ParsedPkgDesc::VescTool(desc) => ParsedPkgdescJson {
-            pkg_name: desc.pkg_name.as_str().into(),
-            description_md_path: desc.description_md_path.as_path().display().to_string(),
-            lisp_path: desc.lisp_path.as_path().display().to_string(),
-            qml_path: desc.qml_path.as_path().display().to_string(),
-            output_name: desc.output_name.as_str().into(),
-            qml_is_fullscreen: desc.qml_is_fullscreen,
-        },
-    };
+fn parsed_to_body(parsed: &ParsedPkgDesc, raw_qml: String) -> ManifestResourceBody {
+    let (dialect, parsed_json) = pkgdesc_to_json(parsed);
 
     ManifestResourceBody {
         ok: true,
