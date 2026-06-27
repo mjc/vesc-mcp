@@ -72,27 +72,6 @@
       "summary": "Migrate vesc-rust-poc pkgdesc from legacy packageName to vesc_tool pkgName"
     },
     {
-      "id": "gap-mcp-resource-router",
-      "priority": "P1",
-      "category": "mcp_resources",
-      "catalog_ref": "catalog/gap-analysis.md#mcp-resources",
-      "summary": "Wire ResourceRegistry into VescMcpService rmcp resources/list and resources/read"
-    },
-    {
-      "id": "gap-mcp-build-recipe-read-handler",
-      "priority": "P1",
-      "category": "mcp_resources",
-      "catalog_ref": "catalog/gap-analysis.md#mcp-resources",
-      "summary": "Connect read_build_recipe to ResourceReadHandler dispatch and server startup seeding"
-    },
-    {
-      "id": "gap-mcp-manifest-uri-encoding",
-      "priority": "P2",
-      "category": "mcp_resources",
-      "catalog_ref": "catalog/gap-analysis.md#mcp-resources",
-      "summary": "Percent-encode absolute paths in vescpkg://manifest/{path} URIs"
-    },
-    {
       "id": "bldc-foc-audio-605",
       "priority": "P2",
       "category": "firmware_api",

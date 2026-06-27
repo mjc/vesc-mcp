@@ -94,28 +94,6 @@ Both import native binary and call `load-native-lib`:
 
 **Gap:** Knowledge index must tag refloat commands separately from firmware API search results.
 
-## MCP resource layer {#mcp-resources}
-
-**Implemented (`.1`):** URI schemes (`vesc://catalog/{kind}/{id}`, `vescpkg://fixture/{name}/manifest`, `vescpkg://manifest/{path}`), `ResourceRegistry`, and `ResourceReadHandler` trait in `crates/vesc-mcp-core/src/resources/`.
-
-**Implemented (`.2`):** Build-recipe resources in `resources/catalog.rs` — `register_build_recipe_resources`, `read_build_recipe`, YAML→markdown for `refloat-vesc-tool` and `poc-rust-packer` from `catalog/refloat/build-flow.yaml`. Inline attribution footer pending extraction to `attribution.rs` (`.8`).
-
-**Not yet wired:**
-
-- `VescMcpService` exposes tools only; `resources/list` and `resources/read` rmcp handlers land in tasks `.3`–`.7` and `.10`–`.12`.
-- Build-recipe bodies are readable via `read_build_recipe()` but not dispatched through `ResourceReadHandler` or server startup seeding.
-- Doc topics, ABI JSON, and fixture manifest resources remain unregistered.
-- Per-command URIs (`vesc://catalog/commands/refloat/{command}`) require either explicit registration per command or a URI template extension beyond the current `{kind}/{id}` parser.
-
-**Path encoding:**
-
-- Dynamic manifest URIs carry sandbox-relative paths as raw path segments (`vescpkg://manifest/tests/fixtures/...`).
-- Absolute paths outside the repo need percent-encoding rules before production use (epic risk).
-
-**Mitigation:** Task `.2` seeds build-recipe resources; `.3`–`.6` add manifest/doc handlers; `.7` snapshot-tests full `resources/list` output; `.8` centralizes attribution footer; `.10`–`.12` wire registry into rmcp; defer subscriptions/caching to `br-mcp-resources-9at.9`.
-
-**Gap (`.2`):** POC build-recipe footer cites `vesc-rust-poc/docs/package-flow.md` without line anchor — catalog `poc_equivalent` lacks `lines` field; add when POC doc stabilizes.
-
 ## Catalog coverage
 
 | refloat feature | bldc API | POC equivalent |
