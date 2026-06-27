@@ -95,6 +95,30 @@ fn tool_build_rust_mode_invalid_layout_fails() {
 }
 
 #[test]
+fn tool_build_vesc_tool_invalid_layout_fails_before_spawn() {
+    let harness = McpTestHarness::new();
+    let root = fixture_path("broken-missing-lisp");
+    let response = harness.call_tool(
+        "build_vescpkg",
+        serde_json::json!({
+            "root": root.to_string_lossy(),
+            "mode": "vesc_tool",
+        }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], false, "response: {body}");
+    let err = structured_error(&body);
+    assert_eq!(err["code"], "LAYOUT_INVALID");
+    assert!(
+        !err["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("spawn")),
+        "layout errors must not come from vesc_tool spawn: {body}"
+    );
+}
+
+#[test]
 fn tool_build_vesc_tool_mocked_via_harness() {
     let harness = McpTestHarness::new();
     let root = fixture_path("refloat-minimal");

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
+use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml, validate_package_layout};
 use vesc_mcp_adapters::locate_pkgdesc;
 
 use crate::config::{McpConfig, allowed_package_roots, validate_sandbox_path};
@@ -275,10 +275,11 @@ fn build_vescpkg_vesc_tool(
         Ok(found) => found,
         Err(err) => return build_error(tool_error_from_adapter(err)),
     };
-    let (output_name, pkgdesc_file_name) = match vesc_tool_pkgdesc_context(&pkgdesc_path) {
-        Ok(context) => context,
-        Err(err) => return build_error(err),
-    };
+    let (output_name, pkgdesc_file_name) =
+        match vesc_tool_pkgdesc_context(&pkgdesc_path, &package_root) {
+            Ok(context) => context,
+            Err(err) => return build_error(err),
+        };
     let vesc_tool = vesc_tool_override.map_or_else(
         || McpConfig::load().vesc_tool_path.clone(),
         Path::to_path_buf,
@@ -318,7 +319,10 @@ fn build_vescpkg_vesc_tool(
     }
 }
 
-fn vesc_tool_pkgdesc_context(pkgdesc_path: &Path) -> Result<(String, String), ToolError> {
+fn vesc_tool_pkgdesc_context(
+    pkgdesc_path: &Path,
+    package_root: &Path,
+) -> Result<(String, String), ToolError> {
     let pkgdesc_src = std::fs::read_to_string(pkgdesc_path).map_err(|source| {
         ToolError::new(
             "IO_ERROR",
@@ -328,6 +332,14 @@ fn vesc_tool_pkgdesc_context(pkgdesc_path: &Path) -> Result<(String, String), To
         .with_hint("ensure pkgdesc.qml exists and is readable")
     })?;
     let parsed = parse_pkgdesc_qml(&pkgdesc_src, pkgdesc_path).map_err(tool_error_from_domain)?;
+    let report = validate_package_layout(package_root, &parsed);
+    if !report.is_ok() {
+        return Err(tool_error_from_adapter(
+            vesc_mcp_adapters::AdapterError::LayoutInvalid {
+                root: package_root.to_path_buf(),
+            },
+        ));
+    }
     let ParsedPkgDesc::VescTool(desc) = parsed;
     let pkgdesc_file_name = pkgdesc_path
         .file_name()
@@ -391,6 +403,23 @@ mod tests {
 
     struct MockVescToolRunner {
         artifact_bytes: Vec<u8>,
+    }
+
+    struct SpyVescToolRunner {
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl VescToolRunner for SpyVescToolRunner {
+        fn build_pkg_from_desc(
+            &self,
+            _vesc_tool: &Path,
+            _package_root: &Path,
+            _pkgdesc_file_name: &str,
+            _timeout_secs: u64,
+        ) -> Result<(), String> {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     impl VescToolRunner for MockVescToolRunner {
@@ -549,6 +578,38 @@ mod tests {
         assert!(artifact_path.ends_with("refloat-minimal.vescpkg"));
         assert_eq!(response.sha256.as_deref(), Some(expected_hash.as_str()));
         assert_eq!(response.size_bytes, Some(18));
+    }
+
+    #[test]
+    fn tool_build_vesc_tool_invalid_layout_skips_subprocess() {
+        let root = fixture_path("broken-missing-lisp");
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let runner = SpyVescToolRunner {
+            called: std::sync::Arc::clone(&called),
+        };
+
+        let response = build_vescpkg_tool_with_runner(
+            &BuildVescpkgParams {
+                root: root.display().to_string(),
+                mode: "vesc_tool".into(),
+                timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
+            },
+            &runner,
+            Some(Path::new("/mock/vesc_tool")),
+            Some(&fixture_sandbox_roots()),
+        );
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().map(|err| err.code.as_str()),
+            Some("LAYOUT_INVALID"),
+            "error: {:?}",
+            response.error
+        );
+        assert!(
+            !called.load(std::sync::atomic::Ordering::SeqCst),
+            "vesc_tool subprocess must not run when layout is invalid"
+        );
     }
 
     #[test]
