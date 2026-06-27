@@ -35,6 +35,8 @@ br --project-db-root /Users/mjc/cfg/beads show br-foundation-qhu
 
 Coordination epic: `br-flj` (multitask delivery waves).
 
+See [docs/poc-integration.md](docs/poc-integration.md) for vesc-rust-poc path dependency strategy.
+
 ## MCP SDK
 
 Uses [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (official Rust MCP SDK) with stdio transport.

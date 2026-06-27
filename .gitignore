@@ -4,3 +4,7 @@
 *.swp
 *.swo
 .DS_Store
+
+# Build outputs from adapter tests (golden vectors under tests/fixtures/golden/ are committed)
+/tests/fixtures/**/*.vescpkg
+!/tests/fixtures/golden/*.vescpkg
