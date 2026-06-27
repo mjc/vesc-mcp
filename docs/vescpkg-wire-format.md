@@ -222,6 +222,73 @@ lispData[2+offset₀]  payload₀ (size₀ bytes, may include NUL pad)
 
 When hand-decoding: always verify `2 + offset + size ≤ lispData.len()`.
 
+## Appendix — annotated golden hex walkthrough
+
+Hand-decode anchor: `tests/fixtures/golden/poc-minimal.vescpkg` (406 bytes on disk, SHA-256 `34e95e36…`). Built from `tests/fixtures/poc-native-lib-minimal/` via `gen-poc-minimal-golden`.
+
+### Outer container (bytes 0–405)
+
+| File offset | Bytes (hex) | Meaning |
+|-------------|-------------|---------|
+| `0x0000`–`0x0003` | `00 00 02 eb` | qCompress declared decompressed length = **747** (0x2eb) |
+| `0x0004`–`0x0195` | `78 da …` | zlib deflate stream (402 bytes); inflates to exactly 747 bytes |
+
+Verify: `declared == len(zlib.decompress(raw[4:]))` — mismatch is a hard parse error.
+
+### Decompressed payload field map
+
+After inflate, offsets are **within the 747-byte payload** (not the on-disk file):
+
+| Decomp offset | Region | Content |
+|---------------|--------|---------|
+| `0x0000`–`0x000b` | magic | `56 45 53 43 20 50 61 63 6b 65 74 00` → `"VESC Packet\0"` |
+| `0x000c`–`0x0032` | field `name` | key + `i32 BE 0x0000001e` + 30 UTF-8 bytes → `POC native-lib minimal fixture` |
+| `0x0033`–`0x00bf` | field `description_md` | key + `i32 BE 0x0000007a` (122) + README markdown body |
+| `0x00c0`–`0x0184` | field `lispData` | key + `i32 BE 0x000000b8` (184) + binary blob (see below) |
+| `0x0185`–`0x02d5` | field `pkgDescQml` | key + `i32 BE 0x00000142` (322) + original pkgdesc.qml text |
+| `0x02d6`–`0x02ea` | field `qmlIsFullscreen` | key + `i32 BE 0x00000001` + single byte `0x00` (false) |
+
+**Omitted field:** `qmlFile` is absent (empty QML path in fixture pkgdesc) — not written as a zero-length placeholder. Spine ends with `qmlIsFullscreen`.
+
+### `lispData` interior (184 bytes at decomp `0x00cd`)
+
+```
++0   i16 BE 00 00          header (must be 0)
++2   cstring               Lisp source (139 chars + NUL)
+     … "(import \"src/package_lib.bin\" 'package-lib)\n(load-native-lib package-lib)\n"
++141 i16 BE 00 01          import_count = 1
++143 cstring "package-lib" tag + NUL
++155 i32 BE 00 00 00 a4     offset = 164 (from start of lispData)
++159 i32 BE 00 00 00 12     size = 18 (17 payload bytes + 1 NUL pad)
++163 [align pad to 4 bytes from byte +2]
++166 bytes                  embedded native payload
+     50 4f 43 5f 46 49 58 54 55 52 45 5f 53 54 55 42 0a 00
+     → ASCII "POC_FIXTURE_STUB\n" + NUL pad
+```
+
+**Geometry check:** payload slice uses `start = 2 + offset = 166`, `end = start + size = 184` — equals `lispData.len()`. Tag `package-lib` matches `(load-native-lib package-lib)` in source.
+
+Representative hex (lispData only):
+
+```
++000: 00 00 3b 20 4d 69 6e 69 6d 61 6c 20 50 4f 43 20  ..; Minimal POC
++128: 70 61 63 6b 61 67 65 2d 6c 69 62 29 0a 00 00 01  package-lib)....
++144: 70 61 63 6b 61 67 65 2d 6c 69 62 00 00 00 00 a4  package-lib.....
++160: 00 00 00 12 00 00 50 4f 43 5f 46 49 58 54 55 52  ......POC_FIXTUR
++176: 45 5f 53 54 55 42 0a 00                          E_STUB..
+```
+
+### Decode checklist
+
+1. Read BE u32 at file start → expected **747**.
+2. zlib-decompress remainder → length must match.
+3. Pop `"VESC Packet\0"` magic.
+4. Loop key\0 + i32 len + value until EOF.
+5. For `lispData`: verify header 0, parse source cstring, read import table, confirm `2 + offset + size ≤ lispData.len()`.
+6. Confirm golden SHA-256 after any packer change.
+
+Offline tools: MCP `inspect_vescpkg` on this path; `vesc-domain` wire tests; regenerate via `gen-poc-minimal-golden`.
+
 ## Related documents
 
 - Master index: [vescpackage-reference.md](vescpackage-reference.md)
