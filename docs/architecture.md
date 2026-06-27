@@ -27,8 +27,7 @@ flowchart TB
     IDX[vesc-knowledge-index]
   end
 
-  subgraph external [External / sibling]
-    POC[vesc-pkg-build<br/>vesc-rust-poc]
+  subgraph external [External]
     VTOOL[vesc_tool CLI]
   end
 
@@ -46,7 +45,7 @@ flowchart TB
   RES --> CAT
   RES --> DOM
   CAT --> CATALOG
-  ADP --> POC
+  ADP --> DOM
   TOOLS -->|mode vesc_tool| VTOOL
   CFG --> FIX
   DOM --> FIX
@@ -58,8 +57,8 @@ flowchart TB
 |-------|----------------|----------------|
 | Transport | `vesc-mcp-server` | stdio MCP session, tracing to stderr |
 | MCP surface | `vesc-mcp-core` | Tool router, resource registry, config, workspace discovery |
-| Domain | `vesc-domain` | `pkgdesc.qml` parsing, `.vescpkg` wire read, validation types |
-| Build adapter | `vesc-mcp-adapters` | Stage files and call POC `vesc-pkg-build` for rust-mode builds |
+| Domain | `vesc-domain` | `pkgdesc.qml` parsing, `.vescpkg` wire read/write, validation types |
+| Build adapter | `vesc-mcp-adapters` | Stage files and call `vesc-domain::write_vescpkg_file` for rust-mode builds |
 | Knowledge | `vesc-knowledge-index` | Embedded search index over catalog-derived entries |
 | Catalog | `catalog/` | YAML indexes (build flows, commands, ABI, doc topics) — no GPL source vendored |
 | Fixtures | `tests/fixtures/` | Synthetic offline package trees for CI |
@@ -73,7 +72,7 @@ sequenceDiagram
   participant T as build_vescpkg
   participant D as vesc-domain
   participant A as vesc-mcp-adapters
-  participant P as vesc-pkg-build
+  participant W as vesc-domain::wire
 
   C->>S: tools/call build_vescpkg
   S->>T: root, mode=rust
@@ -81,7 +80,7 @@ sequenceDiagram
   T->>D: parse_pkgdesc_qml
   alt mode rust
     T->>A: stage + build
-    A->>P: write_vesc_package
+    A->>W: write_vescpkg_file
   else mode vesc_tool
     T->>T: spawn VESC_TOOL_PATH subprocess
   end

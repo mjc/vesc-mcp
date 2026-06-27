@@ -4,8 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
-use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml, validate_package_layout};
-use vesc_pkg_build::package_format::{VescPackageInput, write_vesc_package};
+use vesc_domain::{
+    ParsedPkgDesc, parse_pkgdesc_qml, validate_package_layout,
+    wire::{VescPackageBuildInput, write_vescpkg_file},
+};
 
 use crate::error::AdapterError;
 
@@ -68,7 +70,7 @@ pub fn build_package_from_root(root: &Path) -> Result<BuiltPackage, AdapterError
     };
 
     let artifact_path = root.join(desc.output_name.as_str());
-    let input = VescPackageInput {
+    let input = VescPackageBuildInput {
         name: desc.pkg_name.as_str(),
         description_md: &description_md,
         lisp_source: &lisp_source,
@@ -77,9 +79,9 @@ pub fn build_package_from_root(root: &Path) -> Result<BuiltPackage, AdapterError
         pkg_desc_qml: &pkgdesc_src,
         qml_is_fullscreen: desc.qml_is_fullscreen,
     };
-    let bytes = write_vesc_package(&artifact_path, &input).map_err(|source| AdapterError::Io {
-        path: artifact_path.clone(),
-        source,
+    let bytes = write_vescpkg_file(&artifact_path, &input).map_err(|err| match err {
+        vesc_domain::DomainError::Io { path, source } => AdapterError::Io { path, source },
+        other => AdapterError::message(other.to_string()),
     })?;
 
     Ok(BuiltPackage {
@@ -121,5 +123,13 @@ mod tests {
             locate_pkgdesc(&fixtures_root().join("poc-native-lib-minimal")).expect("pkgdesc");
         assert!(path.ends_with("package/pkgdesc.qml"));
         assert!(package_root.ends_with("package"));
+    }
+
+    #[test]
+    fn locate_pkgdesc_finds_refloat_minimal_at_root() {
+        let (path, package_root) =
+            locate_pkgdesc(&fixtures_root().join("refloat-minimal")).expect("pkgdesc");
+        assert!(path.ends_with("pkgdesc.qml"));
+        assert_eq!(package_root, fixtures_root().join("refloat-minimal"));
     }
 }

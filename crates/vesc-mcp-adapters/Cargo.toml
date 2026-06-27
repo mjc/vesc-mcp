@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Adapters between vesc-domain and vesc-rust-poc vesc-pkg-build"
+description = "Host-side adapters bridging vesc-domain pack/inspect to MCP tools"
 
 [lints]
 workspace = true
@@ -17,7 +17,6 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 vesc-domain = { path = "../vesc-domain" }
-vesc-pkg-build = { path = "../../../vesc-rust-poc/crates/vesc-pkg-build" }
 
 [dev-dependencies]
 tempfile = "3"

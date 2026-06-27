@@ -51,8 +51,8 @@ Optional CI smoke: `./scripts/docs-smoke.sh` (spawns server, checks `tools/list`
 MCP Client  →  vesc-mcp-server (stdio)  →  vesc-mcp-core
                                               ├─ tools (ping, list, inspect, build, …)
                                               ├─ resources (vesc://catalog/*, vescpkg://…)
-                                              ├─ vesc-domain (parse / validate vescpkg)
-                                              ├─ vesc-mcp-adapters → vesc-pkg-build (POC)
+                                              ├─ vesc-domain (parse / validate / pack vescpkg)
+                                              ├─ vesc-mcp-adapters (stage + write)
                                               ├─ vesc-knowledge-index (embedded search)
                                               └─ catalog/ YAML + tests/fixtures/
 ```
@@ -62,7 +62,7 @@ MCP Client  →  vesc-mcp-server (stdio)  →  vesc-mcp-core
 | `vesc-mcp-server` | stdio MCP binary |
 | `vesc-mcp-core` | tools, resources, config, MCP service |
 | `vesc-domain` | VESC / vescpkg domain types and parsers |
-| `vesc-mcp-adapters` | Host-side bridge to POC `vesc-pkg-build` |
+| `vesc-mcp-adapters` | Host-side staging and `.vescpkg` write via `vesc-domain` |
 | `vesc-knowledge-index` | Embedded firmware/package knowledge index |
 
 See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data-flow notes.
@@ -75,7 +75,7 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/configuration.md](docs/configuration.md) | Environment variables and `config.toml` |
 | [docs/architecture.md](docs/architecture.md) | Crate diagram and boundaries |
 | [docs/testing.md](docs/testing.md) | Red/green/refactor workflow |
-| [docs/poc-integration.md](docs/poc-integration.md) | vesc-rust-poc path dependency |
+| [docs/poc-integration.md](docs/poc-integration.md) | POC catalog/fixtures (no compile-time dep) |
 | [docs/vescpackage-reference.md](docs/vescpackage-reference.md) | End-to-end package lifecycle index |
 | [docs/vescpkg-wire-format.md](docs/vescpkg-wire-format.md) | `.vescpkg` byte-level wire spec |
 | [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) | Native loader ABI (vesc_pkg_lib) |

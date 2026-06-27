@@ -1,4 +1,4 @@
-//! Host-side adapters bridging `vesc-domain` and POC `vesc-pkg-build`.
+//! Host-side adapters for vesc-domain pack and inspect.
 
 #![forbid(unsafe_code)]
 

@@ -2,9 +2,8 @@ mod common;
 
 use std::fs;
 
-use vesc_domain::wire::{FIELD_SPINE, package_fields};
+use vesc_domain::wire::{FIELD_SPINE, VescPackageBuildInput, build_vescpkg_bytes, package_fields};
 use vesc_domain::{LispImport, parse_lisp_imports};
-use vesc_pkg_build::package_format::{VescPackageInput, build_vesc_package};
 
 use common::fixture_path;
 
@@ -17,7 +16,7 @@ fn characterization_lisp_imports_embed_native_payload_bytes() {
     fs::create_dir_all(&src_dir).expect("src dir");
     fs::write(src_dir.join("package_lib.bin"), [0, 1, 2, 3, 0xff]).expect("native payload");
 
-    let package = build_vesc_package(&VescPackageInput {
+    let package = build_vescpkg_bytes(&VescPackageBuildInput {
         name: "test",
         description_md: "",
         lisp_source: "(import \"src/package_lib.bin\" 'package-lib)\n(load-native-lib package-lib)\n",
@@ -60,7 +59,7 @@ fn characterization_package_uses_vesc_tool_field_spine() {
     fs::create_dir_all(root.join("src")).expect("src dir");
     fs::write(root.join("src/package_lib.bin"), [0xaa]).expect("native payload");
 
-    let package = build_vesc_package(&VescPackageInput {
+    let package = build_vescpkg_bytes(&VescPackageBuildInput {
         name: "test",
         description_md: "markdown",
         lisp_source: "(import \"src/package_lib.bin\" 'package-lib)\n",

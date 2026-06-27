@@ -1,6 +1,6 @@
 # `.vescpkg` wire format
 
-Byte-level specification for VESC custom package wire artifacts. Canonical behavior is implemented in `vesc-domain::wire` (reader) and mirrored by `vesc-pkg-build::package_format` (writer) and `vesc_tool` `codeloader.cpp` (reference writer).
+Byte-level specification for VESC custom package wire artifacts. Canonical behavior is implemented in `vesc-domain::wire` (reader and writer) and mirrored by `vesc_tool` `codeloader.cpp` (reference writer).
 
 ## File anatomy
 
@@ -86,7 +86,7 @@ Empty `qmlFile` is omitted — not written as a zero-length field. Test: `packag
 
 Parity tests:
 
-- `vesc-pkg-build`: `package_uses_the_vesc_tool_field_spine`
+- `vesc-domain::wire`: `characterization_package_uses_vesc_tool_field_spine`
 - `vesc-mcp-adapters`: `characterization_package_uses_vesc_tool_field_spine`
 
 ## lispData binary structure
@@ -107,7 +107,7 @@ Offset  Type        Field
         bytes       embedded payloads at recorded offsets
 ```
 
-Reference: `vesc-domain::parse_lisp_imports`, `vesc-pkg-build::pack_lisp_imports`.
+Reference: `vesc-domain::parse_lisp_imports`, `vesc-domain::wire::pack_lisp_imports` (private; see `write.rs`).
 
 ### Payload placement rule (critical)
 
