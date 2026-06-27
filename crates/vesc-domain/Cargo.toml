@@ -11,7 +11,7 @@ description = "VESC and vescpkg domain types (placeholder module tree)"
 workspace = true
 
 [dependencies]
-flate2.workspace = true
+flate2 = { workspace = true, features = ["zlib"] }
 thiserror.workspace = true
 
 [dev-dependencies]

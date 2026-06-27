@@ -1,11 +1,15 @@
 //! `.vescpkg` wire format reader (mirrors POC `package_format_decode`).
 
+mod write;
+
 use std::io::Read;
 use std::path::Path;
 
 use flate2::read::ZlibDecoder;
 
 use crate::error::DomainError;
+
+pub use write::{VescPackageBuildInput, build_vescpkg_bytes, write_vescpkg_file};
 
 /// Magic header inside the decompressed VESC package payload.
 pub const MAGIC: &str = "VESC Packet";
