@@ -76,7 +76,7 @@ Wire keys in pack order (`vesc-domain::FIELD_SPINE`):
 
 ### Golden fixture spine
 
-`tests/fixtures/golden/poc-minimal.vescpkg` decodes to keys:
+`tests/fixtures/golden/native-lib-minimal.vescpkg` decodes to keys:
 
 ```
 name, description_md, lispData, pkgDescQml, qmlIsFullscreen
@@ -84,10 +84,10 @@ name, description_md, lispData, pkgDescQml, qmlIsFullscreen
 
 Empty `qmlFile` is omitted — not written as a zero-length field. Test: `package_fields_follow_vesc_tool_spine`.
 
-Parity tests:
+Golden stability tests:
 
-- `vesc-domain::wire`: golden round-trip and field-spine tests on `tests/fixtures/golden/poc-minimal.vescpkg`
-- `vesc-mcp-core`: optional `tool_build_poc_native_lib_minimal_matches_golden_when_vesc_tool_available` when `VESC_TOOL_PATH` is set
+- `vesc-domain::wire`: golden round-trip and field-spine tests on `tests/fixtures/golden/native-lib-minimal.vescpkg`
+- `vesc-mcp-core`: optional `tool_build_native_lib_minimal_matches_golden_when_vesc_tool_available` when `VESC_TOOL_PATH` is set
 
 ## lispData binary structure
 
@@ -118,7 +118,7 @@ Embedded file bytes live **inside the same `lispData` buffer**.
 - The `+2` skips the leading i16 header when locating payload bytes.
 - Payloads are **4-byte aligned** in POC/vesc_tool builds; trailing NUL padding after native `.bin` content is allowed.
 
-Example from golden fixture (`tests/fixtures/golden/poc-minimal.vescpkg`):
+Example from golden fixture (`tests/fixtures/golden/native-lib-minimal.vescpkg`):
 
 - Native bytes: `[0, 1, 2, 3, 0xff]` (5 bytes)
 - Stored size: **6** (one trailing NUL pad)
@@ -129,7 +129,7 @@ Validation helper: `payload_matches_native_with_only_nul_tail` — true when pay
 
 ### Lisp source side
 
-Typical loader (`tests/fixtures/poc-native-lib-minimal/package/code.lisp`):
+Typical loader (`tests/fixtures/native-lib-minimal/package/code.lisp`):
 
 ```lisp
 (import "src/package_lib.bin" 'package-lib)
@@ -186,12 +186,12 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs`.
 
 Set `$VESC_TOOL_ROOT` (or sibling checkout paths) per [configuration.md](configuration.md).
 
-## Parity strategy
+## Golden stability strategy
 
-1. **Golden vector** — `tests/fixtures/golden/poc-minimal.vescpkg` SHA-256: `5148d649a6da7abb8deb5a4bdca38f9fe7bd1b9d918f9e06001e0f20e2cedba9`
+1. **Golden vector** — `tests/fixtures/golden/native-lib-minimal.vescpkg` SHA-256: `5148d649a6da7abb8deb5a4bdca38f9fe7bd1b9d918f9e06001e0f20e2cedba9`
 2. **Field spine** — packages must expose keys in `FIELD_SPINE` order when all fields present
 3. **Import geometry** — offset/size/payload round-trip via `parse_lisp_imports`
-4. **Optional live build** — when `VESC_TOOL_PATH` is set, `build_vescpkg` + parity tests compare against golden
+4. **Optional live build** — when `VESC_TOOL_PATH` is set, `build_vescpkg` + golden-stability tests compare against golden
 
 Regenerate golden with `vesc_tool` — see `tests/fixtures/golden/README.md`.
 
@@ -212,7 +212,7 @@ When hand-decoding: always verify `2 + offset + size ≤ lispData.len()`.
 
 ## Appendix — annotated golden hex walkthrough
 
-Hand-decode anchor: `tests/fixtures/golden/poc-minimal.vescpkg` (406 bytes on disk, SHA-256 `5148d649…`). Produced by `vesc_tool --buildPkgFromDesc` from `tests/fixtures/poc-native-lib-minimal/package/pkgdesc.qml`.
+Hand-decode anchor: `tests/fixtures/golden/native-lib-minimal.vescpkg` (406 bytes on disk, SHA-256 `5148d649…`). Produced by `vesc_tool --buildPkgFromDesc` from `tests/fixtures/native-lib-minimal/package/pkgdesc.qml`.
 
 ### Outer container (bytes 0–405)
 
