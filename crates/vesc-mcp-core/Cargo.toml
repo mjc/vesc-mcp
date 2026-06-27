@@ -27,6 +27,7 @@ tokio.workspace = true
 tracing.workspace = true
 sha2.workspace = true
 vesc-domain = { path = "../vesc-domain" }
+vesc-knowledge-index = { path = "../vesc-knowledge-index" }
 vesc-mcp-adapters = { path = "../vesc-mcp-adapters" }
 
 [dev-dependencies]

@@ -25,6 +25,7 @@ use crate::tools::inspect::{
     InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
 };
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+use crate::tools::search_knowledge::{SearchVescKnowledgeParams, search_vesc_knowledge_json};
 use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -140,6 +141,15 @@ impl VescMcpService {
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
     fn run_package_checks(&self, Parameters(params): Parameters<RunPackageChecksParams>) -> String {
         run_package_checks_json(&params)
+    }
+
+    #[tool(description = "Search the embedded VESC firmware and package knowledge index")]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn search_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<SearchVescKnowledgeParams>,
+    ) -> String {
+        search_vesc_knowledge_json(&params)
     }
 }
 
@@ -309,5 +319,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "run_package_checks"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_search_vesc_knowledge() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "search_vesc_knowledge"));
     }
 }

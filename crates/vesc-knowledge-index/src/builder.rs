@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::IndexEntry;
+use crate::entry::Category;
 use crate::parsers::poc_abi::{self, PocAbiParseError};
 use crate::parsers::refloat_commands::{self, RefloatCommandsParseError};
 use crate::parsers::vesc_c_if::{self, VescCIfParseError};
@@ -75,5 +76,39 @@ impl IndexBuilder {
         refloat_root: &Path,
     ) -> Result<Vec<IndexEntry>, RefloatCommandsParseError> {
         refloat_commands::parse_catalog(catalog_root, refloat_root)
+    }
+
+    /// Build the full embedded index from catalog YAML and upstream doc paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable error when any catalog-backed parser fails.
+    pub fn build_embedded_index(
+        catalog_root: &Path,
+        refloat_root: &Path,
+    ) -> Result<Vec<IndexEntry>, String> {
+        let mut entries =
+            Self::parse_vesc_c_if_groups(catalog_root).map_err(|err| err.to_string())?;
+        entries.extend(Self::parse_abi_inventory(catalog_root).map_err(|err| err.to_string())?);
+        entries.extend(
+            Self::parse_refloat_commands(catalog_root, refloat_root)
+                .map_err(|err| err.to_string())?,
+        );
+        entries.sort_by(|left, right| {
+            category_build_order(left.category)
+                .cmp(&category_build_order(right.category))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(entries)
+    }
+}
+
+const fn category_build_order(category: Category) -> u8 {
+    match category {
+        Category::FirmwareApi => 0,
+        Category::Lispbm => 1,
+        Category::PackageBuild => 2,
+        Category::RefloatCommand => 3,
+        Category::PocAbi => 4,
     }
 }

@@ -1069,6 +1069,7 @@ dependencies = [
  "toml",
  "tracing",
  "vesc-domain",
+ "vesc-knowledge-index",
  "vesc-mcp-adapters",
 ]
 
