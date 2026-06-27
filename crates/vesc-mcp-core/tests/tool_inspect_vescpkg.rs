@@ -1,7 +1,31 @@
 //! Integration tests for the `inspect_vescpkg` MCP tool.
 
+use std::fs;
+
 use serde_json::Value;
-use vesc_mcp_core::test_support::{McpTestHarness, fixture_path};
+use vesc_mcp_core::test_support::{McpTestHarness, TempWorkspace, fixture_path};
+
+#[test]
+fn tool_inspect_vescpkg_rejects_path_outside_env_roots() {
+    let harness = McpTestHarness::new();
+    let workspace = TempWorkspace::new();
+    let path = workspace.root.join("outside.vescpkg");
+    fs::write(&path, b"not-a-real-package").expect("write artifact");
+
+    let response = harness.call_tool(
+        "inspect_vescpkg",
+        serde_json::json!({ "path": path.to_string_lossy() }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], false, "response: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|err| err.contains("VESC_PACKAGE_ROOTS")),
+        "response: {body}"
+    );
+}
 
 #[test]
 fn tool_inspect_vescpkg_reads_name() {

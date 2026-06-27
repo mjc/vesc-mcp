@@ -1,7 +1,26 @@
 //! Integration tests for the `validate_package_layout` MCP tool.
 
 use serde_json::Value;
-use vesc_mcp_core::test_support::{McpTestHarness, fixture_path};
+use vesc_mcp_core::test_support::{McpTestHarness, TempWorkspace, fixture_path};
+
+#[test]
+fn tool_validate_package_layout_rejects_path_outside_env_roots() {
+    let harness = McpTestHarness::new();
+    let workspace = TempWorkspace::new();
+    let response = harness.call_tool(
+        "validate_package_layout",
+        serde_json::json!({ "root": workspace.root.to_string_lossy() }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], false, "response: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|err| err.contains("VESC_PACKAGE_ROOTS")),
+        "response: {body}"
+    );
+}
 
 #[test]
 fn tool_validate_poc_native_fixture_ok() {
