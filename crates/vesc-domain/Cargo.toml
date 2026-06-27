@@ -11,4 +11,8 @@ description = "VESC and vescpkg domain types (placeholder module tree)"
 workspace = true
 
 [dependencies]
+flate2.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
