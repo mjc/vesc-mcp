@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::IndexEntry;
 use crate::parsers::poc_abi::{self, PocAbiParseError};
+use crate::parsers::refloat_commands::{self, RefloatCommandsParseError};
 use crate::parsers::vesc_c_if::{self, VescCIfParseError};
 
 /// Builds searchable index entries from catalog artifacts.
@@ -59,5 +60,20 @@ impl IndexBuilder {
         poc_root: Option<&Path>,
     ) -> Result<Vec<IndexEntry>, PocAbiParseError> {
         poc_abi::parse_catalog_with_source_validation(catalog_root, poc_root)
+    }
+
+    /// Parse refloat command markdown docs from catalog YAML and upstream checkout.
+    ///
+    /// Reads doc paths under `{refloat_root}/doc/commands/` and extracts each title
+    /// plus first paragraph as the entry summary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefloatCommandsParseError`] when the catalog or a referenced doc is missing.
+    pub fn parse_refloat_commands(
+        catalog_root: &Path,
+        refloat_root: &Path,
+    ) -> Result<Vec<IndexEntry>, RefloatCommandsParseError> {
+        refloat_commands::parse_catalog(catalog_root, refloat_root)
     }
 }
