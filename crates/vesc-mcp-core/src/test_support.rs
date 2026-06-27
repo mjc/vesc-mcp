@@ -41,6 +41,28 @@ pub fn fixture_path(name: &str) -> PathBuf {
     fixtures_root().join(name)
 }
 
+/// Resolve `vesc_tool` for optional parity tests (`VESC_TOOL_PATH` or `vesc_tool` on PATH).
+#[must_use]
+pub fn resolve_vesc_tool_for_tests() -> Option<PathBuf> {
+    use std::process::{Command, Stdio};
+
+    use crate::config::McpConfig;
+
+    let path = McpConfig::load().vesc_tool_path.clone();
+    if path.is_file() {
+        return Some(path);
+    }
+    match Command::new(&path)
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => Some(path),
+        _ => None,
+    }
+}
+
 /// Read a fixture file relative to a named fixture directory.
 ///
 /// # Panics

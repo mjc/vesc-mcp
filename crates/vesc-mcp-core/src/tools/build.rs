@@ -634,20 +634,4 @@ mod tests {
             response.error
         );
     }
-
-    /// Requires `vesc_tool` on PATH or `VESC_TOOL_PATH`; skipped when unavailable.
-    #[test]
-    #[ignore = "requires vesc_tool binary on PATH or VESC_TOOL_PATH"]
-    fn tool_build_vesc_tool_real_binary() {
-        let root = fixture_path("refloat-minimal");
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: root.display().to_string(),
-            mode: "vesc_tool".into(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
-
-        assert!(response.ok, "error: {:?}", response.error);
-        let artifact_path = response.artifact_path.expect("artifact_path");
-        assert!(std::path::Path::new(&artifact_path).is_file());
-    }
 }
