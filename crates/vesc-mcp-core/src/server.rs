@@ -8,7 +8,9 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::tools::inspect::{InspectPkgdescParams, inspect_pkgdesc_json};
+use crate::tools::inspect::{
+    InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
+};
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -80,6 +82,12 @@ impl VescMcpService {
     fn inspect_pkgdesc(&self, Parameters(params): Parameters<InspectPkgdescParams>) -> String {
         inspect_pkgdesc_json(&params)
     }
+
+    #[tool(description = "Read a .vescpkg wire artifact and return structured package fields")]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn inspect_vescpkg(&self, Parameters(params): Parameters<InspectVescpkgParams>) -> String {
+        inspect_vescpkg_json(&params)
+    }
 }
 
 #[tool_handler(
@@ -140,5 +148,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "inspect_pkgdesc"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_inspect_vescpkg() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "inspect_vescpkg"));
     }
 }

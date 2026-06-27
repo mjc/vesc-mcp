@@ -1,10 +1,10 @@
-//! `inspect_pkgdesc` — parse a pkgdesc.qml file and return structured fields.
+//! `inspect_pkgdesc` / `inspect_vescpkg` — parse package descriptors and wire artifacts.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
+use vesc_domain::{ParsedPkgDesc, parse_lisp_imports, parse_pkgdesc_qml, read_vescpkg_fields};
 
 use super::list_packages::dialect_label;
 
@@ -91,6 +91,75 @@ pub fn inspect_pkgdesc_json(params: &InspectPkgdescParams) -> String {
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct InspectVescpkgParams {
+    /// Absolute or relative path to a `.vescpkg` file.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct VescpkgInspectionJson {
+    pub name: String,
+    pub description_md: String,
+    pub qml_file: String,
+    pub qml_is_fullscreen: bool,
+    pub lisp_import_count: usize,
+    pub lisp_editor_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct InspectVescpkgResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inspection: Option<VescpkgInspectionJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[must_use]
+pub fn inspect_vescpkg(path: &str) -> InspectVescpkgResponse {
+    let path_buf = PathBuf::from(path);
+
+    match read_and_inspect_vescpkg(&path_buf) {
+        Ok(inspection) => InspectVescpkgResponse {
+            ok: true,
+            inspection: Some(inspection),
+            error: None,
+        },
+        Err(err) => InspectVescpkgResponse {
+            ok: false,
+            inspection: None,
+            error: Some(err),
+        },
+    }
+}
+
+fn read_and_inspect_vescpkg(path: &Path) -> Result<VescpkgInspectionJson, String> {
+    let fields = read_vescpkg_fields(path).map_err(|err| err.to_string())?;
+    let (_, imports) = parse_lisp_imports(&fields.lisp_data).map_err(|err| err.to_string())?;
+    let lisp_editor_path = imports
+        .first()
+        .map(|import| import.tag.clone())
+        .unwrap_or_default();
+
+    Ok(VescpkgInspectionJson {
+        name: fields.name,
+        description_md: fields.description_md,
+        qml_file: fields.qml_file,
+        qml_is_fullscreen: fields.qml_is_fullscreen,
+        lisp_import_count: imports.len(),
+        lisp_editor_path,
+    })
+}
+
+/// Serialize a tool response as JSON text for rmcp handlers.
+#[must_use]
+pub fn inspect_vescpkg_json(params: &InspectVescpkgParams) -> String {
+    let response = inspect_vescpkg(&params.path);
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +193,25 @@ mod tests {
     #[test]
     fn inspect_missing_file_returns_error() {
         let response = inspect_pkgdesc("/nonexistent/pkgdesc.qml");
+        assert!(!response.ok);
+        assert!(response.error.is_some());
+    }
+
+    #[test]
+    fn inspect_vescpkg_golden_reads_name_and_imports() {
+        let path = fixture_path("golden/poc-minimal.vescpkg");
+        let response = inspect_vescpkg(&path.display().to_string());
+
+        assert!(response.ok);
+        let inspection = response.inspection.expect("inspection fields");
+        assert_eq!(inspection.name, "POC native-lib minimal fixture");
+        assert_eq!(inspection.lisp_import_count, 1);
+        assert_eq!(inspection.lisp_editor_path, "package-lib");
+    }
+
+    #[test]
+    fn inspect_vescpkg_missing_file_returns_error() {
+        let response = inspect_vescpkg("/nonexistent/package.vescpkg");
         assert!(!response.ok);
         assert!(response.error.is_some());
     }
