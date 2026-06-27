@@ -128,7 +128,7 @@ impl McpTestHarness {
             }
             "build_vescpkg" => {
                 let params: BuildVescpkgParams = serde_json::from_value(arguments)
-                    .expect("build_vescpkg requires { \"root\": \"...\", \"mode\": \"rust\" }");
+                    .expect("build_vescpkg requires { \"root\": \"...\", \"mode\": \"rust\" | \"vesc_tool\" }");
                 build_vescpkg_json(&params)
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),

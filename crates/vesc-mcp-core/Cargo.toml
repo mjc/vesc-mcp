@@ -21,6 +21,7 @@ tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+sha2.workspace = true
 vesc-domain = { path = "../vesc-domain" }
 vesc-mcp-adapters = { path = "../vesc-mcp-adapters" }
 

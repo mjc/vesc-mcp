@@ -103,7 +103,7 @@ impl VescMcpService {
     }
 
     #[tool(
-        description = "Build a .vescpkg wire artifact from a package root (rust mode uses in-tree adapter)"
+        description = "Build a .vescpkg wire artifact from a package root (rust in-tree adapter or vesc_tool CLI subprocess)"
     )]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
     fn build_vescpkg(&self, Parameters(params): Parameters<BuildVescpkgParams>) -> String {

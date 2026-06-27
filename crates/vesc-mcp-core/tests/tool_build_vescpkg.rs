@@ -81,9 +81,9 @@ fn tool_build_rust_mode_invalid_layout_fails() {
 }
 
 #[test]
-fn tool_build_unsupported_mode_fails() {
+fn tool_build_vesc_tool_mocked_via_harness() {
     let harness = McpTestHarness::new();
-    let root = fixture_path("poc-native-lib-minimal");
+    let root = fixture_path("refloat-minimal");
     let response = harness.call_tool(
         "build_vescpkg",
         serde_json::json!({
@@ -93,11 +93,34 @@ fn tool_build_unsupported_mode_fails() {
     );
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    // Without vesc_tool on PATH the real subprocess fails; integration harness uses production runner.
     assert_eq!(body["ok"], false, "response: {body}");
     assert!(
         body["error"]
             .as_str()
-            .is_some_and(|err| err.contains("vesc_tool")),
+            .is_some_and(|err| err.contains("spawn") || err.contains("vesc_tool")),
+        "response: {body}"
+    );
+}
+
+#[test]
+fn tool_build_unsupported_mode_fails() {
+    let harness = McpTestHarness::new();
+    let root = fixture_path("poc-native-lib-minimal");
+    let response = harness.call_tool(
+        "build_vescpkg",
+        serde_json::json!({
+            "root": root.to_string_lossy(),
+            "mode": "cmake",
+        }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], false, "response: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|err| err.contains("unsupported build mode")),
         "response: {body}"
     );
 }
