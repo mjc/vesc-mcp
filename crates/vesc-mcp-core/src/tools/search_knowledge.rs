@@ -108,3 +108,39 @@ pub fn search_vesc_knowledge_json(params: &SearchVescKnowledgeParams) -> String 
     serde_json::to_string(&response)
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_category_returns_error_response() {
+        let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
+            query: "nvm".into(),
+            category: Some("not_a_category".into()),
+            limit: 10,
+        });
+        assert!(!resp.ok);
+        assert!(resp.error.is_some());
+        assert!(resp.results.is_empty());
+    }
+
+    #[test]
+    fn zero_limit_uses_default() {
+        let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
+            query: "pkg".into(),
+            category: None,
+            limit: 0,
+        });
+        assert!(resp.ok);
+        assert!(!resp.results.is_empty());
+    }
+
+    #[test]
+    fn category_label_maps_firmware_api() {
+        assert_eq!(
+            category_label(vesc_knowledge_index::Category::FirmwareApi),
+            "firmware_api"
+        );
+    }
+}
