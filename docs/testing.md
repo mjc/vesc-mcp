@@ -60,3 +60,25 @@ Broken fixtures under `tests/fixtures/broken-*` drive validation tests. A test a
 ## CI
 
 GitHub Actions runs `nix develop -c make check`, which invokes `cargo nextest run --workspace`. No external repos are required for the default fixture suite.
+
+A separate **coverage** job (report-only) runs `cargo llvm-cov` and uploads `lcov.info` as an artifact.
+
+## Coverage
+
+Per-crate **line coverage floor: 80%** for `vesc-domain`, `vesc-knowledge-index`, `vesc-mcp-adapters`, and `vesc-mcp-core`. Policy and excludes are in [`.config/coverage.toml`](../.config/coverage.toml).
+
+Excluded from reports: `vendor/` and std. See [`.config/coverage-exclude.regex`](../.config/coverage-exclude.regex).
+
+```bash
+nix develop -c make coverage           # workspace run; POC paths excluded from lcov
+nix develop -c make coverage-summary     # per-crate lib src % vs 80% floor
+nix develop -c make coverage-html        # HTML report (same exclusions)
+```
+
+After `make coverage`, open the HTML report or inspect a single crate:
+
+```bash
+cargo llvm-cov report -p vesc-mcp-core --summary-only
+```
+
+Excluded from the floor: `vesc-mcp-server` bootstrap, `build.rs`, `src/bin/*`, and `vendor/`.

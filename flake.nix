@@ -25,6 +25,7 @@
           rustToolchain
           pkg-config
           cargo-nextest
+          cargo-llvm-cov
           cargo-deny
           cargo-audit
           clippy

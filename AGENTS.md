@@ -111,6 +111,17 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 
 Integration tests use `McpTestHarness::call_tool(name, json!({...}))` — same handlers as the live MCP server.
 
+## Coverage
+
+Per-crate **line coverage floor: 80%** for library `src/` in `vesc-domain`, `vesc-knowledge-index`, `vesc-mcp-adapters`, and `vesc-mcp-core`. Policy: [`.config/coverage.toml`](.config/coverage.toml). Excludes: [`.config/coverage-exclude.regex`](.config/coverage-exclude.regex).
+
+```bash
+nix develop -c make coverage           # instrumented workspace test run (CI lcov)
+nix develop -c bash scripts/coverage-summary.sh   # per-crate % vs floor
+```
+
+CI uploads `lcov.info` (report-only; does not fail the build).
+
 ## Related docs
 
 - [docs/vescpackage-reference.md](docs/vescpackage-reference.md) — package lifecycle index (wire + ABI)

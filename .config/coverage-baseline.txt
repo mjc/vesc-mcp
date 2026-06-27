@@ -1,0 +1,8 @@
+# Coverage baseline (2026-06-27, lib src/ via scripts/coverage-summary.sh)
+#
+# vesc-domain:           87.2%  (599/687)
+# vesc-knowledge-index:  82.1%  (473/576)
+# vesc-mcp-adapters:     95.7%  (134/140)
+# vesc-mcp-core:         83.2%  (2786/3350)
+#
+# Floor: 80% per crate (.config/coverage.toml)

@@ -1,0 +1,2 @@
+# Paths excluded from vesc-mcp coverage reports (vendor, std).
+/vendor/|/library/std/

@@ -1,0 +1,24 @@
+# Coverage policy for vesc-mcp (see docs/testing.md).
+#
+# Per-crate line coverage floor (library crates only):
+#   vesc-domain, vesc-knowledge-index, vesc-mcp-adapters, vesc-mcp-core >= 80%
+#
+# Excluded from reports and floor (not vesc-mcp code):
+#   - vesc-mcp-server bootstrap, build.rs, src/bin/*, vendor/
+#   - test_support.rs (harness helpers)
+# Regex: .config/coverage-exclude.regex
+
+[crates]
+floor_percent = 80
+
+[[crates.members]]
+name = "vesc-domain"
+
+[[crates.members]]
+name = "vesc-knowledge-index"
+
+[[crates.members]]
+name = "vesc-mcp-adapters"
+
+[[crates.members]]
+name = "vesc-mcp-core"
