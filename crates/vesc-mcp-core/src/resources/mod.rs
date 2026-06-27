@@ -72,9 +72,19 @@ pub enum ResourceReadError {
 }
 
 /// Registry of static MCP resources plus URI validation for dynamic templates.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ResourceRegistry {
     static_resources: BTreeMap<String, ResourceMeta>,
+    handlers: Vec<Box<dyn ResourceReadHandler>>,
+}
+
+impl std::fmt::Debug for ResourceRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceRegistry")
+            .field("static_resources", &self.static_resources)
+            .field("handlers", &self.handlers.len())
+            .finish()
+    }
 }
 
 impl ResourceRegistry {
@@ -143,6 +153,39 @@ impl ResourceRegistry {
             .values()
             .map(ResourceMeta::to_mcp_resource)
             .collect()
+    }
+
+    /// Register a read handler for dynamic resource bodies.
+    pub fn register_handler(&mut self, handler: impl ResourceReadHandler + 'static) {
+        self.handlers.push(Box::new(handler));
+    }
+
+    /// Read a resource body by URI, dispatching to the first matching handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResourceReadError`] when the URI is invalid, unhandled, or read fails.
+    pub fn read(&self, uri: &str) -> Result<String, ResourceReadError> {
+        let parsed = parse_resource_uri(uri).map_err(|err| ResourceReadError::NotFound {
+            uri: format!("{uri}: {err}"),
+        })?;
+        for handler in &self.handlers {
+            if handler.matches(&parsed) {
+                return handler.read(&parsed);
+            }
+        }
+        Err(ResourceReadError::NotFound { uri: uri.into() })
+    }
+
+    /// List MCP resource templates served by registered handlers.
+    #[must_use]
+    pub fn list_mcp_templates(&self) -> Vec<RawResourceTemplate> {
+        let probe = ParsedResourceUri::DynamicManifest(ManifestResourceUri { path: "_".into() });
+        if self.handlers.iter().any(|handler| handler.matches(&probe)) {
+            vec![Self::manifest_template()]
+        } else {
+            vec![]
+        }
     }
 
     /// MCP resource template for sandboxed live manifest reads.

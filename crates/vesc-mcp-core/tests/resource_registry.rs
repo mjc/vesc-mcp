@@ -1,9 +1,11 @@
 //! Integration tests for the MCP resource URI scheme and registry.
 
 use vesc_mcp_core::resources::{
-    CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri, ResourceMeta,
-    ResourceRegistry, parse_resource_uri,
+    CatalogResourceUri, FixtureManifestUri, ManifestResourceHandler, ManifestResourceUri,
+    ParsedResourceUri, REFLOAT_MINIMAL_MANIFEST_URI, ResourceMeta, ResourceRegistry,
+    parse_resource_uri, register_manifest_resources,
 };
+use vesc_mcp_core::test_support::fixture_sandbox_roots;
 
 #[test]
 fn resource_registry_parses_valid_uris() {
@@ -99,4 +101,38 @@ fn resource_registry_lists_registered_static_resources() {
     assert_eq!(mcp.len(), 1);
     assert_eq!(mcp[0].uri, "vesc://catalog/build-recipe/refloat-vesc-tool");
     assert_eq!(mcp[0].mime_type.as_deref(), Some("text/markdown"));
+}
+
+#[test]
+fn resource_registry_read_dispatches_manifest_handler() {
+    let mut registry = ResourceRegistry::new();
+    register_manifest_resources(&mut registry).expect("register manifest resources");
+    registry.register_handler(ManifestResourceHandler::new(fixture_sandbox_roots()));
+
+    let body = registry
+        .read(REFLOAT_MINIMAL_MANIFEST_URI)
+        .unwrap_or_else(|err| panic!("read fixture manifest: {err}"));
+    assert!(body.contains("Refloat Minimal"));
+}
+
+#[test]
+fn resource_registry_read_not_found_without_handler() {
+    let mut registry = ResourceRegistry::new();
+    register_manifest_resources(&mut registry).expect("register manifest resources");
+    let err = registry
+        .read(REFLOAT_MINIMAL_MANIFEST_URI)
+        .expect_err("no handler registered");
+    assert!(
+        err.to_string().contains("not found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn resource_registry_list_templates_when_manifest_handler_registered() {
+    let mut registry = ResourceRegistry::new();
+    registry.register_handler(ManifestResourceHandler::new(fixture_sandbox_roots()));
+    let templates = registry.list_mcp_templates();
+    assert_eq!(templates.len(), 1);
+    assert_eq!(templates[0].uri_template, "vescpkg://manifest/{path}");
 }
