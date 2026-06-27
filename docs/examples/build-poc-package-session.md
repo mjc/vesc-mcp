@@ -1,16 +1,17 @@
-# Example agent session: build POC native-lib package
+# Example agent session: build fixture package (offline)
 
-Walkthrough for `build_vescpkg` in **rust** mode on `tests/fixtures/poc-native-lib-minimal/`, then `inspect_vescpkg` on the wire artifact.
+Walkthrough for `build_vescpkg` in **rust** mode on `tests/fixtures/poc-native-lib-minimal/` — an **MCP/CI parity path only**. Production refloat packages use `vesc_tool --buildPkgFromDesc` (see [inspect-refloat-session.md](inspect-refloat-session.md) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
 
 **Prerequisites**
 
 | Requirement | Notes |
 |-------------|-------|
 | `VESC_PACKAGE_ROOTS` | Must include `tests/fixtures/` (or the fixture parent path). |
-| `VESC_POC_ROOT` | Sibling checkout of **vesc-rust-poc** (default `~/projects/vesc-rust-poc`). The Rust packer is a path dependency on `vesc-pkg-build` — see [poc-integration.md](../poc-integration.md). |
-| Build toolchain | `nix develop -c make check` in vesc-mcp; POC checkout must build if you change packer code. |
+| Build toolchain | `nix develop -c make check` in vesc-mcp. No sibling repos required. |
 
-The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). Adapters resolve `lisp_editor_path` to the package root — see sharp edges in [poc-integration.md](../poc-integration.md).
+The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). Adapters resolve `lisp_editor_path` to the package root — see [poc-integration.md](../poc-integration.md).
+
+When `VESC_TOOL_PATH` is set, prefer `mode: "vesc_tool"` for the same layout using the official packer.
 
 ---
 
@@ -36,9 +37,9 @@ The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). Adapte
 
 ---
 
-## Prompt 2 — build with Rust packer
+## Prompt 2 — build with parity writer (fixtures)
 
-> Build a `.vescpkg` for the POC native-lib minimal fixture using `build_vescpkg` with `mode: "rust"`.
+> Build a `.vescpkg` for the native-lib minimal fixture using `build_vescpkg` with `mode: "rust"`.
 
 **Tool call**
 
@@ -56,14 +57,14 @@ The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). Adapte
 {
   "ok": true,
   "artifact_path": "/…/tests/fixtures/poc-native-lib-minimal/package/poc-native-lib-minimal.vescpkg",
-  "sha256": "34e95e3628a810efc9bfd3cdf23d80dea193f9a11c65b4a5da6f8a23163b7207",
-  "size_bytes": 512
+  "sha256": "5148d649a6da7abb8deb5a4bdca38f9fe7bd1b9d918f9e06001e0f20e2cedba9",
+  "size_bytes": 406
 }
 ```
 
-The SHA-256 must match the golden vector in `tests/fixtures/golden/poc-minimal.sha256`. `size_bytes` is illustrative — only the hash is pinned in CI.
+The SHA-256 must match the golden vector in `tests/fixtures/golden/poc-minimal.sha256`.
 
-If `VESC_POC_ROOT` is missing or `vesc-pkg-build` fails to link, the tool returns `{ "ok": false, "error": { "code": "…", "message": "…", "hint": "…" } }`.
+On layout or I/O failure the tool returns `{ "ok": false, "error": { "code": "…", "message": "…", "hint": "…" } }`.
 
 ---
 
@@ -125,15 +126,19 @@ vescpkg://fixture/poc-native-lib-minimal/manifest
 
 ```bash
 export VESC_PACKAGE_ROOTS="$PWD/tests/fixtures"
-export VESC_POC_ROOT="$HOME/projects/vesc-rust-poc"   # or vendor/sibling path
+# Optional — use official packer instead of rust parity mode:
+# export VESC_TOOL_PATH=/path/to/vesc_tool
 ```
 
-Build recipe resource: `vesc://catalog/build-recipe/poc-rust-packer`
+Build recipe resources:
+
+- Production (refloat): `vesc://catalog/build-recipe/refloat-vesc-tool`
+- Fixture parity (CI): `vesc://catalog/build-recipe/poc-rust-packer`
 
 ---
 
 ## Related docs
 
-- [inspect-refloat-session.md](inspect-refloat-session.md) — discovery and layout checks without POC
-- [poc-integration.md](../poc-integration.md) — path dependency and sharp edges
-- [configuration.md](../configuration.md) — `VESC_POC_ROOT`, `VESC_PACKAGE_ROOTS`
+- [inspect-refloat-session.md](inspect-refloat-session.md) — discovery and layout checks with vesc_tool workflow
+- [poc-integration.md](../poc-integration.md) — parity writer vs production vesc_tool
+- [configuration.md](../configuration.md) — `VESC_PACKAGE_ROOTS`, `VESC_TOOL_PATH`

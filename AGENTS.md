@@ -50,7 +50,7 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 | URI | Description |
 |-----|-------------|
 | `vesc://catalog/build-recipe/refloat-vesc-tool` | Refloat Makefile + vesc_tool build flow |
-| `vesc://catalog/build-recipe/poc-rust-packer` | POC `make package` + Rust packer |
+| `vesc://catalog/build-recipe/poc-rust-packer` | MCP fixture build (`build_vescpkg` rust mode; not production) |
 
 **Doc topics** (`text/markdown`):
 

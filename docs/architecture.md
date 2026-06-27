@@ -58,7 +58,7 @@ flowchart TB
 | Transport | `vesc-mcp-server` | stdio MCP session, tracing to stderr |
 | MCP surface | `vesc-mcp-core` | Tool router, resource registry, config, workspace discovery |
 | Domain | `vesc-domain` | `pkgdesc.qml` parsing, `.vescpkg` wire read/write, validation types |
-| Build adapter | `vesc-mcp-adapters` | Stage files and call `vesc-domain::write_vescpkg_file` for rust-mode builds |
+| Build adapter | `vesc-mcp-adapters` | Stage fixtures; rust mode uses parity writer; production path is `vesc_tool` |
 | Knowledge | `vesc-knowledge-index` | Embedded search index over catalog-derived entries |
 | Catalog | `catalog/` | YAML indexes (build flows, commands, ABI, doc topics) — no GPL source vendored |
 | Fixtures | `tests/fixtures/` | Synthetic offline package trees for CI |

@@ -4,9 +4,9 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 ## Summary
 
-| Area | refloat | vesc-rust-poc | Impact |
-|------|---------|---------------|--------|
-| Package packer | vesc_tool CLI | Rust `vesc-pkg-build` | Different build entrypoint; wire format should match |
+| Area | refloat | vesc-mcp (fixtures) | Impact |
+|------|---------|---------------------|--------|
+| Package packer | vesc_tool CLI | Parity writer in CI only | Production uses vesc_tool; MCP tests offline |
 | Descriptor dialect | vesc_tool (`pkgName`, …) | Legacy POC mistake (`packageName`, …) | POC must migrate to vesc_tool schema |
 | Native payload | C via vesc_pkg_lib | Rust staticlib + C shim | Toolchain and symbol audit differ |
 | BLE / device test | Manual VESC Tool upload | Host `loopback` CLI | POC has automated hw path; refloat docs none |
@@ -31,13 +31,13 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 ## Packer {#packer}
 
-**refloat:** `make` → `vesc_tool --buildPkgFromDesc pkgdesc.qml` (or legacy `--buildPkg` colon string when `OLDVT=1`).
+**refloat:** `make` → `vesc_tool --buildPkgFromDesc pkgdesc.qml` (or legacy `--buildPkg` colon string when `OLDVT=1`). This matches official VESC Tool behavior (`codeloader.cpp`).
 
-**POC:** `make package` → `vesc-pkg-build` writes `.vescpkg` with magic `"VESC Packet"`, zlib-compressed fields, null-terminated keys.
+**vesc-mcp (fixtures only):** `build_vescpkg` mode `rust` writes `.vescpkg` via `vesc-domain::wire` parity code for offline CI — not a packaging workflow for real packages.
 
-**Gap:** Two independent implementations. POC tests (`package_uses_the_vesc_tool_field_spine`) assert field-name compatibility with vesc_tool output, but refloat CI does not run Rust packer.
+**Gap:** Hosts without `vesc_tool` cannot pack real packages through MCP; fixture tests use the parity writer instead.
 
-**Mitigation:** Integration epic (`br-integrate-poc-5tu`) wraps POC packer; characterization tests compare bytes where feasible.
+**Mitigation:** Characterization tests and golden SHA-256 pin parity writer output against the wire spec; use `mode: vesc_tool` when the binary is available.
 
 ## Native library build {#native}
 

@@ -75,7 +75,7 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/configuration.md](docs/configuration.md) | Environment variables and `config.toml` |
 | [docs/architecture.md](docs/architecture.md) | Crate diagram and boundaries |
 | [docs/testing.md](docs/testing.md) | Red/green/refactor workflow |
-| [docs/poc-integration.md](docs/poc-integration.md) | POC catalog/fixtures (no compile-time dep) |
+| [docs/poc-integration.md](docs/poc-integration.md) | MCP fixture builds (parity writer; production uses vesc_tool) |
 | [docs/vescpackage-reference.md](docs/vescpackage-reference.md) | End-to-end package lifecycle index |
 | [docs/vescpkg-wire-format.md](docs/vescpkg-wire-format.md) | `.vescpkg` byte-level wire spec |
 | [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) | Native loader ABI (vesc_pkg_lib) |

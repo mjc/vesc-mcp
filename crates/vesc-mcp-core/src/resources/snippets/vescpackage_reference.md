@@ -16,7 +16,7 @@ Related MCP doc topics: `pkgdesc_dialects`, `lisp_imports`, `vesc_c_if`.
 
 1. **Authoring** — `pkgdesc.qml`, loader `.lisp`, optional UI `.qml`, README, native sources under a package root.
 2. **Validation** — `validate_package_layout` checks descriptor-relative paths resolve under the root.
-3. **Packing** — refloat: `vesc_tool --buildPkgFromDesc pkgdesc.qml`; POC: `vesc-pkg-build::build_vesc_package`.
+3. **Packing** — **Production:** `vesc_tool --buildPkgFromDesc pkgdesc.qml` (refloat Makefile). Authoritative behavior is in VESC Tool `codeloader.cpp`.
 4. **Artifact** — `.vescpkg`: Qt `qCompress` (4-byte BE length + zlib) around a `"VESC Packet"` field spine.
 5. **Distribution** — VESC Tool upload or MCP `inspect_vescpkg`.
 6. **Runtime** — Firmware evaluates `lispData`, resolves `(import …)` embedded binaries, calls `(load-native-lib …)`.
@@ -30,7 +30,7 @@ Related MCP doc topics: `pkgdesc_dialects`, `lisp_imports`, `vesc_c_if`.
 | Legacy POC pkgdesc | Keys like `packageName`, `nativeLibraryPath` are **invalid** — use vesc_tool schema (`pkgName`, `pkgLisp`, …). |
 | Empty wire fields | May be **omitted** from the spine, not zero-length placeholders. |
 | `pkgOutput` | Output filename on disk only — **not** a wire field. |
-| Read vs write | Wire parsing in `vesc-domain`; packing via `vesc-pkg-build`. Do not reimplement in adapters. |
+| MCP rust mode | **Fixture/CI only** — parity writer mirrors vesc_tool; not a production packer. |
 
 ## Wire field spine (vesc_tool order)
 
@@ -52,6 +52,6 @@ See `lisp_imports` topic for `lispData` binary layout and offset arithmetic.
 | `inspect_pkgdesc` | Parse `pkgdesc.qml` under sandbox roots |
 | `inspect_vescpkg` | Decode wire fields and lisp imports |
 | `validate_package_layout` | Pre-build asset checks |
-| `build_vescpkg` | `mode: "rust"` on fixtures; `vesc_tool` when available |
+| `build_vescpkg` | `mode: vesc_tool` when binary available; `mode: rust` on fixtures only |
 
 Offline fixtures: `tests/fixtures/refloat-minimal/`, `poc-native-lib-minimal/`, `golden/poc-minimal.vescpkg`.

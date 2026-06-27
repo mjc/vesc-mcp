@@ -108,9 +108,9 @@ pub fn register_build_recipe_resources(
     })?;
     registry.register(ResourceMeta {
         uri: POC_RUST_PACKER_URI.into(),
-        name: "POC Rust packer build recipe".into(),
+        name: "MCP fixture build (offline CI)".into(),
         description: Some(
-            "Build packages with vesc-rust-poc make package and Rust vesc-pkg-build".into(),
+            "build_vescpkg rust mode on fixtures — parity writer only; production packaging uses vesc_tool".into(),
         ),
         mime_type: "text/markdown".into(),
     })
@@ -182,22 +182,15 @@ fn render_refloat_vesc_tool(doc: &BuildFlowDoc) -> String {
     out
 }
 
-fn render_poc_rust_packer(doc: &BuildFlowDoc, poc: &PocEquivalent) -> String {
+fn render_poc_rust_packer(_doc: &BuildFlowDoc, poc: &PocEquivalent) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "# POC Rust packer build flow\n\nEquivalent to Refloat `{id}` using `{repo}`.\n",
-        id = doc.id,
-        repo = poc.repo,
+        "# MCP fixture build (offline CI)\n\n**Not production packaging.** Refloat and official VESC packages use `vesc_tool` — see `vesc://catalog/build-recipe/refloat-vesc-tool`.\n\nFor sandbox fixtures and CI, `build_vescpkg` with `mode: \"rust\"` writes `.vescpkg` using an in-repo parity writer that mirrors `vesc_tool` `codeloader.cpp`.\n",
     );
     let _ = writeln!(
         out,
-        "## Build\n\n```makefile\nmake {target}\n```\n",
-        target = poc.makefile_target,
-    );
-    let _ = writeln!(
-        out,
-        "Packer: {packer}\n\nReference: `{repo}/{doc}`\n",
+        "## MCP tool\n\n```json\n{{ \"root\": \"tests/fixtures/…\", \"mode\": \"rust\" }}\n```\n\nPacker note: {packer}\n\nReference: `{repo}/{doc}`\n",
         packer = poc.packer,
         repo = poc.repo,
         doc = poc.doc,
@@ -315,7 +308,8 @@ mod tests {
         let doc = load_build_flow(&default_catalog_root()).expect("load build-flow");
         assert_eq!(doc.id, "refloat-build-flow");
         let poc = doc.poc_equivalent.expect("poc_equivalent");
-        assert_eq!(poc.lines, Some([19, 37]));
+        assert_eq!(poc.repo, "vesc-mcp");
+        assert!(poc.packer.contains("parity"));
     }
 
     #[test]

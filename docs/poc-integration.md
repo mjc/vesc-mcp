@@ -1,47 +1,31 @@
-# POC catalog and fixtures (no compile-time dependency)
+# MCP build adapters (fixtures)
 
-vesc-mcp does **not** link the sibling **vesc-rust-poc** checkout. Wire **read and write** both live in `vesc-domain::wire`; `vesc-mcp-adapters` stages files and calls `write_vescpkg_file`.
+**Production packaging** follows refloat and official VESC tooling: `vesc_tool --buildPkgFromDesc pkgdesc.qml` (see [build-flow catalog](../catalog/refloat/build-flow.yaml) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
 
-## Packaging API (in-repo)
+vesc-mcp does **not** link **vesc-rust-poc**. For **offline CI and MCP sandbox tests only**, `build_vescpkg` with `mode: "rust"` stages fixture files and writes `.vescpkg` via an in-repo **parity writer** in `vesc-domain::wire` that mirrors `vesc_tool` `codeloader.cpp`. That writer is not a supported packaging workflow for real packages.
 
-| Symbol | Crate | Use in vesc-mcp |
-|--------|-------|-----------------|
-| `VescPackageBuildInput` | vesc-domain | Build wire payload from staged files |
+## Parity writer API (test harness)
+
+| Symbol | Crate | Use |
+|--------|-------|-----|
+| `VescPackageBuildInput` | vesc-domain | Staged inputs for wire bytes |
 | `build_vescpkg_bytes` | vesc-domain | Produce `.vescpkg` bytes |
 | `write_vescpkg_file` | vesc-domain | Write artifact to disk |
 
-Implementation: `crates/vesc-domain/src/wire/write.rs` (ported from the historical POC packer; kept in sync with `vesc_tool` / `codeloader.cpp` behavior).
+Implementation: `crates/vesc-domain/src/wire/write.rs`.
 
-## External POC references (catalog only)
+## Catalog pointers to external repos
 
-The knowledge index and catalog may still cite **vesc-rust-poc** as a logical repo for ABI entries and gap analysis. Those are documentation pointers — not Cargo path dependencies.
+The knowledge index may cite **vesc-rust-poc** for ABI inventory paths. Those are documentation-only — not Cargo dependencies.
 
-`VESC_POC_ROOT` / `poc_root` in config only matter when resolving catalog paths on disk for MCP resources (e.g. ABI snippets), not for building packages.
-
-## Out of scope (MCP server)
-
-| Crate | Reason |
-|-------|--------|
-| `vesc-ffi` | `unsafe` / device FFI — not loaded in MCP host |
-| `vesc-rust-poc` device crate | `no_std` runtime — not linked here |
-| `vesc-protocol` | BLE protocol — tools only unless explicitly added |
-
-## vesc_tool pkgdesc (canonical)
-
-Build adapters read **on-disk** `pkgdesc.qml` using `vesc-domain::parse_pkgdesc_qml` (vesc_tool schema: `pkgName`, `pkgOutput`, …).
+`VESC_POC_ROOT` / `poc_root` resolve catalog paths on disk for MCP resources when a sibling checkout exists.
 
 ## Sharp edges
 
-1. **`lisp_editor_path` is the repo/fixture root**, not the `.lisp` file path. `(import "…")` paths resolve relative to this root; adapters pass the same root as `build_package_from_root` receives.
+1. **`lisp_editor_path` is the package/fixture root**, not the `.lisp` file path.
 
-2. **Read and write in domain.** Wire parsing, field spine checks, layout validation, and packing all live in `vesc-domain`. Adapters orchestrate staging + I/O only.
+2. **Pkgdesc dialect.** Fixtures use vesc_tool keys (`pkgName`, `pkgLisp`, `pkgOutput`, …). Legacy keys are rejected with `DomainError::LegacyPocDialect`.
 
-3. **Pkgdesc dialect.** On-disk fixtures must use vesc_tool keys (`pkgName`, `pkgLisp`, `pkgOutput`, …). Legacy POC keys (`packageName`, `nativeLibraryPath`) are rejected with `DomainError::LegacyPocDialect`.
+3. **Golden vectors.** `tests/fixtures/golden/poc-minimal.vescpkg` pins parity-writer output for CI. Regenerate: `nix develop -c cargo run -p vesc-mcp-adapters --bin gen-poc-minimal-golden`.
 
-4. **No FFI in adapters.** Device/runtime crates stay out of the MCP host.
-
-5. **Golden vectors.** Committed `tests/fixtures/golden/poc-minimal.vescpkg` must match adapter output SHA-256. Regenerate via `nix develop -c cargo run -p vesc-mcp-adapters --bin gen-poc-minimal-golden`.
-
-## License
-
-GPL. MCP server is a separate binary; keep license files in sync when distributing.
+4. **Prefer vesc_tool for real builds.** When `VESC_TOOL_PATH` is available, use `build_vescpkg` with `mode: "vesc_tool"`.

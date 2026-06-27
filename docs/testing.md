@@ -70,7 +70,7 @@ Per-crate **line coverage floor: 80%** for `vesc-domain`, `vesc-knowledge-index`
 Excluded from reports: `vendor/` and std. See [`.config/coverage-exclude.regex`](../.config/coverage-exclude.regex).
 
 ```bash
-nix develop -c make coverage           # workspace run; POC paths excluded from lcov
+nix develop -c make coverage           # workspace run
 nix develop -c make coverage-summary     # per-crate lib src % vs 80% floor
 nix develop -c make coverage-html        # HTML report (same exclusions)
 ```

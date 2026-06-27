@@ -172,13 +172,17 @@ Integration tests: `tool_inspect_vescpkg_rejects_bad_magic`, `tool_inspect_vescp
 
 ## Packer implementations
 
-| Aspect | vesc_tool | vesc-pkg-build (POC) |
-|--------|-----------|----------------------|
-| Entry | `--buildPkgFromDesc pkgdesc.qml` | `build_vesc_package(&VescPackageInput)` |
-| Descriptor | Reads QML properties live | Reads staged files + embeds pkgdesc text |
-| Native embed | `lispPackImports(…, editorPath, …)` | `pack_lisp_imports(code, editor_path)` |
-| Compression | Qt `qCompress` | `q_compress` (same layout) |
-| Legacy | `--buildPkg` colon format (`OLDVT=1`) | Not supported |
+**Authoritative:** `vesc_tool` / `codeloader.cpp`. Refloat packages are built with `--buildPkgFromDesc`.
+
+| Aspect | vesc_tool |
+|--------|-----------|
+| Entry | `--buildPkgFromDesc pkgdesc.qml` |
+| Descriptor | Reads QML properties live |
+| Native embed | `lispPackImports(…, editorPath, …)` |
+| Compression | Qt `qCompress` |
+| Legacy | `--buildPkg` colon format (`OLDVT=1`) |
+
+**MCP fixtures only:** `vesc-domain::wire::write.rs` implements a parity writer for offline CI (`build_vescpkg` mode `rust`). It is not a supported production packer.
 
 ### Upstream citations
 
@@ -188,9 +192,8 @@ Integration tests: `tool_inspect_vescpkg_rejects_bad_magic`, `tool_inspect_vescp
 | vesc_tool | `codeloader.cpp` | 879–916 | Unpack mirror |
 | vesc_tool | `codeloader.cpp` | 173–252 | `lispPackImports` |
 | vesc_tool | `codeloader.cpp` | 1174–1252 | pkgdesc QML property reads |
-| vesc-rust-poc | `crates/vesc-pkg-build/src/package_format.rs` | 20–37 | `build_vesc_package` spine |
-| vesc-rust-poc | `crates/vesc-pkg-build/src/package_format.rs` | 111–180 | `pack_lisp_imports` |
 | vesc-mcp | `crates/vesc-domain/src/wire/mod.rs` | full module | Reader + tests |
+| vesc-mcp | `crates/vesc-domain/src/wire/write.rs` | full module | Parity writer (fixtures) |
 
 Set `$VESC_POC_ROOT`, `$VESC_TOOL_ROOT` (or sibling checkout paths) per [configuration.md](configuration.md).
 

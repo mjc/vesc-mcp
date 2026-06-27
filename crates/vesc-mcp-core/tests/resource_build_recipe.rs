@@ -48,20 +48,24 @@ fn resource_build_recipe_poc_contains_package_target() {
     let body = read_build_recipe(POC_RUST_PACKER_URI, &catalog_root())
         .unwrap_or_else(|err| panic!("read poc recipe: {err}"));
     assert!(
-        body.contains("package"),
-        "missing make package target:\n{body}"
+        body.contains("build_vescpkg") || body.contains("rust"),
+        "missing MCP fixture build command:\n{body}"
     );
     assert!(
-        body.contains("vesc-pkg-build") || body.contains("vesc-rust-poc"),
-        "missing POC packer info:\n{body}"
+        body.contains("vesc_tool") || body.contains("parity"),
+        "missing production vs fixture packer context:\n{body}"
+    );
+    assert!(
+        body.contains("vesc-mcp") || body.contains("build_vescpkg"),
+        "missing MCP fixture build info:\n{body}"
     );
     assert!(
         body.contains("Source:"),
         "missing attribution footer:\n{body}"
     );
     assert!(
-        body.contains("Source: vesc-rust-poc/docs/package-flow.md#L19"),
-        "missing POC doc line anchor in footer:\n{body}"
+        body.contains("Source: vesc-mcp/docs/poc-integration.md"),
+        "missing MCP doc reference in footer:\n{body}"
     );
 }
 

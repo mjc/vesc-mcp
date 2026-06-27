@@ -90,11 +90,10 @@ artifacts:
   - src/package_lib.bin
 
 poc_equivalent:
-  repo: vesc-rust-poc
-  doc: docs/package-flow.md
-  lines: [19, 37]
-  makefile_target: package
-  packer: Rust vesc-pkg-build (not vesc_tool)
+  repo: vesc-mcp
+  doc: docs/poc-integration.md
+  makefile_target: build_vescpkg (mode=rust, fixtures only)
+  packer: vesc-domain parity writer (mirrors vesc_tool; not production packaging)
 
 related_bldc:
   - lispBM/c_libs/vesc_c_if.h

@@ -8,7 +8,7 @@ Textbook-depth reference for VESC custom packages: from `pkgdesc.qml` on disk th
 |----------|-------|
 | [vescpkg-wire-format.md](vescpkg-wire-format.md) | Byte-level `.vescpkg` spec, `lispData` geometry, failure taxonomy, [golden hex appendix](vescpkg-wire-format.md#appendix--annotated-golden-hex-walkthrough) |
 | [vesc-pkg-lib-abi.md](vesc-pkg-lib-abi.md) | Native loader contract, macros, C vs Rust paths, firmware load sequence |
-| [poc-integration.md](poc-integration.md) | vesc-mcp ↔ vesc-rust-poc adapter boundaries and sharp edges |
+| [poc-integration.md](poc-integration.md) | MCP fixture builds and parity writer (not production packaging) |
 | [configuration.md](configuration.md) | Env vars (`VESC_REFLOAT_ROOT`, `VESC_BLDC_ROOT`, `VESC_POC_ROOT`, …) |
 | [safety.md](safety.md) | Flash/upload gates (default off) |
 
@@ -28,7 +28,6 @@ flowchart TB
   end
   subgraph Pack
     P1[vesc_tool --buildPkgFromDesc]
-    P2[vesc-pkg-build Rust POC]
   end
   subgraph Artifact
     W1[.vescpkg qCompress + zlib]
@@ -45,11 +44,8 @@ flowchart TB
   A1 --> V1
   A2 --> V1
   A3 --> P1
-  A3 --> P2
   V1 --> P1
-  V1 --> P2
   P1 --> W1
-  P2 --> W1
   W1 --> H1
   H1 --> R1
   R1 --> R2
@@ -61,7 +57,7 @@ flowchart TB
 
 1. **Authoring** — Developer edits `pkgdesc.qml`, loader `.lisp`, optional UI `.qml`, README markdown, and native sources under a package root.
 2. **Validation** — `validate_package_layout` checks that descriptor-relative paths (`pkgDescriptionMd`, `pkgLisp`, `pkgQml`) resolve to existing files under the root.
-3. **Packing** — **refloat** uses `vesc_tool --buildPkgFromDesc pkgdesc.qml`; **POC** uses `vesc-pkg-build::build_vesc_package`. Both emit the same wire dialect when configured correctly.
+3. **Packing** — `vesc_tool --buildPkgFromDesc pkgdesc.qml` (refloat Makefile default). This is the authoritative path documented by VESC Tool / `codeloader.cpp`.
 4. **Artifact** — On-disk `.vescpkg`: Qt `qCompress` wrapper (4-byte BE length + zlib) around a `"VESC Packet"` field spine.
 5. **Distribution** — VESC Tool upload to ESC, or offline inspection via MCP `inspect_vescpkg`.
 6. **Runtime** — Firmware stores fields, evaluates `lispData` Lisp source, resolves `(import …)` embedded binaries, calls `(load-native-lib …)`.
@@ -71,11 +67,11 @@ flowchart TB
 
 | Edge | Detail |
 |------|--------|
-| `lisp_editor_path` | Package **root**, not the `.lisp` file path. Import paths in `(import "src/foo.bin" …)` resolve relative to this root. See `vesc-mcp-adapters` build path and POC `VescPackageInput::lisp_editor_path`. |
+| `lisp_editor_path` | Package **root**, not the `.lisp` file path. Import paths in `(import "src/foo.bin" …)` resolve relative to this root. See `vesc-mcp-adapters` build path and `VescPackageBuildInput::lisp_editor_path`. |
 | Legacy POC pkgdesc | Keys like `packageName`, `nativeLibraryPath` are **invalid**. `vesc-domain` returns `DomainError::LegacyPocDialect`. Use vesc_tool schema only (`pkgName`, `pkgLisp`, …). |
 | Empty wire fields | May be **omitted** from the spine, not written as zero-length placeholders. Golden fixture omits empty `qmlFile`. |
 | `pkgOutput` | Names the output **file on disk during build** only — not a wire field. |
-| Read vs write | Wire parsing lives in `vesc-domain`; packing calls `vesc-pkg-build`. Do not reimplement layout in adapters. |
+| Read vs write | Wire format spec matches `vesc_tool`. `vesc-domain::wire` implements read + a **test-only** parity writer for MCP fixtures; adapters do not define packaging policy. |
 
 ## On-disk layout and pkgdesc
 
@@ -137,21 +133,29 @@ Full Makefile detail lives in `catalog/refloat/build-flow.yaml` and MCP resource
 | Modern pkgdesc | `vesc_tool --buildPkgFromDesc pkgdesc.qml` | Default (`OLDVT=0`) |
 | Legacy colon | `vesc_tool --buildPkg "out:lisp:qml:fs:readme:name"` | `OLDVT=1` on old vesc_tool |
 | Native dep | `make -C src` | Before pack; produces `package_lib.bin` |
-| POC Rust | `make package` / `build_vescpkg` mode `rust` | vesc-pkg-build in sibling POC |
 
 Makefile variables: `VESC_TOOL`, `MINIFY_QML`, `OLDVT` — see build-flow catalog.
 
-## Packer comparison
+## Packer reference (authoritative)
 
-| Aspect | vesc_tool | vesc-pkg-build (POC) |
-|--------|-----------|----------------------|
-| Entry | `--buildPkgFromDesc` | `build_vesc_package(&VescPackageInput)` |
-| Descriptor | Reads QML properties live | Staged files + embedded pkgdesc text |
-| Native embed | `lispPackImports` from disk | `pack_lisp_imports` — same offset algorithm |
-| Legacy colon | `--buildPkg` | Not supported |
-| Parity anchor | — | Golden SHA-256 `34e95e36…` on `poc-minimal.vescpkg` |
+| Aspect | vesc_tool (`codeloader.cpp`) |
+|--------|------------------------------|
+| Entry | `--buildPkgFromDesc pkgdesc.qml` |
+| Descriptor | Reads QML properties live |
+| Native embed | `lispPackImports(…, editorPath, …)` |
+| Compression | Qt `qCompress` (4-byte BE length + zlib) |
+| Legacy | `--buildPkg` colon format when `OLDVT=1` |
 
-Upstream writers: `$VESC_TOOL_ROOT/codeloader.cpp` (pack/unpack); in-repo reader: `crates/vesc-domain/src/wire/mod.rs`.
+In-repo reader: `crates/vesc-domain/src/wire/mod.rs`. MCP uses a parity writer (`write.rs`) only to build fixture artifacts in CI without requiring `vesc_tool` on every runner.
+
+## MCP offline fixture builds (not production)
+
+| Tool | Mode | Purpose |
+|------|------|---------|
+| `build_vescpkg` | `vesc_tool` | Spawn real packer when binary available |
+| `build_vescpkg` | `rust` | Parity writer on sandbox fixtures only |
+
+Recipe resource: `vesc://catalog/build-recipe/poc-rust-packer` (MCP fixture/CI only; production is `refloat-vesc-tool`).
 
 ## Ground truth and test anchors
 
@@ -183,8 +187,9 @@ Use this reference alongside live MCP tools (offline fixtures first):
 | Resource URI | Topic |
 |--------------|-------|
 | `vescpkg://fixture/refloat-minimal/manifest` | Parsed refloat fixture |
-| `vescpkg://fixture/poc-native-lib-minimal/manifest` | Parsed POC fixture |
-| `vesc://catalog/build-recipe/poc-rust-packer` | POC `make package` flow |
+| `vescpkg://fixture/poc-native-lib-minimal/manifest` | Parsed native-lib fixture |
+| `vesc://catalog/build-recipe/refloat-vesc-tool` | Refloat Makefile + vesc_tool (production) |
+| `vesc://catalog/build-recipe/poc-rust-packer` | MCP fixture build (`build_vescpkg` rust mode; not production) |
 | `vesc://catalog/abi/minimal-test-package` | 12-symbol POC ABI JSON |
 
 Env vars: see [configuration.md](configuration.md). Flash/upload tools remain gated — see [safety.md](safety.md).
@@ -255,15 +260,14 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs` (`FIELD_SPINE`, `package_fi
 | domain | `crates/vesc-domain/src/wire/mod.rs` | reader impl | wire unit tests |
 | adapter | `crates/vesc-mcp-adapters/src/build.rs` | 62–63 | `lisp_editor_path` = fixture **root**, not `.lisp` dir |
 
-### Example F — POC Rust packer cross-check
+### Example F — MCP parity writer (fixture CI only)
 
-| Path | Lines | What it proves |
-|------|-------|----------------|
-| `$VESC_POC_ROOT/crates/vesc-pkg-build/src/package_format.rs` | ~337 | `lisp_imports_embed_native_payload_bytes` — offset/size/payload geometry |
-| `$VESC_POC_ROOT/crates/vesc-pkg-build/src/package_format.rs` | ~408 | `package_uses_the_vesc_tool_field_spine` |
-| `$VESC_POC_ROOT/docs/abi-inventory.md` | — | 12-symbol ABI prose |
-| `catalog/poc/minimal-test-package-abi.yaml` | — | MCP resource `vesc://catalog/abi/minimal-test-package` |
-| `crates/vesc-mcp-adapters/tests/characterization.rs` | 11–53 | Parity test mirroring L337 (offset 100, size 6 example) |
+| Path | What it proves |
+|------|----------------|
+| `$VESC_TOOL_ROOT/codeloader.cpp` | Authoritative pack/unpack (`packVescPackage`, `lispPackImports`) |
+| `crates/vesc-domain/src/wire/write.rs` | Test parity writer mirroring vesc_tool |
+| `crates/vesc-mcp-adapters/tests/characterization.rs` | Import offset geometry vs golden fixture |
+| `tests/fixtures/golden/poc-minimal.vescpkg` | Pinned parity output (SHA-256 in sidecar) |
 
 ## Further reading
 
