@@ -15,6 +15,8 @@ pub const VESC_PACKAGE_ROOTS_ENV: &str = "VESC_PACKAGE_ROOTS";
 pub const VESC_TOOL_PATH_ENV: &str = "VESC_TOOL_PATH";
 /// Environment variable gating flash/upload tools (default off).
 pub const VESC_MCP_ENABLE_FLASH_ENV: &str = "VESC_MCP_ENABLE_FLASH";
+/// Environment variable overriding the config TOML file path.
+pub const VESC_MCP_CONFIG_ENV: &str = "VESC_MCP_CONFIG";
 
 static CONFIG: OnceLock<McpConfig> = OnceLock::new();
 
@@ -38,7 +40,7 @@ impl McpConfig {
     }
 
     fn from_sources() -> Self {
-        let file = read_config_file(&default_config_path());
+        let file = read_config_file(&config_file_path());
         let config = merge_config(&file, &read_env_overrides());
         if config.package_roots.is_empty() {
             #[cfg(any(test, feature = "test-fixtures"))]
@@ -94,6 +96,16 @@ pub fn default_config_path() -> PathBuf {
         |_| PathBuf::from(".config/vesc-mcp/config.toml"),
         |home| PathBuf::from(home).join(".config/vesc-mcp/config.toml"),
     )
+}
+
+/// Resolved config file path (`VESC_MCP_CONFIG` or [`default_config_path`]).
+#[must_use]
+pub fn config_file_path() -> PathBuf {
+    resolve_config_file_path(env::var(VESC_MCP_CONFIG_ENV).ok().as_deref())
+}
+
+fn resolve_config_file_path(env_override: Option<&str>) -> PathBuf {
+    env_override.map_or_else(default_config_path, workspace::expand_path)
 }
 
 fn read_config_file(path: &Path) -> ConfigFile {
@@ -417,5 +429,40 @@ package_roots = ["/from/file"]
     fn enable_flash_defaults_off() {
         let merged = merge_config(&ConfigFile::default(), &EnvOverrides::default());
         assert!(!merged.enable_flash);
+    }
+
+    #[test]
+    fn config_file_path_uses_env_override() {
+        let custom = PathBuf::from("/tmp/vesc-mcp/custom-config.toml");
+        assert_eq!(
+            resolve_config_file_path(Some("/tmp/vesc-mcp/custom-config.toml")),
+            custom
+        );
+    }
+
+    #[test]
+    fn config_file_path_falls_back_to_default() {
+        assert_eq!(resolve_config_file_path(None), default_config_path());
+    }
+
+    #[test]
+    fn config_reads_custom_file_path() {
+        let workspace = TempWorkspace::new();
+        let config_path = workspace.root.join("custom.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[paths]
+package_roots = ["/custom/from/file"]
+"#,
+        )
+        .expect("write custom config");
+
+        let file = read_config_file(&config_path);
+        let merged = merge_config(&file, &EnvOverrides::default());
+        assert_eq!(
+            merged.package_roots,
+            vec![PathBuf::from("/custom/from/file")]
+        );
     }
 }
