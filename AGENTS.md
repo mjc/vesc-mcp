@@ -35,7 +35,7 @@ Tools that read or write package trees require paths under **`VESC_PACKAGE_ROOTS
 | Fixture | Use with |
 |---------|----------|
 | `tests/fixtures/refloat-minimal/` | `inspect_pkgdesc`, `validate_package_layout`, `build_vescpkg` |
-| `tests/fixtures/poc-native-lib-minimal/` | native-lib layout, `build_vescpkg` with `vesc_tool` |
+| `tests/fixtures/native-lib-minimal/` | native-lib layout, `build_vescpkg` with `vesc_tool` |
 | `tests/fixtures/broken-*` | negative / error-path tests |
 | `tests/fixtures/golden/` | deterministic wire bytes |
 
@@ -44,6 +44,8 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 ## MCP resources
 
 ### Static resources (`resources/list`)
+
+Clients may subscribe to readable resource URIs via `resources/subscribe`; the server advertises `resources.subscribe` and emits `notifications/resources/updated` when subscribed content changes.
 
 **Build recipes** (`text/markdown`):
 
@@ -71,7 +73,7 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 | URI | Description |
 |-----|-------------|
 | `vescpkg://fixture/refloat-minimal/manifest` | Parsed pkgdesc for refloat-minimal fixture |
-| `vescpkg://fixture/poc-native-lib-minimal/manifest` | Parsed pkgdesc for POC native-lib fixture |
+| `vescpkg://fixture/native-lib-minimal/manifest` | Parsed pkgdesc for native-lib-minimal fixture |
 
 **Refloat command docs** (`text/markdown`, from `catalog/refloat/commands.yaml`):
 

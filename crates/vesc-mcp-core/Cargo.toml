@@ -31,6 +31,8 @@ vesc-knowledge-index = { path = "../vesc-knowledge-index" }
 vesc-mcp-adapters = { path = "../vesc-mcp-adapters" }
 
 [dev-dependencies]
+anyhow.workspace = true
 insta.workspace = true
+rmcp = { workspace = true, features = ["client"] }
 serde_json.workspace = true
 serde_yaml.workspace = true

@@ -11,6 +11,7 @@ mod catalog;
 mod manifest;
 mod refloat_command;
 mod r#static;
+mod subscriptions;
 mod uri;
 
 pub use abi::{
@@ -21,7 +22,7 @@ pub use catalog::{
     read_build_recipe, register_build_recipe_resources,
 };
 pub use manifest::{
-    ManifestResourceHandler, POC_NATIVE_LIB_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
+    ManifestResourceHandler, NATIVE_LIB_MINIMAL_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
     read_manifest, register_manifest_resources,
 };
 pub use refloat_command::{
@@ -32,6 +33,7 @@ pub use r#static::{
     DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI,
     VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
 };
+pub use subscriptions::ResourceSubscriptions;
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
     RefloatCommandUri, ResourceUriError, decode_manifest_path, encode_manifest_path,
@@ -192,6 +194,15 @@ impl ResourceRegistry {
             }
         }
         Err(ResourceReadError::NotFound { uri: uri.into() })
+    }
+
+    /// Returns whether a URI is registered and readable by this registry.
+    ///
+    /// Used by MCP `resources/subscribe` to reject unknown URIs before tracking
+    /// the subscription.
+    #[must_use]
+    pub fn is_readable(&self, uri: &str) -> bool {
+        self.read(uri).is_ok()
     }
 
     /// List MCP resource templates served by registered handlers.

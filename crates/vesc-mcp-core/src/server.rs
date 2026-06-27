@@ -6,7 +6,8 @@ use rmcp::{
     model::{
         Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
         ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
-        ResourceTemplate, ServerCapabilities, ServerInfo,
+        ResourceTemplate, ResourceUpdatedNotificationParam, ServerCapabilities, ServerInfo,
+        SubscribeRequestParams, UnsubscribeRequestParams,
     },
     schemars,
     service::RequestContext,
@@ -16,7 +17,7 @@ use rmcp::{
 
 use std::sync::Arc;
 
-use crate::resources::{ResourceReadError, ResourceRegistry};
+use crate::resources::{ResourceReadError, ResourceRegistry, ResourceSubscriptions};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
@@ -45,6 +46,7 @@ pub struct PingResponse {
 pub struct VescMcpService {
     tool_router: ToolRouter<Self>,
     resources: Arc<ResourceRegistry>,
+    resource_subscriptions: Arc<ResourceSubscriptions>,
 }
 
 impl Default for VescMcpService {
@@ -67,12 +69,38 @@ impl VescMcpService {
             resources: Arc::new(
                 ResourceRegistry::with_defaults().expect("default MCP resource registry"),
             ),
+            resource_subscriptions: Arc::new(ResourceSubscriptions::new()),
         }
     }
 
     #[must_use]
     pub fn resource_registry(&self) -> &ResourceRegistry {
         self.resources.as_ref()
+    }
+
+    #[must_use]
+    pub fn resource_subscriptions(&self) -> &ResourceSubscriptions {
+        self.resource_subscriptions.as_ref()
+    }
+
+    /// Notify subscribed clients that a resource body changed.
+    ///
+    /// Returns `true` when the URI was subscribed and a notification was sent.
+    ///
+    /// # Errors
+    ///
+    /// Propagates MCP transport errors from the peer notification call.
+    pub async fn notify_resource_updated_if_subscribed(
+        &self,
+        peer: &rmcp::Peer<RoleServer>,
+        uri: &str,
+    ) -> Result<bool, rmcp::ServiceError> {
+        if !self.resource_subscriptions.is_subscribed(uri) {
+            return Ok(false);
+        }
+        peer.notify_resource_updated(ResourceUpdatedNotificationParam::new(uri))
+            .await?;
+        Ok(true)
     }
 
     /// Tool names registered on this service (for integration test harnesses).
@@ -219,11 +247,36 @@ impl ServerHandler for VescMcpService {
         }
     }
 
+    async fn subscribe(
+        &self,
+        request: SubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        if !self.resources.is_readable(&request.uri) {
+            return Err(McpError::resource_not_found(
+                format!("resource not found: {}", request.uri),
+                None,
+            ));
+        }
+        self.resource_subscriptions.subscribe(request.uri);
+        Ok(())
+    }
+
+    async fn unsubscribe(
+        &self,
+        request: UnsubscribeRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), McpError> {
+        self.resource_subscriptions.unsubscribe(&request.uri);
+        Ok(())
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_resources_subscribe()
                 .build(),
         )
         .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
@@ -311,7 +364,12 @@ mod tests {
         let service = VescMcpService::new();
         let info = service.get_info();
         assert!(info.capabilities.tools.is_some());
-        assert!(info.capabilities.resources.is_some());
+        let resources = info
+            .capabilities
+            .resources
+            .as_ref()
+            .expect("resources capability");
+        assert!(resources.subscribe.unwrap_or(false));
     }
 
     #[test]
