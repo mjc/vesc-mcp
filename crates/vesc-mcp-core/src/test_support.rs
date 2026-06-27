@@ -87,6 +87,7 @@ impl McpTestHarness {
             InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
         };
         use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+        use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
 
         assert!(
             self.list_tool_names().iter().any(|tool| tool == name),
@@ -118,6 +119,11 @@ impl McpTestHarness {
                 let params: InspectVescpkgParams = serde_json::from_value(arguments)
                     .expect("inspect_vescpkg requires { \"path\": \"...\" }");
                 inspect_vescpkg_json(&params)
+            }
+            "validate_package_layout" => {
+                let params: ValidatePackageLayoutParams = serde_json::from_value(arguments)
+                    .expect("validate_package_layout requires { \"root\": \"...\" }");
+                validate_package_layout_json(&params)
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),
         }

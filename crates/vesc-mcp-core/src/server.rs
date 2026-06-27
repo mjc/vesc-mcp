@@ -12,6 +12,7 @@ use crate::tools::inspect::{
     InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
 };
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PingParams {
@@ -88,6 +89,17 @@ impl VescMcpService {
     fn inspect_vescpkg(&self, Parameters(params): Parameters<InspectVescpkgParams>) -> String {
         inspect_vescpkg_json(&params)
     }
+
+    #[tool(
+        description = "Validate that all assets referenced by pkgdesc.qml exist under a package root"
+    )]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn validate_package_layout(
+        &self,
+        Parameters(params): Parameters<ValidatePackageLayoutParams>,
+    ) -> String {
+        validate_package_layout_json(&params)
+    }
 }
 
 #[tool_handler(
@@ -155,5 +167,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "inspect_vescpkg"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_validate_package_layout() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "validate_package_layout"));
     }
 }
