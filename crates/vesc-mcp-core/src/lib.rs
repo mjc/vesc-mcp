@@ -3,6 +3,7 @@
 pub mod catalog;
 pub mod error;
 pub mod server;
+pub mod tools;
 
 #[doc(hidden)]
 pub mod test_support;

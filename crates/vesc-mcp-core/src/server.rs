@@ -8,7 +8,9 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PingParams {
     #[serde(default)]
     pub message: Option<String>,
@@ -63,6 +65,14 @@ impl VescMcpService {
             r#"{"ok":false,"echo":"serialization failed","server":"vesc-mcp"}"#.into()
         })
     }
+
+    #[tool(
+        description = "Discover vescpkg package roots by scanning for pkgdesc.qml under configured paths"
+    )]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn list_vesc_packages(&self, Parameters(params): Parameters<ListPackagesParams>) -> String {
+        list_vesc_packages_json(&params)
+    }
 }
 
 #[tool_handler(
@@ -109,5 +119,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "ping"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_list_vesc_packages() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "list_vesc_packages"));
     }
 }

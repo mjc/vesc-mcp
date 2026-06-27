@@ -72,6 +72,43 @@ impl McpTestHarness {
     pub fn list_tool_names(&self) -> Vec<String> {
         self.service.list_tool_names()
     }
+
+    /// Call a registered MCP tool and return the JSON text payload.
+    ///
+    /// Dispatches through the same tool handlers registered on [`crate::VescMcpService`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when the tool name is unknown or arguments fail to deserialize.
+    #[must_use]
+    pub fn call_tool(&self, name: &str, arguments: serde_json::Value) -> String {
+        use crate::server::{PingParams, PingResponse, decide_ping_echo};
+        use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+
+        assert!(
+            self.list_tool_names().iter().any(|tool| tool == name),
+            "tool {name} is not registered; have {:?}",
+            self.list_tool_names()
+        );
+
+        match name {
+            "ping" => {
+                let params: PingParams = serde_json::from_value(arguments).unwrap_or_default();
+                let payload = PingResponse {
+                    ok: true,
+                    echo: decide_ping_echo(params.message),
+                    server: "vesc-mcp".into(),
+                };
+                serde_json::to_string(&payload).expect("ping response json")
+            }
+            "list_vesc_packages" => {
+                let params: ListPackagesParams =
+                    serde_json::from_value(arguments).unwrap_or_default();
+                list_vesc_packages_json(&params)
+            }
+            other => panic!("missing harness dispatch for registered tool: {other}"),
+        }
+    }
 }
 
 impl Default for McpTestHarness {
