@@ -293,9 +293,7 @@ fn build_vescpkg_vesc_tool(
         return build_error(tool_error_from_vesc_tool(err, &root));
     }
 
-    let artifact_path = [root.join(&output_name), package_root.join(&output_name)]
-        .into_iter()
-        .find(|path| path.is_file());
+    let artifact_path = resolve_vesc_tool_artifact_path(&root, &package_root, &output_name);
 
     let Some(artifact_path) = artifact_path else {
         return build_error(tool_error_from_vesc_tool(
@@ -317,6 +315,23 @@ fn build_vescpkg_vesc_tool(
         },
         Err(err) => build_error(err),
     }
+}
+
+/// Locate the `.vescpkg` written by `vesc_tool --buildPkgFromDesc`.
+///
+/// `vesc_tool` runs with `package_root` (the directory containing `pkgdesc.qml`) as cwd
+/// and writes `pkgOutput` relative to that directory. Refloat-style trees place `pkgdesc.qml`
+/// at the package root, so the artifact usually appears at `root/output_name`. Nested layouts
+/// such as `poc-native-lib-minimal/package/pkgdesc.qml` may write under `package/` while the
+/// caller passes the parent directory as `root`; probe both locations.
+fn resolve_vesc_tool_artifact_path(
+    root: &Path,
+    package_root: &Path,
+    output_name: &str,
+) -> Option<PathBuf> {
+    [root.join(output_name), package_root.join(output_name)]
+        .into_iter()
+        .find(|path| path.is_file())
 }
 
 fn vesc_tool_pkgdesc_context(
@@ -578,6 +593,68 @@ mod tests {
         assert!(artifact_path.ends_with("refloat-minimal.vescpkg"));
         assert_eq!(response.sha256.as_deref(), Some(expected_hash.as_str()));
         assert_eq!(response.size_bytes, Some(18));
+    }
+
+    #[test]
+    fn resolve_vesc_tool_artifact_path_checks_root_then_package_root() {
+        let workspace = TempWorkspace::new();
+        let package_root = workspace.root.join("package");
+        std::fs::create_dir_all(&package_root).expect("package dir");
+        let artifact = package_root.join("demo.vescpkg");
+        std::fs::write(&artifact, b"bytes").expect("artifact");
+
+        assert_eq!(
+            resolve_vesc_tool_artifact_path(&workspace.root, &package_root, "demo.vescpkg")
+                .as_deref(),
+            Some(artifact.as_path())
+        );
+    }
+
+    #[test]
+    fn tool_build_vesc_tool_nested_package_layout_mocked() {
+        struct NestedPackageMockRunner {
+            artifact_bytes: Vec<u8>,
+        }
+
+        impl VescToolRunner for NestedPackageMockRunner {
+            fn build_pkg_from_desc(
+                &self,
+                _vesc_tool: &Path,
+                package_root: &Path,
+                _pkgdesc_file_name: &str,
+                _timeout_secs: u64,
+            ) -> Result<(), String> {
+                let artifact_path = package_root.join("poc-native-lib-minimal.vescpkg");
+                std::fs::write(&artifact_path, &self.artifact_bytes)
+                    .map_err(|err| format!("mock write {}: {err}", artifact_path.display()))
+            }
+        }
+
+        let root = fixture_path("poc-native-lib-minimal");
+        let artifact_at_root = root.join("poc-native-lib-minimal.vescpkg");
+        let _ = std::fs::remove_file(&artifact_at_root);
+        let artifact_bytes = b"nested-package-artifact".to_vec();
+        let expected_hash = sha256_hex(&artifact_bytes);
+        let runner = NestedPackageMockRunner { artifact_bytes };
+
+        let response = build_vescpkg_tool_with_runner(
+            &BuildVescpkgParams {
+                root: root.display().to_string(),
+                mode: "vesc_tool".into(),
+                timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
+            },
+            &runner,
+            Some(Path::new("/mock/vesc_tool")),
+            Some(&fixture_sandbox_roots()),
+        );
+
+        assert!(response.ok, "error: {:?}", response.error);
+        let artifact_path = response.artifact_path.expect("artifact_path");
+        assert!(
+            artifact_path.ends_with("package/poc-native-lib-minimal.vescpkg"),
+            "artifact_path: {artifact_path}"
+        );
+        assert_eq!(response.sha256.as_deref(), Some(expected_hash.as_str()));
     }
 
     #[test]
