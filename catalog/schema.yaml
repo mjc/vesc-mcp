@@ -28,10 +28,13 @@ env_vars:
   VESC_POC_ROOT:
     default: "~/projects/vesc-rust-poc"
     resolves: poc_equivalent references
+  VESC_VESC_TOOL_ROOT:
+    default: "vendor/vesc_tool or ~/projects/vesc_tool"
+    resolves: vesc_tool catalog path entries
 
 required_entry_fields:
   id: Unique catalog document id (kebab-case)
-  source_repo: Logical repo name (refloat | bldc | vesc-rust-poc)
+  source_repo: Logical repo name (refloat | bldc | vesc-rust-poc | vesc_tool)
   source_repo_env: Environment variable holding checkout root
   version: Schema version integer for the document
 

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use super::env::RepoRoots;
+use super::env::{CatalogRepo, RepoRoots};
 use super::paths::{CatalogPathRef, collect_catalog_path_refs, find_duplicate_catalog_ids};
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -45,10 +45,10 @@ pub fn validate_catalog_paths(
         return Err(CatalogValidationError::DuplicateIds(duplicates.join("; ")));
     }
 
-    ensure_repo_roots_exist(roots)?;
-
     let refs =
         collect_catalog_path_refs(catalog_root).map_err(CatalogValidationError::DuplicateIds)?;
+
+    ensure_repo_roots_exist(roots, &refs)?;
 
     for reference in refs {
         check_path_ref(&reference, roots)?;
@@ -57,11 +57,14 @@ pub fn validate_catalog_paths(
     Ok(())
 }
 
-fn ensure_repo_roots_exist(roots: &RepoRoots) -> Result<(), CatalogValidationError> {
+fn ensure_repo_roots_exist(
+    roots: &RepoRoots,
+    refs: &[CatalogPathRef],
+) -> Result<(), CatalogValidationError> {
     for (repo, path) in [
-        (super::CatalogRepo::Refloat, &roots.refloat),
-        (super::CatalogRepo::Bldc, &roots.bldc),
-        (super::CatalogRepo::Poc, &roots.poc),
+        (CatalogRepo::Refloat, &roots.refloat),
+        (CatalogRepo::Bldc, &roots.bldc),
+        (CatalogRepo::Poc, &roots.poc),
     ] {
         if !path.is_dir() {
             return Err(CatalogValidationError::MissingRepoRoot {
@@ -70,6 +73,17 @@ fn ensure_repo_roots_exist(roots: &RepoRoots) -> Result<(), CatalogValidationErr
             });
         }
     }
+
+    let needs_vesc_tool = refs
+        .iter()
+        .any(|reference| reference.repo == CatalogRepo::VescTool);
+    if needs_vesc_tool && !roots.vesc_tool.is_dir() {
+        return Err(CatalogValidationError::MissingRepoRoot {
+            var: CatalogRepo::VescTool.env_var(),
+            path: roots.vesc_tool.display().to_string(),
+        });
+    }
+
     Ok(())
 }
 

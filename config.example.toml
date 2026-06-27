@@ -1,7 +1,7 @@
 # vesc-mcp configuration
 #
 # Copy to ~/.config/vesc-mcp/config.toml and adjust paths for your machine.
-# Environment variables override these values (see docs/configuration.md).
+# Environment variables override these values.
 
 [paths]
 # Directories the MCP server may scan, build, and inspect (also VESC_PACKAGE_ROOTS).
@@ -10,10 +10,12 @@ package_roots = [
   "~/projects/vesc-rust-poc",
 ]
 
-# Sibling repo checkouts used for catalog path validation.
-refloat_root = "~/projects/refloat"
-bldc_root = "~/projects/bldc"
+# Upstream repo checkouts used for catalog path validation.
+# Relative paths resolve against the vesc-mcp workspace root (e.g. vendor/ submodules).
+refloat_root = "vendor/refloat"
+bldc_root = "vendor/bldc"
 poc_root = "~/projects/vesc-rust-poc"
+vesc_tool_root = "vendor/vesc_tool"
 
 # vesc_tool binary for subprocess builds (also VESC_TOOL_PATH).
 vesc_tool = "vesc_tool"

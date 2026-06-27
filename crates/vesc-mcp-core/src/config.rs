@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 use crate::catalog::CatalogRepo;
+use crate::workspace;
 
 /// Environment variable for comma- or colon-separated package sandbox roots.
 pub const VESC_PACKAGE_ROOTS_ENV: &str = "VESC_PACKAGE_ROOTS";
@@ -24,6 +25,7 @@ pub struct McpConfig {
     pub refloat_root: PathBuf,
     pub bldc_root: PathBuf,
     pub poc_root: PathBuf,
+    pub vesc_tool_root: PathBuf,
     pub vesc_tool_path: PathBuf,
     pub enable_flash: bool,
 }
@@ -65,6 +67,7 @@ struct PathsSection {
     refloat_root: Option<String>,
     bldc_root: Option<String>,
     poc_root: Option<String>,
+    vesc_tool_root: Option<String>,
     vesc_tool: Option<String>,
 }
 
@@ -79,6 +82,7 @@ struct EnvOverrides {
     refloat_root: Option<PathBuf>,
     bldc_root: Option<PathBuf>,
     poc_root: Option<PathBuf>,
+    vesc_tool_root: Option<PathBuf>,
     vesc_tool_path: Option<PathBuf>,
     enable_flash: Option<bool>,
 }
@@ -111,6 +115,9 @@ fn read_env_overrides() -> EnvOverrides {
             .ok()
             .map(PathBuf::from),
         poc_root: env::var(CatalogRepo::Poc.env_var()).ok().map(PathBuf::from),
+        vesc_tool_root: env::var(CatalogRepo::VescTool.env_var())
+            .ok()
+            .map(PathBuf::from),
         vesc_tool_path: env::var(VESC_TOOL_PATH_ENV).ok().map(PathBuf::from),
         enable_flash: env::var(VESC_MCP_ENABLE_FLASH_ENV)
             .ok()
@@ -128,10 +135,12 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
         .clone()
         .or_else(|| {
             paths.and_then(|section| {
-                section
-                    .package_roots
-                    .as_ref()
-                    .map(|roots| roots.iter().map(|entry| expand_tilde(entry)).collect())
+                section.package_roots.as_ref().map(|roots| {
+                    roots
+                        .iter()
+                        .map(|entry| workspace::expand_path(entry))
+                        .collect()
+                })
             })
         })
         .unwrap_or_default();
@@ -141,22 +150,33 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
         refloat_root: env.refloat_root.clone().unwrap_or_else(|| {
             paths
                 .and_then(|section| section.refloat_root.as_deref())
-                .map_or_else(|| CatalogRepo::Refloat.resolve_root(), expand_tilde)
+                .map_or_else(
+                    || CatalogRepo::Refloat.resolve_root(),
+                    workspace::expand_path,
+                )
         }),
         bldc_root: env.bldc_root.clone().unwrap_or_else(|| {
             paths
                 .and_then(|section| section.bldc_root.as_deref())
-                .map_or_else(|| CatalogRepo::Bldc.resolve_root(), expand_tilde)
+                .map_or_else(|| CatalogRepo::Bldc.resolve_root(), workspace::expand_path)
         }),
         poc_root: env.poc_root.clone().unwrap_or_else(|| {
             paths
                 .and_then(|section| section.poc_root.as_deref())
-                .map_or_else(|| CatalogRepo::Poc.resolve_root(), expand_tilde)
+                .map_or_else(|| CatalogRepo::Poc.resolve_root(), workspace::expand_path)
+        }),
+        vesc_tool_root: env.vesc_tool_root.clone().unwrap_or_else(|| {
+            paths
+                .and_then(|section| section.vesc_tool_root.as_deref())
+                .map_or_else(
+                    || CatalogRepo::VescTool.resolve_root(),
+                    workspace::expand_path,
+                )
         }),
         vesc_tool_path: env.vesc_tool_path.clone().unwrap_or_else(|| {
             paths
                 .and_then(|section| section.vesc_tool.as_deref())
-                .map_or_else(|| PathBuf::from("vesc_tool"), PathBuf::from)
+                .map_or_else(|| PathBuf::from("vesc_tool"), workspace::expand_path)
         }),
         enable_flash: env
             .enable_flash
@@ -181,18 +201,13 @@ pub fn split_path_list(value: &str) -> Vec<PathBuf> {
         .split([',', ':'])
         .map(str::trim)
         .filter(|segment| !segment.is_empty())
-        .map(expand_tilde)
+        .map(workspace::expand_path)
         .collect()
 }
 
 #[must_use]
 pub fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(path)
+    workspace::expand_path(path)
 }
 
 fn parse_enable_flash_env(value: &str) -> bool {

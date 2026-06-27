@@ -6,6 +6,7 @@ pub mod error;
 pub mod resources;
 pub mod server;
 pub mod tools;
+pub mod workspace;
 
 #[doc(hidden)]
 pub mod test_support;

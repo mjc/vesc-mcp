@@ -3,12 +3,15 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+use crate::workspace::{self, expand_path};
+
 /// Logical catalog source repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CatalogRepo {
     Refloat,
     Bldc,
     Poc,
+    VescTool,
 }
 
 impl CatalogRepo {
@@ -18,31 +21,52 @@ impl CatalogRepo {
             Self::Refloat => "VESC_REFLOAT_ROOT",
             Self::Bldc => "VESC_BLDC_ROOT",
             Self::Poc => "VESC_POC_ROOT",
+            Self::VescTool => workspace::VESC_VESC_TOOL_ROOT_ENV,
         }
     }
 
     #[must_use]
-    pub const fn default_relative(self) -> &'static str {
+    pub const fn vendor_subdir(self) -> Option<&'static str> {
+        match self {
+            Self::Refloat => Some("refloat"),
+            Self::Bldc => Some("bldc"),
+            Self::VescTool => Some("vesc_tool"),
+            Self::Poc => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn sibling_default(self) -> &'static str {
         match self {
             Self::Refloat => "~/projects/refloat",
             Self::Bldc => "~/projects/bldc",
             Self::Poc => "~/projects/vesc-rust-poc",
+            Self::VescTool => "~/projects/vesc_tool",
         }
     }
 
+    /// Resolve checkout root: env override, then initialized `vendor/` submodule, then sibling default.
     #[must_use]
     pub fn resolve_root(self) -> PathBuf {
-        env::var(self.env_var())
-            .map_or_else(|_| expand_tilde(self.default_relative()), PathBuf::from)
+        if let Ok(path) = env::var(self.env_var()) {
+            return PathBuf::from(path);
+        }
+        if let Some(subdir) = self.vendor_subdir() {
+            if let Some(vendor) = workspace::vendor_checkout(subdir) {
+                return vendor;
+            }
+        }
+        expand_path(self.sibling_default())
     }
 }
 
-/// Resolved checkout roots for sibling repositories.
+/// Resolved checkout roots for sibling repositories and submodules.
 #[derive(Debug, Clone)]
 pub struct RepoRoots {
     pub refloat: PathBuf,
     pub bldc: PathBuf,
     pub poc: PathBuf,
+    pub vesc_tool: PathBuf,
 }
 
 impl RepoRoots {
@@ -53,6 +77,7 @@ impl RepoRoots {
             refloat: config.refloat_root.clone(),
             bldc: config.bldc_root.clone(),
             poc: config.poc_root.clone(),
+            vesc_tool: config.vesc_tool_root.clone(),
         }
     }
 
@@ -62,17 +87,9 @@ impl RepoRoots {
             CatalogRepo::Refloat => &self.refloat,
             CatalogRepo::Bldc => &self.bldc,
             CatalogRepo::Poc => &self.poc,
+            CatalogRepo::VescTool => &self.vesc_tool,
         }
     }
-}
-
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(path)
 }
 
 #[cfg(test)]
@@ -80,8 +97,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn expand_tilde_uses_home() {
-        let expanded = expand_tilde("~/projects/refloat");
-        assert!(expanded.ends_with("projects/refloat"));
+    fn expand_path_resolves_vendor_relative() {
+        let expanded = expand_path("vendor/bldc");
+        if let Some(ws) = workspace::workspace_root() {
+            assert_eq!(expanded, ws.join("vendor/bldc"));
+        }
+    }
+
+    #[test]
+    fn resolve_root_falls_back_to_sibling_when_vendor_missing() {
+        if workspace::vendor_bldc().is_none() {
+            let root = CatalogRepo::Bldc.resolve_root();
+            assert!(root.ends_with("bldc"));
+        }
     }
 }

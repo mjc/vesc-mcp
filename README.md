@@ -5,9 +5,17 @@ MCP server that exposes VESC firmware and **vescpkg** knowledge to AI assistants
 ## Quick start
 
 ```bash
+git clone --recurse-submodules <repo-url>
+cd vesc-mcp
 direnv allow          # or: nix develop
 make check            # fmt, clippy, nextest, doc
 cargo run -p vesc-mcp-server
+```
+
+If you already cloned without submodules:
+
+```bash
+git submodule update --init --recursive
 ```
 
 ## Workspace layout
@@ -20,11 +28,23 @@ cargo run -p vesc-mcp-server
 
 ## External repos (optional env vars)
 
-| Variable | Default |
-|----------|---------|
-| `VESC_REFLOAT_ROOT` | `~/projects/refloat` |
-| `VESC_BLDC_ROOT` | `~/projects/bldc` |
+Catalog path validation and knowledge indexing resolve upstream sources in this order: **environment override → initialized `vendor/` submodule → sibling checkout default**.
+
+| Variable | Default (when unset) |
+|----------|----------------------|
+| `VESC_REFLOAT_ROOT` | `vendor/refloat` if submodule initialized, else `~/projects/refloat` |
+| `VESC_BLDC_ROOT` | `vendor/bldc` if submodule initialized, else `~/projects/bldc` |
 | `VESC_POC_ROOT` | `~/projects/vesc-rust-poc` |
+| `VESC_VESC_TOOL_ROOT` | `vendor/vesc_tool` if submodule initialized, else `~/projects/vesc_tool` |
+| `VESC_TOOL_PATH` | `vesc_tool` (binary on PATH for subprocess builds) |
+
+Vendor submodules (optional but recommended for catalog validation):
+
+| Submodule | Upstream |
+|-----------|----------|
+| `vendor/bldc` | [vedderb/bldc](https://github.com/vedderb/bldc) |
+| `vendor/refloat` | [lukash/refloat](https://github.com/lukash/refloat) |
+| `vendor/vesc_tool` | [vedderb/vesc_tool](https://github.com/vedderb/vesc_tool) |
 
 ## Beads backlog
 
