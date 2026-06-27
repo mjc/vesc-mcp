@@ -6,7 +6,10 @@ use vesc_mcp_core::test_support::{fixture_path, fixture_sandbox_roots};
 use vesc_mcp_core::tools::inspect::inspect_pkgdesc_with_sandbox;
 
 fn dynamic_manifest_uri(relative: &str) -> String {
-    format!("vescpkg://manifest/{relative}")
+    format!(
+        "vescpkg://manifest/{}",
+        vesc_mcp_core::resources::encode_manifest_path(relative)
+    )
 }
 
 fn parse_manifest_json(body: &str) -> Value {

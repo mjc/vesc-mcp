@@ -46,7 +46,7 @@ pub struct ManifestResourceUri {
 impl ManifestResourceUri {
     #[must_use]
     pub fn to_uri(&self) -> String {
-        format!("vescpkg://manifest/{}", self.path)
+        format!("vescpkg://manifest/{}", encode_manifest_path(&self.path))
     }
 }
 
@@ -207,9 +207,89 @@ fn parse_dynamic_manifest_uri(
         ));
     }
 
+    let decoded =
+        decode_manifest_path(path).map_err(|reason| ResourceUriError::malformed(full, reason))?;
+
     Ok(ParsedResourceUri::DynamicManifest(ManifestResourceUri {
-        path: path.into(),
+        path: decoded,
     }))
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+const fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+/// Percent-encode a manifest path for `vescpkg://manifest/{path}` URIs (RFC 3986).
+///
+/// Relative paths preserve `/` segment separators. Absolute paths encode every `/` as `%2F`.
+#[must_use]
+pub fn encode_manifest_path(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+
+    if path.starts_with('/') {
+        return encode_bytes(path.as_bytes());
+    }
+
+    path.split('/')
+        .map(|segment| encode_bytes(segment.as_bytes()))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Decode a percent-encoded manifest path from a URI.
+///
+/// # Errors
+///
+/// Returns a reason string when `%` sequences are truncated or use invalid hex digits.
+pub fn decode_manifest_path(encoded: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(encoded.len());
+    let bytes = encoded.as_bytes();
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes
+                .get(index + 1..index + 3)
+                .ok_or_else(|| "truncated percent-encoding".to_string())?;
+            let high = hex_digit(hex[0])?;
+            let low = hex_digit(hex[1])?;
+            out.push(char::from((high << 4) | low));
+            index += 3;
+            continue;
+        }
+
+        out.push(char::from(bytes[index]));
+        index += 1;
+    }
+
+    Ok(out)
+}
+
+fn encode_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        if is_unreserved(byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[(byte >> 4) as usize]));
+            out.push(char::from(HEX[(byte & 0x0f) as usize]));
+        }
+    }
+    out
+}
+
+fn hex_digit(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(format!("invalid percent-encoding byte {byte:?}")),
+    }
 }
 
 #[cfg(test)]
@@ -230,5 +310,43 @@ mod tests {
             parsed.to_uri(),
             "vescpkg://fixture/poc-native-lib-minimal/manifest"
         );
+    }
+
+    #[test]
+    fn manifest_path_encode_decode_round_trips_relative_with_spaces() {
+        let path = "my package/pkgdesc.qml";
+        let encoded = encode_manifest_path(path);
+        assert_eq!(encoded, "my%20package/pkgdesc.qml");
+        assert_eq!(decode_manifest_path(&encoded).unwrap(), path);
+
+        let uri = format!("vescpkg://manifest/{encoded}");
+        let parsed = parse_resource_uri(&uri).unwrap();
+        assert_eq!(
+            parsed,
+            ParsedResourceUri::DynamicManifest(ManifestResourceUri { path: path.into() })
+        );
+        assert_eq!(parsed.to_uri(), uri);
+    }
+
+    #[test]
+    fn manifest_path_encode_decode_round_trips_absolute() {
+        let path = "/tmp/foo bar/pkgdesc.qml";
+        let encoded = encode_manifest_path(path);
+        assert_eq!(encoded, "%2Ftmp%2Ffoo%20bar%2Fpkgdesc.qml");
+        assert_eq!(decode_manifest_path(&encoded).unwrap(), path);
+
+        let uri = format!("vescpkg://manifest/{encoded}");
+        let parsed = parse_resource_uri(&uri).unwrap();
+        assert_eq!(
+            parsed,
+            ParsedResourceUri::DynamicManifest(ManifestResourceUri { path: path.into() })
+        );
+        assert_eq!(parsed.to_uri(), uri);
+    }
+
+    #[test]
+    fn manifest_path_decode_rejects_truncated_percent() {
+        let err = decode_manifest_path("foo%2").unwrap_err();
+        assert!(err.contains("truncated"));
     }
 }

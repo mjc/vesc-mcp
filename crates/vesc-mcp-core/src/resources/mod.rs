@@ -34,7 +34,7 @@ pub use r#static::{
 };
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
-    ResourceUriError, parse_resource_uri,
+    ResourceUriError, decode_manifest_path, encode_manifest_path, parse_resource_uri,
 };
 
 use std::collections::BTreeMap;
