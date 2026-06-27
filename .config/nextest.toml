@@ -6,7 +6,7 @@ retries = 0
 fail-fast = false
 test-threads = "num-cpus"
 
-[profile.default.overrides]
+[[profile.default.overrides]]
 filter = 'test(catalog_paths_exist_when_env_set)'
 ignore = true
 
@@ -14,6 +14,6 @@ ignore = true
 retries = { backoff = "fixed", count = 1, delay-ms = 500 }
 fail-fast = true
 
-[profile.ci.overrides]
+[[profile.ci.overrides]]
 filter = 'test(catalog_paths_exist_when_env_set)'
 ignore = true
