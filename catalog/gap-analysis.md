@@ -94,6 +94,23 @@ Both import native binary and call `load-native-lib`:
 
 **Gap:** Knowledge index must tag refloat commands separately from firmware API search results.
 
+## MCP resource layer {#mcp-resources}
+
+**Implemented (`.1`):** URI schemes (`vesc://catalog/{kind}/{id}`, `vescpkg://fixture/{name}/manifest`, `vescpkg://manifest/{path}`), `ResourceRegistry`, and `ResourceReadHandler` trait in `crates/vesc-mcp-core/src/resources/`.
+
+**Not yet wired:**
+
+- `VescMcpService` exposes tools only; `resources/list` and `resources/read` rmcp handlers land in tasks `.2`–`.7`.
+- Static catalog seeding (build recipes, doc topics, ABI JSON) is registry-ready but unpopulated at startup.
+- Per-command URIs (`vesc://catalog/commands/refloat/{command}`) require either explicit registration per command or a URI template extension beyond the current `{kind}/{id}` parser.
+
+**Path encoding:**
+
+- Dynamic manifest URIs carry sandbox-relative paths as raw path segments (`vescpkg://manifest/tests/fixtures/...`).
+- Absolute paths outside the repo need percent-encoding rules before production use (epic risk).
+
+**Mitigation:** Task `.2` seeds build-recipe resources; `.3`–`.6` add manifest/doc handlers; `.7` snapshot-tests full `resources/list` output; defer subscriptions/caching to `br-mcp-resources-9at.9`.
+
 ## Catalog coverage
 
 | refloat feature | bldc API | POC equivalent |
