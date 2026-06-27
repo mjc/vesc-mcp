@@ -5,11 +5,15 @@
 //! - `vescpkg://fixture/{name}/manifest` — in-repo fixture manifests
 //! - `vescpkg://manifest/{path}` — dynamic manifests (sandboxed at read time)
 
+mod abi;
 mod catalog;
 mod manifest;
 mod r#static;
 mod uri;
 
+pub use abi::{
+    AbiResourceHandler, MINIMAL_TEST_PACKAGE_ABI_URI, read_abi_resource, register_abi_resources,
+};
 pub use catalog::{
     BuildFlowDoc, BuildRecipeResourceHandler, POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI,
     load_build_flow, read_build_recipe, register_build_recipe_resources,
@@ -202,9 +206,11 @@ impl ResourceRegistry {
         let mut registry = Self::new();
         register_build_recipe_resources(&mut registry)?;
         register_doc_topic_resources(&mut registry)?;
+        register_abi_resources(&mut registry)?;
         register_manifest_resources(&mut registry)?;
         registry.register_handler(BuildRecipeResourceHandler::new());
         registry.register_handler(DocTopicResourceHandler::new());
+        registry.register_handler(AbiResourceHandler::new());
         registry.register_handler(ManifestResourceHandler::from_config());
         Ok(registry)
     }

@@ -16,6 +16,7 @@ directory_layout:
     - catalog/bldc/vesc_c_if.yaml
     - catalog/bldc/nvm.yaml
     - catalog/bldc/native-lib-macros.yaml
+    - catalog/poc/minimal-test-package-abi.yaml
 
 env_vars:
   VESC_REFLOAT_ROOT:

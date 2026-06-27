@@ -1,0 +1,45 @@
+id: minimal-test-package-abi
+source_repo: vesc-rust-poc
+version: 1
+package_id: minimal-test-package
+sources:
+  - path: crates/vesc-pkg-build/src/abi_inventory.rs
+    lines: [23, 84]
+  - path: docs/abi-inventory.md
+requirements:
+  - name: prog_ptr
+    kind: loader_header
+    caller: Rust package exports the VESC program pointer header word
+  - name: init
+    kind: entry_point
+    caller: package loader calls the Rust-owned native init trampoline
+  - name: lib_info
+    kind: type
+    caller: entrypoint receives package metadata
+  - name: lbm_add_extension
+    kind: function
+    caller: Rust package registers LispBM extensions through VESC_IF
+  - name: lbm_value
+    kind: type
+    caller: extension ABI passes LispBM values
+  - name: lbm_uint
+    kind: type
+    caller: extension ABI carries argument counts
+  - name: lbm_dec_as_i32
+    kind: function
+    caller: Rust package decodes LispBM integer arguments
+  - name: lbm_enc_i
+    kind: function
+    caller: Rust package encodes integer results
+  - name: VESC_IF.lbm_enc_sym_eerror
+    kind: error_symbol
+    caller: Rust package returns the firmware eval-error symbol on bad arguments
+  - name: VESC_IF.set_app_data_handler
+    kind: function
+    caller: Rust package registers the BLE loopback app-data callback
+  - name: VESC_IF.send_app_data
+    kind: function
+    caller: Rust package sends BLE loopback replies through firmware app data
+  - name: VESC_IF.system_time_ticks
+    kind: function
+    caller: Rust package reads firmware ticks for loopback status replies
