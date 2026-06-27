@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use vesc_domain::{ParsedPkgDesc, parse_lisp_imports, parse_pkgdesc_qml, read_vescpkg_fields};
 
+use crate::config::{allowed_package_roots, validate_sandbox_file};
+
 use super::list_packages::dialect_label;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -37,9 +39,30 @@ pub struct InspectPkgdescResponse {
 
 #[must_use]
 pub fn inspect_pkgdesc(path: &str) -> InspectPkgdescResponse {
-    let path_buf = PathBuf::from(path);
+    inspect_pkgdesc_with_sandbox(path, None)
+}
 
-    let content = match fs::read_to_string(&path_buf) {
+#[must_use]
+pub fn inspect_pkgdesc_with_sandbox(
+    path: &str,
+    allowed_roots_override: Option<&[PathBuf]>,
+) -> InspectPkgdescResponse {
+    let path_buf = PathBuf::from(path);
+    let allowed_roots = allowed_package_roots(allowed_roots_override);
+    if let Err(err) = validate_sandbox_file(&path_buf, &allowed_roots) {
+        return InspectPkgdescResponse {
+            ok: false,
+            dialect: None,
+            parsed: None,
+            error: Some(err),
+        };
+    }
+
+    inspect_pkgdesc_at_path(&path_buf)
+}
+
+fn inspect_pkgdesc_at_path(path_buf: &Path) -> InspectPkgdescResponse {
+    let content = match fs::read_to_string(path_buf) {
         Ok(content) => content,
         Err(err) => {
             return InspectPkgdescResponse {
@@ -51,7 +74,7 @@ pub fn inspect_pkgdesc(path: &str) -> InspectPkgdescResponse {
         }
     };
 
-    match parse_pkgdesc_qml(&content, &path_buf) {
+    match parse_pkgdesc_qml(&content, path_buf) {
         Ok(parsed) => parsed_to_response(parsed),
         Err(err) => InspectPkgdescResponse {
             ok: false,
@@ -118,7 +141,23 @@ pub struct InspectVescpkgResponse {
 
 #[must_use]
 pub fn inspect_vescpkg(path: &str) -> InspectVescpkgResponse {
+    inspect_vescpkg_with_sandbox(path, None)
+}
+
+#[must_use]
+pub fn inspect_vescpkg_with_sandbox(
+    path: &str,
+    allowed_roots_override: Option<&[PathBuf]>,
+) -> InspectVescpkgResponse {
     let path_buf = PathBuf::from(path);
+    let allowed_roots = allowed_package_roots(allowed_roots_override);
+    if let Err(err) = validate_sandbox_file(&path_buf, &allowed_roots) {
+        return InspectVescpkgResponse {
+            ok: false,
+            inspection: None,
+            error: Some(err),
+        };
+    }
 
     match read_and_inspect_vescpkg(&path_buf) {
         Ok(inspection) => InspectVescpkgResponse {
@@ -163,7 +202,7 @@ pub fn inspect_vescpkg_json(params: &InspectVescpkgParams) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::fixture_path;
+    use crate::test_support::{fixture_path, fixture_sandbox_roots};
 
     #[test]
     fn inspect_refloat_minimal_fixture() {
@@ -192,7 +231,10 @@ mod tests {
 
     #[test]
     fn inspect_missing_file_returns_error() {
-        let response = inspect_pkgdesc("/nonexistent/pkgdesc.qml");
+        let response = inspect_pkgdesc_with_sandbox(
+            "/nonexistent/pkgdesc.qml",
+            Some(&fixture_sandbox_roots()),
+        );
         assert!(!response.ok);
         assert!(response.error.is_some());
     }
@@ -211,7 +253,10 @@ mod tests {
 
     #[test]
     fn inspect_vescpkg_missing_file_returns_error() {
-        let response = inspect_vescpkg("/nonexistent/package.vescpkg");
+        let response = inspect_vescpkg_with_sandbox(
+            "/nonexistent/package.vescpkg",
+            Some(&fixture_sandbox_roots()),
+        );
         assert!(!response.ok);
         assert!(response.error.is_some());
     }

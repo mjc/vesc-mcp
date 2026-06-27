@@ -10,6 +10,9 @@ description = "Shared MCP server logic, config, and error types for vesc-mcp"
 [lints]
 workspace = true
 
+[features]
+test-fixtures = []
+
 [dependencies]
 anyhow.workspace = true
 rmcp.workspace = true
@@ -17,6 +20,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+toml.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true

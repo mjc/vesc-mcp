@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::tools::list_packages::resolve_roots;
+use crate::config::{allowed_package_roots, validate_sandbox_path};
 
 /// Ordered package checks run under a sandboxed root.
 const PACKAGE_CHECKS: &[(&str, &str, &[&str])] = &[
@@ -96,10 +96,9 @@ pub fn run_package_checks_tool_with_runner(
     allowed_roots_override: Option<&[PathBuf]>,
 ) -> RunPackageChecksResponse {
     let root_path = PathBuf::from(root);
-    let allowed_roots =
-        allowed_roots_override.map_or_else(|| resolve_roots(&[]), <[PathBuf]>::to_vec);
+    let allowed_roots = allowed_package_roots(allowed_roots_override);
 
-    let canonical_root = match validate_sandbox(&root_path, &allowed_roots) {
+    let canonical_root = match validate_sandbox_path(&root_path, &allowed_roots) {
         Ok(path) => path,
         Err(err) => {
             return RunPackageChecksResponse {
@@ -121,49 +120,6 @@ pub fn run_package_checks_tool_with_runner(
         checks,
         error: None,
     }
-}
-
-fn validate_sandbox(root: &Path, allowed_roots: &[PathBuf]) -> Result<PathBuf, String> {
-    if allowed_roots.is_empty() {
-        return Err(
-            "path sandbox: set VESC_PACKAGE_ROOTS to allow package roots (colon-separated paths)"
-                .into(),
-        );
-    }
-
-    if !root.is_dir() {
-        return Err(format!("root is not a directory: {}", root.display()));
-    }
-
-    let canonical = root
-        .canonicalize()
-        .map_err(|err| format!("resolve root {}: {err}", root.display()))?;
-
-    for allowed in allowed_roots {
-        let Ok(canonical_allowed) = allowed.canonicalize() else {
-            continue;
-        };
-        if path_within_root(&canonical, &canonical_allowed) {
-            return Ok(canonical);
-        }
-    }
-
-    Err(format!(
-        "root {} is outside configured VESC_PACKAGE_ROOTS",
-        root.display()
-    ))
-}
-
-fn path_within_root(path: &Path, root: &Path) -> bool {
-    let mut root_components = root.components();
-    for component in path.components() {
-        match root_components.next() {
-            Some(expected) if expected == component => {}
-            Some(_) => return false,
-            None => return true,
-        }
-    }
-    root_components.next().is_none()
 }
 
 /// Serialize a tool response as JSON text for rmcp handlers.
@@ -341,6 +297,8 @@ mod tests {
 
     #[test]
     fn path_within_root_rejects_prefix_collision() {
+        use crate::config::path_within_root;
+
         let root = PathBuf::from("/tmp/vesc");
         let sibling = PathBuf::from("/tmp/vesc-other");
         assert!(!path_within_root(&sibling, &root));

@@ -1,11 +1,12 @@
 //! `list_vesc_packages` — discover pkgdesc.qml under configured roots.
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use vesc_domain::{PkgDescDialect, parse_pkgdesc_qml};
+
+use crate::config::{McpConfig, resolve_package_roots};
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct ListPackagesParams {
@@ -31,21 +32,10 @@ pub struct ListPackagesResponse {
     pub error: Option<String>,
 }
 
-/// Resolve search roots from explicit params or `VESC_PACKAGE_ROOTS`.
+/// Resolve search roots from explicit params or loaded MCP config.
 #[must_use]
 pub fn resolve_roots(roots: &[String]) -> Vec<PathBuf> {
-    if !roots.is_empty() {
-        return roots.iter().map(PathBuf::from).collect();
-    }
-    env::var("VESC_PACKAGE_ROOTS")
-        .map(|value| {
-            value
-                .split(':')
-                .filter(|segment| !segment.is_empty())
-                .map(PathBuf::from)
-                .collect()
-        })
-        .unwrap_or_default()
+    resolve_package_roots(roots, McpConfig::load())
 }
 
 #[must_use]

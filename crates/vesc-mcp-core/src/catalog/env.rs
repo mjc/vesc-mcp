@@ -48,10 +48,11 @@ pub struct RepoRoots {
 impl RepoRoots {
     #[must_use]
     pub fn from_env() -> Self {
+        let config = crate::config::McpConfig::load();
         Self {
-            refloat: CatalogRepo::Refloat.resolve_root(),
-            bldc: CatalogRepo::Bldc.resolve_root(),
-            poc: CatalogRepo::Poc.resolve_root(),
+            refloat: config.refloat_root.clone(),
+            bldc: config.bldc_root.clone(),
+            poc: config.poc_root.clone(),
         }
     }
 

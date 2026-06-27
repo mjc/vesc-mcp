@@ -7,7 +7,7 @@ CARGO ?= cargo
 check: fmt clippy test doc
 
 test:
-	$(CARGO) nextest run --workspace --profile ci
+	$(CARGO) nextest run --workspace --profile ci --features vesc-mcp-core/test-fixtures
 
 fmt:
 	$(CARGO) fmt --all --check

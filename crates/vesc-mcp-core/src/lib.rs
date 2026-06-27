@@ -1,6 +1,7 @@
 //! Core types and MCP tool wiring for the vesc-mcp server.
 
 pub mod catalog;
+pub mod config;
 pub mod error;
 pub mod server;
 pub mod tools;

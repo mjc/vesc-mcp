@@ -58,7 +58,7 @@ fn tool_build_rust_mode_missing_pkgdesc_fails() {
     assert!(
         body["error"]
             .as_str()
-            .is_some_and(|err| err.contains("pkgdesc")),
+            .is_some_and(|err| err.contains("outside configured VESC_PACKAGE_ROOTS")),
         "response: {body}"
     );
 }

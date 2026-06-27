@@ -29,6 +29,12 @@ pub fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
+/// Allowed sandbox roots covering all in-repo fixtures (unit tests).
+#[must_use]
+pub fn fixture_sandbox_roots() -> Vec<PathBuf> {
+    vec![fixtures_root()]
+}
+
 /// Resolve a named fixture directory under [`fixtures_root`].
 #[must_use]
 pub fn fixture_path(name: &str) -> PathBuf {

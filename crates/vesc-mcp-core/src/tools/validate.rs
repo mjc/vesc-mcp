@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use vesc_domain::{LayoutIssue, parse_pkgdesc_qml, validate_package_layout};
 
+use crate::config::{allowed_package_roots, validate_sandbox_path};
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ValidatePackageLayoutParams {
     /// Package root directory containing `pkgdesc.qml` (or `package/pkgdesc.qml`).
@@ -55,9 +57,29 @@ fn issue_to_json(issue: &LayoutIssue) -> LayoutIssueJson {
 
 #[must_use]
 pub fn validate_package_layout_tool(root: &str) -> ValidatePackageLayoutResponse {
-    let root_path = PathBuf::from(root);
+    validate_package_layout_tool_with_sandbox(root, None)
+}
 
-    let (pkgdesc_path, package_root) = match locate_pkgdesc(&root_path) {
+#[must_use]
+pub fn validate_package_layout_tool_with_sandbox(
+    root: &str,
+    allowed_roots_override: Option<&[PathBuf]>,
+) -> ValidatePackageLayoutResponse {
+    let root_path = PathBuf::from(root);
+    let allowed_roots = allowed_package_roots(allowed_roots_override);
+    if let Err(err) = validate_sandbox_path(&root_path, &allowed_roots) {
+        return ValidatePackageLayoutResponse {
+            ok: false,
+            issues: Vec::new(),
+            error: Some(err),
+        };
+    }
+
+    validate_package_layout_at_root(&root_path)
+}
+
+fn validate_package_layout_at_root(root_path: &Path) -> ValidatePackageLayoutResponse {
+    let (pkgdesc_path, package_root) = match locate_pkgdesc(root_path) {
         Ok(found) => found,
         Err(err) => {
             return ValidatePackageLayoutResponse {

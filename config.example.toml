@@ -1,0 +1,23 @@
+# vesc-mcp configuration
+#
+# Copy to ~/.config/vesc-mcp/config.toml and adjust paths for your machine.
+# Environment variables override these values (see docs/configuration.md).
+
+[paths]
+# Directories the MCP server may scan, build, and inspect (also VESC_PACKAGE_ROOTS).
+package_roots = [
+  "~/projects/refloat",
+  "~/projects/vesc-rust-poc",
+]
+
+# Sibling repo checkouts used for catalog path validation.
+refloat_root = "~/projects/refloat"
+bldc_root = "~/projects/bldc"
+poc_root = "~/projects/vesc-rust-poc"
+
+# vesc_tool binary for subprocess builds (also VESC_TOOL_PATH).
+vesc_tool = "vesc_tool"
+
+[features]
+# Flash/upload tools stay disabled unless true or VESC_MCP_ENABLE_FLASH=1.
+enable_flash = false

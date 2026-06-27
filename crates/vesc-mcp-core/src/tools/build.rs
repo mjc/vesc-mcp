@@ -10,11 +10,10 @@ use sha2::{Digest, Sha256};
 use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
 use vesc_mcp_adapters::build::locate_pkgdesc;
 
+use crate::config::{McpConfig, allowed_package_roots, validate_sandbox_path};
+
 /// Default build timeout in seconds (applied when subprocess modes land).
 pub const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 120;
-
-/// Environment variable overriding the `vesc_tool` binary path.
-pub const VESC_TOOL_PATH_ENV: &str = "VESC_TOOL_PATH";
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BuildVescpkgParams {
@@ -125,7 +124,7 @@ impl VescToolRunner for RealVescToolRunner {
 
 #[must_use]
 pub fn build_vescpkg_tool(params: &BuildVescpkgParams) -> BuildVescpkgResponse {
-    build_vescpkg_tool_with_runner(params, &RealVescToolRunner, None)
+    build_vescpkg_tool_with_runner(params, &RealVescToolRunner, None, None)
 }
 
 #[must_use]
@@ -133,7 +132,14 @@ pub fn build_vescpkg_tool_with_runner(
     params: &BuildVescpkgParams,
     runner: &dyn VescToolRunner,
     vesc_tool_override: Option<&Path>,
+    allowed_roots_override: Option<&[PathBuf]>,
 ) -> BuildVescpkgResponse {
+    let root_path = PathBuf::from(&params.root);
+    let allowed_roots = allowed_package_roots(allowed_roots_override);
+    if let Err(err) = validate_sandbox_path(&root_path, &allowed_roots) {
+        return build_error(err);
+    }
+
     match params.mode.as_str() {
         "rust" => build_vescpkg_rust(params),
         "vesc_tool" => build_vescpkg_vesc_tool(params, runner, vesc_tool_override),
@@ -189,7 +195,10 @@ fn build_vescpkg_vesc_tool(
         Ok(context) => context,
         Err(err) => return build_error(err),
     };
-    let vesc_tool = vesc_tool_override.map_or_else(vesc_tool_path_from_env, Path::to_path_buf);
+    let vesc_tool = vesc_tool_override.map_or_else(
+        || McpConfig::load().vesc_tool_path.clone(),
+        Path::to_path_buf,
+    );
     if let Err(err) = runner.build_pkg_from_desc(
         &vesc_tool,
         &package_root,
@@ -235,10 +244,6 @@ fn vesc_tool_pkgdesc_context(pkgdesc_path: &Path) -> Result<(String, String), St
     Ok((desc.output_name.as_str().to_owned(), pkgdesc_file_name))
 }
 
-fn vesc_tool_path_from_env() -> PathBuf {
-    std::env::var(VESC_TOOL_PATH_ENV).map_or_else(|_| PathBuf::from("vesc_tool"), PathBuf::from)
-}
-
 fn artifact_metadata(path: &Path) -> Result<(String, usize), String> {
     let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
     Ok((sha256_hex(&bytes), bytes.len()))
@@ -259,7 +264,7 @@ pub fn build_vescpkg_json(params: &BuildVescpkgParams) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{TempWorkspace, fixture_path};
+    use crate::test_support::{TempWorkspace, fixture_path, fixture_sandbox_roots};
 
     struct MockVescToolRunner {
         artifact_bytes: Vec<u8>,
@@ -304,11 +309,17 @@ mod tests {
     #[test]
     fn tool_build_rust_mode_missing_pkgdesc_fails() {
         let workspace = TempWorkspace::new();
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: workspace.root.display().to_string(),
-            mode: "rust".into(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
+        let allowed = vec![workspace.root.clone()];
+        let response = build_vescpkg_tool_with_runner(
+            &BuildVescpkgParams {
+                root: workspace.root.display().to_string(),
+                mode: "rust".into(),
+                timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
+            },
+            &RealVescToolRunner,
+            None,
+            Some(&allowed),
+        );
 
         assert!(!response.ok);
         assert!(
@@ -367,6 +378,7 @@ mod tests {
             },
             &runner,
             Some(Path::new("/mock/vesc_tool")),
+            Some(&fixture_sandbox_roots()),
         );
 
         assert!(response.ok, "error: {:?}", response.error);
@@ -387,6 +399,7 @@ mod tests {
             },
             &RealVescToolRunner,
             Some(Path::new("/nonexistent/vesc_tool_for_test")),
+            Some(&fixture_sandbox_roots()),
         );
 
         assert!(!response.ok);
