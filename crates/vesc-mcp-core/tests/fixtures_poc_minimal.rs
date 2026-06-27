@@ -1,20 +1,11 @@
 //! Meta-tests for the poc-native-lib-minimal fixture layout.
 
-use std::path::PathBuf;
-
-fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
-}
-
-fn poc_minimal_root() -> PathBuf {
-    fixtures_root().join("poc-native-lib-minimal")
-}
+use vesc_mcp_core::test_support::{fixture_path, read_fixture_file};
 
 #[test]
 fn fixtures_poc_native_lib_minimal_validates() {
-    let root = poc_minimal_root();
-    let pkgdesc_path = root.join("package/pkgdesc.qml");
-    let content = std::fs::read_to_string(&pkgdesc_path).expect("read pkgdesc.qml");
+    let root = fixture_path("poc-native-lib-minimal");
+    let content = read_fixture_file("poc-native-lib-minimal", "package/pkgdesc.qml");
 
     assert!(content.contains("property string packageName:"));
     assert!(content.contains("property string nativeLibraryPath: \"src/package_lib.bin\""));

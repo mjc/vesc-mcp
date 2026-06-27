@@ -16,6 +16,8 @@ rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
+tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -23,3 +25,4 @@ vesc-domain = { path = "../vesc-domain" }
 
 [dev-dependencies]
 serde_json.workspace = true
+serde_yaml.workspace = true

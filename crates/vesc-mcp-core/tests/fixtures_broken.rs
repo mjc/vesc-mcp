@@ -1,27 +1,23 @@
 //! Negative meta-tests for intentionally broken fixture variants.
 
-use std::path::PathBuf;
+use std::path::Path;
 
-fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
-}
+use vesc_mcp_core::test_support::{asset_missing, fixture_path, read_fixture_file};
 
 #[test]
 fn fixtures_broken_missing_lisp_fails_validation() {
-    let root = fixtures_root().join("broken-missing-lisp");
-    let pkgdesc = std::fs::read_to_string(root.join("pkgdesc.qml")).expect("read pkgdesc");
+    let root = fixture_path("broken-missing-lisp");
+    let pkgdesc = read_fixture_file("broken-missing-lisp", "pkgdesc.qml");
     assert!(pkgdesc.contains("lisp/missing-package.lisp"));
-
-    let missing = root.join("lisp/missing-package.lisp");
-    assert!(
-        !missing.exists(),
-        "broken fixture must reference a missing lisp path"
-    );
+    assert!(asset_missing(
+        &root,
+        Path::new("lisp/missing-package.lisp")
+    ));
 }
 
 #[test]
 fn fixtures_broken_bad_wire_is_truncated() {
-    let path = fixtures_root().join("broken-bad-wire/truncated.vescpkg");
+    let path = fixture_path("broken-bad-wire/truncated.vescpkg");
     let bytes = std::fs::read(&path).expect("read truncated vescpkg");
     assert!(
         bytes.len() < 16,
@@ -31,7 +27,7 @@ fn fixtures_broken_bad_wire_is_truncated() {
 
 #[test]
 fn fixtures_broken_bad_magic_is_not_vescpkg() {
-    let path = fixtures_root().join("broken-bad-magic/bad-magic.vescpkg");
+    let path = fixture_path("broken-bad-magic/bad-magic.vescpkg");
     let bytes = std::fs::read(&path).expect("read bad-magic vescpkg");
     assert_ne!(&bytes[..4.min(bytes.len())], &[0, 0, 0, 0]);
     let text = std::str::from_utf8(&bytes).expect("fixture is utf8 marker");
@@ -40,9 +36,7 @@ fn fixtures_broken_bad_magic_is_not_vescpkg() {
 
 #[test]
 fn fixtures_legacy_colon_desc_matches_oldvt_format() {
-    let path = fixtures_root().join("legacy-colon-desc/buildpkg.colon");
-    let line = std::fs::read_to_string(&path)
-        .expect("read colon descriptor")
+    let line = read_fixture_file("legacy-colon-desc", "buildpkg.colon")
         .trim()
         .to_string();
 
