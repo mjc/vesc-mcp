@@ -6,11 +6,16 @@
 //! - `vescpkg://manifest/{path}` — dynamic manifests (sandboxed at read time)
 
 mod catalog;
+mod manifest;
 mod uri;
 
 pub use catalog::{
     BuildFlowDoc, POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI, load_build_flow, read_build_recipe,
     register_build_recipe_resources,
+};
+pub use manifest::{
+    ManifestResourceHandler, POC_NATIVE_LIB_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
+    read_manifest, register_manifest_resources,
 };
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
