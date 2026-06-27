@@ -18,6 +18,7 @@ expression: uris
   "vesc://catalog/doc/topic/lisp_imports",
   "vesc://catalog/doc/topic/pkgdesc_dialects",
   "vesc://catalog/doc/topic/vesc_c_if",
+  "vesc://catalog/doc/topic/vescpackage_reference",
   "vescpkg://fixture/poc-native-lib-minimal/manifest",
   "vescpkg://fixture/refloat-minimal/manifest"
 ]

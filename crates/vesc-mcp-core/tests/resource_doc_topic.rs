@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use vesc_mcp_core::resources::{
-    LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, ResourceRegistry, VESC_C_IF_URI, read_doc_topic,
-    register_doc_topic_resources,
+    LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, ResourceRegistry, VESC_C_IF_URI,
+    VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
 };
 
 fn catalog_root() -> PathBuf {
@@ -62,10 +62,32 @@ fn resource_doc_topic_lisp_imports_describes_wire_format() {
 }
 
 #[test]
-fn resource_doc_topic_registers_three_static_resources() {
+fn resource_doc_topic_vescpackage_reference_covers_lifecycle() {
+    let body = read_doc_topic(VESCPACKAGE_REFERENCE_URI, &catalog_root())
+        .unwrap_or_else(|err| panic!("read vescpackage reference: {err}"));
+    assert!(
+        body.contains("pkgdesc.qml"),
+        "missing authoring step:\n{body}"
+    );
+    assert!(
+        body.contains("lispData") && body.contains("load-native-lib"),
+        "missing runtime steps:\n{body}"
+    );
+    assert!(
+        body.contains("lisp_editor_path"),
+        "missing sharp edge:\n{body}"
+    );
+    assert!(
+        body.contains("Source:"),
+        "missing attribution footer:\n{body}"
+    );
+}
+
+#[test]
+fn resource_doc_topic_registers_four_static_resources() {
     let mut registry = ResourceRegistry::new();
     register_doc_topic_resources(&mut registry).expect("register doc topic resources");
-    assert_eq!(registry.list_static().len(), 3);
+    assert_eq!(registry.list_static().len(), 4);
 
     let uris: Vec<_> = registry
         .list_static()
@@ -75,6 +97,7 @@ fn resource_doc_topic_registers_three_static_resources() {
     assert!(uris.contains(&PKGDESC_DIALECTS_URI));
     assert!(uris.contains(&VESC_C_IF_URI));
     assert!(uris.contains(&LISP_IMPORTS_URI));
+    assert!(uris.contains(&VESCPACKAGE_REFERENCE_URI));
 
     for meta in registry.list_static() {
         assert_eq!(meta.mime_type, "text/markdown");

@@ -29,8 +29,8 @@ pub use refloat_command::{
     refloat_command_uri, register_refloat_command_resources,
 };
 pub use r#static::{
-    DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI, read_doc_topic,
-    register_doc_topic_resources,
+    DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI,
+    VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
 };
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,

@@ -12,7 +12,7 @@ Textbook-depth reference for VESC custom packages: from `pkgdesc.qml` on disk th
 | [configuration.md](configuration.md) | Env vars (`VESC_REFLOAT_ROOT`, `VESC_BLDC_ROOT`, `VESC_POC_ROOT`, …) |
 | [safety.md](safety.md) | Flash/upload gates (default off) |
 
-Related MCP resources: `vesc://catalog/doc/topic/pkgdesc_dialects`, `vesc://catalog/doc/topic/lisp_imports`, `vesc://catalog/doc/topic/vesc_c_if`.
+Related MCP resources: `vesc://catalog/doc/topic/vescpackage_reference`, `vesc://catalog/doc/topic/pkgdesc_dialects`, `vesc://catalog/doc/topic/lisp_imports`, `vesc://catalog/doc/topic/vesc_c_if`.
 
 ## End-to-end lifecycle
 

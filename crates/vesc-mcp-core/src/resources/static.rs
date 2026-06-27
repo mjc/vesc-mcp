@@ -20,10 +20,14 @@ pub const VESC_C_IF_URI: &str = "vesc://catalog/doc/topic/vesc_c_if";
 /// `vesc://catalog/doc/topic/lisp_imports`
 pub const LISP_IMPORTS_URI: &str = "vesc://catalog/doc/topic/lisp_imports";
 
+/// `vesc://catalog/doc/topic/vescpackage_reference`
+pub const VESCPACKAGE_REFERENCE_URI: &str = "vesc://catalog/doc/topic/vescpackage_reference";
+
 const VESC_C_IF_CATALOG_REL: &str = "bldc/vesc_c_if.yaml";
 
 const PKGDESC_DIALECTS_BODY: &str = include_str!("snippets/pkgdesc_dialects.md");
 const LISP_IMPORTS_BODY: &str = include_str!("snippets/lisp_imports.md");
+const VESCPACKAGE_REFERENCE_BODY: &str = include_str!("snippets/vescpackage_reference.md");
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct VescCIfCatalog {
@@ -80,6 +84,15 @@ pub fn register_doc_topic_resources(
         name: "lispData import table".into(),
         description: Some("Wire format for embedded native payloads in lispData".into()),
         mime_type: "text/markdown".into(),
+    })?;
+    registry.register(ResourceMeta {
+        uri: VESCPACKAGE_REFERENCE_URI.into(),
+        name: "VESC package lifecycle reference".into(),
+        description: Some(
+            "End-to-end pkgdesc → wire → native ABI index with sharp edges and MCP integration"
+                .into(),
+        ),
+        mime_type: "text/markdown".into(),
     })
 }
 
@@ -98,6 +111,7 @@ pub fn read_doc_topic(uri: &str, catalog_root: &Path) -> Result<String, Resource
             })
         }
         LISP_IMPORTS_URI => Ok(render_lisp_imports()),
+        VESCPACKAGE_REFERENCE_URI => Ok(render_vescpackage_reference()),
         other => Err(ResourceReadError::NotFound { uri: other.into() }),
     }
 }
@@ -125,6 +139,19 @@ fn render_lisp_imports() -> String {
             )
             .with_line(337),
             SourceRef::literal("crates/vesc-domain/src/wire/mod.rs"),
+        ],
+    );
+    out
+}
+
+fn render_vescpackage_reference() -> String {
+    let mut out = VESCPACKAGE_REFERENCE_BODY.to_owned();
+    append_source_footer(
+        &mut out,
+        &[
+            SourceRef::literal("docs/vescpackage-reference.md"),
+            SourceRef::literal("docs/vescpkg-wire-format.md"),
+            SourceRef::literal("docs/vesc-pkg-lib-abi.md"),
         ],
     );
     out

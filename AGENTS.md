@@ -59,6 +59,7 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 | `vesc://catalog/doc/topic/pkgdesc_dialects` | vesc_tool vs legacy POC pkgdesc schemas |
 | `vesc://catalog/doc/topic/vesc_c_if` | LBM `vesc_c_if` extension surface |
 | `vesc://catalog/doc/topic/lisp_imports` | `lispData` native import wire format |
+| `vesc://catalog/doc/topic/vescpackage_reference` | Package lifecycle index (wire + ABI) |
 
 **ABI inventory** (`application/json`):
 
