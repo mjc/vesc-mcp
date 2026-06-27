@@ -12,6 +12,10 @@ use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
 use vesc_mcp_adapters::locate_pkgdesc;
 
 use crate::config::{McpConfig, allowed_package_roots, validate_sandbox_path};
+use crate::tools::tool_error::{
+    ToolError, tool_error_from_adapter, tool_error_from_build_timeout, tool_error_from_domain,
+    tool_error_from_sandbox, tool_error_from_vesc_tool,
+};
 
 /// Default build timeout in seconds (applied when subprocess modes land).
 pub const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 120;
@@ -41,7 +45,7 @@ pub struct BuildVescpkgResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub error: Option<ToolError>,
 }
 
 /// Subprocess backend for `vesc_tool --buildPkgFromDesc` (mockable in unit tests).
@@ -149,34 +153,6 @@ impl RustPackageBuilder for RealRustPackageBuilder {
     }
 }
 
-fn run_with_timeout<T: Send + 'static>(
-    timeout_secs: u64,
-    label: &str,
-    root: &Path,
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = tx.send(work());
-    });
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match rx.try_recv() {
-            Ok(result) => return result,
-            Err(mpsc::TryRecvError::Empty) if Instant::now() >= deadline => {
-                return Err(format!(
-                    "{label} timed out after {timeout_secs}s (root {})",
-                    root.display()
-                ));
-            }
-            Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(50)),
-            Err(mpsc::TryRecvError::Disconnected) => {
-                return Err(format!("{label} worker panicked (root {})", root.display()));
-            }
-        }
-    }
-}
-
 #[must_use]
 pub fn build_vescpkg_tool(params: &BuildVescpkgParams) -> BuildVescpkgResponse {
     build_vescpkg_tool_with_runner(params, &RealVescToolRunner, None, None)
@@ -209,21 +185,19 @@ pub fn build_vescpkg_tool_with_builders(
     let root_path = PathBuf::from(&params.root);
     let allowed_roots = allowed_package_roots(allowed_roots_override);
     if let Err(err) = validate_sandbox_path(&root_path, &allowed_roots) {
-        return build_error(err);
+        return build_error(tool_error_from_sandbox(err));
     }
 
     match params.mode.as_str() {
         "rust" => build_vescpkg_rust(params, rust_builder),
         "vesc_tool" => build_vescpkg_vesc_tool(params, runner, vesc_tool_override),
-        other => BuildVescpkgResponse {
-            ok: false,
-            artifact_path: None,
-            sha256: None,
-            size_bytes: None,
-            error: Some(format!(
-                "unsupported build mode {other:?}; expected \"rust\" or \"vesc_tool\""
-            )),
-        },
+        other => build_error(
+            ToolError::new(
+                "UNSUPPORTED_MODE",
+                format!("unsupported build mode {other:?}; expected \"rust\" or \"vesc_tool\""),
+            )
+            .with_hint("use mode \"rust\" or \"vesc_tool\""),
+        ),
     }
 }
 
@@ -238,7 +212,7 @@ fn build_vescpkg_rust(
     match run_with_timeout(timeout_secs, "rust build", &root, move || {
         builder
             .build_from_root(&build_root)
-            .map_err(|err| err.to_string())
+            .map_err(tool_error_from_adapter)
     }) {
         Ok(built) => BuildVescpkgResponse {
             ok: true,
@@ -252,13 +226,42 @@ fn build_vescpkg_rust(
 }
 
 #[allow(clippy::missing_const_for_fn)]
-fn build_error(error: String) -> BuildVescpkgResponse {
+fn build_error(error: ToolError) -> BuildVescpkgResponse {
     BuildVescpkgResponse {
         ok: false,
         artifact_path: None,
         sha256: None,
         size_bytes: None,
         error: Some(error),
+    }
+}
+
+fn run_with_timeout<T: Send + 'static>(
+    timeout_secs: u64,
+    label: &str,
+    root: &Path,
+    work: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
+) -> Result<T, ToolError> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match rx.try_recv() {
+            Ok(result) => return result,
+            Err(mpsc::TryRecvError::Empty) if Instant::now() >= deadline => {
+                return Err(tool_error_from_build_timeout(label, root, timeout_secs));
+            }
+            Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(50)),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(ToolError::new(
+                    "BUILD_FAILED",
+                    format!("{label} worker panicked (root {})", root.display()),
+                )
+                .with_path(root.display().to_string()));
+            }
+        }
     }
 }
 
@@ -270,7 +273,7 @@ fn build_vescpkg_vesc_tool(
     let root = PathBuf::from(&params.root);
     let (pkgdesc_path, package_root) = match locate_pkgdesc(&root) {
         Ok(found) => found,
-        Err(err) => return build_error(err.to_string()),
+        Err(err) => return build_error(tool_error_from_adapter(err)),
     };
     let (output_name, pkgdesc_file_name) = match vesc_tool_pkgdesc_context(&pkgdesc_path) {
         Ok(context) => context,
@@ -286,7 +289,7 @@ fn build_vescpkg_vesc_tool(
         &pkgdesc_file_name,
         params.timeout_secs,
     ) {
-        return build_error(err);
+        return build_error(tool_error_from_vesc_tool(err, &root));
     }
 
     let artifact_path = [root.join(&output_name), package_root.join(&output_name)]
@@ -294,9 +297,12 @@ fn build_vescpkg_vesc_tool(
         .find(|path| path.is_file());
 
     let Some(artifact_path) = artifact_path else {
-        return build_error(format!(
-            "vesc_tool finished but artifact {output_name} not found under {}",
-            root.display()
+        return build_error(tool_error_from_vesc_tool(
+            format!(
+                "vesc_tool finished but artifact {output_name} not found under {}",
+                root.display()
+            ),
+            &root,
         ));
     };
 
@@ -312,21 +318,37 @@ fn build_vescpkg_vesc_tool(
     }
 }
 
-fn vesc_tool_pkgdesc_context(pkgdesc_path: &Path) -> Result<(String, String), String> {
-    let pkgdesc_src = std::fs::read_to_string(pkgdesc_path)
-        .map_err(|err| format!("read {}: {err}", pkgdesc_path.display()))?;
-    let parsed = parse_pkgdesc_qml(&pkgdesc_src, pkgdesc_path).map_err(|err| err.to_string())?;
+fn vesc_tool_pkgdesc_context(pkgdesc_path: &Path) -> Result<(String, String), ToolError> {
+    let pkgdesc_src = std::fs::read_to_string(pkgdesc_path).map_err(|source| {
+        ToolError::new(
+            "IO_ERROR",
+            format!("read {}: {source}", pkgdesc_path.display()),
+        )
+        .with_path(pkgdesc_path.display().to_string())
+        .with_hint("ensure pkgdesc.qml exists and is readable")
+    })?;
+    let parsed = parse_pkgdesc_qml(&pkgdesc_src, pkgdesc_path).map_err(tool_error_from_domain)?;
     let ParsedPkgDesc::VescTool(desc) = parsed;
     let pkgdesc_file_name = pkgdesc_path
         .file_name()
         .and_then(|name| name.to_str())
         .map(str::to_owned)
-        .ok_or_else(|| format!("pkgdesc path has no file name: {}", pkgdesc_path.display()))?;
+        .ok_or_else(|| {
+            ToolError::new(
+                "BUILD_FAILED",
+                format!("pkgdesc path has no file name: {}", pkgdesc_path.display()),
+            )
+            .with_path(pkgdesc_path.display().to_string())
+        })?;
     Ok((desc.output_name.as_str().to_owned(), pkgdesc_file_name))
 }
 
-fn artifact_metadata(path: &Path) -> Result<(String, usize), String> {
-    let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+fn artifact_metadata(path: &Path) -> Result<(String, usize), ToolError> {
+    let bytes = std::fs::read(path).map_err(|source| {
+        ToolError::new("IO_ERROR", format!("read {}: {source}", path.display()))
+            .with_path(path.display().to_string())
+            .with_hint("ensure the build artifact exists and is readable")
+    })?;
     Ok((sha256_hex(&bytes), bytes.len()))
 }
 
@@ -338,8 +360,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[must_use]
 pub fn build_vescpkg_json(params: &BuildVescpkgParams) -> String {
     let response = build_vescpkg_tool(params);
-    serde_json::to_string(&response)
-        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+    serde_json::to_string(&response).unwrap_or_else(|_| {
+        r#"{"ok":false,"error":{"code":"SERIALIZATION_FAILED","message":"serialization failed"}}"#
+            .into()
+    })
 }
 
 #[cfg(test)]
@@ -421,12 +445,9 @@ mod tests {
         );
 
         assert!(!response.ok);
-        assert!(
-            response
-                .error
-                .as_ref()
-                .is_some_and(|err| err.contains("pkgdesc"))
-        );
+        assert!(response.error.as_ref().is_some_and(|err| {
+            err.code == "MISSING_PKGDESC" || err.message.contains("pkgdesc")
+        }));
     }
 
     #[test]
@@ -447,11 +468,9 @@ mod tests {
         );
 
         assert!(!response.ok);
-        assert!(
-            response
-                .error
-                .as_ref()
-                .is_some_and(|err| err.contains("timed out")),
+        assert_eq!(
+            response.error.as_ref().map(|err| err.code.as_str()),
+            Some("BUILD_TIMEOUT"),
             "error: {:?}",
             response.error
         );
@@ -467,7 +486,26 @@ mod tests {
         });
 
         assert!(!response.ok);
-        assert!(response.error.is_some());
+        let err = response.error.expect("structured error");
+        assert_eq!(err.code, "LAYOUT_INVALID");
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn tool_build_errors_include_hint() {
+        let root = fixture_path("broken-missing-lisp");
+        let response = build_vescpkg_tool(&BuildVescpkgParams {
+            root: root.display().to_string(),
+            mode: "rust".into(),
+            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
+        });
+
+        let err = response.error.expect("structured error");
+        assert!(
+            err.hint
+                .as_ref()
+                .is_some_and(|hint| hint.contains("validate_package_layout"))
+        );
     }
 
     #[test]
@@ -480,11 +518,9 @@ mod tests {
         });
 
         assert!(!response.ok);
-        assert!(
-            response
-                .error
-                .as_ref()
-                .is_some_and(|err| err.contains("unsupported build mode")),
+        assert_eq!(
+            response.error.as_ref().map(|err| err.code.as_str()),
+            Some("UNSUPPORTED_MODE"),
             "error: {:?}",
             response.error
         );
@@ -530,11 +566,9 @@ mod tests {
         );
 
         assert!(!response.ok);
-        assert!(
-            response
-                .error
-                .as_ref()
-                .is_some_and(|err| err.contains("spawn") || err.contains("vesc_tool")),
+        assert_eq!(
+            response.error.as_ref().map(|err| err.code.as_str()),
+            Some("VESC_TOOL_SPAWN_FAILED"),
             "error: {:?}",
             response.error
         );

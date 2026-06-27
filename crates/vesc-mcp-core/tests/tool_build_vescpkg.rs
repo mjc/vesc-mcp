@@ -5,6 +5,15 @@ use std::fs;
 use serde_json::Value;
 use vesc_mcp_core::test_support::{McpTestHarness, TempWorkspace, fixture_path};
 
+fn structured_error(body: &Value) -> &Value {
+    let err = body.get("error").expect("error field");
+    assert!(
+        err.is_object(),
+        "error should be a structured object: {body}"
+    );
+    err
+}
+
 #[test]
 fn tool_build_rust_mode_creates_artifact() {
     let harness = McpTestHarness::new();
@@ -55,12 +64,15 @@ fn tool_build_rust_mode_missing_pkgdesc_fails() {
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
     assert_eq!(body["ok"], false, "response: {body}");
+    let err = structured_error(&body);
+    assert_eq!(err["code"], "SANDBOX_DENIED");
     assert!(
-        body["error"]
+        err["message"]
             .as_str()
-            .is_some_and(|err| err.contains("outside configured VESC_PACKAGE_ROOTS")),
+            .is_some_and(|message| message.contains("outside configured VESC_PACKAGE_ROOTS")),
         "response: {body}"
     );
+    assert!(err["hint"].as_str().is_some());
 }
 
 #[test]
@@ -77,7 +89,9 @@ fn tool_build_rust_mode_invalid_layout_fails() {
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
     assert_eq!(body["ok"], false, "response: {body}");
-    assert!(body["error"].as_str().is_some(), "response: {body}");
+    let err = structured_error(&body);
+    assert_eq!(err["code"], "LAYOUT_INVALID");
+    assert!(err["hint"].as_str().is_some());
 }
 
 #[test]
@@ -95,12 +109,9 @@ fn tool_build_vesc_tool_mocked_via_harness() {
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
     // Without vesc_tool on PATH the real subprocess fails; integration harness uses production runner.
     assert_eq!(body["ok"], false, "response: {body}");
-    assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|err| err.contains("spawn") || err.contains("vesc_tool")),
-        "response: {body}"
-    );
+    let err = structured_error(&body);
+    assert_eq!(err["code"], "VESC_TOOL_SPAWN_FAILED");
+    assert!(err["hint"].as_str().is_some());
 }
 
 #[test]
@@ -117,10 +128,12 @@ fn tool_build_unsupported_mode_fails() {
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
     assert_eq!(body["ok"], false, "response: {body}");
+    let err = structured_error(&body);
+    assert_eq!(err["code"], "UNSUPPORTED_MODE");
     assert!(
-        body["error"]
+        err["message"]
             .as_str()
-            .is_some_and(|err| err.contains("unsupported build mode")),
+            .is_some_and(|message| message.contains("unsupported build mode")),
         "response: {body}"
     );
 }
