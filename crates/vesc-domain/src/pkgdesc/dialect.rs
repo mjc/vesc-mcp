@@ -21,3 +21,23 @@ impl ParsedPkgDesc {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pkgdesc::vesc_tool::PkgDescVescTool;
+    use crate::pkgdesc::{OutputFileName, PkgName, RelativeAssetPath};
+
+    #[test]
+    fn parsed_pkgdesc_reports_vesc_tool_dialect() {
+        let parsed = ParsedPkgDesc::VescTool(PkgDescVescTool::new(
+            PkgName::new("x"),
+            RelativeAssetPath::new("README.md"),
+            RelativeAssetPath::new("a.lisp"),
+            RelativeAssetPath::new(""),
+            OutputFileName::new("out.vescpkg"),
+            false,
+        ));
+        assert_eq!(parsed.dialect(), PkgDescDialect::VescTool);
+    }
+}
