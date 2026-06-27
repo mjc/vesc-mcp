@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -122,6 +123,60 @@ impl VescToolRunner for RealVescToolRunner {
     }
 }
 
+/// In-process build backend for `rust` mode (mockable in unit tests).
+pub trait RustPackageBuilder: Send + Sync {
+    /// Build a `.vescpkg` from an on-disk package root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an adapter error when layout validation or I/O fails.
+    fn build_from_root(
+        &self,
+        root: &Path,
+    ) -> Result<vesc_mcp_adapters::BuiltPackage, vesc_mcp_adapters::AdapterError>;
+}
+
+/// Production builder that delegates to [`vesc_mcp_adapters::build_package_from_root`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RealRustPackageBuilder;
+
+impl RustPackageBuilder for RealRustPackageBuilder {
+    fn build_from_root(
+        &self,
+        root: &Path,
+    ) -> Result<vesc_mcp_adapters::BuiltPackage, vesc_mcp_adapters::AdapterError> {
+        vesc_mcp_adapters::build_package_from_root(root)
+    }
+}
+
+fn run_with_timeout<T: Send + 'static>(
+    timeout_secs: u64,
+    label: &str,
+    root: &Path,
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match rx.try_recv() {
+            Ok(result) => return result,
+            Err(mpsc::TryRecvError::Empty) if Instant::now() >= deadline => {
+                return Err(format!(
+                    "{label} timed out after {timeout_secs}s (root {})",
+                    root.display()
+                ));
+            }
+            Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_millis(50)),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err(format!("{label} worker panicked (root {})", root.display()));
+            }
+        }
+    }
+}
+
 #[must_use]
 pub fn build_vescpkg_tool(params: &BuildVescpkgParams) -> BuildVescpkgResponse {
     build_vescpkg_tool_with_runner(params, &RealVescToolRunner, None, None)
@@ -134,6 +189,23 @@ pub fn build_vescpkg_tool_with_runner(
     vesc_tool_override: Option<&Path>,
     allowed_roots_override: Option<&[PathBuf]>,
 ) -> BuildVescpkgResponse {
+    build_vescpkg_tool_with_builders(
+        params,
+        runner,
+        Arc::new(RealRustPackageBuilder),
+        vesc_tool_override,
+        allowed_roots_override,
+    )
+}
+
+#[must_use]
+pub fn build_vescpkg_tool_with_builders(
+    params: &BuildVescpkgParams,
+    runner: &dyn VescToolRunner,
+    rust_builder: Arc<dyn RustPackageBuilder>,
+    vesc_tool_override: Option<&Path>,
+    allowed_roots_override: Option<&[PathBuf]>,
+) -> BuildVescpkgResponse {
     let root_path = PathBuf::from(&params.root);
     let allowed_roots = allowed_package_roots(allowed_roots_override);
     if let Err(err) = validate_sandbox_path(&root_path, &allowed_roots) {
@@ -141,7 +213,7 @@ pub fn build_vescpkg_tool_with_runner(
     }
 
     match params.mode.as_str() {
-        "rust" => build_vescpkg_rust(params),
+        "rust" => build_vescpkg_rust(params, rust_builder),
         "vesc_tool" => build_vescpkg_vesc_tool(params, runner, vesc_tool_override),
         other => BuildVescpkgResponse {
             ok: false,
@@ -155,10 +227,19 @@ pub fn build_vescpkg_tool_with_runner(
     }
 }
 
-fn build_vescpkg_rust(params: &BuildVescpkgParams) -> BuildVescpkgResponse {
+fn build_vescpkg_rust(
+    params: &BuildVescpkgParams,
+    builder: Arc<dyn RustPackageBuilder>,
+) -> BuildVescpkgResponse {
     let root = PathBuf::from(&params.root);
+    let timeout_secs = params.timeout_secs;
+    let build_root = root.clone();
 
-    match vesc_mcp_adapters::build_package_from_root(&root) {
+    match run_with_timeout(timeout_secs, "rust build", &root, move || {
+        builder
+            .build_from_root(&build_root)
+            .map_err(|err| err.to_string())
+    }) {
         Ok(built) => BuildVescpkgResponse {
             ok: true,
             artifact_path: Some(built.artifact_path.display().to_string()),
@@ -166,7 +247,7 @@ fn build_vescpkg_rust(params: &BuildVescpkgParams) -> BuildVescpkgResponse {
             size_bytes: Some(built.bytes_len),
             error: None,
         },
-        Err(err) => build_error(err.to_string()),
+        Err(err) => build_error(err),
     }
 }
 
@@ -263,8 +344,26 @@ pub fn build_vescpkg_json(params: &BuildVescpkgParams) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::test_support::{TempWorkspace, fixture_path, fixture_sandbox_roots};
+
+    struct SlowRustBuilder {
+        delay: Duration,
+    }
+
+    impl RustPackageBuilder for SlowRustBuilder {
+        fn build_from_root(
+            &self,
+            _root: &Path,
+        ) -> Result<vesc_mcp_adapters::BuiltPackage, vesc_mcp_adapters::AdapterError> {
+            thread::sleep(self.delay);
+            Err(vesc_mcp_adapters::AdapterError::message(
+                "slow builder should have timed out",
+            ))
+        }
+    }
 
     struct MockVescToolRunner {
         artifact_bytes: Vec<u8>,
@@ -327,6 +426,34 @@ mod tests {
                 .error
                 .as_ref()
                 .is_some_and(|err| err.contains("pkgdesc"))
+        );
+    }
+
+    #[test]
+    fn tool_build_rust_mode_respects_timeout() {
+        let root = fixture_path("poc-native-lib-minimal");
+        let response = build_vescpkg_tool_with_builders(
+            &BuildVescpkgParams {
+                root: root.display().to_string(),
+                mode: "rust".into(),
+                timeout_secs: 1,
+            },
+            &RealVescToolRunner,
+            Arc::new(SlowRustBuilder {
+                delay: Duration::from_secs(5),
+            }),
+            None,
+            Some(&fixture_sandbox_roots()),
+        );
+
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .as_ref()
+                .is_some_and(|err| err.contains("timed out")),
+            "error: {:?}",
+            response.error
         );
     }
 
