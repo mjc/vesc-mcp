@@ -112,6 +112,9 @@ Integration tests use `McpTestHarness::call_tool(name, json!({...}))` — same h
 
 ## Related docs
 
+- [docs/vescpackage-reference.md](docs/vescpackage-reference.md) — package lifecycle index (wire + ABI)
+- [docs/vescpkg-wire-format.md](docs/vescpkg-wire-format.md) — `.vescpkg` byte spec
+- [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) — native loader contract
 - [docs/configuration.md](docs/configuration.md) — env vars
 - [docs/architecture.md](docs/architecture.md) — crate boundaries
 - [docs/safety.md](docs/safety.md) — flash/upload gates

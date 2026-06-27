@@ -76,6 +76,9 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/architecture.md](docs/architecture.md) | Crate diagram and boundaries |
 | [docs/testing.md](docs/testing.md) | Red/green/refactor workflow |
 | [docs/poc-integration.md](docs/poc-integration.md) | vesc-rust-poc path dependency |
+| [docs/vescpackage-reference.md](docs/vescpackage-reference.md) | End-to-end package lifecycle index |
+| [docs/vescpkg-wire-format.md](docs/vescpkg-wire-format.md) | `.vescpkg` byte-level wire spec |
+| [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) | Native loader ABI (vesc_pkg_lib) |
 | [docs/safety.md](docs/safety.md) | Flash/upload gates and device hygiene |
 | [docs/examples/inspect-refloat-session.md](docs/examples/inspect-refloat-session.md) | Agent walkthrough: refloat-minimal fixture |
 | [docs/examples/build-poc-package-session.md](docs/examples/build-poc-package-session.md) | Agent walkthrough: POC rust build |
