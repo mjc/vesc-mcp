@@ -970,6 +970,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vesc-domain",
+ "vesc-mcp-adapters",
 ]
 
 [[package]]

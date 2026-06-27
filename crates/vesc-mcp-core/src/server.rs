@@ -8,6 +8,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
 use crate::tools::inspect::{
     InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
 };
@@ -100,6 +101,14 @@ impl VescMcpService {
     ) -> String {
         validate_package_layout_json(&params)
     }
+
+    #[tool(
+        description = "Build a .vescpkg wire artifact from a package root (rust mode uses in-tree adapter)"
+    )]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn build_vescpkg(&self, Parameters(params): Parameters<BuildVescpkgParams>) -> String {
+        build_vescpkg_json(&params)
+    }
 }
 
 #[tool_handler(
@@ -174,5 +183,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "validate_package_layout"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_build_vescpkg() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "build_vescpkg"));
     }
 }

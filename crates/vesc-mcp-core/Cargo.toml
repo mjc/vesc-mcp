@@ -22,6 +22,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 vesc-domain = { path = "../vesc-domain" }
+vesc-mcp-adapters = { path = "../vesc-mcp-adapters" }
 
 [dev-dependencies]
 serde_json.workspace = true

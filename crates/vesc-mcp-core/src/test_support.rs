@@ -83,6 +83,7 @@ impl McpTestHarness {
     #[must_use]
     pub fn call_tool(&self, name: &str, arguments: serde_json::Value) -> String {
         use crate::server::{PingParams, PingResponse, decide_ping_echo};
+        use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
         use crate::tools::inspect::{
             InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
         };
@@ -124,6 +125,11 @@ impl McpTestHarness {
                 let params: ValidatePackageLayoutParams = serde_json::from_value(arguments)
                     .expect("validate_package_layout requires { \"root\": \"...\" }");
                 validate_package_layout_json(&params)
+            }
+            "build_vescpkg" => {
+                let params: BuildVescpkgParams = serde_json::from_value(arguments)
+                    .expect("build_vescpkg requires { \"root\": \"...\", \"mode\": \"rust\" }");
+                build_vescpkg_json(&params)
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),
         }
