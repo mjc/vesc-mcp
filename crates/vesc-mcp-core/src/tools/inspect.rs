@@ -4,7 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use vesc_domain::{ParsedPkgDesc, parse_lisp_imports, parse_pkgdesc_qml, read_vescpkg_fields};
+use vesc_domain::{ParsedPkgDesc, parse_pkgdesc_qml};
+use vesc_mcp_adapters::{PackageInspection, inspect_vescpkg as adapter_inspect_vescpkg};
 
 use crate::config::{allowed_package_roots, validate_sandbox_file};
 
@@ -159,36 +160,31 @@ pub fn inspect_vescpkg_with_sandbox(
         };
     }
 
-    match read_and_inspect_vescpkg(&path_buf) {
+    match adapter_inspect_vescpkg(&path_buf) {
         Ok(inspection) => InspectVescpkgResponse {
             ok: true,
-            inspection: Some(inspection),
+            inspection: Some(inspection.into()),
             error: None,
         },
         Err(err) => InspectVescpkgResponse {
             ok: false,
             inspection: None,
-            error: Some(err),
+            error: Some(err.to_string()),
         },
     }
 }
 
-fn read_and_inspect_vescpkg(path: &Path) -> Result<VescpkgInspectionJson, String> {
-    let fields = read_vescpkg_fields(path).map_err(|err| err.to_string())?;
-    let (_, imports) = parse_lisp_imports(&fields.lisp_data).map_err(|err| err.to_string())?;
-    let lisp_editor_path = imports
-        .first()
-        .map(|import| import.tag.clone())
-        .unwrap_or_default();
-
-    Ok(VescpkgInspectionJson {
-        name: fields.name,
-        description_md: fields.description_md,
-        qml_file: fields.qml_file,
-        qml_is_fullscreen: fields.qml_is_fullscreen,
-        lisp_import_count: imports.len(),
-        lisp_editor_path,
-    })
+impl From<PackageInspection> for VescpkgInspectionJson {
+    fn from(inspection: PackageInspection) -> Self {
+        Self {
+            name: inspection.name,
+            description_md: inspection.description_md,
+            qml_file: inspection.qml_file,
+            qml_is_fullscreen: inspection.qml_is_fullscreen,
+            lisp_import_count: inspection.lisp_import_count,
+            lisp_editor_path: inspection.lisp_editor_path,
+        }
+    }
 }
 
 /// Serialize a tool response as JSON text for rmcp handlers.
@@ -261,3 +257,4 @@ mod tests {
         assert!(response.error.is_some());
     }
 }
+
