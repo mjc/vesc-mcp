@@ -4,6 +4,42 @@ use serde_json::Value;
 use vesc_mcp_core::test_support::{McpTestHarness, fixture_path};
 
 #[test]
+fn tool_validate_poc_native_fixture_ok() {
+    let harness = McpTestHarness::new();
+    let root = fixture_path("poc-native-lib-minimal");
+    let response = harness.call_tool(
+        "validate_package_layout",
+        serde_json::json!({ "root": root.to_string_lossy() }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], true, "response: {body}");
+    assert!(
+        body.get("issues")
+            .is_none_or(|issues| issues.as_array().is_some_and(Vec::is_empty)),
+        "response: {body}"
+    );
+}
+
+#[test]
+fn tool_validate_missing_pkgdesc_fails() {
+    let harness = McpTestHarness::new();
+    let root = fixture_path("broken-missing-pkgdesc");
+    let response = harness.call_tool(
+        "validate_package_layout",
+        serde_json::json!({ "root": root.to_string_lossy() }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], false, "response: {body}");
+    let error = body["error"].as_str().expect("error message");
+    assert!(
+        error.contains("no pkgdesc.qml"),
+        "expected missing pkgdesc error, got: {error}"
+    );
+}
+
+#[test]
 fn tool_validate_refloat_fixture_ok() {
     let harness = McpTestHarness::new();
     let root = fixture_path("refloat-minimal");
