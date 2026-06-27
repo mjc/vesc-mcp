@@ -1,8 +1,10 @@
 //! MCP service definition and tool routing.
 
 use rmcp::{
-    ServerHandler, ServiceExt, handler::server::wrapper::Parameters, schemars, tool, tool_handler,
-    tool_router, transport::stdio,
+    ServerHandler, ServiceExt,
+    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    schemars, tool, tool_handler, tool_router,
+    transport::stdio,
 };
 use serde::{Deserialize, Serialize};
 
@@ -19,11 +21,36 @@ pub struct PingResponse {
     pub server: String,
 }
 
-#[derive(Clone)]
-pub struct VescMcpService;
+#[derive(Clone, Debug)]
+pub struct VescMcpService {
+    tool_router: ToolRouter<Self>,
+}
 
-#[tool_router]
+impl Default for VescMcpService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[tool_router(router = tool_router)]
 impl VescMcpService {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Tool names registered on this service (for integration test harnesses).
+    #[must_use]
+    pub fn list_tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
     #[tool(description = "Health check — returns server identity and optional echo")]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
     fn ping(&self, Parameters(PingParams { message }): Parameters<PingParams>) -> String {
@@ -39,6 +66,7 @@ impl VescMcpService {
 }
 
 #[tool_handler(
+    router = self.tool_router,
     name = "vesc-mcp",
     version = "0.1.0",
     instructions = "MCP server for VESC firmware and vescpkg development. Start with ping, then list/inspect tools as they land."
@@ -56,7 +84,7 @@ pub fn decide_ping_echo(message: Option<String>) -> String {
 ///
 /// Returns an error if the transport fails to initialize or the session ends unexpectedly.
 pub async fn run_stdio_server() -> anyhow::Result<()> {
-    let service = VescMcpService;
+    let service = VescMcpService::new();
     let running = service.serve(stdio()).await?;
     running.waiting().await?;
     Ok(())
@@ -74,5 +102,12 @@ mod tests {
     #[test]
     fn decide_ping_echo_returns_custom_message() {
         assert_eq!(decide_ping_echo(Some("hello vesc".into())), "hello vesc");
+    }
+
+    #[test]
+    fn list_tool_names_includes_ping() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "ping"));
     }
 }

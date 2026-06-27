@@ -54,6 +54,32 @@ pub fn asset_missing(root: &Path, relative: &Path) -> bool {
     !root.join(relative).is_file()
 }
 
+/// In-process MCP server harness for integration tests.
+#[derive(Debug, Clone)]
+pub struct McpTestHarness {
+    service: crate::VescMcpService,
+}
+
+impl McpTestHarness {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            service: crate::VescMcpService::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn list_tool_names(&self) -> Vec<String> {
+        self.service.list_tool_names()
+    }
+}
+
+impl Default for McpTestHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

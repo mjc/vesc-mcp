@@ -6,14 +6,6 @@ retries = 0
 fail-fast = false
 test-threads = "num-cpus"
 
-[[profile.default.overrides]]
-filter = 'test(catalog_paths_exist_when_env_set)'
-ignore = true
-
 [profile.ci]
-retries = { backoff = "fixed", count = 1, delay-ms = 500 }
+retries = { backoff = "fixed", count = 1, delay = "500ms" }
 fail-fast = true
-
-[[profile.ci.overrides]]
-filter = 'test(catalog_paths_exist_when_env_set)'
-ignore = true
