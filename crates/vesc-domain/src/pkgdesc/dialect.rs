@@ -1,19 +1,16 @@
 //! Pkgdesc dialect identification.
 
-/// Known pkgdesc.qml property dialects.
+/// Canonical pkgdesc.qml property dialect (`vesc_tool` / refloat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PkgDescDialect {
-    /// `vesc_tool` / refloat schema (`pkgName`, `pkgLisp`, …).
+    /// `vesc_tool` schema (`pkgName`, `pkgLisp`, …).
     VescTool,
-    /// POC native-lib baseline schema (`packageName`, `nativeLibraryPath`, …).
-    NativeLibBaseline,
 }
 
-/// Parsed pkgdesc content, tagged by dialect.
+/// Parsed pkgdesc content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedPkgDesc {
     VescTool(super::vesc_tool::PkgDescVescTool),
-    NativeLib(super::native_lib::PkgDescNativeLib),
 }
 
 impl ParsedPkgDesc {
@@ -21,7 +18,6 @@ impl ParsedPkgDesc {
     pub const fn dialect(&self) -> PkgDescDialect {
         match self {
             Self::VescTool(_) => PkgDescDialect::VescTool,
-            Self::NativeLib(_) => PkgDescDialect::NativeLibBaseline,
         }
     }
 }

@@ -7,9 +7,9 @@ fn fixtures_poc_native_lib_minimal_validates() {
     let root = fixture_path("poc-native-lib-minimal");
     let content = read_fixture_file("poc-native-lib-minimal", "package/pkgdesc.qml");
 
-    assert!(content.contains("property string packageName:"));
-    assert!(content.contains("property string nativeLibraryPath: \"src/package_lib.bin\""));
-    assert!(content.contains("property string loaderScriptPath: \"code.lisp\""));
+    assert!(content.contains("property string pkgName:"));
+    assert!(content.contains("property string pkgLisp: \"code.lisp\""));
+    assert!(content.contains("property string pkgOutput:"));
 
     for relative in [
         "package/pkgdesc.qml",

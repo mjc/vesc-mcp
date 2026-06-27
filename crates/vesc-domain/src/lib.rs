@@ -11,6 +11,6 @@ pub mod wire;
 
 pub use error::DomainError;
 pub use pkgdesc::{
-    OutputFileName, PackageVersion, ParsedPkgDesc, PkgDescDialect, PkgDescNativeLib,
-    PkgDescVescTool, PkgName, RelativeAssetPath, parse_pkgdesc_qml,
+    OutputFileName, PackageVersion, ParsedPkgDesc, PkgDescDialect, PkgDescVescTool, PkgName,
+    RelativeAssetPath, parse_pkgdesc_qml,
 };

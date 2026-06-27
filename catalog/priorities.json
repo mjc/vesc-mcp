@@ -69,7 +69,7 @@
       "priority": "P1",
       "category": "package_build",
       "catalog_ref": "catalog/gap-analysis.md#descriptor",
-      "summary": "vesc_tool pkgName vs POC packageName schema"
+      "summary": "Migrate vesc-rust-poc pkgdesc from legacy packageName to vesc_tool pkgName"
     },
     {
       "id": "bldc-foc-audio-605",

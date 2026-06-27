@@ -16,14 +16,14 @@ pub enum DomainError {
     },
 
     #[error(
-        "unknown pkgdesc dialect in {path}: expected vesc_tool (pkgName) or native_lib (packageName) properties"
+        "unknown pkgdesc dialect in {path}: expected vesc_tool properties starting with `pkgName`"
     )]
     UnknownDialect { path: PathBuf },
 
     #[error(
-        "pkgdesc dialect mismatch in {path}: found both vesc_tool and native_lib property sets"
+        "legacy POC pkgdesc dialect in {path}: use vesc_tool properties (`pkgName`, `pkgLisp`, …) instead of POC-only fields (`packageName`, `nativeLibraryPath`, …)"
     )]
-    DialectMismatch { path: PathBuf },
+    LegacyPocDialect { path: PathBuf },
 
     #[error("missing asset `{asset}` relative to package root `{root}`")]
     MissingAsset { asset: PathBuf, root: PathBuf },
@@ -55,6 +55,17 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("pkgName"));
         assert!(message.contains("fixtures/refloat/pkgdesc.qml"));
+    }
+
+    #[test]
+    fn legacy_poc_dialect_error_is_actionable() {
+        let err = DomainError::LegacyPocDialect {
+            path: PathBuf::from("fixtures/poc/package/pkgdesc.qml"),
+        };
+        let message = err.to_string();
+        assert!(message.contains("legacy POC pkgdesc dialect"));
+        assert!(message.contains("pkgName"));
+        assert!(message.contains("packageName"));
     }
 
     #[test]

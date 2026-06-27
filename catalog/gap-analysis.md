@@ -7,7 +7,7 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 | Area | refloat | vesc-rust-poc | Impact |
 |------|---------|---------------|--------|
 | Package packer | vesc_tool CLI | Rust `vesc-pkg-build` | Different build entrypoint; wire format should match |
-| Descriptor dialect | vesc_tool (`pkgName`, …) | Native-lib baseline (`packageName`, …) | Domain model needs dual dialect |
+| Descriptor dialect | vesc_tool (`pkgName`, …) | Legacy POC mistake (`packageName`, …) | POC must migrate to vesc_tool schema |
 | Native payload | C via vesc_pkg_lib | Rust staticlib + C shim | Toolchain and symbol audit differ |
 | BLE / device test | Manual VESC Tool upload | Host `loopback` CLI | POC has automated hw path; refloat docs none |
 | Command protocol | 12 doc/commands | Not implemented | POC scope is packaging, not app comms |
@@ -20,13 +20,14 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 - `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput`
 - `isCompatible(fwRxParams)` JavaScript guard
 
-**POC** (`fixtures/native-lib-baseline/package/pkgdesc.qml`):
+**POC (incorrect, pending fix)** (`fixtures/native-lib-baseline/package/pkgdesc.qml`):
 
-- `packageName`, `packageVersion`, `nativeLibraryPath`, `loaderScriptPath`
+- Uses invented `packageName`, `packageVersion`, `nativeLibraryPath`, `loaderScriptPath`
+- These fields are **not** read by `vesc_tool` (`codeloader.cpp` only reads `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput`)
 
-**Gap:** Property names and semantics differ. vesc-mcp `vesc-domain` must detect dialect explicitly (`PkgDescDialect::VescTool` vs `NativeLibBaseline`). A unified schema is not yet adopted upstream.
+**Gap:** POC pkgdesc used a non-authoritative property naming scheme. Canonical schema is vesc_tool/refloat only (`br-flj.12` decision).
 
-**Mitigation:** Catalog both; normalize in domain layer before MCP tools emit JSON.
+**Mitigation:** `vesc-domain` rejects legacy POC-only fields with `DomainError::LegacyPocDialect`. Fix tracked in vesc-rust-poc beads; vesc-mcp fixture `poc-native-lib-minimal/` already uses vesc_tool schema.
 
 ## Packer {#packer}
 

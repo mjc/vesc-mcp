@@ -5,10 +5,16 @@ use std::path::Path;
 
 use crate::error::DomainError;
 
-use super::dialect::{ParsedPkgDesc, PkgDescDialect};
-use super::native_lib::PkgDescNativeLib;
-use super::newtypes::{OutputFileName, PackageVersion, PkgName, RelativeAssetPath};
+use super::dialect::ParsedPkgDesc;
+use super::newtypes::{OutputFileName, PkgName, RelativeAssetPath};
 use super::vesc_tool::PkgDescVescTool;
+
+const LEGACY_POC_PROPERTIES: [&str; 4] = [
+    "packageName",
+    "packageVersion",
+    "nativeLibraryPath",
+    "loaderScriptPath",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PropertyValue {
@@ -16,29 +22,23 @@ enum PropertyValue {
     Bool(bool),
 }
 
-/// Parse pkgdesc.qml text and return a dialect-tagged descriptor.
+/// Parse pkgdesc.qml text and return a parsed descriptor.
 ///
 /// # Errors
 ///
-/// Returns [`DomainError`] when the dialect cannot be determined, required
-/// properties are missing, or duplicate property declarations are found.
+/// Returns [`DomainError`] when required properties are missing, legacy POC-only
+/// fields are present, or duplicate property declarations are found.
 pub fn parse_pkgdesc_qml(
     content: &str,
     path: impl AsRef<Path>,
 ) -> Result<ParsedPkgDesc, DomainError> {
     let path = path.as_ref().to_path_buf();
     let properties = extract_properties(content, &path)?;
-    let dialect = detect_dialect(&properties, &path)?;
-    match dialect {
-        PkgDescDialect::VescTool => Ok(ParsedPkgDesc::VescTool(build_vesc_tool(
-            &properties,
-            &path,
-        )?)),
-        PkgDescDialect::NativeLibBaseline => Ok(ParsedPkgDesc::NativeLib(build_native_lib(
-            &properties,
-            &path,
-        )?)),
-    }
+    validate_dialect(&properties, &path)?;
+    Ok(ParsedPkgDesc::VescTool(build_vesc_tool(
+        &properties,
+        &path,
+    )?))
 }
 
 fn extract_properties(
@@ -95,23 +95,24 @@ fn parse_quoted_string(value_text: &str) -> Option<String> {
     Some(value_text.to_string())
 }
 
-fn detect_dialect(
+fn validate_dialect(
     properties: &HashMap<String, PropertyValue>,
     path: &Path,
-) -> Result<PkgDescDialect, DomainError> {
-    let has_vesc_tool = properties.contains_key("pkgName");
-    let has_native_lib = properties.contains_key("packageName");
-
-    match (has_vesc_tool, has_native_lib) {
-        (true, true) => Err(DomainError::DialectMismatch {
+) -> Result<(), DomainError> {
+    let has_legacy_poc = LEGACY_POC_PROPERTIES
+        .iter()
+        .any(|key| properties.contains_key(*key));
+    if has_legacy_poc {
+        return Err(DomainError::LegacyPocDialect {
             path: path.to_path_buf(),
-        }),
-        (true, false) => Ok(PkgDescDialect::VescTool),
-        (false, true) => Ok(PkgDescDialect::NativeLibBaseline),
-        (false, false) => Err(DomainError::UnknownDialect {
-            path: path.to_path_buf(),
-        }),
+        });
     }
+    if properties.contains_key("pkgName") {
+        return Ok(());
+    }
+    Err(DomainError::UnknownDialect {
+        path: path.to_path_buf(),
+    })
 }
 
 fn build_vesc_tool(
@@ -125,18 +126,6 @@ fn build_vesc_tool(
         string_path_property(properties, "pkgQml", path)?,
         string_output_property(properties, "pkgOutput", path)?,
         bool_property(properties, "pkgQmlIsFullscreen", path)?,
-    ))
-}
-
-fn build_native_lib(
-    properties: &HashMap<String, PropertyValue>,
-    path: &Path,
-) -> Result<PkgDescNativeLib, DomainError> {
-    Ok(PkgDescNativeLib::new(
-        string_property(properties, "packageName", path)?,
-        version_property(properties, "packageVersion", path)?,
-        string_path_property(properties, "nativeLibraryPath", path)?,
-        string_path_property(properties, "loaderScriptPath", path)?,
     ))
 }
 
@@ -171,18 +160,6 @@ fn string_output_property(
 ) -> Result<OutputFileName, DomainError> {
     match properties.get(key) {
         Some(PropertyValue::String(value)) => Ok(OutputFileName::new(value.clone())),
-        Some(_) => Err(invalid_type(key, path, "string")),
-        None => Err(missing(key, path)),
-    }
-}
-
-fn version_property(
-    properties: &HashMap<String, PropertyValue>,
-    key: &str,
-    path: &Path,
-) -> Result<PackageVersion, DomainError> {
-    match properties.get(key) {
-        Some(PropertyValue::String(value)) => Ok(PackageVersion::new(value.clone())),
         Some(_) => Err(invalid_type(key, path, "string")),
         None => Err(missing(key, path)),
     }
@@ -236,7 +213,7 @@ Item {
 }
 "#;
 
-    const POC_NATIVE_PKGDESC: &str = r#"import QtQuick 2.15
+    const LEGACY_POC_PKGDESC: &str = r#"import QtQuick 2.15
 
 Item {
     property string packageName: "Rust BLE loopback test package"
@@ -250,23 +227,16 @@ Item {
     fn parse_refloat_pkgdesc() {
         let parsed = parse_pkgdesc_qml(REFLOAT_PKGDESC, "pkgdesc.qml").expect("parse refloat");
         assert_eq!(parsed.dialect(), PkgDescDialect::VescTool);
-        let ParsedPkgDesc::VescTool(desc) = parsed else {
-            panic!("expected vesc_tool dialect");
-        };
+        let ParsedPkgDesc::VescTool(desc) = parsed;
         assert_eq!(desc.pkg_name.as_str(), "Refloat");
         assert_eq!(desc.output_name.as_str(), "refloat.vescpkg");
         assert!(!desc.qml_is_fullscreen);
     }
 
     #[test]
-    fn parse_poc_native_pkgdesc() {
-        let parsed = parse_pkgdesc_qml(POC_NATIVE_PKGDESC, "pkgdesc.qml").expect("parse poc");
-        assert_eq!(parsed.dialect(), PkgDescDialect::NativeLibBaseline);
-        let ParsedPkgDesc::NativeLib(desc) = parsed else {
-            panic!("expected native_lib dialect");
-        };
-        assert_eq!(desc.package_name.as_str(), "Rust BLE loopback test package");
-        assert_eq!(desc.version.as_str(), "0.1.0");
+    fn reject_legacy_poc_pkgdesc() {
+        let err = parse_pkgdesc_qml(LEGACY_POC_PKGDESC, "pkgdesc.qml").unwrap_err();
+        assert!(matches!(err, DomainError::LegacyPocDialect { .. }));
     }
 
     #[test]
@@ -277,12 +247,12 @@ Item {
     }
 
     #[test]
-    fn reject_dialect_mismatch() {
+    fn reject_mixed_vesc_tool_and_legacy_poc_fields() {
         let content = r#"Item {
             property string pkgName: "x"
             property string packageName: "y"
         }"#;
         let err = parse_pkgdesc_qml(content, "pkgdesc.qml").unwrap_err();
-        assert!(matches!(err, DomainError::DialectMismatch { .. }));
+        assert!(matches!(err, DomainError::LegacyPocDialect { .. }));
     }
 }
