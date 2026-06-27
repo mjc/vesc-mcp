@@ -1,0 +1,48 @@
+# Refloat Lisp loader script and runtime hooks
+# Source: refloat/lisp/package.lisp, refloat/lisp/bms.lisp
+id: refloat-lisp-loader
+source_repo: refloat
+source_repo_env: VESC_REFLOAT_ROOT
+version: 1
+
+loader:
+  path: lisp/package.lisp
+  lines: [1, 17]
+  referenced_by: pkgdesc.qml (property pkgLisp)
+
+steps:
+  - line: 1
+    form: '(import "src/package_lib.bin" ''package-lib)'
+    description: Import native binary produced by src/Makefile as Lisp symbol package-lib
+
+  - line: 2
+    form: "(load-native-lib package-lib)"
+    description: Load native library into LispBM runtime (bldc ext_load_native_lib)
+
+  - line: 4
+    form: "(define fw-ver (sysinfo 'fw-ver))"
+    description: Capture firmware version tuple for feature gating
+
+  - line: 5
+    form: "(apply ext-set-fw-version fw-ver)"
+    description: Pass firmware version to native extension layer
+
+  - lines: [8, 16]
+    condition: "(ext-bms) and fw >= 6.05 or fw >= 7.x"
+    imports: lisp/bms.lisp
+    spawn: 'spawn "Refloat BMS" 50 bms-loop'
+    description: Conditionally start BMS polling thread on supported firmware
+
+native_binary:
+  output: src/package_lib.bin
+  built_by: src/Makefile (target package_lib)
+  conversion: vesc_pkg_lib/conv.py emits .lisp wrapper; package packs .bin
+
+related_bldc:
+  - lispBM/lispif_vesc_extensions.c (ext_load_native_lib, ext_unload_native_lib)
+  - lispBM/c_libs/vesc_c_if.h (lbm_add_extension, VESC_IF)
+
+poc_equivalent:
+  repo: vesc-rust-poc
+  loader: fixtures/native-lib-baseline/package/code.lisp
+  native_path: src/package_lib.bin
