@@ -1,11 +1,22 @@
 //! MCP service definition and tool routing.
 
 use rmcp::{
-    ServerHandler, ServiceExt,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    schemars, tool, tool_handler, tool_router,
+    model::{
+        Implementation, ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams,
+        ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+        ResourceTemplate, ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router,
     transport::stdio,
 };
+
+use std::sync::Arc;
+
+use crate::resources::{ResourceReadError, ResourceRegistry};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
@@ -32,6 +43,7 @@ pub struct PingResponse {
 #[derive(Clone, Debug)]
 pub struct VescMcpService {
     tool_router: ToolRouter<Self>,
+    resources: Arc<ResourceRegistry>,
 }
 
 impl Default for VescMcpService {
@@ -42,11 +54,24 @@ impl Default for VescMcpService {
 
 #[tool_router(router = tool_router)]
 impl VescMcpService {
+    /// Create a new MCP service with default tools and resource registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if built-in resource registration fails.
     #[must_use]
     pub fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
+            resources: Arc::new(
+                ResourceRegistry::with_defaults().expect("default MCP resource registry"),
+            ),
         }
+    }
+
+    #[must_use]
+    pub fn resource_registry(&self) -> &ResourceRegistry {
+        self.resources.as_ref()
     }
 
     /// Tool names registered on this service (for integration test harnesses).
@@ -124,7 +149,79 @@ impl VescMcpService {
     version = "0.1.0",
     instructions = "MCP server for VESC firmware and vescpkg development. Start with ping, then list/inspect tools as they land."
 )]
-impl ServerHandler for VescMcpService {}
+impl ServerHandler for VescMcpService {
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult {
+            resources: self
+                .resources
+                .list_mcp_resources()
+                .into_iter()
+                .map(|resource| Resource::new(resource, None))
+                .collect(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult {
+            resource_templates: self
+                .resources
+                .list_mcp_templates()
+                .into_iter()
+                .map(|template| ResourceTemplate::new(template, None))
+                .collect(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        match self.resources.read(&request.uri) {
+            Ok(text) => {
+                let mime_type = self
+                    .resources
+                    .lookup(&request.uri)
+                    .map_or("application/json", |meta| meta.mime_type.as_str());
+                Ok(ReadResourceResult::new(vec![
+                    ResourceContents::text(text, &request.uri).with_mime_type(mime_type),
+                ]))
+            }
+            Err(ResourceReadError::NotFound { uri }) => Err(McpError::resource_not_found(
+                format!("resource not found: {uri}"),
+                None,
+            )),
+            Err(ResourceReadError::ReadFailed { uri, message }) => Err(
+                McpError::resource_not_found(format!("read failed for {uri}: {message}"), None),
+            ),
+        }
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
+        .with_instructions(
+            "MCP server for VESC firmware and vescpkg development. Start with ping, then list/inspect tools as they land.",
+        )
+    }
+}
 
 #[must_use]
 pub fn decide_ping_echo(message: Option<String>) -> String {
@@ -197,6 +294,14 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "build_vescpkg"));
+    }
+
+    #[test]
+    fn get_info_advertises_tools_and_resources() {
+        let service = VescMcpService::new();
+        let info = service.get_info();
+        assert!(info.capabilities.tools.is_some());
+        assert!(info.capabilities.resources.is_some());
     }
 
     #[test]

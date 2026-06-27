@@ -3,11 +3,14 @@
 //! Loads YAML from `catalog/` and renders markdown bodies with source attribution.
 
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{ResourceMeta, ResourceReadError, ResourceRegistry, ResourceRegistryError};
+use super::{
+    ParsedResourceUri, ResourceMeta, ResourceReadError, ResourceReadHandler, ResourceRegistry,
+    ResourceRegistryError,
+};
 
 /// Relative path to the Refloat build-flow catalog document.
 pub const BUILD_FLOW_CATALOG_REL: &str = "refloat/build-flow.yaml";
@@ -235,6 +238,44 @@ fn render_target(out: &mut String, doc: &BuildFlowDoc, target: &TargetEntry) {
             end = end,
         );
     }
+}
+
+/// Handler dispatching catalog build-recipe URIs.
+#[derive(Debug, Clone)]
+pub struct BuildRecipeResourceHandler {
+    catalog_root: PathBuf,
+}
+
+impl BuildRecipeResourceHandler {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            catalog_root: repo_catalog_root(),
+        }
+    }
+}
+
+impl Default for BuildRecipeResourceHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResourceReadHandler for BuildRecipeResourceHandler {
+    fn matches(&self, uri: &ParsedResourceUri) -> bool {
+        matches!(
+            uri,
+            ParsedResourceUri::Catalog(catalog) if catalog.kind == "build-recipe"
+        )
+    }
+
+    fn read(&self, uri: &ParsedResourceUri) -> Result<String, ResourceReadError> {
+        read_build_recipe(&uri.to_uri(), &self.catalog_root)
+    }
+}
+
+fn repo_catalog_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog")
 }
 
 fn append_attribution(out: &mut String, repo: &str, path: &str, line: Option<u64>) {

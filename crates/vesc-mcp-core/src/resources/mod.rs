@@ -10,8 +10,8 @@ mod manifest;
 mod uri;
 
 pub use catalog::{
-    BuildFlowDoc, POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI, load_build_flow, read_build_recipe,
-    register_build_recipe_resources,
+    BuildFlowDoc, BuildRecipeResourceHandler, POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI,
+    load_build_flow, read_build_recipe, register_build_recipe_resources,
 };
 pub use manifest::{
     ManifestResourceHandler, POC_NATIVE_LIB_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
@@ -186,6 +186,20 @@ impl ResourceRegistry {
         } else {
             vec![]
         }
+    }
+
+    /// Registry preloaded with build-recipe and manifest resources plus read handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResourceRegistryError`] when static resource registration fails.
+    pub fn with_defaults() -> Result<Self, ResourceRegistryError> {
+        let mut registry = Self::new();
+        register_build_recipe_resources(&mut registry)?;
+        register_manifest_resources(&mut registry)?;
+        registry.register_handler(BuildRecipeResourceHandler::new());
+        registry.register_handler(ManifestResourceHandler::from_config());
+        Ok(registry)
     }
 
     /// MCP resource template for sandboxed live manifest reads.
