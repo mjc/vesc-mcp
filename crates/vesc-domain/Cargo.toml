@@ -1,0 +1,14 @@
+[package]
+name = "vesc-domain"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "VESC and vescpkg domain types (placeholder module tree)"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
