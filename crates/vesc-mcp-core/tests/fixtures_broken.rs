@@ -9,10 +9,7 @@ fn fixtures_broken_missing_lisp_fails_validation() {
     let root = fixture_path("broken-missing-lisp");
     let pkgdesc = read_fixture_file("broken-missing-lisp", "pkgdesc.qml");
     assert!(pkgdesc.contains("lisp/missing-package.lisp"));
-    assert!(asset_missing(
-        &root,
-        Path::new("lisp/missing-package.lisp")
-    ));
+    assert!(asset_missing(&root, Path::new("lisp/missing-package.lisp")));
 }
 
 #[test]
