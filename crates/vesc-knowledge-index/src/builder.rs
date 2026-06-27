@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::IndexEntry;
 use crate::entry::Category;
 use crate::parsers::poc_abi::{self, PocAbiParseError};
+use crate::parsers::priorities::{self, PrioritiesParseError};
 use crate::parsers::refloat_commands::{self, RefloatCommandsParseError};
 use crate::parsers::vesc_c_if::{self, VescCIfParseError};
 
@@ -78,6 +79,15 @@ impl IndexBuilder {
         refloat_commands::parse_catalog(catalog_root, refloat_root)
     }
 
+    /// Parse catalog priority rows from `priorities.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrioritiesParseError`] when the file is missing or invalid.
+    pub fn parse_priorities(catalog_root: &Path) -> Result<Vec<IndexEntry>, PrioritiesParseError> {
+        priorities::parse_catalog(catalog_root)
+    }
+
     /// Build the full embedded index from catalog YAML and upstream doc paths.
     ///
     /// # Errors
@@ -94,6 +104,7 @@ impl IndexBuilder {
             Self::parse_refloat_commands(catalog_root, refloat_root)
                 .map_err(|err| err.to_string())?,
         );
+        entries.extend(Self::parse_priorities(catalog_root).map_err(|err| err.to_string())?);
         entries.sort_by(|left, right| {
             category_build_order(left.category)
                 .cmp(&category_build_order(right.category))

@@ -1,0 +1,11 @@
+{
+  "query": "lbm_add_extension",
+  "top": {
+    "category": "firmware_api",
+    "id": "vesc_c_if.lbm_add_extension",
+    "name": "lbm_add_extension",
+    "score": 1000,
+    "source_path": "lispBM/c_libs/vesc_c_if.h",
+    "source_repo": "bldc"
+  }
+}

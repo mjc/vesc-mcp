@@ -1,0 +1,11 @@
+{
+  "query": "buildPkgFromDesc",
+  "top": {
+    "category": "package_build",
+    "id": "priority.refloat-build-pkgdesc",
+    "name": "refloat_build_pkgdesc",
+    "score": 700,
+    "source_path": "catalog/refloat/build-flow.yaml",
+    "source_repo": "catalog"
+  }
+}

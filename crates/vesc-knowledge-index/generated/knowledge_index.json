@@ -1,5 +1,94 @@
 [
   {
+    "id": "priority.bldc-foc-audio-605",
+    "name": "bldc_foc_audio_605",
+    "category": "firmware_api",
+    "summary": "FOC audio APIs added in firmware 6.05",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/bldc/vesc_c_if.yaml#foc_audio_605",
+      "line": 1
+    },
+    "keywords": [
+      "6.05",
+      "605",
+      "APIs",
+      "FOC",
+      "added",
+      "audio",
+      "bldc",
+      "firmware",
+      "foc",
+      "in"
+    ]
+  },
+  {
+    "id": "priority.bldc-native-lib-macros",
+    "name": "bldc_native_lib_macros",
+    "category": "firmware_api",
+    "summary": "HEADER, INIT_FUN, VESC_IF loader contract",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/bldc/native-lib-macros.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "HEADER",
+      "INIT_FUN",
+      "VESC_IF",
+      "bldc",
+      "contract",
+      "lib",
+      "loader",
+      "macros",
+      "native"
+    ]
+  },
+  {
+    "id": "priority.bldc-nvm",
+    "name": "bldc_nvm",
+    "category": "firmware_api",
+    "summary": "read_nvm / write_nvm / wipe_nvm for package persistence",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/bldc/nvm.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "bldc",
+      "for",
+      "nvm",
+      "package",
+      "persistence",
+      "read_nvm",
+      "wipe_nvm",
+      "write_nvm"
+    ]
+  },
+  {
+    "id": "priority.bldc-vesc-c-if-lbm",
+    "name": "bldc_vesc_c_if_lbm",
+    "category": "firmware_api",
+    "summary": "lbm_add_extension and vesc_c_if function groups",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/bldc/vesc_c_if.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "and",
+      "bldc",
+      "c",
+      "function",
+      "groups",
+      "if",
+      "lbm",
+      "lbm_add_extension",
+      "vesc",
+      "vesc_c_if"
+    ]
+  },
+  {
     "id": "vesc_c_if.commands_process_packet",
     "name": "commands_process_packet",
     "category": "firmware_api",
@@ -928,6 +1017,162 @@
     ]
   },
   {
+    "id": "priority.refloat-lisp-load-native",
+    "name": "refloat_lisp_load_native",
+    "category": "lispbm",
+    "summary": "load-native-lib and package_lib.bin import path",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/refloat/lisp-loader.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "and",
+      "import",
+      "lisp",
+      "load",
+      "load-native-lib",
+      "native",
+      "package_lib.bin",
+      "path",
+      "refloat"
+    ]
+  },
+  {
+    "id": "priority.gap-descriptor-dialect",
+    "name": "gap_descriptor_dialect",
+    "category": "package_build",
+    "summary": "Migrate vesc-rust-poc pkgdesc from legacy packageName to vesc_tool pkgName",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/gap-analysis.md#descriptor",
+      "line": 1
+    },
+    "keywords": [
+      "Migrate",
+      "descriptor",
+      "dialect",
+      "from",
+      "gap",
+      "legacy",
+      "packageName",
+      "pkgName",
+      "pkgdesc",
+      "to",
+      "vesc-rust-poc",
+      "vesc_tool"
+    ]
+  },
+  {
+    "id": "priority.gap-packer-divergence",
+    "name": "gap_packer_divergence",
+    "category": "package_build",
+    "summary": "vesc_tool vs Rust vesc-pkg-build wire format parity",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/gap-analysis.md#packer",
+      "line": 1
+    },
+    "keywords": [
+      "Rust",
+      "divergence",
+      "format",
+      "gap",
+      "packer",
+      "parity",
+      "vesc-pkg-build",
+      "vesc_tool",
+      "vs",
+      "wire"
+    ]
+  },
+  {
+    "id": "priority.refloat-build-pkgdesc",
+    "name": "refloat_build_pkgdesc",
+    "category": "package_build",
+    "summary": "vesc_tool --buildPkgFromDesc flow and Makefile targets",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/refloat/build-flow.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "Makefile",
+      "and",
+      "build",
+      "buildPkgFromDesc",
+      "flow",
+      "pkgdesc",
+      "refloat",
+      "targets",
+      "vesc_tool"
+    ]
+  },
+  {
+    "id": "priority.refloat-legacy-oldvt",
+    "name": "refloat_legacy_oldvt",
+    "category": "package_build",
+    "summary": "OLDVT=1 colon-format buildPkg for legacy vesc_tool",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/refloat/build-flow.yaml#legacy_colon",
+      "line": 1
+    },
+    "keywords": [
+      "OLDVT=1",
+      "buildPkg",
+      "colon-format",
+      "for",
+      "legacy",
+      "oldvt",
+      "refloat",
+      "vesc_tool"
+    ]
+  },
+  {
+    "id": "priority.refloat-native-lib-layout",
+    "name": "refloat_native_lib_layout",
+    "category": "package_build",
+    "summary": "vesc_pkg_lib rules.mk ARM build pipeline",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/refloat/native-lib.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "ARM",
+      "build",
+      "layout",
+      "lib",
+      "native",
+      "pipeline",
+      "refloat",
+      "rules.mk",
+      "vesc_pkg_lib"
+    ]
+  },
+  {
+    "id": "priority.refloat-commands-transport",
+    "name": "refloat_commands_transport",
+    "category": "refloat_command",
+    "summary": "COMM_CUSTOM_APP_DATA / interface 101 command index",
+    "source": {
+      "repo": "catalog",
+      "path": "catalog/refloat/commands.yaml",
+      "line": 1
+    },
+    "keywords": [
+      "101",
+      "COMM_CUSTOM_APP_DATA",
+      "command",
+      "commands",
+      "index",
+      "interface",
+      "refloat",
+      "transport"
+    ]
+  },
+  {
     "id": "refloat_command.ALERTS_CONTROL",
     "name": "ALERTS_CONTROL",
     "category": "refloat_command",
@@ -1327,6 +1572,26 @@
       "minimal-test-package",
       "loader_header",
       "prog_ptr"
+    ]
+  },
+  {
+    "id": "priority.poc-minimal-abi",
+    "name": "poc_minimal_abi",
+    "category": "poc_abi",
+    "summary": "12-symbol minimal Rust package ABI",
+    "source": {
+      "repo": "catalog",
+      "path": "vesc-rust-poc/docs/abi-inventory.md",
+      "line": 1
+    },
+    "keywords": [
+      "12-symbol",
+      "ABI",
+      "Rust",
+      "abi",
+      "minimal",
+      "package",
+      "poc"
     ]
   }
 ]

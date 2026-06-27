@@ -1,0 +1,11 @@
+{
+  "query": "REALTIME",
+  "top": {
+    "category": "refloat_command",
+    "id": "refloat_command.REALTIME_DATA",
+    "name": "REALTIME_DATA",
+    "score": 900,
+    "source_path": "doc/commands/REALTIME_DATA.md",
+    "source_repo": "refloat"
+  }
+}
