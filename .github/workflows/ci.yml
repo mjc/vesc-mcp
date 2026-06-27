@@ -16,3 +16,6 @@ jobs:
 
       - name: Run checks
         run: nix develop -c make check
+
+      - name: Verify fixture suite
+        run: nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'

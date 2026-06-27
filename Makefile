@@ -7,7 +7,7 @@ CARGO ?= cargo
 check: fmt clippy test doc
 
 test:
-	$(CARGO) nextest run --workspace
+	$(CARGO) nextest run --workspace --profile ci
 
 fmt:
 	$(CARGO) fmt --all --check
