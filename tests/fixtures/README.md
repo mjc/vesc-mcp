@@ -10,5 +10,6 @@ Synthetic vescpkg workspace trees for vesc-mcp CI. All content is MIT-licensed s
 | `broken-bad-magic/` | `.vescpkg` with invalid magic/header |
 | `broken-bad-wire/` | Truncated `.vescpkg` bytes |
 | `legacy-colon-desc/` | OLDVT colon-format `--buildPkg` descriptor string |
+| `golden/` | Deterministic `.vescpkg` wire bytes for offline tests |
 
 Total fixture size is kept under 50KB.
