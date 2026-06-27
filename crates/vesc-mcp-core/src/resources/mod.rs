@@ -5,8 +5,13 @@
 //! - `vescpkg://fixture/{name}/manifest` — in-repo fixture manifests
 //! - `vescpkg://manifest/{path}` — dynamic manifests (sandboxed at read time)
 
+mod catalog;
 mod uri;
 
+pub use catalog::{
+    BuildFlowDoc, POC_RUST_PACKER_URI, REFLOAT_VESC_TOOL_URI, load_build_flow, read_build_recipe,
+    register_build_recipe_resources,
+};
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
     ResourceUriError, parse_resource_uri,
