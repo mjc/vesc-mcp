@@ -89,8 +89,12 @@ impl McpTestHarness {
     #[must_use]
     pub fn call_tool(&self, name: &str, arguments: serde_json::Value) -> String {
         use crate::server::{PingParams, PingResponse, decide_ping_echo};
-        use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
-        use crate::tools::check::{RunPackageChecksParams, run_package_checks_json};
+        use crate::tools::build::{
+            BuildVescpkgParams, RealVescToolRunner, build_vescpkg_tool_with_runner,
+        };
+        use crate::tools::check::{
+            RealPackageCheckRunner, RunPackageChecksParams, run_package_checks_tool_with_runner,
+        };
         use crate::tools::inspect::{
             InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_with_sandbox,
             inspect_vescpkg_with_sandbox,
@@ -148,12 +152,23 @@ impl McpTestHarness {
             "build_vescpkg" => {
                 let params: BuildVescpkgParams = serde_json::from_value(arguments)
                     .expect("build_vescpkg requires { \"root\": \"...\", \"mode\": \"rust\" | \"vesc_tool\" }");
-                build_vescpkg_json(&params)
+                let response = build_vescpkg_tool_with_runner(
+                    &params,
+                    &RealVescToolRunner,
+                    None,
+                    Some(&sandbox),
+                );
+                serde_json::to_string(&response).expect("build_vescpkg response json")
             }
             "run_package_checks" => {
                 let params: RunPackageChecksParams = serde_json::from_value(arguments)
                     .expect("run_package_checks requires { \"root\": \"...\" }");
-                run_package_checks_json(&params)
+                let response = run_package_checks_tool_with_runner(
+                    &params.root,
+                    &RealPackageCheckRunner,
+                    Some(&sandbox),
+                );
+                serde_json::to_string(&response).expect("run_package_checks response json")
             }
             "search_vesc_knowledge" => {
                 let params: SearchVescKnowledgeParams = serde_json::from_value(arguments)
