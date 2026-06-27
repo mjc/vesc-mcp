@@ -92,10 +92,18 @@ impl McpTestHarness {
         use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
         use crate::tools::check::{RunPackageChecksParams, run_package_checks_json};
         use crate::tools::inspect::{
-            InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
+            InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_with_sandbox,
+            inspect_vescpkg_with_sandbox,
         };
         use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
-        use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
+        use crate::tools::search_knowledge::{
+            SearchVescKnowledgeParams, search_vesc_knowledge_json,
+        };
+        use crate::tools::validate::{
+            ValidatePackageLayoutParams, validate_package_layout_tool_with_sandbox,
+        };
+
+        let sandbox = fixture_sandbox_roots();
 
         assert!(
             self.list_tool_names().iter().any(|tool| tool == name),
@@ -121,17 +129,21 @@ impl McpTestHarness {
             "inspect_pkgdesc" => {
                 let params: InspectPkgdescParams = serde_json::from_value(arguments)
                     .expect("inspect_pkgdesc requires { \"path\": \"...\" }");
-                inspect_pkgdesc_json(&params)
+                let response = inspect_pkgdesc_with_sandbox(&params.path, Some(&sandbox));
+                serde_json::to_string(&response).expect("inspect_pkgdesc response json")
             }
             "inspect_vescpkg" => {
                 let params: InspectVescpkgParams = serde_json::from_value(arguments)
                     .expect("inspect_vescpkg requires { \"path\": \"...\" }");
-                inspect_vescpkg_json(&params)
+                let response = inspect_vescpkg_with_sandbox(&params.path, Some(&sandbox));
+                serde_json::to_string(&response).expect("inspect_vescpkg response json")
             }
             "validate_package_layout" => {
                 let params: ValidatePackageLayoutParams = serde_json::from_value(arguments)
                     .expect("validate_package_layout requires { \"root\": \"...\" }");
-                validate_package_layout_json(&params)
+                let response =
+                    validate_package_layout_tool_with_sandbox(&params.root, Some(&sandbox));
+                serde_json::to_string(&response).expect("validate_package_layout response json")
             }
             "build_vescpkg" => {
                 let params: BuildVescpkgParams = serde_json::from_value(arguments)
@@ -142,6 +154,11 @@ impl McpTestHarness {
                 let params: RunPackageChecksParams = serde_json::from_value(arguments)
                     .expect("run_package_checks requires { \"root\": \"...\" }");
                 run_package_checks_json(&params)
+            }
+            "search_vesc_knowledge" => {
+                let params: SearchVescKnowledgeParams = serde_json::from_value(arguments)
+                    .expect("search_vesc_knowledge requires { \"query\": \"...\" }");
+                search_vesc_knowledge_json(&params)
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),
         }
