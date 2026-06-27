@@ -9,6 +9,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
+use crate::tools::check::{RunPackageChecksParams, run_package_checks_json};
 use crate::tools::inspect::{
     InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
 };
@@ -109,6 +110,12 @@ impl VescMcpService {
     fn build_vescpkg(&self, Parameters(params): Parameters<BuildVescpkgParams>) -> String {
         build_vescpkg_json(&params)
     }
+
+    #[tool(description = "Run cargo fmt/clippy/test checks in a sandboxed vescpkg package root")]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn run_package_checks(&self, Parameters(params): Parameters<RunPackageChecksParams>) -> String {
+        run_package_checks_json(&params)
+    }
 }
 
 #[tool_handler(
@@ -190,5 +197,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "build_vescpkg"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_run_package_checks() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "run_package_checks"));
     }
 }
