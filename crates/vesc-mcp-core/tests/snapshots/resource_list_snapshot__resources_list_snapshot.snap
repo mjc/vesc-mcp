@@ -1,0 +1,23 @@
+---
+source: crates/vesc-mcp-core/tests/resource_list_snapshot.rs
+expression: uris
+---
+[
+  "vesc://catalog/abi/minimal-test-package",
+  "vesc://catalog/build-recipe/poc-rust-packer",
+  "vesc://catalog/build-recipe/refloat-vesc-tool",
+  "vesc://catalog/commands/refloat/ALERTS_CONTROL",
+  "vesc://catalog/commands/refloat/ALERTS_LIST",
+  "vesc://catalog/commands/refloat/DATA_RECORD",
+  "vesc://catalog/commands/refloat/INFO",
+  "vesc://catalog/commands/refloat/LIGHTS_CONTROL",
+  "vesc://catalog/commands/refloat/REALTIME_DATA",
+  "vesc://catalog/commands/refloat/REALTIME_DATA_INTERNAL",
+  "vesc://catalog/commands/refloat/REALTIME_DATA_INTERNAL_IDS",
+  "vesc://catalog/commands/refloat/REMOTE",
+  "vesc://catalog/doc/topic/lisp_imports",
+  "vesc://catalog/doc/topic/pkgdesc_dialects",
+  "vesc://catalog/doc/topic/vesc_c_if",
+  "vescpkg://fixture/poc-native-lib-minimal/manifest",
+  "vescpkg://fixture/refloat-minimal/manifest"
+]
