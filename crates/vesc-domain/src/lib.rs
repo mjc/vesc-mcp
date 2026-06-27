@@ -1,6 +1,9 @@
 //! VESC / vescpkg domain types.
 //!
-//! Module stubs are expanded in `br-domain-model-oli`.
+//! Parse, validate, and inspect package metadata and artifacts.
 
-pub mod package;
+pub mod layout;
 pub mod paths;
+pub mod pkgdesc;
+pub mod validate;
+pub mod wire;
