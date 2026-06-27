@@ -17,5 +17,8 @@ fn ci_runs_nextest_config_present() {
 #[test]
 fn ci_fixture_catalog_is_documented() {
     let readme = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/README.md");
-    assert!(readme.is_file(), "fixture README should exist for CI discoverability");
+    assert!(
+        readme.is_file(),
+        "fixture README should exist for CI discoverability"
+    );
 }
