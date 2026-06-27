@@ -123,3 +123,41 @@ const fn category_build_order(category: Category) -> u8 {
         Category::PocAbi => 4,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn catalog_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog")
+    }
+
+    fn refloat_root() -> PathBuf {
+        let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/refloat");
+        if vendor.is_dir() {
+            vendor
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/refloat")
+        }
+    }
+
+    #[test]
+    fn builder_parse_priorities_from_catalog() {
+        let entries = IndexBuilder::parse_priorities(&catalog_root()).expect("priorities");
+        assert!(!entries.is_empty());
+        assert!(entries.iter().all(|e| e.id.starts_with("priority.")));
+    }
+
+    #[test]
+    fn builder_build_embedded_index_merges_sources() {
+        let entries =
+            IndexBuilder::build_embedded_index(&catalog_root(), &refloat_root()).expect("build");
+        assert!(entries.len() > 20);
+        let categories: std::collections::BTreeSet<_> =
+            entries.iter().map(|e| e.category).collect();
+        assert!(categories.contains(&Category::FirmwareApi));
+        assert!(categories.contains(&Category::RefloatCommand));
+    }
+}

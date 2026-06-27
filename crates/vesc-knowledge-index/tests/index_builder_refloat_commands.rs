@@ -9,6 +9,10 @@ fn repo_catalog_root() -> PathBuf {
 }
 
 fn refloat_root() -> PathBuf {
+    let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/refloat");
+    if vendor.is_dir() {
+        return vendor;
+    }
     std::env::var("VESC_REFLOAT_ROOT").map_or_else(
         |_| PathBuf::from(std::env::var("HOME").expect("HOME")).join("projects/refloat"),
         PathBuf::from,

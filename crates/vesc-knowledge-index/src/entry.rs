@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Knowledge index category aligned with `catalog/priorities.json`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     FirmwareApi,

@@ -83,3 +83,25 @@ fn priority_keywords(id: &str, summary: &str) -> Vec<String> {
     keywords.dedup();
     keywords
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn parse_missing_priorities_returns_io_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let err = parse_catalog(temp.path()).expect_err("missing file");
+        assert!(matches!(err, PrioritiesParseError::Io { .. }));
+    }
+
+    #[test]
+    fn parse_invalid_json_returns_parse_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::write(temp.path().join(CATALOG_REL_PATH), "{not json").expect("write");
+        let err = parse_catalog(temp.path()).expect_err("bad json");
+        assert!(matches!(err, PrioritiesParseError::Parse(_)));
+    }
+}

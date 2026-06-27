@@ -56,3 +56,29 @@ pub fn search_knowledge(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_entries_non_empty() {
+        assert!(!embedded_entries().is_empty());
+    }
+
+    #[test]
+    fn search_knowledge_respects_limit_and_category() {
+        let all = search_knowledge("nvm", None, 3);
+        assert!(!all.is_empty());
+        assert!(all.len() <= 3);
+
+        let filtered = search_knowledge("nvm", Some(Category::FirmwareApi), 10);
+        assert!(filtered.iter().all(|h| h.category == Category::FirmwareApi));
+    }
+
+    #[test]
+    fn search_knowledge_zero_limit_becomes_one() {
+        let hits = search_knowledge("pkg", None, 0);
+        assert_eq!(hits.len(), 1);
+    }
+}
