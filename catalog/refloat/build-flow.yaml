@@ -1,0 +1,99 @@
+# Refloat package build flow — vesc_tool modes and Makefile targets
+# Source: refloat/Makefile, refloat/pkgdesc.qml
+id: refloat-build-flow
+source_repo: refloat
+source_repo_env: VESC_REFLOAT_ROOT
+version: 1
+
+descriptor:
+  path: pkgdesc.qml
+  lines: [1, 18]
+  dialect: vesc_tool
+  properties:
+    pkgName: Refloat
+    pkgDescriptionMd: package_README-gen.md
+    pkgLisp: lisp/package.lisp
+    pkgQml: ui.qml
+    pkgQmlIsFullscreen: false
+    pkgOutput: refloat.vescpkg
+
+makefile:
+  path: Makefile
+  default_target: all
+  variables:
+    - name: VESC_TOOL
+      default: vesc_tool
+      description: Path to vesc_tool binary; override with make VESC_TOOL=...
+    - name: MINIFY_QML
+      default: "1"
+      description: Set to 0 to skip QML minification (pack ui.qml verbatim)
+    - name: OLDVT
+      default: "0"
+      description: Set to 1 for legacy colon-format --buildPkg (no pkgdesc.qml support)
+
+targets:
+  - name: all
+    produces: refloat.vescpkg
+    depends_on: [src, lisp/package.lisp, package_README-gen.md, ui.qml]
+
+  - name: refloat.vescpkg
+    path: Makefile
+    lines: [10, 15]
+    modes:
+      - id: pkgdesc
+        condition: OLDVT=0
+        command: '"$(VESC_TOOL)" --buildPkgFromDesc pkgdesc.qml'
+        description: Modern vesc_tool path using pkgdesc.qml descriptor
+      - id: legacy_colon
+        condition: OLDVT=1
+        command: '"$(VESC_TOOL)" --buildPkg "refloat.vescpkg:lisp/package.lisp:ui.qml:0:package_README-gen.md:Refloat"'
+        description: Legacy colon-separated buildPkg for old vesc_tool without pkgdesc support
+        colon_format: "output:lisp:qml:fullscreen:readme:name"
+
+  - name: src
+    path: Makefile
+    lines: [17, 18]
+    command: "$(MAKE) -C src"
+    description: Builds native package_lib.bin via src/Makefile and vesc_pkg_lib rules
+
+  - name: package_README-gen.md
+    path: Makefile
+    lines: [29, 35]
+    inputs: [package_README.md, version]
+    description: Copies README and appends build metadata (version, date, git commit)
+
+  - name: ui.qml
+    path: Makefile
+    lines: [37, 41]
+    inputs: [ui.qml.in, package_name, version]
+    templating:
+      placeholders: ["{{PACKAGE_NAME}}", "{{VERSION}}"]
+      minify: "rjsmin.py when MINIFY_QML=1, else cat"
+
+  - name: clean
+    path: Makefile
+    lines: [43, 45]
+    removes: [refloat.vescpkg, package_README-gen.md, ui.qml]
+    submake: src clean
+
+native_build:
+  path: src/Makefile
+  target: package_lib
+  output: src/package_lib.bin
+  vesc_c_lib_path: ../vesc_pkg_lib/
+  includes: vesc_pkg_lib/rules.mk
+
+artifacts:
+  - refloat.vescpkg
+  - package_README-gen.md
+  - ui.qml
+  - src/package_lib.bin
+
+poc_equivalent:
+  repo: vesc-rust-poc
+  doc: docs/package-flow.md
+  makefile_target: package
+  packer: Rust vesc-pkg-build (not vesc_tool)
+
+related_bldc:
+  - lispBM/c_libs/vesc_c_if.h
