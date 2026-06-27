@@ -1,0 +1,46 @@
+id: minimal-test-package-abi
+source_repo: vesc-mcp
+version: 1
+package_id: minimal-test-package
+sources:
+  - path: docs/vesc-pkg-lib-abi.md
+    lines: [94, 108]
+  - path: tests/fixtures/native-lib-minimal/package/code.lisp
+  - path: crates/vesc-domain/src/wire/mod.rs
+requirements:
+  - name: prog_ptr
+    kind: loader_header
+    caller: Native package exports the VESC program pointer header word
+  - name: init
+    kind: entry_point
+    caller: Firmware calls the native init trampoline after load-native-lib
+  - name: lib_info
+    kind: type
+    caller: Init receives package metadata
+  - name: lbm_add_extension
+    kind: function
+    caller: Native package registers LispBM extensions through VESC_IF
+  - name: lbm_value
+    kind: type
+    caller: Extension ABI passes LispBM values
+  - name: lbm_uint
+    kind: type
+    caller: Extension ABI carries argument counts
+  - name: lbm_dec_as_i32
+    kind: function
+    caller: Native package decodes LispBM integer arguments
+  - name: lbm_enc_i
+    kind: function
+    caller: Native package encodes integer results
+  - name: VESC_IF.lbm_enc_sym_eerror
+    kind: error_symbol
+    caller: Native package returns the firmware eval-error symbol on bad arguments
+  - name: VESC_IF.set_app_data_handler
+    kind: function
+    caller: Native package registers the BLE loopback app-data callback
+  - name: VESC_IF.send_app_data
+    kind: function
+    caller: Native package sends BLE loopback replies through firmware app data
+  - name: VESC_IF.system_time_ticks
+    kind: function
+    caller: Native package reads firmware ticks for loopback status replies

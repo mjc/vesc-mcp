@@ -40,7 +40,7 @@ fn resource_abi_minimal_json_valid() {
         serde_json::from_str(&body).expect("resource returns valid JSON");
 
     assert_eq!(parsed.id, "minimal-test-package");
-    assert_eq!(parsed.source_repo, "vesc-rust-poc");
+    assert_eq!(parsed.source_repo, "vesc-mcp");
     assert_eq!(parsed.requirements.len(), 12);
     assert!(
         parsed
@@ -53,8 +53,8 @@ fn resource_abi_minimal_json_valid() {
         parsed
             .sources
             .iter()
-            .any(|source| source.path.contains("abi_inventory.rs")),
-        "missing abi_inventory source path:\n{body}"
+            .any(|source| source.path.contains("vesc-pkg-lib-abi.md")),
+        "missing vesc-pkg-lib-abi.md source path:\n{body}"
     );
 }
 

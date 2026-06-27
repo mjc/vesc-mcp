@@ -10,13 +10,14 @@ use super::{
 };
 
 /// Relative path to the minimal test package ABI catalog document.
-pub const MINIMAL_TEST_PACKAGE_ABI_CATALOG_REL: &str = "poc/minimal-test-package-abi.yaml";
+pub const MINIMAL_TEST_PACKAGE_ABI_CATALOG_REL: &str = "abi/minimal-test-package-abi.yaml";
 
 /// `vesc://catalog/abi/minimal-test-package`
 pub const MINIMAL_TEST_PACKAGE_ABI_URI: &str = "vesc://catalog/abi/minimal-test-package";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct MinimalTestPackageAbiCatalog {
+    source_repo: String,
     package_id: String,
     sources: Vec<AbiSourceCatalog>,
     requirements: Vec<AbiRequirementCatalog>,
@@ -69,7 +70,9 @@ pub fn register_abi_resources(
     registry.register(ResourceMeta {
         uri: MINIMAL_TEST_PACKAGE_ABI_URI.into(),
         name: "minimal test package ABI".into(),
-        description: Some("JSON ABI inventory for the POC minimal native-lib test package".into()),
+        description: Some(
+            "JSON ABI inventory for the native-lib-minimal test package fixture".into(),
+        ),
         mime_type: "application/json".into(),
     })
 }
@@ -103,7 +106,7 @@ fn load_minimal_test_package_abi(
     let doc = load_minimal_test_package_abi_catalog(catalog_root)?;
     Ok(MinimalTestPackageAbiResource {
         id: doc.package_id,
-        source_repo: "vesc-rust-poc".into(),
+        source_repo: doc.source_repo,
         sources: doc
             .sources
             .into_iter()

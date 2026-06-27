@@ -66,6 +66,7 @@ fn source_repo_from_value(value: &Value) -> Option<CatalogRepo> {
         "bldc" => Some(CatalogRepo::Bldc),
         "vesc-rust-poc" => Some(CatalogRepo::Poc),
         "vesc_tool" => Some(CatalogRepo::VescTool),
+        "vesc-mcp" => Some(CatalogRepo::VescMcp),
         _ => None,
     }
 }

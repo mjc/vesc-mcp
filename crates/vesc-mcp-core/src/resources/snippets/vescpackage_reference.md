@@ -54,4 +54,4 @@ See `lisp_imports` topic for `lispData` binary layout and offset arithmetic.
 | `validate_package_layout` | Pre-build asset checks |
 | `build_vescpkg` | Spawn `vesc_tool --buildPkgFromDesc` (`VESC_TOOL_PATH`) |
 
-Offline fixtures: `tests/fixtures/refloat-minimal/`, `poc-native-lib-minimal/`, read-only `golden/poc-minimal.vescpkg`.
+Offline fixtures: `tests/fixtures/refloat-minimal/`, `native-lib-minimal/`, read-only `golden/native-lib-minimal.vescpkg`.

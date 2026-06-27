@@ -30,7 +30,7 @@
       "summary": "HEADER, INIT_FUN, VESC_IF loader contract"
     },
     {
-      "id": "poc-minimal-abi",
+      "id": "native-lib-minimal-abi",
       "priority": "P0",
       "category": "poc_abi",
       "catalog_ref": "vesc-rust-poc/docs/abi-inventory.md",

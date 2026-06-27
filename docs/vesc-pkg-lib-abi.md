@@ -87,7 +87,7 @@ refloat may add firmware-version gating and conditional `(import "bms.lisp" 'bms
 
 ## POC Rust path
 
-Catalog: `catalog/poc/minimal-test-package-abi.yaml`, MCP resource `vesc://catalog/abi/minimal-test-package`.
+Catalog: `catalog/abi/minimal-test-package-abi.yaml`, MCP resource `vesc://catalog/abi/minimal-test-package`.
 
 POC packages use `thumbv7em-none-eabihf` Rust staticlib + C shim. Same conceptual import/embed path; different toolchain and symbol audit gate.
 
@@ -109,14 +109,14 @@ POC packages use `thumbv7em-none-eabihf` Rust staticlib + C shim. Same conceptua
 
 Missing symbols fail POC `symbol_audit` at build time — expand ABI only when features require it.
 
-Fixture loader (`tests/fixtures/poc-native-lib-minimal/package/code.lisp`):
+Fixture loader (`tests/fixtures/native-lib-minimal/package/code.lisp`):
 
 ```lisp
 (import "src/package_lib.bin" 'package-lib)
 (load-native-lib package-lib)
 ```
 
-With `lisp_editor_path` = fixture root (`poc-native-lib-minimal/`), not `package/`.
+With `lisp_editor_path` = fixture root (`native-lib-minimal/`), not `package/`.
 
 ## Firmware load path
 

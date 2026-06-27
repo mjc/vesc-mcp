@@ -1375,11 +1375,11 @@
     "id": "poc_abi.VESC_IF.lbm_enc_sym_eerror",
     "name": "VESC_IF.lbm_enc_sym_eerror",
     "category": "poc_abi",
-    "summary": "Rust package returns the firmware eval-error symbol on bad arguments",
+    "summary": "Native package returns the firmware eval-error symbol on bad arguments",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1392,11 +1392,11 @@
     "id": "poc_abi.VESC_IF.send_app_data",
     "name": "VESC_IF.send_app_data",
     "category": "poc_abi",
-    "summary": "Rust package sends BLE loopback replies through firmware app data",
+    "summary": "Native package sends BLE loopback replies through firmware app data",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1409,11 +1409,11 @@
     "id": "poc_abi.VESC_IF.set_app_data_handler",
     "name": "VESC_IF.set_app_data_handler",
     "category": "poc_abi",
-    "summary": "Rust package registers the BLE loopback app-data callback",
+    "summary": "Native package registers the BLE loopback app-data callback",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1426,11 +1426,11 @@
     "id": "poc_abi.VESC_IF.system_time_ticks",
     "name": "VESC_IF.system_time_ticks",
     "category": "poc_abi",
-    "summary": "Rust package reads firmware ticks for loopback status replies",
+    "summary": "Native package reads firmware ticks for loopback status replies",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1443,11 +1443,11 @@
     "id": "poc_abi.init",
     "name": "init",
     "category": "poc_abi",
-    "summary": "package loader calls the Rust-owned native init trampoline",
+    "summary": "Firmware calls the native init trampoline after load-native-lib",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1460,11 +1460,11 @@
     "id": "poc_abi.lbm_add_extension",
     "name": "lbm_add_extension",
     "category": "poc_abi",
-    "summary": "Rust package registers LispBM extensions through VESC_IF",
+    "summary": "Native package registers LispBM extensions through VESC_IF",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1477,11 +1477,11 @@
     "id": "poc_abi.lbm_dec_as_i32",
     "name": "lbm_dec_as_i32",
     "category": "poc_abi",
-    "summary": "Rust package decodes LispBM integer arguments",
+    "summary": "Native package decodes LispBM integer arguments",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1494,11 +1494,11 @@
     "id": "poc_abi.lbm_enc_i",
     "name": "lbm_enc_i",
     "category": "poc_abi",
-    "summary": "Rust package encodes integer results",
+    "summary": "Native package encodes integer results",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1511,11 +1511,11 @@
     "id": "poc_abi.lbm_uint",
     "name": "lbm_uint",
     "category": "poc_abi",
-    "summary": "extension ABI carries argument counts",
+    "summary": "Extension ABI carries argument counts",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1528,11 +1528,11 @@
     "id": "poc_abi.lbm_value",
     "name": "lbm_value",
     "category": "poc_abi",
-    "summary": "extension ABI passes LispBM values",
+    "summary": "Extension ABI passes LispBM values",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1545,11 +1545,11 @@
     "id": "poc_abi.lib_info",
     "name": "lib_info",
     "category": "poc_abi",
-    "summary": "entrypoint receives package metadata",
+    "summary": "Init receives package metadata",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1562,11 +1562,11 @@
     "id": "poc_abi.prog_ptr",
     "name": "prog_ptr",
     "category": "poc_abi",
-    "summary": "Rust package exports the VESC program pointer header word",
+    "summary": "Native package exports the VESC program pointer header word",
     "source": {
-      "repo": "vesc-rust-poc",
-      "path": "crates/vesc-pkg-build/src/abi_inventory.rs",
-      "line": 23
+      "repo": "vesc-mcp",
+      "path": "docs/vesc-pkg-lib-abi.md",
+      "line": 94
     },
     "keywords": [
       "poc_abi",
@@ -1576,8 +1576,8 @@
     ]
   },
   {
-    "id": "priority.poc-minimal-abi",
-    "name": "poc_minimal_abi",
+    "id": "priority.native-lib-minimal-abi",
+    "name": "native_lib_minimal_abi",
     "category": "poc_abi",
     "summary": "12-symbol minimal Rust package ABI",
     "source": {
@@ -1590,9 +1590,10 @@
       "ABI",
       "Rust",
       "abi",
+      "lib",
       "minimal",
-      "package",
-      "poc"
+      "native",
+      "package"
     ]
   }
 ]

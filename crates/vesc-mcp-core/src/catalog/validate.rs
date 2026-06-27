@@ -84,6 +84,16 @@ fn ensure_repo_roots_exist(
         });
     }
 
+    let needs_vesc_mcp = refs
+        .iter()
+        .any(|reference| reference.repo == CatalogRepo::VescMcp);
+    if needs_vesc_mcp && !roots.vesc_mcp.is_dir() {
+        return Err(CatalogValidationError::MissingRepoRoot {
+            var: CatalogRepo::VescMcp.env_var(),
+            path: roots.vesc_mcp.display().to_string(),
+        });
+    }
+
     Ok(())
 }
 

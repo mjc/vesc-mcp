@@ -99,10 +99,10 @@ refloat-minimal/
   ui.qml
 ```
 
-**poc-native-lib-minimal** (`tests/fixtures/poc-native-lib-minimal/`):
+**native-lib-minimal** (`tests/fixtures/native-lib-minimal/`):
 
 ```
-poc-native-lib-minimal/
+native-lib-minimal/
   package/
     pkgdesc.qml
     code.lisp
@@ -151,7 +151,7 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs`.
 
 | Anchor | Use |
 |--------|-----|
-| `tests/fixtures/golden/poc-minimal.vescpkg` + `.sha256` | Read-only wire reference (see `tests/fixtures/golden/README.md`) |
+| `tests/fixtures/golden/native-lib-minimal.vescpkg` + `.sha256` | Read-only wire reference (see `tests/fixtures/golden/README.md`) |
 | `vesc-domain` wire tests | Parser behavior, import geometry |
 | `tests/fixtures/broken-*` | Wire error taxonomy |
 | `catalog/*.yaml` | Structured citations with env vars |
@@ -170,7 +170,7 @@ Use this reference alongside live MCP tools (offline fixtures first):
 | Resource URI | Topic |
 |--------------|-------|
 | `vescpkg://fixture/refloat-minimal/manifest` | Parsed refloat fixture |
-| `vescpkg://fixture/poc-native-lib-minimal/manifest` | Parsed native-lib fixture |
+| `vescpkg://fixture/native-lib-minimal/manifest` | Parsed native-lib fixture |
 | `vesc://catalog/build-recipe/refloat-vesc-tool` | Refloat Makefile + vesc_tool |
 | `vesc://catalog/abi/minimal-test-package` | 12-symbol POC ABI JSON |
 
@@ -237,8 +237,8 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs` (`FIELD_SPINE`, `package_fi
 | Fixture | Path | Maps to | MCP / test anchor |
 |---------|------|---------|-------------------|
 | refloat-minimal | `tests/fixtures/refloat-minimal/pkgdesc.qml` | Example A descriptor | `inspect_pkgdesc`, `vescpkg://fixture/refloat-minimal/manifest` |
-| poc-native-lib-minimal | `tests/fixtures/poc-native-lib-minimal/package/` | nested layout + native embed | `build_vescpkg` (needs `vesc_tool`) |
-| golden | `tests/fixtures/golden/poc-minimal.vescpkg` | annotated hex — [wire appendix](vescpkg-wire-format.md#appendix--annotated-golden-hex-walkthrough) | `inspect_vescpkg` (read-only) |
+| native-lib-minimal | `tests/fixtures/native-lib-minimal/package/` | nested layout + native embed | `build_vescpkg` (needs `vesc_tool`) |
+| golden | `tests/fixtures/golden/native-lib-minimal.vescpkg` | annotated hex — [wire appendix](vescpkg-wire-format.md#appendix--annotated-golden-hex-walkthrough) | `inspect_vescpkg` (read-only) |
 | domain | `crates/vesc-domain/src/wire/mod.rs` | reader impl | wire unit tests |
 
 ### Example F — Wire golden (read-only)
@@ -246,7 +246,7 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs` (`FIELD_SPINE`, `package_fi
 | Path | What it proves |
 |------|----------------|
 | `$VESC_TOOL_ROOT/codeloader.cpp` | Authoritative pack/unpack |
-| `tests/fixtures/golden/poc-minimal.vescpkg` | Committed wire reference bytes |
+| `tests/fixtures/golden/native-lib-minimal.vescpkg` | Committed wire reference bytes |
 
 ## Further reading
 

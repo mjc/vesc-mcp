@@ -40,7 +40,7 @@ impl IndexBuilder {
         vesc_c_if::parse_catalog_with_header_validation(catalog_root, bldc_root)
     }
 
-    /// Parse POC `abi_inventory` requirements from catalog YAML.
+    /// Parse minimal native-lib ABI requirements from catalog YAML.
     ///
     /// # Errors
     ///
@@ -49,10 +49,10 @@ impl IndexBuilder {
         poc_abi::parse_catalog(catalog_root)
     }
 
-    /// Parse POC ABI requirements and optionally validate symbols against the upstream source.
+    /// Parse minimal native-lib ABI requirements and optionally validate symbols against the in-repo doc.
     ///
-    /// When `poc_root` is `Some`, every indexed symbol must appear in the primary
-    /// `abi_inventory.rs` source file under that checkout.
+    /// When `repo_root` is `Some`, every indexed symbol must appear in the primary
+    /// `docs/vesc-pkg-lib-abi.md` source file under that checkout.
     ///
     /// # Errors
     ///

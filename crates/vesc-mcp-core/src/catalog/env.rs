@@ -12,6 +12,7 @@ pub enum CatalogRepo {
     Bldc,
     Poc,
     VescTool,
+    VescMcp,
 }
 
 impl CatalogRepo {
@@ -22,6 +23,7 @@ impl CatalogRepo {
             Self::Bldc => "VESC_BLDC_ROOT",
             Self::Poc => "VESC_POC_ROOT",
             Self::VescTool => workspace::VESC_VESC_TOOL_ROOT_ENV,
+            Self::VescMcp => "VESC_MCP_ROOT",
         }
     }
 
@@ -31,7 +33,7 @@ impl CatalogRepo {
             Self::Refloat => Some("refloat"),
             Self::Bldc => Some("bldc"),
             Self::VescTool => Some("vesc_tool"),
-            Self::Poc => None,
+            Self::Poc | Self::VescMcp => None,
         }
     }
 
@@ -42,12 +44,16 @@ impl CatalogRepo {
             Self::Bldc => "~/projects/bldc",
             Self::Poc => "~/projects/vesc-rust-poc",
             Self::VescTool => "~/projects/vesc_tool",
+            Self::VescMcp => ".",
         }
     }
 
     /// Resolve checkout root: env override, then initialized `vendor/` submodule, then sibling default.
     #[must_use]
     pub fn resolve_root(self) -> PathBuf {
+        if self == Self::VescMcp {
+            return workspace::workspace_root().unwrap_or_else(|| expand_path("."));
+        }
         if let Ok(path) = env::var(self.env_var()) {
             return PathBuf::from(path);
         }
@@ -67,6 +73,7 @@ pub struct RepoRoots {
     pub bldc: PathBuf,
     pub poc: PathBuf,
     pub vesc_tool: PathBuf,
+    pub vesc_mcp: PathBuf,
 }
 
 impl RepoRoots {
@@ -78,6 +85,7 @@ impl RepoRoots {
             bldc: config.bldc_root.clone(),
             poc: config.poc_root.clone(),
             vesc_tool: config.vesc_tool_root.clone(),
+            vesc_mcp: CatalogRepo::VescMcp.resolve_root(),
         }
     }
 
@@ -88,6 +96,7 @@ impl RepoRoots {
             CatalogRepo::Bldc => &self.bldc,
             CatalogRepo::Poc => &self.poc,
             CatalogRepo::VescTool => &self.vesc_tool,
+            CatalogRepo::VescMcp => &self.vesc_mcp,
         }
     }
 }

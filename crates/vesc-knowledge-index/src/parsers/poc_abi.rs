@@ -1,4 +1,4 @@
-//! Parse `catalog/poc/minimal-test-package-abi.yaml` requirements into index entries.
+//! Parse `catalog/abi/minimal-test-package-abi.yaml` requirements into index entries.
 
 use std::path::Path;
 
@@ -8,9 +8,9 @@ use thiserror::Error;
 use crate::{Category, IndexEntry, SourceRef};
 
 /// Relative path from the catalog root to the minimal test package ABI document.
-pub const CATALOG_REL_PATH: &str = "poc/minimal-test-package-abi.yaml";
+pub const CATALOG_REL_PATH: &str = "abi/minimal-test-package-abi.yaml";
 
-const ABI_INVENTORY_SOURCE_MARKER: &str = "abi_inventory.rs";
+const ABI_DOC_SOURCE_MARKER: &str = "vesc-pkg-lib-abi.md";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct PocAbiCatalog {
@@ -49,10 +49,10 @@ pub enum PocAbiParseError {
     /// Failed to deserialize catalog YAML.
     #[error("parse catalog YAML: {0}")]
     Yaml(#[from] serde_yaml::Error),
-    /// The catalog lacks an `abi_inventory.rs` source reference.
-    #[error("missing abi_inventory source in catalog")]
-    MissingAbiInventorySource,
-    /// A catalog symbol was not found in the upstream abi inventory source.
+    /// The catalog lacks the in-repo ABI doc source reference.
+    #[error("missing vesc-pkg-lib-abi.md source in catalog")]
+    MissingAbiDocSource,
+    /// A catalog symbol was not found in the primary ABI doc source.
     #[error("symbol `{symbol}` not found in {source_path}")]
     SymbolNotInSource {
         /// Symbol name from the catalog.
@@ -72,21 +72,21 @@ pub fn parse_catalog(catalog_root: &Path) -> Result<Vec<IndexEntry>, PocAbiParse
     entries_from_catalog(&catalog)
 }
 
-/// Parse catalog entries and optionally validate symbol names against the upstream source.
+/// Parse catalog entries and optionally validate symbol names against the in-repo doc.
 ///
-/// When `poc_root` is `Some`, every indexed symbol must appear in the primary
-/// `abi_inventory.rs` source file under that checkout.
+/// When `repo_root` is `Some`, every indexed symbol must appear in the primary
+/// `docs/vesc-pkg-lib-abi.md` source file under that checkout.
 ///
 /// # Errors
 ///
 /// Returns [`PocAbiParseError`] on catalog or source validation failure.
 pub fn parse_catalog_with_source_validation(
     catalog_root: &Path,
-    poc_root: Option<&Path>,
+    repo_root: Option<&Path>,
 ) -> Result<Vec<IndexEntry>, PocAbiParseError> {
     let catalog = load_catalog(catalog_root)?;
     let entries = entries_from_catalog(&catalog)?;
-    if let Some(root) = poc_root {
+    if let Some(root) = repo_root {
         validate_against_source(&catalog, &entries, root)?;
     }
     Ok(entries)
@@ -105,8 +105,8 @@ fn primary_abi_source(catalog: &PocAbiCatalog) -> Result<&AbiSource, PocAbiParse
     catalog
         .sources
         .iter()
-        .find(|source| source.path.contains(ABI_INVENTORY_SOURCE_MARKER))
-        .ok_or(PocAbiParseError::MissingAbiInventorySource)
+        .find(|source| source.path.contains(ABI_DOC_SOURCE_MARKER))
+        .ok_or(PocAbiParseError::MissingAbiDocSource)
 }
 
 fn entries_from_catalog(catalog: &PocAbiCatalog) -> Result<Vec<IndexEntry>, PocAbiParseError> {
@@ -143,10 +143,10 @@ fn entries_from_catalog(catalog: &PocAbiCatalog) -> Result<Vec<IndexEntry>, PocA
 fn validate_against_source(
     catalog: &PocAbiCatalog,
     entries: &[IndexEntry],
-    poc_root: &Path,
+    repo_root: &Path,
 ) -> Result<(), PocAbiParseError> {
     let source = primary_abi_source(catalog)?;
-    let source_path = poc_root.join(&source.path);
+    let source_path = repo_root.join(&source.path);
     let content = std::fs::read_to_string(&source_path).map_err(|source| PocAbiParseError::Io {
         path: source_path.display().to_string(),
         source,

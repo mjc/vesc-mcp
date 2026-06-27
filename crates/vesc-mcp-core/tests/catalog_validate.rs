@@ -23,6 +23,7 @@ fn validate_missing_catalog_dir() {
         bldc: temp.path().join("bldc"),
         poc: temp.path().join("poc"),
         vesc_tool: temp.path().join("vesc_tool"),
+        vesc_mcp: temp.path().join("vesc_mcp"),
     };
     let err = validate_catalog_paths(&missing, &roots).expect_err("missing dir");
     assert!(matches!(err, CatalogValidationError::MissingCatalogDir(_)));
@@ -37,10 +38,12 @@ fn validate_missing_repo_root() {
         bldc: temp.path().join("bldc"),
         poc: temp.path().join("poc"),
         vesc_tool: temp.path().join("vesc_tool"),
+        vesc_mcp: temp.path().join("vesc_mcp"),
     };
     fs::create_dir_all(&roots.bldc).expect("bldc");
     fs::create_dir_all(&roots.poc).expect("poc");
     fs::create_dir_all(&roots.vesc_tool).expect("vesc_tool");
+    fs::create_dir_all(&roots.vesc_mcp).expect("vesc_mcp");
     let err = validate_catalog_paths(temp.path(), &roots).expect_err("missing refloat root");
     assert!(matches!(
         err,
@@ -59,10 +62,12 @@ fn validate_missing_catalog_path_reference() {
         bldc: temp.path().join("bldc"),
         poc: temp.path().join("poc"),
         vesc_tool: temp.path().join("vesc_tool"),
+        vesc_mcp: temp.path().join("vesc_mcp"),
     };
     fs::create_dir_all(&roots.bldc).expect("bldc");
     fs::create_dir_all(&roots.poc).expect("poc");
     fs::create_dir_all(&roots.vesc_tool).expect("vesc_tool");
+    fs::create_dir_all(&roots.vesc_mcp).expect("vesc_mcp");
     // catalog cites doc/commands/DEMO.md but file does not exist under refloat root
     let err = validate_catalog_paths(temp.path(), &roots).expect_err("missing path");
     assert!(matches!(err, CatalogValidationError::MissingPath { .. }));

@@ -16,7 +16,7 @@ directory_layout:
     - catalog/bldc/vesc_c_if.yaml
     - catalog/bldc/nvm.yaml
     - catalog/bldc/native-lib-macros.yaml
-    - catalog/poc/minimal-test-package-abi.yaml
+    - catalog/abi/minimal-test-package-abi.yaml
 
 env_vars:
   VESC_REFLOAT_ROOT:
@@ -34,7 +34,7 @@ env_vars:
 
 required_entry_fields:
   id: Unique catalog document id (kebab-case)
-  source_repo: Logical repo name (refloat | bldc | vesc-rust-poc | vesc_tool)
+  source_repo: Logical repo name (refloat | bldc | vesc-rust-poc | vesc_tool | vesc-mcp)
   source_repo_env: Environment variable holding checkout root
   version: Schema version integer for the document
 

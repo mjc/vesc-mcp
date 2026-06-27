@@ -27,17 +27,17 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 **Gap:** POC pkgdesc used a non-authoritative property naming scheme. Canonical schema is vesc_tool/refloat only (`br-flj.12` decision).
 
-**Mitigation:** `vesc-domain` rejects legacy POC-only fields with `DomainError::LegacyPocDialect`. Fix tracked in vesc-rust-poc beads; vesc-mcp fixture `poc-native-lib-minimal/` already uses vesc_tool schema.
+**Mitigation:** `vesc-domain` rejects legacy POC-only fields with `DomainError::LegacyPocDialect`. Fix tracked in vesc-rust-poc beads; vesc-mcp fixture `native-lib-minimal/` already uses vesc_tool schema.
 
 ## Packer {#packer}
 
 **refloat:** `make` → `vesc_tool --buildPkgFromDesc pkgdesc.qml` (or legacy `--buildPkg` colon string when `OLDVT=1`). This matches official VESC Tool behavior (`codeloader.cpp`).
 
-**vesc-mcp:** `build_vescpkg` spawns `vesc_tool` only. Golden `poc-minimal.vescpkg` is a read-only wire reference for offline tests.
+**vesc-mcp:** `build_vescpkg` spawns `vesc_tool` only. Golden `native-lib-minimal.vescpkg` is a read-only wire reference for offline tests.
 
 **Gap:** CI hosts without `vesc_tool` cannot run live build tests; wire parsing tests use committed golden bytes.
 
-**Mitigation:** Optional parity tests when `VESC_TOOL_PATH` is set; golden regeneration documented in `tests/fixtures/golden/README.md`.
+**Mitigation:** Optional golden-stability tests when `VESC_TOOL_PATH` is set; golden regeneration documented in `tests/fixtures/golden/README.md`.
 
 ## Native library build {#native}
 
