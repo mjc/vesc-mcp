@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/vesc-domain",
+    "crates/vesc-knowledge-index",
     "crates/vesc-mcp-adapters",
     "crates/vesc-mcp-core",
     "crates/vesc-mcp-server",

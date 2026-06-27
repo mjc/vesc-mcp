@@ -1028,6 +1028,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vesc-knowledge-index"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "vesc-mcp-adapters"
 version = "0.1.0"
 dependencies = [
