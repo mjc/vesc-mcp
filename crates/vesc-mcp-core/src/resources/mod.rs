@@ -7,6 +7,7 @@
 
 mod catalog;
 mod manifest;
+mod r#static;
 mod uri;
 
 pub use catalog::{
@@ -16,6 +17,10 @@ pub use catalog::{
 pub use manifest::{
     ManifestResourceHandler, POC_NATIVE_LIB_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
     read_manifest, register_manifest_resources,
+};
+pub use r#static::{
+    DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI, read_doc_topic,
+    register_doc_topic_resources,
 };
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
@@ -196,8 +201,10 @@ impl ResourceRegistry {
     pub fn with_defaults() -> Result<Self, ResourceRegistryError> {
         let mut registry = Self::new();
         register_build_recipe_resources(&mut registry)?;
+        register_doc_topic_resources(&mut registry)?;
         register_manifest_resources(&mut registry)?;
         registry.register_handler(BuildRecipeResourceHandler::new());
+        registry.register_handler(DocTopicResourceHandler::new());
         registry.register_handler(ManifestResourceHandler::from_config());
         Ok(registry)
     }

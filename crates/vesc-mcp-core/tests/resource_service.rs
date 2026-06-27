@@ -2,7 +2,8 @@
 
 use vesc_mcp_core::VescMcpService;
 use vesc_mcp_core::resources::{
-    POC_RUST_PACKER_URI, REFLOAT_MINIMAL_MANIFEST_URI, REFLOAT_VESC_TOOL_URI,
+    LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, POC_RUST_PACKER_URI, REFLOAT_MINIMAL_MANIFEST_URI,
+    REFLOAT_VESC_TOOL_URI, VESC_C_IF_URI,
 };
 
 #[test]
@@ -14,9 +15,12 @@ fn service_registry_lists_default_static_resources() {
         .iter()
         .map(|meta| meta.uri.as_str())
         .collect();
-    assert_eq!(uris.len(), 4);
+    assert_eq!(uris.len(), 7);
     assert!(uris.contains(&REFLOAT_VESC_TOOL_URI));
     assert!(uris.contains(&POC_RUST_PACKER_URI));
+    assert!(uris.contains(&PKGDESC_DIALECTS_URI));
+    assert!(uris.contains(&VESC_C_IF_URI));
+    assert!(uris.contains(&LISP_IMPORTS_URI));
     assert!(uris.contains(&REFLOAT_MINIMAL_MANIFEST_URI));
 }
 
@@ -42,4 +46,9 @@ fn service_registry_reads_build_recipe_and_manifest() {
         .read(REFLOAT_MINIMAL_MANIFEST_URI)
         .unwrap_or_else(|err| panic!("read manifest: {err}"));
     assert!(manifest.contains("Refloat Minimal"));
+
+    let dialects = registry
+        .read(PKGDESC_DIALECTS_URI)
+        .unwrap_or_else(|err| panic!("read doc topic: {err}"));
+    assert!(dialects.contains("pkgName") && dialects.contains("packageName"));
 }
