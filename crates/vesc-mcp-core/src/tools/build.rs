@@ -371,14 +371,14 @@ mod tests {
                 _pkgdesc_file_name: &str,
                 _timeout_secs: u64,
             ) -> Result<(), String> {
-                let artifact_path = package_root.join("poc-native-lib-minimal.vescpkg");
+                let artifact_path = package_root.join("native-lib-minimal.vescpkg");
                 std::fs::write(&artifact_path, &self.artifact_bytes)
                     .map_err(|err| format!("mock write {}: {err}", artifact_path.display()))
             }
         }
 
-        let root = fixture_path("poc-native-lib-minimal");
-        let artifact_at_root = root.join("poc-native-lib-minimal.vescpkg");
+        let root = fixture_path("native-lib-minimal");
+        let artifact_at_root = root.join("native-lib-minimal.vescpkg");
         let _ = std::fs::remove_file(&artifact_at_root);
         let artifact_bytes = b"nested-package-artifact".to_vec();
         let expected_hash = sha256_hex(&artifact_bytes);
@@ -397,7 +397,7 @@ mod tests {
         assert!(response.ok, "error: {:?}", response.error);
         let artifact_path = response.artifact_path.expect("artifact_path");
         assert!(
-            artifact_path.ends_with("package/poc-native-lib-minimal.vescpkg"),
+            artifact_path.ends_with("package/native-lib-minimal.vescpkg"),
             "artifact_path: {artifact_path}"
         );
         assert_eq!(response.sha256.as_deref(), Some(expected_hash.as_str()));

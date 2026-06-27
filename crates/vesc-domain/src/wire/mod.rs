@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn extract_vescpkg_name_field() {
-        let path = fixtures_root().join("golden/poc-minimal.vescpkg");
+        let path = fixtures_root().join("golden/native-lib-minimal.vescpkg");
         let fields = read_vescpkg_fields(&path).expect("read golden package");
         assert_eq!(fields.name, "POC native-lib minimal fixture");
         assert!(fields.description_md.contains("native-lib-baseline"));
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn lisp_imports_embed_native_payload_bytes() {
-        let path = fixtures_root().join("golden/poc-minimal.vescpkg");
+        let path = fixtures_root().join("golden/native-lib-minimal.vescpkg");
         let fields = read_vescpkg_fields(&path).expect("read golden package");
         let (code, imports) = parse_lisp_imports(&fields.lisp_data).expect("parse imports");
 
@@ -364,9 +364,8 @@ mod tests {
         assert_eq!(imports[0].tag, "package-lib");
         assert_eq!(imports[0].offset % 4, 0);
 
-        let native =
-            std::fs::read(fixtures_root().join("poc-native-lib-minimal/src/package_lib.bin"))
-                .expect("read native payload");
+        let native = std::fs::read(fixtures_root().join("native-lib-minimal/src/package_lib.bin"))
+            .expect("read native payload");
         assert!(payload_matches_native_with_only_nul_tail(
             &imports[0].payload,
             &native
@@ -375,7 +374,7 @@ mod tests {
 
     #[test]
     fn package_fields_follow_vesc_tool_spine() {
-        let path = fixtures_root().join("golden/poc-minimal.vescpkg");
+        let path = fixtures_root().join("golden/native-lib-minimal.vescpkg");
         let bytes = std::fs::read(&path).expect("read golden package");
         let fields = package_fields(&bytes).expect("parse fields");
         let keys: Vec<_> = fields.iter().map(|field| field.key.as_str()).collect();

@@ -18,8 +18,8 @@ use super::{
 /// `vescpkg://fixture/refloat-minimal/manifest`
 pub const REFLOAT_MINIMAL_MANIFEST_URI: &str = "vescpkg://fixture/refloat-minimal/manifest";
 
-/// `vescpkg://fixture/poc-native-lib-minimal/manifest`
-pub const POC_NATIVE_LIB_MANIFEST_URI: &str = "vescpkg://fixture/poc-native-lib-minimal/manifest";
+/// `vescpkg://fixture/native-lib-minimal/manifest`
+pub const NATIVE_LIB_MINIMAL_MANIFEST_URI: &str = "vescpkg://fixture/native-lib-minimal/manifest";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct ManifestResourceBody {
@@ -49,9 +49,9 @@ pub fn register_manifest_resources(
         mime_type: "application/json".into(),
     })?;
     registry.register(ResourceMeta {
-        uri: POC_NATIVE_LIB_MANIFEST_URI.into(),
-        name: "poc-native-lib-minimal fixture manifest".into(),
-        description: Some("Parsed pkgdesc for the poc-native-lib-minimal test fixture".into()),
+        uri: NATIVE_LIB_MINIMAL_MANIFEST_URI.into(),
+        name: "native-lib-minimal fixture manifest".into(),
+        description: Some("Parsed pkgdesc for the native-lib-minimal test fixture".into()),
         mime_type: "application/json".into(),
     })
 }
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn resolve_fixture_paths_for_known_fixtures() {
         assert!(resolve_fixture_pkgdesc_path("refloat-minimal").is_some());
-        assert!(resolve_fixture_pkgdesc_path("poc-native-lib-minimal").is_some());
+        assert!(resolve_fixture_pkgdesc_path("native-lib-minimal").is_some());
         assert!(resolve_fixture_pkgdesc_path("missing-fixture").is_none());
     }
 

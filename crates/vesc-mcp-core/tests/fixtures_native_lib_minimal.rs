@@ -1,11 +1,11 @@
-//! Meta-tests for the poc-native-lib-minimal fixture layout.
+//! Meta-tests for the native-lib-minimal fixture layout.
 
 use vesc_mcp_core::test_support::{fixture_path, read_fixture_file};
 
 #[test]
-fn fixtures_poc_native_lib_minimal_validates() {
-    let root = fixture_path("poc-native-lib-minimal");
-    let content = read_fixture_file("poc-native-lib-minimal", "package/pkgdesc.qml");
+fn fixtures_native_lib_minimal_validates() {
+    let root = fixture_path("native-lib-minimal");
+    let content = read_fixture_file("native-lib-minimal", "package/pkgdesc.qml");
 
     assert!(content.contains("property string pkgName:"));
     assert!(content.contains("property string pkgLisp: \"code.lisp\""));

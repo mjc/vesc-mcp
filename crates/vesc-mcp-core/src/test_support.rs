@@ -41,7 +41,7 @@ pub fn fixture_path(name: &str) -> PathBuf {
     fixtures_root().join(name)
 }
 
-/// Resolve `vesc_tool` for optional parity tests (`VESC_TOOL_PATH` or `vesc_tool` on PATH).
+/// Resolve `vesc_tool` for optional golden-stability tests (`VESC_TOOL_PATH` or `vesc_tool` on PATH).
 #[must_use]
 pub fn resolve_vesc_tool_for_tests() -> Option<PathBuf> {
     use std::process::{Command, Stdio};

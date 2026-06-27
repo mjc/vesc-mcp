@@ -52,7 +52,7 @@ fn tool_inspect_pkgdesc_refloat_dialect() {
 #[test]
 fn tool_inspect_pkgdesc_poc_native_dialect() {
     let harness = McpTestHarness::new();
-    let path = fixture_path("poc-native-lib-minimal/package/pkgdesc.qml");
+    let path = fixture_path("native-lib-minimal/package/pkgdesc.qml");
     let response = harness.call_tool(
         "inspect_pkgdesc",
         serde_json::json!({ "path": path.to_string_lossy() }),
@@ -63,8 +63,8 @@ fn tool_inspect_pkgdesc_poc_native_dialect() {
     assert_eq!(body["dialect"], "vesc_tool");
 
     let parsed = &body["parsed"];
-    assert_eq!(parsed["pkg_name"], "POC native-lib minimal fixture");
-    assert_eq!(parsed["output_name"], "poc-native-lib-minimal.vescpkg");
+    assert_eq!(parsed["pkg_name"], "native-lib minimal fixture");
+    assert_eq!(parsed["output_name"], "native-lib-minimal.vescpkg");
     assert_eq!(parsed["description_md_path"], "README.md");
     assert_eq!(parsed["lisp_path"], "code.lisp");
     assert_eq!(parsed["qml_path"], "");

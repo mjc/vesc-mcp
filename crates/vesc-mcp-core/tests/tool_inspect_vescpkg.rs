@@ -30,7 +30,7 @@ fn tool_inspect_vescpkg_rejects_path_outside_env_roots() {
 #[test]
 fn tool_inspect_vescpkg_reads_name() {
     let harness = McpTestHarness::new();
-    let path = fixture_path("golden/poc-minimal.vescpkg");
+    let path = fixture_path("golden/native-lib-minimal.vescpkg");
     let response = harness.call_tool(
         "inspect_vescpkg",
         serde_json::json!({ "path": path.to_string_lossy() }),

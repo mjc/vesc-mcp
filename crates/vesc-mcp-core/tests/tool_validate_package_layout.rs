@@ -25,7 +25,7 @@ fn tool_validate_package_layout_rejects_path_outside_env_roots() {
 #[test]
 fn tool_validate_poc_native_fixture_ok() {
     let harness = McpTestHarness::new();
-    let root = fixture_path("poc-native-lib-minimal");
+    let root = fixture_path("native-lib-minimal");
     let response = harness.call_tool(
         "validate_package_layout",
         serde_json::json!({ "root": root.to_string_lossy() }),

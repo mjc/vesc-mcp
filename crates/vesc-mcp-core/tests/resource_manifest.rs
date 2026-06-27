@@ -51,22 +51,19 @@ fn resource_manifest_matches_tool_output() {
 #[test]
 fn resource_fixture_poc_native_lib_manifest_valid() {
     let allowed = fixture_sandbox_roots();
-    let uri = "vescpkg://fixture/poc-native-lib-minimal/manifest";
+    let uri = "vescpkg://fixture/native-lib-minimal/manifest";
     let body = read_manifest(uri, &allowed).unwrap_or_else(|err| panic!("read poc fixture: {err}"));
     let json = parse_manifest_json(&body);
 
     assert_eq!(json["ok"], true, "response: {json}");
     assert_eq!(json["dialect"], "vesc_tool");
-    assert_eq!(json["parsed"]["pkg_name"], "POC native-lib minimal fixture");
-    assert_eq!(
-        json["parsed"]["output_name"],
-        "poc-native-lib-minimal.vescpkg"
-    );
+    assert_eq!(json["parsed"]["pkg_name"], "native-lib minimal fixture");
+    assert_eq!(json["parsed"]["output_name"], "native-lib-minimal.vescpkg");
     assert_eq!(json["parsed"]["qml_path"], "");
     assert!(
         json["raw_qml"]
             .as_str()
-            .is_some_and(|raw| raw.contains("POC native-lib minimal fixture")),
+            .is_some_and(|raw| raw.contains("native-lib minimal fixture")),
         "missing raw pkgdesc text:\n{json}"
     );
 }
@@ -99,7 +96,7 @@ fn resource_manifest_registers_fixture_resources() {
         .map(|meta| meta.uri.as_str())
         .collect();
     assert!(uris.contains(&"vescpkg://fixture/refloat-minimal/manifest"));
-    assert!(uris.contains(&"vescpkg://fixture/poc-native-lib-minimal/manifest"));
+    assert!(uris.contains(&"vescpkg://fixture/native-lib-minimal/manifest"));
 }
 
 #[test]

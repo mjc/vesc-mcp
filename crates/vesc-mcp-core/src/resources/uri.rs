@@ -357,11 +357,10 @@ mod tests {
 
     #[test]
     fn fixture_manifest_uri_round_trips() {
-        let parsed =
-            parse_resource_uri("vescpkg://fixture/poc-native-lib-minimal/manifest").unwrap();
+        let parsed = parse_resource_uri("vescpkg://fixture/native-lib-minimal/manifest").unwrap();
         assert_eq!(
             parsed.to_uri(),
-            "vescpkg://fixture/poc-native-lib-minimal/manifest"
+            "vescpkg://fixture/native-lib-minimal/manifest"
         );
     }
 

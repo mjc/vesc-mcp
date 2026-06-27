@@ -1,4 +1,4 @@
-//! Optional `build_vescpkg` tests requiring `vesc_tool` on PATH or `VESC_TOOL_PATH`.
+//! Optional `build_vescpkg` golden-stability tests requiring `vesc_tool` on PATH or `VESC_TOOL_PATH`.
 //!
 //! Skips automatically when the binary is unavailable (default CI).
 
@@ -57,8 +57,11 @@ fn assert_vesc_tool_matches_golden(fixture: &str, golden_sha256_rel: Option<&str
 }
 
 #[test]
-fn tool_build_poc_native_lib_minimal_matches_golden_when_vesc_tool_available() {
-    assert_vesc_tool_matches_golden("poc-native-lib-minimal", Some("golden/poc-minimal.sha256"));
+fn tool_build_native_lib_minimal_matches_golden_when_vesc_tool_available() {
+    assert_vesc_tool_matches_golden(
+        "native-lib-minimal",
+        Some("golden/native-lib-minimal.sha256"),
+    );
 }
 
 #[test]

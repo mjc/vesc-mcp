@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn locate_pkgdesc_finds_poc_fixture() {
         let (path, package_root) =
-            locate_pkgdesc(&fixtures_root().join("poc-native-lib-minimal")).expect("pkgdesc");
+            locate_pkgdesc(&fixtures_root().join("native-lib-minimal")).expect("pkgdesc");
         assert!(path.ends_with("package/pkgdesc.qml"));
         assert!(package_root.ends_with("package"));
     }

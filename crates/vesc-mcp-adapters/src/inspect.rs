@@ -49,7 +49,7 @@ mod tests {
 
     fn golden_vescpkg() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/golden/poc-minimal.vescpkg")
+            .join("../../tests/fixtures/golden/native-lib-minimal.vescpkg")
     }
 
     #[test]

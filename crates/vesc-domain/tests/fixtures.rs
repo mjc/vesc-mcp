@@ -35,8 +35,8 @@ fn fixture_refloat_minimal_pkgdesc_and_layout() {
 
 #[test]
 fn fixture_poc_native_lib_minimal_layout_ok() {
-    let root = fixture_path("poc-native-lib-minimal/package");
-    let content = read_fixture("poc-native-lib-minimal/package", "pkgdesc.qml");
+    let root = fixture_path("native-lib-minimal/package");
+    let content = read_fixture("native-lib-minimal/package", "pkgdesc.qml");
     let desc = parse_pkgdesc_qml(&content, root.join("pkgdesc.qml")).expect("parse pkgdesc");
     assert!(validate_package_layout(&root, &desc).is_ok());
 }
@@ -52,7 +52,7 @@ fn fixture_broken_missing_lisp_validation_fails() {
 
 #[test]
 fn fixture_golden_vescpkg_round_trip() {
-    let path = fixture_path("golden/poc-minimal.vescpkg");
+    let path = fixture_path("golden/native-lib-minimal.vescpkg");
     let fields = read_vescpkg_fields(&path).expect("read golden vescpkg");
     assert_eq!(fields.name, "POC native-lib minimal fixture");
 
@@ -87,12 +87,12 @@ fn fixture_legacy_colon_descriptor() {
 
 #[test]
 fn fixture_suite_all_green() {
-    let golden = fixture_path("golden/poc-minimal.vescpkg");
+    let golden = fixture_path("golden/native-lib-minimal.vescpkg");
     assert!(golden.is_file(), "golden vescpkg must exist");
 
-    let sha_path = fixture_path("golden/poc-minimal.sha256");
+    let sha_path = fixture_path("golden/native-lib-minimal.sha256");
     let sha_line = std::fs::read_to_string(&sha_path).expect("read sha256");
-    assert!(sha_line.contains("poc-minimal.vescpkg"));
+    assert!(sha_line.contains("native-lib-minimal.vescpkg"));
 
     let fields = read_vescpkg_fields(&golden).expect("golden wire");
     let (_, imports) = wire::parse_lisp_imports(&fields.lisp_data).expect("imports");

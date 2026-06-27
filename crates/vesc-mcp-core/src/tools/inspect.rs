@@ -231,15 +231,15 @@ mod tests {
     }
 
     #[test]
-    fn inspect_poc_native_fixture() {
-        let path = fixture_path("poc-native-lib-minimal/package/pkgdesc.qml");
+    fn inspect_native_lib_minimal_fixture() {
+        let path = fixture_path("native-lib-minimal/package/pkgdesc.qml");
         let response = inspect_pkgdesc(&path.display().to_string());
 
         assert!(response.ok);
         assert_eq!(response.dialect.as_deref(), Some("vesc_tool"));
         let parsed = response.parsed.expect("parsed fields");
-        assert_eq!(parsed.pkg_name, "POC native-lib minimal fixture");
-        assert_eq!(parsed.output_name, "poc-native-lib-minimal.vescpkg");
+        assert_eq!(parsed.pkg_name, "native-lib minimal fixture");
+        assert_eq!(parsed.output_name, "native-lib-minimal.vescpkg");
         assert_eq!(parsed.qml_path, "");
     }
 
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn inspect_vescpkg_golden_reads_name_and_imports() {
-        let path = fixture_path("golden/poc-minimal.vescpkg");
+        let path = fixture_path("golden/native-lib-minimal.vescpkg");
         let response = inspect_vescpkg(&path.display().to_string());
 
         assert!(response.ok);
