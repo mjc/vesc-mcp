@@ -96,7 +96,7 @@ Helpers: `vesc_mcp_core::test_support::{fixture_path, read_fixture_file, McpTest
 
 ## Safety rules
 
-- **Flash/upload tools are gated** — default off. Enable only with `VESC_MCP_ENABLE_FLASH=1` or `[features] enable_flash = true` in config. Never assume flash is available.
+- **Flash/upload tools are gated** — default off. Enable only with `VESC_MCP_ENABLE_FLASH=1` or `[features] enable_flash = true` in config. Never assume flash is available. See [docs/safety.md](docs/safety.md).
 - **Sandbox all paths** — reject reads/writes outside `VESC_PACKAGE_ROOTS`.
 - **Prefer fixtures offline** — use `tests/fixtures/` and `vescpkg://fixture/…` URIs before pointing at live sibling repos.
 - **No hardcoded home paths** in prompts or commits — use env vars or `config.toml`.
@@ -114,4 +114,6 @@ Integration tests use `McpTestHarness::call_tool(name, json!({...}))` — same h
 
 - [docs/configuration.md](docs/configuration.md) — env vars
 - [docs/architecture.md](docs/architecture.md) — crate boundaries
+- [docs/safety.md](docs/safety.md) — flash/upload gates
+- [docs/examples/](docs/examples/) — copy-paste agent sessions
 - [catalog/gap-analysis.md](catalog/gap-analysis.md) — known coverage gaps
