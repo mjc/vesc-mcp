@@ -83,6 +83,7 @@ impl McpTestHarness {
     #[must_use]
     pub fn call_tool(&self, name: &str, arguments: serde_json::Value) -> String {
         use crate::server::{PingParams, PingResponse, decide_ping_echo};
+        use crate::tools::inspect::{InspectPkgdescParams, inspect_pkgdesc_json};
         use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
 
         assert!(
@@ -105,6 +106,11 @@ impl McpTestHarness {
                 let params: ListPackagesParams =
                     serde_json::from_value(arguments).unwrap_or_default();
                 list_vesc_packages_json(&params)
+            }
+            "inspect_pkgdesc" => {
+                let params: InspectPkgdescParams = serde_json::from_value(arguments)
+                    .expect("inspect_pkgdesc requires { \"path\": \"...\" }");
+                inspect_pkgdesc_json(&params)
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),
         }

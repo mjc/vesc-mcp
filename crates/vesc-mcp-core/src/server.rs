@@ -8,6 +8,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::tools::inspect::{InspectPkgdescParams, inspect_pkgdesc_json};
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -73,6 +74,12 @@ impl VescMcpService {
     fn list_vesc_packages(&self, Parameters(params): Parameters<ListPackagesParams>) -> String {
         list_vesc_packages_json(&params)
     }
+
+    #[tool(description = "Parse a pkgdesc.qml file and return structured descriptor fields")]
+    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    fn inspect_pkgdesc(&self, Parameters(params): Parameters<InspectPkgdescParams>) -> String {
+        inspect_pkgdesc_json(&params)
+    }
 }
 
 #[tool_handler(
@@ -126,5 +133,12 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "list_vesc_packages"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_inspect_pkgdesc() {
+        let service = VescMcpService::new();
+        let names = service.list_tool_names();
+        assert!(names.iter().any(|name| name == "inspect_pkgdesc"));
     }
 }
