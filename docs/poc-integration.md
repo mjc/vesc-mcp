@@ -42,6 +42,20 @@ POC `PackageBuildPlan` remains documented for native-lib-baseline workflows insi
 2. **API break:** pin POC git rev in this doc + open Beads task; avoid silent breakage.
 3. **Future:** optional git submodule or crates.io publish — not v1.
 
+## Sharp edges
+
+1. **`lisp_editor_path` is the repo/fixture root**, not the `.lisp` file path. POC `build_vesc_package` resolves `(import "…")` paths relative to this root; vesc-mcp adapters pass the same root as `build_package_from_root` receives.
+
+2. **Read vs write split.** Wire parsing, field spine checks, and layout validation live in `vesc-domain`. Packing and native-payload embedding call into `vesc-pkg-build`. Do not reimplement wire layout in adapters.
+
+3. **Pkgdesc dialect.** On-disk fixtures must use vesc_tool keys (`pkgName`, `pkgLisp`, `pkgOutput`, …). Legacy POC keys (`packageName`, `nativeLibraryPath`) are rejected by `vesc-domain` with `DomainError::LegacyPocDialect`. Cross-repo migration is tracked in `br-integrate-poc-5tu.10`.
+
+4. **No FFI in adapters.** `vesc-ffi` and device/runtime crates stay out of the MCP host. Adapters only link `vesc-pkg-build` for deterministic pack writes.
+
+5. **No cross-compile in adapters.** Builds assume host-native `vesc-pkg-build`; target triple selection belongs in POC/device workflows, not MCP tooling.
+
+6. **Golden vectors.** Committed `tests/fixtures/golden/poc-minimal.vescpkg` must match adapter output SHA-256. Regenerate via `scripts/gen_poc_minimal_golden.py` when pack format or fixture layout changes (`br-integrate-poc-5tu.11`).
+
 ## License
 
 Both repos are GPL. MCP server is a separate binary linking POC as a library; keep license files in sync when distributing.

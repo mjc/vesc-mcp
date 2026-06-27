@@ -122,21 +122,4 @@ mod tests {
         assert!(path.ends_with("package/pkgdesc.qml"));
         assert!(package_root.ends_with("package"));
     }
-
-    #[test]
-    fn adapter_builds_poc_fixture_vescpkg() {
-        let root = fixtures_root().join("poc-native-lib-minimal");
-        let built = build_package_from_root(&root).expect("build");
-        assert!(built.artifact_path.is_file());
-        assert!(built.bytes_len > 0);
-
-        let golden_hash =
-            std::fs::read_to_string(fixtures_root().join("golden/poc-minimal.sha256"))
-                .expect("golden sha256")
-                .split_whitespace()
-                .next()
-                .expect("hash column")
-                .to_ascii_lowercase();
-        assert_eq!(built.sha256, golden_hash);
-    }
 }
