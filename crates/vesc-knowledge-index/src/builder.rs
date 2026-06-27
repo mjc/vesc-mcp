@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::IndexEntry;
+use crate::parsers::poc_abi::{self, PocAbiParseError};
 use crate::parsers::vesc_c_if::{self, VescCIfParseError};
 
 /// Builds searchable index entries from catalog artifacts.
@@ -34,5 +35,29 @@ impl IndexBuilder {
         bldc_root: Option<&Path>,
     ) -> Result<Vec<IndexEntry>, VescCIfParseError> {
         vesc_c_if::parse_catalog_with_header_validation(catalog_root, bldc_root)
+    }
+
+    /// Parse POC `abi_inventory` requirements from catalog YAML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PocAbiParseError`] when the catalog file is missing or invalid.
+    pub fn parse_abi_inventory(catalog_root: &Path) -> Result<Vec<IndexEntry>, PocAbiParseError> {
+        poc_abi::parse_catalog(catalog_root)
+    }
+
+    /// Parse POC ABI requirements and optionally validate symbols against the upstream source.
+    ///
+    /// When `poc_root` is `Some`, every indexed symbol must appear in the primary
+    /// `abi_inventory.rs` source file under that checkout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PocAbiParseError`] on catalog or source validation failure.
+    pub fn parse_abi_inventory_validated(
+        catalog_root: &Path,
+        poc_root: Option<&Path>,
+    ) -> Result<Vec<IndexEntry>, PocAbiParseError> {
+        poc_abi::parse_catalog_with_source_validation(catalog_root, poc_root)
     }
 }
