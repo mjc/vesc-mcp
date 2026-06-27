@@ -1,0 +1,47 @@
+# bldc NVM (non-volatile memory) API for native packages
+# Source: bldc/lispBM/c_libs/vesc_c_if.h
+id: bldc-nvm
+source_repo: bldc
+source_repo_env: VESC_BLDC_ROOT
+version: 1
+
+header:
+  path: lispBM/c_libs/vesc_c_if.h
+  struct: vesc_c_if
+  group: nvm
+  lines: [610, 613]
+
+functions:
+  - name: read_nvm
+    signature: "bool (*read_nvm)(uint8_t *v, unsigned int len, unsigned int address)"
+    line: 611
+    description: Read len bytes from NVM at address into buffer v
+
+  - name: write_nvm
+    signature: "bool (*write_nvm)(uint8_t *v, unsigned int len, unsigned int address)"
+    line: 612
+    description: Write len bytes from v to NVM at address
+
+  - name: wipe_nvm
+    signature: "bool (*wipe_nvm)(void)"
+    line: 613
+    description: Erase package NVM region
+
+related:
+  - group: eeprom
+    lines: [533, 535]
+    symbols: [read_eeprom_var, store_eeprom_var]
+    note: Separate EEPROM var API; distinct from package NVM helpers
+
+  - group: backup
+    lines: [601, 602]
+    symbols: [store_backup_data]
+
+firmware_notes:
+  - All three NVM pointers are in the baseline struct section (pre-6.05 marker)
+  - Check for null before call on very old firmware if struct layout differs
+
+poc_status:
+  repo: vesc-rust-poc
+  covered: false
+  note: Minimal POC ABI does not include NVM; add when package persistence is needed

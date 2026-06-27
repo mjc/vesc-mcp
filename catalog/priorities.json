@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "priorities": [
+    {
+      "id": "refloat-build-pkgdesc",
+      "priority": "P0",
+      "category": "package_build",
+      "catalog_ref": "catalog/refloat/build-flow.yaml",
+      "summary": "vesc_tool --buildPkgFromDesc flow and Makefile targets"
+    },
+    {
+      "id": "refloat-lisp-load-native",
+      "priority": "P0",
+      "category": "lispbm",
+      "catalog_ref": "catalog/refloat/lisp-loader.yaml",
+      "summary": "load-native-lib and package_lib.bin import path"
+    },
+    {
+      "id": "bldc-vesc-c-if-lbm",
+      "priority": "P0",
+      "category": "firmware_api",
+      "catalog_ref": "catalog/bldc/vesc_c_if.yaml",
+      "summary": "lbm_add_extension and vesc_c_if function groups"
+    },
+    {
+      "id": "bldc-native-lib-macros",
+      "priority": "P0",
+      "category": "firmware_api",
+      "catalog_ref": "catalog/bldc/native-lib-macros.yaml",
+      "summary": "HEADER, INIT_FUN, VESC_IF loader contract"
+    },
+    {
+      "id": "poc-minimal-abi",
+      "priority": "P0",
+      "category": "poc_abi",
+      "catalog_ref": "vesc-rust-poc/docs/abi-inventory.md",
+      "summary": "12-symbol minimal Rust package ABI"
+    },
+    {
+      "id": "refloat-commands-transport",
+      "priority": "P1",
+      "category": "refloat_command",
+      "catalog_ref": "catalog/refloat/commands.yaml",
+      "summary": "COMM_CUSTOM_APP_DATA / interface 101 command index"
+    },
+    {
+      "id": "bldc-nvm",
+      "priority": "P1",
+      "category": "firmware_api",
+      "catalog_ref": "catalog/bldc/nvm.yaml",
+      "summary": "read_nvm / write_nvm / wipe_nvm for package persistence"
+    },
+    {
+      "id": "refloat-native-lib-layout",
+      "priority": "P1",
+      "category": "package_build",
+      "catalog_ref": "catalog/refloat/native-lib.yaml",
+      "summary": "vesc_pkg_lib rules.mk ARM build pipeline"
+    },
+    {
+      "id": "gap-packer-divergence",
+      "priority": "P1",
+      "category": "package_build",
+      "catalog_ref": "catalog/gap-analysis.md#packer",
+      "summary": "vesc_tool vs Rust vesc-pkg-build wire format parity"
+    },
+    {
+      "id": "gap-descriptor-dialect",
+      "priority": "P1",
+      "category": "package_build",
+      "catalog_ref": "catalog/gap-analysis.md#descriptor",
+      "summary": "vesc_tool pkgName vs POC packageName schema"
+    },
+    {
+      "id": "bldc-foc-audio-605",
+      "priority": "P2",
+      "category": "firmware_api",
+      "catalog_ref": "catalog/bldc/vesc_c_if.yaml#foc_audio_605",
+      "summary": "FOC audio APIs added in firmware 6.05"
+    },
+    {
+      "id": "refloat-legacy-oldvt",
+      "priority": "P2",
+      "category": "package_build",
+      "catalog_ref": "catalog/refloat/build-flow.yaml#legacy_colon",
+      "summary": "OLDVT=1 colon-format buildPkg for legacy vesc_tool"
+    }
+  ]
+}

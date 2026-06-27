@@ -1,0 +1,87 @@
+# Catalog schema for vesc-mcp knowledge artifacts
+# Consumed by MCP resources (br-mcp-resources-9at) and knowledge index (br-knowledge-index-kfl)
+$id: https://vesc-mcp.dev/catalog/schema/v1
+version: 1
+
+directory_layout:
+  root: catalog/
+  files:
+    - catalog/schema.yaml
+    - catalog/priorities.json
+    - catalog/gap-analysis.md
+    - catalog/refloat/build-flow.yaml
+    - catalog/refloat/lisp-loader.yaml
+    - catalog/refloat/native-lib.yaml
+    - catalog/refloat/commands.yaml
+    - catalog/bldc/vesc_c_if.yaml
+    - catalog/bldc/nvm.yaml
+    - catalog/bldc/native-lib-macros.yaml
+
+env_vars:
+  VESC_REFLOAT_ROOT:
+    default: "~/projects/refloat"
+    resolves: refloat catalog path entries
+  VESC_BLDC_ROOT:
+    default: "~/projects/bldc"
+    resolves: bldc catalog path entries
+  VESC_POC_ROOT:
+    default: "~/projects/vesc-rust-poc"
+    resolves: poc_equivalent references
+
+required_entry_fields:
+  id: Unique catalog document id (kebab-case)
+  source_repo: Logical repo name (refloat | bldc | vesc-rust-poc)
+  source_repo_env: Environment variable holding checkout root
+  version: Schema version integer for the document
+
+path_reference:
+  path: Repo-relative file path (required for file-backed facts)
+  lines: Optional [start, end] inclusive 1-based line range
+  line: Optional single line number
+  symbol: Optional C/Lisp symbol name
+
+catalog_document_types:
+  build_flow:
+    file_pattern: "catalog/refloat/build-flow.yaml"
+    required: [id, makefile, artifacts]
+
+  lisp_loader:
+    file_pattern: "catalog/refloat/lisp-loader.yaml"
+    required: [id, loader, native_binary]
+
+  native_lib_layout:
+    file_pattern: "catalog/refloat/native-lib.yaml"
+    required: [id, vendored_tree, rules_mk]
+
+  commands_index:
+    file_pattern: "catalog/refloat/commands.yaml"
+    required: [id, transport, public_commands]
+
+  vesc_c_if_surface:
+    file_pattern: "catalog/bldc/vesc_c_if.yaml"
+    required: [id, header, function_groups]
+
+  nvm_api:
+    file_pattern: "catalog/bldc/nvm.yaml"
+    required: [id, functions]
+
+  native_lib_macros:
+    file_pattern: "catalog/bldc/native-lib-macros.yaml"
+    required: [id, macros, init_contract]
+
+validation:
+  rust_module: vesc_mcp_core::catalog
+  tests:
+    - catalog_paths_exist_when_env_set
+    - catalog_no_duplicate_ids
+    - catalog_schema_files_parse
+
+priorities_file:
+  path: catalog/priorities.json
+  schema:
+    type: array
+    items:
+      id: string
+      priority: enum [P0, P1, P2]
+      category: enum [firmware_api, lispbm, package_build, refloat_command, poc_abi]
+      catalog_ref: string
