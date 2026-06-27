@@ -2,8 +2,8 @@
 
 use vesc_mcp_core::resources::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceHandler, ManifestResourceUri,
-    ParsedResourceUri, REFLOAT_MINIMAL_MANIFEST_URI, ResourceMeta, ResourceRegistry,
-    parse_resource_uri, register_manifest_resources,
+    ParsedResourceUri, REFLOAT_MINIMAL_MANIFEST_URI, RefloatCommandUri, ResourceMeta,
+    ResourceRegistry, parse_resource_uri, register_manifest_resources,
 };
 use vesc_mcp_core::test_support::fixture_sandbox_roots;
 
@@ -34,6 +34,12 @@ fn resource_registry_parses_valid_uris() {
             "vescpkg://manifest/tests/fixtures/refloat-minimal/pkgdesc.qml",
             ParsedResourceUri::DynamicManifest(ManifestResourceUri {
                 path: "tests/fixtures/refloat-minimal/pkgdesc.qml".into(),
+            }),
+        ),
+        (
+            "vesc://catalog/commands/refloat/REALTIME_DATA",
+            ParsedResourceUri::RefloatCommand(RefloatCommandUri {
+                command: "REALTIME_DATA".into(),
             }),
         ),
     ];
@@ -135,4 +141,16 @@ fn resource_registry_list_templates_when_manifest_handler_registered() {
     let templates = registry.list_mcp_templates();
     assert_eq!(templates.len(), 1);
     assert_eq!(templates[0].uri_template, "vescpkg://manifest/{path}");
+}
+
+#[test]
+fn resource_registry_list_templates_when_refloat_command_handler_registered() {
+    let mut registry = ResourceRegistry::new();
+    registry.register_handler(vesc_mcp_core::resources::RefloatCommandResourceHandler::new());
+    let templates = registry.list_mcp_templates();
+    assert_eq!(templates.len(), 1);
+    assert_eq!(
+        templates[0].uri_template,
+        "vesc://catalog/commands/refloat/{command}"
+    );
 }

@@ -219,13 +219,7 @@ impl Default for RefloatCommandResourceHandler {
 
 impl ResourceReadHandler for RefloatCommandResourceHandler {
     fn matches(&self, uri: &ParsedResourceUri) -> bool {
-        matches!(
-            uri,
-            ParsedResourceUri::Catalog(catalog)
-                if catalog.kind == "commands"
-                    && catalog.id.starts_with("refloat/")
-                    && catalog.id.len() > "refloat/".len()
-        )
+        matches!(uri, ParsedResourceUri::RefloatCommand(_))
     }
 
     fn read(&self, uri: &ParsedResourceUri) -> Result<String, ResourceReadError> {

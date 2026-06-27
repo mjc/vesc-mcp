@@ -6,6 +6,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedResourceUri {
     Catalog(CatalogResourceUri),
+    RefloatCommand(RefloatCommandUri),
     FixtureManifest(FixtureManifestUri),
     DynamicManifest(ManifestResourceUri),
 }
@@ -21,6 +22,19 @@ impl CatalogResourceUri {
     #[must_use]
     pub fn to_uri(&self) -> String {
         format!("vesc://catalog/{}/{}", self.kind, self.id)
+    }
+}
+
+/// `vesc://catalog/commands/refloat/{command}` — refloat command doc resources.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefloatCommandUri {
+    pub command: String,
+}
+
+impl RefloatCommandUri {
+    #[must_use]
+    pub fn to_uri(&self) -> String {
+        format!("vesc://catalog/commands/refloat/{}", self.command)
     }
 }
 
@@ -79,6 +93,7 @@ impl ParsedResourceUri {
     pub fn to_uri(&self) -> String {
         match self {
             Self::Catalog(catalog) => catalog.to_uri(),
+            Self::RefloatCommand(command) => command.to_uri(),
             Self::FixtureManifest(fixture) => fixture.to_uri(),
             Self::DynamicManifest(manifest) => manifest.to_uri(),
         }
@@ -140,6 +155,17 @@ fn parse_vesc_uri(full: &str, rest: &str) -> Result<ParsedResourceUri, ResourceU
             full,
             "catalog kind and id must not be empty",
         ));
+    }
+
+    if kind == "commands" {
+        if let Some(command) = id
+            .strip_prefix("refloat/")
+            .filter(|name| !name.is_empty() && !name.contains('/'))
+        {
+            return Ok(ParsedResourceUri::RefloatCommand(RefloatCommandUri {
+                command: command.into(),
+            }));
+        }
     }
 
     Ok(ParsedResourceUri::Catalog(CatalogResourceUri {
@@ -300,6 +326,33 @@ mod tests {
     fn catalog_uri_round_trips() {
         let parsed = parse_resource_uri("vesc://catalog/commands/refloat/balance").unwrap();
         assert_eq!(parsed.to_uri(), "vesc://catalog/commands/refloat/balance");
+    }
+
+    #[test]
+    fn refloat_command_uri_round_trips() {
+        let parsed = parse_resource_uri("vesc://catalog/commands/refloat/REALTIME_DATA").unwrap();
+        assert_eq!(
+            parsed,
+            ParsedResourceUri::RefloatCommand(RefloatCommandUri {
+                command: "REALTIME_DATA".into(),
+            })
+        );
+        assert_eq!(
+            parsed.to_uri(),
+            "vesc://catalog/commands/refloat/REALTIME_DATA"
+        );
+    }
+
+    #[test]
+    fn catalog_doc_uri_keeps_multi_segment_id() {
+        let parsed = parse_resource_uri("vesc://catalog/doc/topic/pkgdesc_dialects").unwrap();
+        assert_eq!(
+            parsed,
+            ParsedResourceUri::Catalog(CatalogResourceUri {
+                kind: "doc".into(),
+                id: "topic/pkgdesc_dialects".into(),
+            })
+        );
     }
 
     #[test]

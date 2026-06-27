@@ -34,7 +34,8 @@ pub use r#static::{
 };
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
-    ResourceUriError, decode_manifest_path, encode_manifest_path, parse_resource_uri,
+    RefloatCommandUri, ResourceUriError, decode_manifest_path, encode_manifest_path,
+    parse_resource_uri,
 };
 
 use std::collections::BTreeMap;
@@ -196,12 +197,29 @@ impl ResourceRegistry {
     /// List MCP resource templates served by registered handlers.
     #[must_use]
     pub fn list_mcp_templates(&self) -> Vec<RawResourceTemplate> {
-        let probe = ParsedResourceUri::DynamicManifest(ManifestResourceUri { path: "_".into() });
-        if self.handlers.iter().any(|handler| handler.matches(&probe)) {
-            vec![Self::manifest_template()]
-        } else {
-            vec![]
+        let mut templates = Vec::new();
+        let manifest_probe =
+            ParsedResourceUri::DynamicManifest(ManifestResourceUri { path: "_".into() });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&manifest_probe))
+        {
+            templates.push(Self::manifest_template());
         }
+
+        let command_probe = ParsedResourceUri::RefloatCommand(RefloatCommandUri {
+            command: "_".into(),
+        });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&command_probe))
+        {
+            templates.push(Self::refloat_command_template());
+        }
+
+        templates
     }
 
     /// Registry preloaded with build-recipe and manifest resources plus read handlers.
@@ -231,6 +249,19 @@ impl ResourceRegistry {
         RawResourceTemplate::new("vescpkg://manifest/{path}", "vescpkg manifest")
             .with_description("Parsed pkgdesc for a package root under configured sandbox paths")
             .with_mime_type("application/json")
+    }
+
+    /// MCP resource template for refloat command docs indexed in the catalog.
+    #[must_use]
+    pub fn refloat_command_template() -> RawResourceTemplate {
+        RawResourceTemplate::new(
+            "vesc://catalog/commands/refloat/{command}",
+            "refloat command doc",
+        )
+        .with_description(
+            "Markdown summary for a refloat package command from catalog/refloat/commands.yaml",
+        )
+        .with_mime_type("text/markdown")
     }
 }
 
