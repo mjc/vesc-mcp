@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::IndexEntry;
 use crate::entry::Category;
-use crate::parsers::poc_abi::{self, PocAbiParseError};
+use crate::parsers::native_lib_abi::{self, NativeLibAbiParseError};
 use crate::parsers::priorities::{self, PrioritiesParseError};
 use crate::parsers::refloat_commands::{self, RefloatCommandsParseError};
 use crate::parsers::vesc_c_if::{self, VescCIfParseError};
@@ -44,9 +44,11 @@ impl IndexBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`PocAbiParseError`] when the catalog file is missing or invalid.
-    pub fn parse_abi_inventory(catalog_root: &Path) -> Result<Vec<IndexEntry>, PocAbiParseError> {
-        poc_abi::parse_catalog(catalog_root)
+    /// Returns [`NativeLibAbiParseError`] when the catalog file is missing or invalid.
+    pub fn parse_abi_inventory(
+        catalog_root: &Path,
+    ) -> Result<Vec<IndexEntry>, NativeLibAbiParseError> {
+        native_lib_abi::parse_catalog(catalog_root)
     }
 
     /// Parse minimal native-lib ABI requirements and optionally validate symbols against the in-repo doc.
@@ -56,12 +58,12 @@ impl IndexBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`PocAbiParseError`] on catalog or source validation failure.
+    /// Returns [`NativeLibAbiParseError`] on catalog or source validation failure.
     pub fn parse_abi_inventory_validated(
         catalog_root: &Path,
         poc_root: Option<&Path>,
-    ) -> Result<Vec<IndexEntry>, PocAbiParseError> {
-        poc_abi::parse_catalog_with_source_validation(catalog_root, poc_root)
+    ) -> Result<Vec<IndexEntry>, NativeLibAbiParseError> {
+        native_lib_abi::parse_catalog_with_source_validation(catalog_root, poc_root)
     }
 
     /// Parse refloat command markdown docs from catalog YAML and upstream checkout.
@@ -120,7 +122,7 @@ const fn category_build_order(category: Category) -> u8 {
         Category::Lispbm => 1,
         Category::PackageBuild => 2,
         Category::RefloatCommand => 3,
-        Category::PocAbi => 4,
+        Category::NativeLibAbi => 4,
     }
 }
 

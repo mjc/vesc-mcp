@@ -20,9 +20,9 @@ fn index_builder_parses_abi_inventory() {
     );
 
     for entry in &entries {
-        assert_eq!(entry.category, Category::PocAbi);
+        assert_eq!(entry.category, Category::NativeLibAbi);
         assert!(
-            entry.id.starts_with("poc_abi."),
+            entry.id.starts_with("native_lib_abi."),
             "unexpected id prefix: {}",
             entry.id
         );
@@ -32,7 +32,7 @@ fn index_builder_parses_abi_inventory() {
         .iter()
         .find(|entry| entry.name == "lbm_add_extension")
         .expect("lbm_add_extension entry");
-    assert_eq!(lbm_add_ext.id, "poc_abi.lbm_add_extension");
+    assert_eq!(lbm_add_ext.id, "native_lib_abi.lbm_add_extension");
     assert_eq!(lbm_add_ext.source.repo, "vesc-mcp");
     assert!(
         lbm_add_ext.source.path.contains("vesc-pkg-lib-abi.md"),
@@ -52,7 +52,10 @@ fn index_builder_parses_abi_inventory() {
         .iter()
         .find(|entry| entry.name == "VESC_IF.set_app_data_handler")
         .expect("VESC_IF.set_app_data_handler entry");
-    assert_eq!(vesc_if_handler.id, "poc_abi.VESC_IF.set_app_data_handler");
+    assert_eq!(
+        vesc_if_handler.id,
+        "native_lib_abi.VESC_IF.set_app_data_handler"
+    );
     assert!(vesc_if_handler.keywords.iter().any(|kw| kw == "function"));
 }
 

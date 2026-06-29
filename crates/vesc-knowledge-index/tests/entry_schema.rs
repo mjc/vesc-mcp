@@ -43,7 +43,7 @@ fn category_roundtrip() {
         (Category::Lispbm, "lispbm"),
         (Category::PackageBuild, "package_build"),
         (Category::RefloatCommand, "refloat_command"),
-        (Category::PocAbi, "poc_abi"),
+        (Category::NativeLibAbi, "native_lib_abi"),
     ];
 
     for (category, expected) in cases {

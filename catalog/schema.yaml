@@ -87,5 +87,5 @@ priorities_file:
     items:
       id: string
       priority: enum [P0, P1, P2]
-      category: enum [firmware_api, lispbm, package_build, refloat_command, poc_abi]
+      category: enum [firmware_api, lispbm, package_build, refloat_command, native_lib_abi]
       catalog_ref: string

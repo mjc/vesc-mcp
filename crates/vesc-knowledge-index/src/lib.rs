@@ -9,7 +9,7 @@ mod search;
 pub use builder::IndexBuilder;
 pub use embedded::{KnowledgeSearchHit, embedded_entries, search_knowledge};
 pub use entry::{Category, IndexEntry, SourceRef};
-pub use parsers::poc_abi::PocAbiParseError;
+pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;
 pub use parsers::refloat_commands::RefloatCommandsParseError;
 pub use parsers::vesc_c_if::VescCIfParseError;

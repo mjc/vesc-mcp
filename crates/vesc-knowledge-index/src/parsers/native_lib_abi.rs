@@ -13,7 +13,7 @@ pub const CATALOG_REL_PATH: &str = "abi/minimal-test-package-abi.yaml";
 const ABI_DOC_SOURCE_MARKER: &str = "vesc-pkg-lib-abi.md";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct PocAbiCatalog {
+struct NativeLibAbiCatalog {
     source_repo: String,
     package_id: String,
     sources: Vec<AbiSource>,
@@ -36,7 +36,7 @@ struct AbiRequirement {
 
 /// Errors while parsing or validating the POC ABI catalog surface.
 #[derive(Debug, Error)]
-pub enum PocAbiParseError {
+pub enum NativeLibAbiParseError {
     /// Failed to read a file from disk.
     #[error("read {path}: {source}")]
     Io {
@@ -66,8 +66,8 @@ pub enum PocAbiParseError {
 ///
 /// # Errors
 ///
-/// Returns [`PocAbiParseError`] when the catalog file is missing or invalid.
-pub fn parse_catalog(catalog_root: &Path) -> Result<Vec<IndexEntry>, PocAbiParseError> {
+/// Returns [`NativeLibAbiParseError`] when the catalog file is missing or invalid.
+pub fn parse_catalog(catalog_root: &Path) -> Result<Vec<IndexEntry>, NativeLibAbiParseError> {
     let catalog = load_catalog(catalog_root)?;
     entries_from_catalog(&catalog)
 }
@@ -79,11 +79,11 @@ pub fn parse_catalog(catalog_root: &Path) -> Result<Vec<IndexEntry>, PocAbiParse
 ///
 /// # Errors
 ///
-/// Returns [`PocAbiParseError`] on catalog or source validation failure.
+/// Returns [`NativeLibAbiParseError`] on catalog or source validation failure.
 pub fn parse_catalog_with_source_validation(
     catalog_root: &Path,
     repo_root: Option<&Path>,
-) -> Result<Vec<IndexEntry>, PocAbiParseError> {
+) -> Result<Vec<IndexEntry>, NativeLibAbiParseError> {
     let catalog = load_catalog(catalog_root)?;
     let entries = entries_from_catalog(&catalog)?;
     if let Some(root) = repo_root {
@@ -92,24 +92,26 @@ pub fn parse_catalog_with_source_validation(
     Ok(entries)
 }
 
-fn load_catalog(catalog_root: &Path) -> Result<PocAbiCatalog, PocAbiParseError> {
+fn load_catalog(catalog_root: &Path) -> Result<NativeLibAbiCatalog, NativeLibAbiParseError> {
     let path = catalog_root.join(CATALOG_REL_PATH);
-    let content = std::fs::read_to_string(&path).map_err(|source| PocAbiParseError::Io {
+    let content = std::fs::read_to_string(&path).map_err(|source| NativeLibAbiParseError::Io {
         path: path.display().to_string(),
         source,
     })?;
     Ok(serde_yaml::from_str(&content)?)
 }
 
-fn primary_abi_source(catalog: &PocAbiCatalog) -> Result<&AbiSource, PocAbiParseError> {
+fn primary_abi_source(catalog: &NativeLibAbiCatalog) -> Result<&AbiSource, NativeLibAbiParseError> {
     catalog
         .sources
         .iter()
         .find(|source| source.path.contains(ABI_DOC_SOURCE_MARKER))
-        .ok_or(PocAbiParseError::MissingAbiDocSource)
+        .ok_or(NativeLibAbiParseError::MissingAbiDocSource)
 }
 
-fn entries_from_catalog(catalog: &PocAbiCatalog) -> Result<Vec<IndexEntry>, PocAbiParseError> {
+fn entries_from_catalog(
+    catalog: &NativeLibAbiCatalog,
+) -> Result<Vec<IndexEntry>, NativeLibAbiParseError> {
     let source = primary_abi_source(catalog)?;
     let line = source
         .lines
@@ -119,9 +121,9 @@ fn entries_from_catalog(catalog: &PocAbiCatalog) -> Result<Vec<IndexEntry>, PocA
         .requirements
         .iter()
         .map(|requirement| IndexEntry {
-            id: format!("poc_abi.{}", requirement.name),
+            id: format!("native_lib_abi.{}", requirement.name),
             name: requirement.name.clone(),
-            category: Category::PocAbi,
+            category: Category::NativeLibAbi,
             summary: requirement.caller.clone(),
             source: SourceRef {
                 repo: catalog.source_repo.clone(),
@@ -129,7 +131,7 @@ fn entries_from_catalog(catalog: &PocAbiCatalog) -> Result<Vec<IndexEntry>, PocA
                 line,
             },
             keywords: vec![
-                "poc_abi".into(),
+                "native_lib_abi".into(),
                 catalog.package_id.clone(),
                 requirement.kind.clone(),
                 requirement.name.clone(),
@@ -141,21 +143,22 @@ fn entries_from_catalog(catalog: &PocAbiCatalog) -> Result<Vec<IndexEntry>, PocA
 }
 
 fn validate_against_source(
-    catalog: &PocAbiCatalog,
+    catalog: &NativeLibAbiCatalog,
     entries: &[IndexEntry],
     repo_root: &Path,
-) -> Result<(), PocAbiParseError> {
+) -> Result<(), NativeLibAbiParseError> {
     let source = primary_abi_source(catalog)?;
     let source_path = repo_root.join(&source.path);
-    let content = std::fs::read_to_string(&source_path).map_err(|source| PocAbiParseError::Io {
-        path: source_path.display().to_string(),
-        source,
-    })?;
+    let content =
+        std::fs::read_to_string(&source_path).map_err(|source| NativeLibAbiParseError::Io {
+            path: source_path.display().to_string(),
+            source,
+        })?;
 
     for entry in entries {
         let needle = symbol_search_token(&entry.name);
         if !content.contains(needle) {
-            return Err(PocAbiParseError::SymbolNotInSource {
+            return Err(NativeLibAbiParseError::SymbolNotInSource {
                 symbol: entry.name.clone(),
                 source_path: source_path.display().to_string(),
             });

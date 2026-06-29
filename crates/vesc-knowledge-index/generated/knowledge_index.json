@@ -1372,9 +1372,9 @@
     ]
   },
   {
-    "id": "poc_abi.VESC_IF.lbm_enc_sym_eerror",
+    "id": "native_lib_abi.VESC_IF.lbm_enc_sym_eerror",
     "name": "VESC_IF.lbm_enc_sym_eerror",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package returns the firmware eval-error symbol on bad arguments",
     "source": {
       "repo": "vesc-mcp",
@@ -1382,16 +1382,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "error_symbol",
       "VESC_IF.lbm_enc_sym_eerror"
     ]
   },
   {
-    "id": "poc_abi.VESC_IF.send_app_data",
+    "id": "native_lib_abi.VESC_IF.send_app_data",
     "name": "VESC_IF.send_app_data",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package sends BLE loopback replies through firmware app data",
     "source": {
       "repo": "vesc-mcp",
@@ -1399,16 +1399,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "function",
       "VESC_IF.send_app_data"
     ]
   },
   {
-    "id": "poc_abi.VESC_IF.set_app_data_handler",
+    "id": "native_lib_abi.VESC_IF.set_app_data_handler",
     "name": "VESC_IF.set_app_data_handler",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package registers the BLE loopback app-data callback",
     "source": {
       "repo": "vesc-mcp",
@@ -1416,16 +1416,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "function",
       "VESC_IF.set_app_data_handler"
     ]
   },
   {
-    "id": "poc_abi.VESC_IF.system_time_ticks",
+    "id": "native_lib_abi.VESC_IF.system_time_ticks",
     "name": "VESC_IF.system_time_ticks",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package reads firmware ticks for loopback status replies",
     "source": {
       "repo": "vesc-mcp",
@@ -1433,16 +1433,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "function",
       "VESC_IF.system_time_ticks"
     ]
   },
   {
-    "id": "poc_abi.init",
+    "id": "native_lib_abi.init",
     "name": "init",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Firmware calls the native init trampoline after load-native-lib",
     "source": {
       "repo": "vesc-mcp",
@@ -1450,16 +1450,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "entry_point",
       "init"
     ]
   },
   {
-    "id": "poc_abi.lbm_add_extension",
+    "id": "native_lib_abi.lbm_add_extension",
     "name": "lbm_add_extension",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package registers LispBM extensions through VESC_IF",
     "source": {
       "repo": "vesc-mcp",
@@ -1467,16 +1467,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "function",
       "lbm_add_extension"
     ]
   },
   {
-    "id": "poc_abi.lbm_dec_as_i32",
+    "id": "native_lib_abi.lbm_dec_as_i32",
     "name": "lbm_dec_as_i32",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package decodes LispBM integer arguments",
     "source": {
       "repo": "vesc-mcp",
@@ -1484,16 +1484,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "function",
       "lbm_dec_as_i32"
     ]
   },
   {
-    "id": "poc_abi.lbm_enc_i",
+    "id": "native_lib_abi.lbm_enc_i",
     "name": "lbm_enc_i",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package encodes integer results",
     "source": {
       "repo": "vesc-mcp",
@@ -1501,16 +1501,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "function",
       "lbm_enc_i"
     ]
   },
   {
-    "id": "poc_abi.lbm_uint",
+    "id": "native_lib_abi.lbm_uint",
     "name": "lbm_uint",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Extension ABI carries argument counts",
     "source": {
       "repo": "vesc-mcp",
@@ -1518,16 +1518,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "type",
       "lbm_uint"
     ]
   },
   {
-    "id": "poc_abi.lbm_value",
+    "id": "native_lib_abi.lbm_value",
     "name": "lbm_value",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Extension ABI passes LispBM values",
     "source": {
       "repo": "vesc-mcp",
@@ -1535,16 +1535,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "type",
       "lbm_value"
     ]
   },
   {
-    "id": "poc_abi.lib_info",
+    "id": "native_lib_abi.lib_info",
     "name": "lib_info",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Init receives package metadata",
     "source": {
       "repo": "vesc-mcp",
@@ -1552,16 +1552,16 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "type",
       "lib_info"
     ]
   },
   {
-    "id": "poc_abi.prog_ptr",
+    "id": "native_lib_abi.prog_ptr",
     "name": "prog_ptr",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "Native package exports the VESC program pointer header word",
     "source": {
       "repo": "vesc-mcp",
@@ -1569,7 +1569,7 @@
       "line": 94
     },
     "keywords": [
-      "poc_abi",
+      "native_lib_abi",
       "minimal-test-package",
       "loader_header",
       "prog_ptr"
@@ -1578,7 +1578,7 @@
   {
     "id": "priority.native-lib-minimal-abi",
     "name": "native_lib_minimal_abi",
-    "category": "poc_abi",
+    "category": "native_lib_abi",
     "summary": "12-symbol minimal Rust package ABI",
     "source": {
       "repo": "catalog",

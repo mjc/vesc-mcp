@@ -26,7 +26,7 @@ fn emit_golden_search_fixtures() {
             vesc_knowledge_index::Category::Lispbm => "lispbm",
             vesc_knowledge_index::Category::PackageBuild => "package_build",
             vesc_knowledge_index::Category::RefloatCommand => "refloat_command",
-            vesc_knowledge_index::Category::PocAbi => "poc_abi",
+            vesc_knowledge_index::Category::NativeLibAbi => "native_lib_abi",
         };
         let payload = serde_json::json!({
             "query": query,

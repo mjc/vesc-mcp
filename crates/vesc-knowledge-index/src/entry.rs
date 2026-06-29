@@ -8,7 +8,7 @@ pub enum Category {
     Lispbm,
     PackageBuild,
     RefloatCommand,
-    PocAbi,
+    NativeLibAbi,
 }
 
 /// Source attribution for an indexed artifact.
