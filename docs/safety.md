@@ -63,7 +63,7 @@ These tools are always registered (Wave 3 baseline):
 
 They operate on configured directories and catalog resources under `tests/fixtures/` or user-declared package roots. They do **not** open serial ports or initiate VESC Tool uploads.
 
-Offline walkthroughs: [examples/inspect-refloat-session.md](examples/inspect-refloat-session.md), [examples/build-poc-package-session.md](examples/build-poc-package-session.md).
+Offline walkthroughs: [examples/inspect-refloat-session.md](examples/inspect-refloat-session.md), [examples/build-native-lib-package-session.md](examples/build-native-lib-package-session.md).
 
 ---
 

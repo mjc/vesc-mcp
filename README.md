@@ -80,7 +80,7 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) | Native loader ABI (vesc_pkg_lib) |
 | [docs/safety.md](docs/safety.md) | Flash/upload gates and device hygiene |
 | [docs/examples/inspect-refloat-session.md](docs/examples/inspect-refloat-session.md) | Agent walkthrough: refloat-minimal fixture |
-| [docs/examples/build-poc-package-session.md](docs/examples/build-poc-package-session.md) | Agent walkthrough: fixture build via `vesc_tool` |
+| [docs/examples/build-native-lib-package-session.md](docs/examples/build-native-lib-package-session.md) | Agent walkthrough: fixture build via `vesc_tool` |
 
 ## External repos (optional)
 

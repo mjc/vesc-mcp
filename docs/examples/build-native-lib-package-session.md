@@ -1,6 +1,6 @@
-# Example agent session: build fixture package via vesc_tool
+# Example agent session: build native-lib-minimal fixture via vesc_tool
 
-Walkthrough for `build_vescpkg` on `tests/fixtures/poc-native-lib-minimal/` using the official `vesc_tool` packer. Production refloat packages follow the same `--buildPkgFromDesc` path (see [inspect-refloat-session.md](inspect-refloat-session.md) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
+Walkthrough for `build_vescpkg` on `tests/fixtures/native-lib-minimal/` using the official `vesc_tool` packer. Production refloat packages follow the same `--buildPkgFromDesc` path (see [inspect-refloat-session.md](inspect-refloat-session.md) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
 
 **Prerequisites**
 
@@ -16,13 +16,13 @@ The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). `build
 
 ## Prompt 1 — validate before build
 
-> Validate layout for `tests/fixtures/poc-native-lib-minimal` before building.
+> Validate layout for `tests/fixtures/native-lib-minimal` before building.
 
 **Tool call** (`validate_package_layout`)
 
 ```json
 {
-  "root": "tests/fixtures/poc-native-lib-minimal"
+  "root": "tests/fixtures/native-lib-minimal"
 }
 ```
 
@@ -44,7 +44,7 @@ The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). `build
 
 ```json
 {
-  "root": "tests/fixtures/poc-native-lib-minimal",
+  "root": "tests/fixtures/native-lib-minimal",
   "timeout_secs": 120
 }
 ```
@@ -54,13 +54,13 @@ The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). `build
 ```json
 {
   "ok": true,
-  "artifact_path": "/…/tests/fixtures/poc-native-lib-minimal/package/poc-native-lib-minimal.vescpkg",
+  "artifact_path": "/…/tests/fixtures/native-lib-minimal/package/native-lib-minimal.vescpkg",
   "sha256": "5148d649a6da7abb8deb5a4bdca38f9fe7bd1b9d918f9e06001e0f20e2cedba9",
   "size_bytes": 406
 }
 ```
 
-The SHA-256 must match the committed golden vector in `tests/fixtures/golden/poc-minimal.sha256`.
+The SHA-256 must match the committed golden vector in `tests/fixtures/golden/native-lib-minimal.sha256`.
 
 On layout, missing `vesc_tool`, or I/O failure the tool returns `{ "ok": false, "error": { "code": "…", "message": "…", "hint": "…" } }`.
 
@@ -68,13 +68,13 @@ On layout, missing `vesc_tool`, or I/O failure the tool returns `{ "ok": false, 
 
 ## Prompt 3 — inspect wire artifact
 
-> Run `inspect_vescpkg` on the artifact from the build step (or on the committed golden file `tests/fixtures/golden/poc-minimal.vescpkg`).
+> Run `inspect_vescpkg` on the artifact from the build step (or on the committed golden file `tests/fixtures/golden/native-lib-minimal.vescpkg`).
 
 **Tool call**
 
 ```json
 {
-  "path": "tests/fixtures/golden/poc-minimal.vescpkg"
+  "path": "tests/fixtures/golden/native-lib-minimal.vescpkg"
 }
 ```
 
@@ -97,12 +97,12 @@ Additional wire fields may appear as the inspector grows; the fields above are a
 
 ## Prompt 4 — compare manifest resource (optional)
 
-> Fetch `vescpkg://fixture/poc-native-lib-minimal/manifest` and confirm pkgdesc fields before build.
+> Fetch `vescpkg://fixture/native-lib-minimal/manifest` and confirm pkgdesc fields before build.
 
 **Resource URI**
 
 ```
-vescpkg://fixture/poc-native-lib-minimal/manifest
+vescpkg://fixture/native-lib-minimal/manifest
 ```
 
 **Expected `parsed` excerpt**
@@ -110,7 +110,7 @@ vescpkg://fixture/poc-native-lib-minimal/manifest
 ```json
 {
   "pkg_name": "POC native-lib minimal fixture",
-  "output_name": "poc-native-lib-minimal.vescpkg",
+  "output_name": "native-lib-minimal.vescpkg",
   "description_md_path": "README.md",
   "lisp_path": "code.lisp",
   "qml_path": "",

@@ -127,5 +127,5 @@ The footer attributes the source file under `tests/fixtures/refloat-minimal/pkgd
 ## Next steps
 
 - Build recipe: `vesc://catalog/build-recipe/refloat-vesc-tool`
-- Build the POC native-lib fixture: [build-poc-package-session.md](build-poc-package-session.md)
+- Build the native-lib fixture: [build-native-lib-package-session.md](build-native-lib-package-session.md)
 - Safety rules for device operations: [../safety.md](../safety.md)
