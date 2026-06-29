@@ -123,6 +123,23 @@ nix develop -c bash scripts/coverage-summary.sh   # per-crate % vs floor
 
 CI uploads `lcov.info` (report-only; does not fail the build).
 
+## Beads (task graph)
+
+Task state is **not** stored in-repo. Use the **Beads MCP** (`user-br`) or CLI against the external workspace:
+
+| Location | Purpose |
+|----------|---------|
+| `~/cfg/beads/vesc-mcp/.beads/` | SQLite + `issues.jsonl` for this project |
+| Beads MCP | `project_overview`, `list_issues`, `create_issue`, `close_issue`, … |
+
+```bash
+# CLI fallback (from repo root; never use in-repo .beads/)
+br --project-db-root ~/cfg/beads ready
+br --project-db-root ~/cfg/beads show br-flj
+```
+
+Do **not** run `br init` in the repo — that creates an accidental `.beads/` directory. Issue prefix: `br-`.
+
 ## Related docs
 
 - [docs/vescpackage-reference.md](docs/vescpackage-reference.md) — package lifecycle index (wire + ABI)

@@ -5,6 +5,9 @@
 *.swo
 .DS_Store
 
+# Beads task state lives in ~/cfg/beads/vesc-mcp (MCP / br --project-db-root), not in-repo
+.beads/
+
 # Build outputs from adapter tests (golden vectors under tests/fixtures/golden/ are committed)
 /tests/fixtures/**/*.vescpkg
 !/tests/fixtures/golden/*.vescpkg

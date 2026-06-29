@@ -106,12 +106,14 @@ Copy [`config.example.toml`](config.example.toml) to `~/.config/vesc-mcp/config.
 
 ## Beads backlog
 
+Task graph lives in **`~/cfg/beads/vesc-mcp`** (Beads MCP or CLI). Do not use an in-repo `.beads/` directory.
+
 ```bash
 br --project-db-root ~/cfg/beads ready
 br --project-db-root ~/cfg/beads show br-docs-dx-8tw
 ```
 
-Coordination epic: `br-flj` (multitask delivery waves).
+In Cursor, prefer the **Beads MCP** (`user-br`) for `list_issues`, `create_issue`, and `close_issue`. Coordination epic: `br-flj` (multitask delivery waves).
 
 ## MCP SDK
 
