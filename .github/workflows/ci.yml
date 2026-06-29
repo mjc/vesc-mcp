@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
@@ -25,6 +27,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
@@ -36,6 +40,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
