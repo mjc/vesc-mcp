@@ -15,9 +15,12 @@ use rmcp::{
     transport::stdio,
 };
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::resources::{ResourceReadError, ResourceRegistry, ResourceSubscriptions};
+use crate::resources::{
+    CatalogSourceWatcher, ResourceReadError, ResourceRegistry, ResourceSubscriptions,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
@@ -47,6 +50,8 @@ pub struct VescMcpService {
     tool_router: ToolRouter<Self>,
     resources: Arc<ResourceRegistry>,
     resource_subscriptions: Arc<ResourceSubscriptions>,
+    catalog_watcher: Arc<CatalogSourceWatcher>,
+    catalog_root: PathBuf,
 }
 
 impl Default for VescMcpService {
@@ -70,6 +75,8 @@ impl VescMcpService {
                 ResourceRegistry::with_defaults().expect("default MCP resource registry"),
             ),
             resource_subscriptions: Arc::new(ResourceSubscriptions::new()),
+            catalog_watcher: Arc::new(CatalogSourceWatcher::new()),
+            catalog_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog"),
         }
     }
 
@@ -225,14 +232,22 @@ impl ServerHandler for VescMcpService {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
+        let catalog_changed = self
+            .catalog_watcher
+            .take_change_if_any(&request.uri, &self.catalog_root);
         match self.resources.read(&request.uri) {
             Ok(text) => {
                 let mime_type = self
                     .resources
                     .lookup(&request.uri)
                     .map_or("application/json", |meta| meta.mime_type.as_str());
+                if catalog_changed && self.resource_subscriptions.is_subscribed(&request.uri) {
+                    let _ = self
+                        .notify_resource_updated_if_subscribed(&context.peer, &request.uri)
+                        .await;
+                }
                 Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(text, &request.uri).with_mime_type(mime_type),
                 ]))
@@ -258,7 +273,9 @@ impl ServerHandler for VescMcpService {
                 None,
             ));
         }
-        self.resource_subscriptions.subscribe(request.uri);
+        self.resource_subscriptions.subscribe(&request.uri);
+        self.catalog_watcher
+            .seed_baseline(&request.uri, &self.catalog_root);
         Ok(())
     }
 

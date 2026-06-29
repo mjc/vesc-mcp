@@ -8,6 +8,7 @@
 mod abi;
 mod attribution;
 mod catalog;
+mod catalog_watch;
 mod manifest;
 mod refloat_command;
 mod r#static;
@@ -21,6 +22,7 @@ pub use catalog::{
     BuildFlowDoc, BuildRecipeResourceHandler, REFLOAT_VESC_TOOL_URI, load_build_flow,
     read_build_recipe, register_build_recipe_resources,
 };
+pub use catalog_watch::CatalogSourceWatcher;
 pub use manifest::{
     ManifestResourceHandler, NATIVE_LIB_MINIMAL_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
     read_manifest, register_manifest_resources,
