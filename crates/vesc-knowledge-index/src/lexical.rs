@@ -67,6 +67,12 @@ struct LexicalArtifact {
     chunks: Vec<Chunk>,
 }
 
+#[derive(Debug, Serialize)]
+struct LexicalArtifactRef<'a> {
+    schema: u16,
+    chunks: Vec<&'a Chunk>,
+}
+
 /// In-memory fielded lexical index. Artifact persistence is added by the lifecycle phase.
 pub struct LexicalIndex {
     index: Index,
@@ -138,9 +144,10 @@ impl LexicalIndex {
         &self,
         path: &Path,
     ) -> Result<(ContentDigest, u64), LexicalError> {
-        let mut chunks: Vec<_> = self.chunks.values().cloned().collect();
-        chunks.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
-        let artifact = LexicalArtifact { schema: 1, chunks };
+        let artifact = LexicalArtifactRef {
+            schema: 1,
+            chunks: self.chunks.values().collect(),
+        };
         let bytes = serde_json::to_vec(&artifact)
             .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         let digest = ContentDigest::of(&bytes);
