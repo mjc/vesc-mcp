@@ -192,11 +192,12 @@ fn resolve_dynamic_manifest_path(path: &str, allowed_roots: &[PathBuf]) -> Resul
 }
 
 fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
+    crate::workspace::fixtures_root()
 }
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    crate::workspace::workspace_root()
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 fn manifest_source_path(path: &Path) -> String {

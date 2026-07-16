@@ -70,7 +70,7 @@ impl SharedMcpState {
             ),
             resource_subscriptions: Arc::new(ResourceSubscriptions::new()),
             catalog_watcher: Arc::new(CatalogSourceWatcher::new()),
-            catalog_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog"),
+            catalog_root: crate::workspace::catalog_root(),
         }
     }
 }

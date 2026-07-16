@@ -49,7 +49,6 @@ pub use uri::{
 };
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use rmcp::model::{Resource as McpResource, ResourceTemplate as McpResourceTemplate};
 
@@ -268,7 +267,7 @@ impl ResourceRegistry {
     /// Returns [`ResourceRegistryError`] when static resource registration fails.
     pub fn with_defaults() -> Result<Self, ResourceRegistryError> {
         let mut registry = Self::new();
-        let catalog_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog");
+        let catalog_root = crate::workspace::catalog_root();
         register_build_recipe_resources(&mut registry)?;
         register_doc_topic_resources(&mut registry)?;
         register_abi_resources(&mut registry)?;

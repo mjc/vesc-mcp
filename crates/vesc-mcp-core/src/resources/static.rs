@@ -237,7 +237,7 @@ impl ResourceReadHandler for DocTopicResourceHandler {
 }
 
 fn repo_catalog_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog")
+    crate::workspace::catalog_root()
 }
 
 #[cfg(test)]

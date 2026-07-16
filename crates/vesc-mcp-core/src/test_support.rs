@@ -26,7 +26,7 @@ impl TempWorkspace {
 /// Workspace-root `tests/fixtures/` directory.
 #[must_use]
 pub fn fixtures_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
+    crate::workspace::fixtures_root()
 }
 
 /// Allowed sandbox roots covering all in-repo fixtures (unit tests).

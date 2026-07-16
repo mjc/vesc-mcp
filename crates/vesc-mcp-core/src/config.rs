@@ -113,9 +113,7 @@ impl McpConfig {
             #[cfg(any(test, feature = "test-fixtures"))]
             {
                 return Self {
-                    package_roots: vec![
-                        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures"),
-                    ],
+                    package_roots: vec![crate::workspace::fixtures_root()],
                     ..config
                 };
             }

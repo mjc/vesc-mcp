@@ -227,12 +227,12 @@ impl ResourceReadHandler for BuildRecipeResourceHandler {
 }
 
 fn repo_catalog_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog")
+    crate::workspace::catalog_root()
 }
 
 #[cfg(test)]
 fn default_catalog_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog")
+    crate::workspace::catalog_root()
 }
 
 #[cfg(test)]

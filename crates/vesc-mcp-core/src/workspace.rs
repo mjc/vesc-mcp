@@ -15,6 +15,24 @@ pub fn workspace_root() -> Option<PathBuf> {
     WORKSPACE_ROOT.get_or_init(discover_workspace_root).clone()
 }
 
+/// Resolve the repository catalog, preferring the runtime-configured workspace.
+#[must_use]
+pub fn catalog_root() -> PathBuf {
+    workspace_root().map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../catalog"),
+        |root| root.join("catalog"),
+    )
+}
+
+/// Resolve repository fixtures, preferring the runtime-configured workspace.
+#[must_use]
+pub fn fixtures_root() -> PathBuf {
+    workspace_root().map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures"),
+        |root| root.join("tests/fixtures"),
+    )
+}
+
 fn discover_workspace_root() -> Option<PathBuf> {
     if let Ok(root) = env::var("VESC_MCP_WORKSPACE_ROOT") {
         let path = PathBuf::from(root);
