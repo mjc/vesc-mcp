@@ -204,10 +204,14 @@
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
         };
+        rocmOnnxruntime = if pkgs.stdenv.isLinux then
+          pkgs.onnxruntime.override { rocmSupport = true; }
+        else null;
       in {
         packages.default = packageFor system;
         packages.vesc-mcp = packageFor system;
-        devShells.default = pkgs.mkShell {
+        devShells = {
+          default = pkgs.mkShell {
           packages = with pkgs; [
             rustToolchain pkg-config cargo-nextest cargo-llvm-cov cargo-deny
             cargo-audit clippy rustfmt jq hyperfine onnxruntime
@@ -225,6 +229,21 @@
             export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
             echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)"
           '';
+          };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          rocm = pkgs.mkShell {
+            packages = with pkgs; [
+              rustToolchain pkg-config cargo-nextest clippy rustfmt jq hyperfine
+              python3Packages.onnx python3Packages.onnxruntime rocmOnnxruntime
+              rocmPackages.rocm-runtime rocmPackages.rocminfo
+            ];
+            shellHook = ''
+              export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
+              export CARGO_TARGET_DIR="$PWD/target"
+              export ORT_DYLIB_PATH="${rocmOnnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
+              echo "vesc-mcp ROCm shell; build with --features semantic-fastembed,semantic-rocm"
+            '';
+          };
         };
         formatter = pkgs.rustfmt;
         checks.nixos-module =

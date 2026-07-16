@@ -772,7 +772,19 @@ fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
 
 #[cfg(all(
     feature = "semantic-fastembed",
-    not(all(feature = "semantic-coreml", target_os = "macos"))
+    feature = "semantic-rocm",
+    target_os = "linux"
+))]
+fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
+    vec![ort::ep::ROCm::default().build()]
+}
+
+#[cfg(all(
+    feature = "semantic-fastembed",
+    not(any(
+        all(feature = "semantic-coreml", target_os = "macos"),
+        all(feature = "semantic-rocm", target_os = "linux")
+    ))
 ))]
 fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
     Vec::new()
