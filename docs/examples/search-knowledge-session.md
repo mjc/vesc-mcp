@@ -32,6 +32,19 @@ Filters are conjunctive. The response `index` object reports the active corpus
 digest, counts, source count, component versions, and optional-source diagnostic
 count without exposing private paths or the raw query.
 
+For an artifact containing immutable Git-tree sources, repository and revision
+filters pin retrieval to one exact snapshot:
+
+```json
+{"query":"imu_read_callback","mode":"lexical","filters":{"repository":"vesc","revision":"0123456789abcdef0123456789abcdef01234567"}}
+```
+
+Git-tree ingestion is additive to the compatibility corpus. The optional
+`git-corpus` build feature consumes an already-managed repository plus an exact
+commit ID, reads blobs without a checkout, and records repository, revision,
+path, media type, trust, license, digest, and source span. Repository acquisition
+and active-generation selection remain separate lifecycle steps.
+
 ## Source read and citation
 
 1. Read `vesc://knowledge/chunk/{id}` from a returned `resource_uri` for the

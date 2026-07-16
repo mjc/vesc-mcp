@@ -102,6 +102,10 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 
 Catalog path validation and knowledge indexing resolve upstream sources in this order: **environment override → initialized `vendor/` submodule → sibling checkout default**. Full reference: [docs/configuration.md](docs/configuration.md).
 
+The Nix release package includes the generated lexical corpus from the pinned
+VESC firmware, VESC Tool, and Refloat revisions and selects it by default.
+Submodules are not used at runtime or while installing the release package.
+
 | Variable | Default (when unset) |
 |----------|----------------------|
 | `VESC_REFLOAT_ROOT` | `vendor/refloat` if submodule initialized, else `~/projects/refloat` |

@@ -26,7 +26,17 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = [ "-p" "vesc-mcp-server" ];
           doCheck = false;
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper pkgs.gzip ];
+          postInstall = ''
+            knowledge="$out/share/vesc-mcp/knowledge"
+            mkdir -p "$knowledge"
+            cp -R ${./release/knowledge}/. "$knowledge/"
+            find "$knowledge" -name '*.gz' -exec gzip -df '{}' \;
+            test -s "$knowledge/active.json"
+            test -s "$knowledge/generations/"*/lexical.json
+            wrapProgram "$out/bin/vesc-mcp-server" \
+              --set-default VESC_RAG_ARTIFACT "$knowledge"
+          '';
           meta.mainProgram = "vesc-mcp-server";
         };
 

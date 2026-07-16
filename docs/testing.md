@@ -8,6 +8,8 @@ vesc-mcp follows **red → green → refactor** for every feature. Commit a fail
 nix develop -c make check          # fmt + clippy + nextest + doc
 nix develop -c cargo nextest run --workspace
 nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
+nix develop -c cargo nextest run -p vesc-knowledge-index --features git-corpus -E 'binary(git_ingestion)'
+nix build
 nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- build
 nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- inspect
 nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode legacy --format text
@@ -35,6 +37,11 @@ latency result. The benchmark uses the active artifact generation, so rebuilding
 the corpus changes both the corpus digest and the cache key.
 
 Configuration lives in [`.config/nextest.toml`](../.config/nextest.toml). The `ci` profile enables fail-fast and one retry.
+
+The `git-corpus` fixture suite creates local bare repositories and reads exact
+commit trees through `gix`; it requires no checkout or network. It covers the
+reviewed VESC, VESC Tool, and Refloat source families plus deterministic
+artifacts, provenance, resource bounds, and unsafe/non-text entry rejection.
 
 ## Test tiers
 

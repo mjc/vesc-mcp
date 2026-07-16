@@ -98,6 +98,10 @@ The lexical artifact cache is keyed by the active immutable generation path.
 After `build`, the new corpus digest selects a new generation and the next
 request loads that generation automatically.
 
+The Nix package wrapper sets `VESC_RAG_ARTIFACT` to its bundled expanded
+corpus unless the caller already supplied an override. Source checkouts and
+submodules are not part of the installed runtime package.
+
 ### Workspace discovery
 
 | Variable | Default | Description |
