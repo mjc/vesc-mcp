@@ -187,28 +187,38 @@ impl SemanticBenchmarkMatrixReport {
         writeln!(markdown).expect("write to String");
         writeln!(
             markdown,
-            "| Batch | Build p50 (µs) | First query after build p50 (µs) | Embedding p50 (µs) | Exact K=5 p50 (µs) | Exact K=50 p50 (µs) |"
+            "| Batch | Intra threads | Chunks | Provider p50 (µs) | Chunks/sec | Padding (ppm) | Exact K=5 p50 (µs) |"
         )
         .expect("write to String");
-        writeln!(markdown, "| ---: | ---: | ---: | ---: | ---: | ---: |").expect("write to String");
+        writeln!(
+            markdown,
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        )
+        .expect("write to String");
         for report in &self.runs {
             let k5 = report
                 .exact_search
                 .get(&5)
                 .map_or(0, |timing| timing.p50_us);
-            let k50 = report
-                .exact_search
-                .get(&50)
-                .map_or(0, |timing| timing.p50_us);
+            let chunks_per_second = if report.provider_inference.p50_us == 0 {
+                0
+            } else {
+                (report.corpus_chunks as u64 * 1_000_000) / report.provider_inference.p50_us
+            };
+            let padding = report
+                .token_statistics
+                .as_ref()
+                .map_or(0, |statistics| statistics.padding_ratio_ppm);
             writeln!(
                 markdown,
-                "| {} | {} | {} | {} | {} | {} |",
+                "| {} | {:?} | {} | {} | {} | {} | {} |",
                 report.outer_batch_size,
-                report.build.p50_us,
-                report.first_query_after_build.p50_us,
-                report.embedding.p50_us,
+                report.intra_threads,
+                report.corpus_chunks,
+                report.provider_inference.p50_us,
+                chunks_per_second,
+                padding,
                 k5,
-                k50,
             )
             .expect("write to String");
         }
@@ -229,6 +239,28 @@ impl SemanticBenchmarkReport {
         writeln!(markdown, "- Corpus digest: `{}`", self.corpus_digest).expect("write to String");
         writeln!(markdown, "- Build identity: `{}`", self.build_identity).expect("write to String");
         writeln!(markdown, "- Machine: `{}`", self.machine.rust_target).expect("write to String");
+        writeln!(markdown, "- Outer batch size: `{}`", self.outer_batch_size)
+            .expect("write to String");
+        writeln!(markdown, "- Intra-op threads: `{:?}`", self.intra_threads)
+            .expect("write to String");
+        writeln!(
+            markdown,
+            "- Embedding input bytes: `{}`",
+            self.embedding_input_bytes
+        )
+        .expect("write to String");
+        if let Some(statistics) = &self.token_statistics {
+            writeln!(
+                markdown,
+                "- Tokens: real={} padded={} untruncated={} truncated-chunks={} padding-ppm={}",
+                statistics.total_real_tokens,
+                statistics.total_padded_tokens,
+                statistics.total_untruncated_tokens,
+                statistics.truncated_chunks,
+                statistics.padding_ratio_ppm,
+            )
+            .expect("write to String");
+        }
         writeln!(markdown).expect("write to String");
         writeln!(
             markdown,
@@ -245,6 +277,17 @@ impl SemanticBenchmarkReport {
             &self.first_query_after_build,
         );
         write_timing_row(&mut markdown, "Build", &self.build);
+        write_timing_row(&mut markdown, "Embedding input", &self.embedding_input);
+        write_timing_row(
+            &mut markdown,
+            "Provider inference",
+            &self.provider_inference,
+        );
+        write_timing_row(
+            &mut markdown,
+            "Vector finalization",
+            &self.vector_finalization,
+        );
         write_timing_row(&mut markdown, "Query embedding", &self.embedding);
         for (limit, timing) in &self.exact_search {
             write_timing_row(&mut markdown, &format!("Exact search K={limit}"), timing);

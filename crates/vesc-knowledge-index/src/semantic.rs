@@ -606,6 +606,16 @@ impl FastEmbedProvider {
         if texts.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
+        let prefixed;
+        let texts = if self.profile.document_prefix.is_empty() {
+            texts
+        } else {
+            prefixed = texts
+                .iter()
+                .map(|text| format!("{}{}", self.profile.document_prefix, text))
+                .collect::<Vec<_>>();
+            &prefixed
+        };
         let mut untruncated_tokenizer = self.model.tokenizer.clone();
         untruncated_tokenizer.with_padding(None);
         untruncated_tokenizer

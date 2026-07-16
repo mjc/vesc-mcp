@@ -1223,18 +1223,37 @@ fn print_semantic_benchmark_report(report: &SemanticBenchmarkReport) {
         report.model_id, report.model_revision, report.corpus_digest, report.build_identity
     );
     println!(
-        "corpus: chunks={} vectors={} dimension={} artifact-bytes={} outer-batch={}",
+        "corpus: chunks={} vectors={} dimension={} artifact-bytes={} outer-batch={} intra-threads={:?}",
         report.corpus_chunks,
         report.vector_count,
         report.vector_dimension,
         report.artifact_bytes,
-        report.outer_batch_size
+        report.outer_batch_size,
+        report.intra_threads
     );
     if let Some(initialization) = &report.cold_initialization {
         print_timing("cold-initialization", initialization);
     }
     print_timing("first-query-after-build", &report.first_query_after_build);
     print_timing("build", &report.build);
+    print_timing("embedding-input", &report.embedding_input);
+    print_timing("provider-inference", &report.provider_inference);
+    print_timing("vector-finalization", &report.vector_finalization);
+    println!("embedding-input-bytes: {}", report.embedding_input_bytes);
+    if let Some(statistics) = &report.token_statistics {
+        println!(
+            "tokens: real={} padded={} untruncated={} min={} median={} p95={} max={} truncated-chunks={} padding-ppm={}",
+            statistics.total_real_tokens,
+            statistics.total_padded_tokens,
+            statistics.total_untruncated_tokens,
+            statistics.min_tokens,
+            statistics.median_tokens,
+            statistics.p95_tokens,
+            statistics.maximum_tokens,
+            statistics.truncated_chunks,
+            statistics.padding_ratio_ppm,
+        );
+    }
     print_timing("embedding", &report.embedding);
     for (limit, timing) in &report.exact_search {
         print_timing(&format!("exact-search-{limit}"), timing);
