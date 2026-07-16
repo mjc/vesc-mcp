@@ -5,8 +5,10 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::{Category, IndexEntry, SourceRef, rank_entries};
+use crate::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex, NormalizedDocument};
 
 static ENTRIES: OnceLock<Vec<IndexEntry>> = OnceLock::new();
+static LEXICAL: OnceLock<LexicalIndex> = OnceLock::new();
 
 /// Load the compile-time embedded index entries.
 ///
@@ -21,6 +23,47 @@ pub fn embedded_entries() -> &'static [IndexEntry] {
             serde_json::from_str(json).expect("valid embedded knowledge index json")
         })
         .as_slice()
+}
+
+/// Builds the fielded lexical index from the legacy embedded corpus once.
+///
+/// # Panics
+///
+/// Panics if the embedded generated corpus violates the migration contract or
+/// Tantivy cannot build its in-memory index.
+#[must_use]
+pub fn lexical_index() -> &'static LexicalIndex {
+    LEXICAL.get_or_init(|| {
+        let chunks = embedded_entries()
+            .iter()
+            .map(|entry| {
+                NormalizedDocument::from_legacy(entry)
+                    .and_then(|document| document.legacy_chunk())
+                    .expect("embedded legacy entry migrates to a chunk")
+            })
+            .collect::<Vec<_>>();
+        LexicalIndex::build(&chunks).expect("embedded lexical index builds")
+    })
+}
+
+/// Searches the fielded lexical index over the embedded legacy corpus.
+///
+/// # Errors
+///
+/// Returns [`LexicalError`] for empty queries or Tantivy search failures.
+pub fn search_lexical_knowledge(
+    query: &str,
+    category: Option<Category>,
+    limit: usize,
+) -> Result<Vec<LexicalHit>, LexicalError> {
+    lexical_index().search(
+        query,
+        &LexicalFilters {
+            category,
+            ..LexicalFilters::default()
+        },
+        limit,
+    )
 }
 
 /// One ranked search hit from the embedded index.
@@ -80,5 +123,15 @@ mod tests {
     fn search_knowledge_zero_limit_becomes_one() {
         let hits = search_knowledge("pkg", None, 0);
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn lexical_search_preserves_exact_identifier() {
+        let hits = search_lexical_knowledge("lbm_add_extension", None, 1).expect("search");
+        assert_eq!(
+            hits[0].chunk.identifiers.iter().next().map(String::as_str),
+            Some("lbm_add_extension")
+        );
+        assert!(hits[0].exact_identifier);
     }
 }
