@@ -43,17 +43,30 @@ Fallback without Nix: build `vesc-mcp-server` and point `command` at the binary;
 
 Verify the connection with the `ping` tool (optional `message` echoes back). Then use `list_vesc_packages` and `inspect_pkgdesc` on paths under your configured sandbox — offline examples live in [`tests/fixtures/`](tests/fixtures/README.md) and [docs/examples/](docs/examples/).
 
+For multiple MCP clients, run the shared Streamable HTTP service:
+
+```bash
+nix develop -c vesc-mcp-server --http
+```
+
+It listens on `http://127.0.0.1:8080/mcp` by default and shares the knowledge
+index/cache across clients. HTTP exposes health, knowledge search, and
+resources; package-tree mutation/build tools remain on stdio until a
+per-client authenticated root policy is implemented. Configure bind, Host,
+Origin, and bearer authentication with the `VESC_MCP_HTTP_*` variables in
+[docs/configuration.md](docs/configuration.md).
+
 Optional CI smoke: `./scripts/docs-smoke.sh` (spawns server, checks `tools/list` count).
 
 ## Architecture overview
 
 ```
-MCP Client  →  vesc-mcp-server (stdio)  →  vesc-mcp-core
+ MCP Client  →  vesc-mcp-server (stdio or Streamable HTTP)  →  vesc-mcp-core
                                               ├─ tools (ping, list, inspect, build, …)
                                               ├─ resources (vesc://catalog/*, vescpkg://…)
                                               ├─ vesc-domain (parse / validate / read vescpkg wire)
                                               ├─ vesc-mcp-adapters (inspect + pkgdesc discovery)
-                                              ├─ vesc-knowledge-index (embedded search)
+                                              ├─ vesc-knowledge-index (corpus, lexical search, optional vectors)
                                               └─ catalog/ YAML + tests/fixtures/
 ```
 
@@ -63,7 +76,7 @@ MCP Client  →  vesc-mcp-server (stdio)  →  vesc-mcp-core
 | `vesc-mcp-core` | tools, resources, config, MCP service |
 | `vesc-domain` | VESC / vescpkg domain types and parsers |
 | `vesc-mcp-adapters` | Host-side pkgdesc discovery and `.vescpkg` inspect |
-| `vesc-knowledge-index` | Embedded firmware/package knowledge index |
+| `vesc-knowledge-index` | Versioned corpus, chunking, lexical retrieval, optional vectors, and artifact lifecycle |
 
 See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data-flow notes.
 
@@ -79,6 +92,9 @@ See [docs/architecture.md](docs/architecture.md) for a detailed diagram and data
 | [docs/vescpkg-wire-format.md](docs/vescpkg-wire-format.md) | `.vescpkg` byte-level wire spec |
 | [docs/vesc-pkg-lib-abi.md](docs/vesc-pkg-lib-abi.md) | Native loader ABI (vesc_pkg_lib) |
 | [docs/safety.md](docs/safety.md) | Flash/upload gates and device hygiene |
+| [docs/rag-threat-model.md](docs/rag-threat-model.md) | Knowledge ingestion and retrieval threat model |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Artifact, mode, and offline fallback diagnosis |
+| [docs/examples/search-knowledge-session.md](docs/examples/search-knowledge-session.md) | Copy-paste retrieval and citation sessions |
 | [docs/examples/inspect-refloat-session.md](docs/examples/inspect-refloat-session.md) | Agent walkthrough: refloat-minimal fixture |
 | [docs/examples/build-native-lib-package-session.md](docs/examples/build-native-lib-package-session.md) | Agent walkthrough: fixture build via `vesc_tool` |
 
@@ -103,6 +119,43 @@ Vendor submodules (optional but recommended for catalog validation):
 | `vendor/vesc_tool` | [vedderb/vesc_tool](https://github.com/vedderb/vesc_tool) |
 
 Copy [`config.example.toml`](config.example.toml) to `~/.config/vesc-mcp/config.toml` for persistent paths.
+
+### Build and inspect knowledge artifacts
+
+The default server remains offline and lexical; explicit legacy mode remains
+available for compatibility. To build the
+reviewed in-repo corpus, versioned lexical artifacts, and inspect the active
+manifest:
+
+```bash
+nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- build --source-root "$PWD"
+nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- inspect
+nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode lexical --artifact target/knowledge-artifacts
+nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- benchmark --artifact target/knowledge-artifacts
+nix develop -c cargo run -p vesc-mcp-server -- --benchmark-search --artifact target/knowledge-artifacts
+```
+
+Semantic retrieval is optional (`semantic-fastembed`); it requires an
+operator-provisioned, pinned local model directory and never downloads one at
+server startup. Build it with `--semantic-model-dir`, `--semantic-model-id`,
+and `--semantic-model-revision`. The active manifest records source digests,
+vendor repository revisions, chunking settings, component versions, and
+optional-source diagnostics.
+
+For the supported FastEmbed baseline, provision the model explicitly with the
+online-only feature, then use the printed revision and model manifest when
+building vectors:
+
+```bash
+nix develop -c cargo run -p vesc-knowledge-index --features semantic-fastembed-online --bin gen-knowledge-index -- \
+  provision-model --out target/models/bge-small-en-v1.5
+```
+
+The provisioner downloads only when this command is run, validates one local
+embedding, copies the five required files, and writes SHA-256 hashes to
+`target/models/bge-small-en-v1.5/manifest.json`. Evaluate the real hybrid path
+by passing that model directory, model ID, model revision, and the semantic
+artifact root to `evaluate --mode hybrid`.
 
 ## Beads backlog
 

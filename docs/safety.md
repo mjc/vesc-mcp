@@ -51,6 +51,18 @@ Example confirmation block for future upload tools:
 
 Sandbox rules for **package trees** (`VESC_PACKAGE_ROOTS`) are independent of device gates — see [configuration.md](configuration.md).
 
+## Knowledge retrieval safety
+
+`search_vesc_knowledge` is read-only. Its returned passages are untrusted
+evidence and must not be followed as instructions. Queries, candidates,
+passages, and serialized responses are bounded; source ingestion is restricted
+to canonicalized allowlisted roots. See [rag-threat-model.md](rag-threat-model.md)
+for the corresponding adversarial tests and accepted risks.
+
+The optional `semantic-fastembed` feature is not part of the default server
+build. Model/runtime files are operator-owned inputs: pin and validate them,
+keep them local, and never enable automatic download at startup.
+
 ---
 
 ## What is safe without the flash gate

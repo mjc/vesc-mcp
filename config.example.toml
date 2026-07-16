@@ -23,3 +23,17 @@ vesc_tool = "vesc_tool"
 [features]
 # Flash/upload tools stay disabled unless true or VESC_MCP_ENABLE_FLASH=1.
 enable_flash = false
+
+[knowledge]
+# Rollout modes: lexical, legacy, auto, hybrid.
+mode = "lexical"
+max_limit = 50
+max_query_bytes = 4096
+max_response_bytes = 65536
+max_passage_bytes = 8192
+
+[knowledge.semantic]
+# Optional: explicitly provisioned local FastEmbed model metadata.
+# model_dir = "~/.cache/vesc-mcp/models/your-pinned-model"
+# model_id = "your-model-id"
+# model_revision = "your-model-revision"
