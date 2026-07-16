@@ -10,10 +10,18 @@ description = "Searchable firmware and package knowledge index types and builder
 [lints]
 workspace = true
 
+[features]
+semantic-fastembed = ["dep:fastembed", "fastembed/ort-download-binaries-native-tls"]
+semantic-fastembed-online = ["semantic-fastembed", "fastembed/online"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+sha2.workspace = true
+pulldown-cmark.workspace = true
+tantivy.workspace = true
+fastembed = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [[bin]]

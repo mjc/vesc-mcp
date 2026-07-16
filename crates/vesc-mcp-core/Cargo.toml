@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 test-fixtures = []
+semantic-fastembed = ["vesc-knowledge-index/semantic-fastembed"]
 
 [dependencies]
 anyhow.workspace = true
