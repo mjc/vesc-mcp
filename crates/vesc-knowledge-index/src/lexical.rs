@@ -11,7 +11,7 @@ use tantivy::schema::{
 };
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
-use crate::corpus::{Chunk, ChunkId, SourceKind, TrustTier};
+use crate::corpus::{Chunk, ChunkId, ContentDigest, SourceKind, TrustTier};
 use crate::{Category, RepositoryId, Revision};
 
 /// Typed filters applied after Tantivy candidate retrieval.
@@ -125,12 +125,28 @@ impl LexicalIndex {
     /// Returns [`LexicalError::Io`] when the file cannot be written or
     /// [`LexicalError::Artifact`] when a chunk cannot be serialized.
     pub fn write_artifact(&self, path: &Path) -> Result<(), LexicalError> {
+        self.write_artifact_with_digest(path).map(|_| ())
+    }
+
+    /// Writes the artifact and returns the digest and exact byte length without
+    /// rereading the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when serialization or writing fails.
+    pub fn write_artifact_with_digest(
+        &self,
+        path: &Path,
+    ) -> Result<(ContentDigest, u64), LexicalError> {
         let mut chunks: Vec<_> = self.chunks.values().cloned().collect();
         chunks.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
         let artifact = LexicalArtifact { schema: 1, chunks };
         let bytes = serde_json::to_vec(&artifact)
             .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        std::fs::write(path, bytes).map_err(|error| LexicalError::Io(error.to_string()))
+        let digest = ContentDigest::of(&bytes);
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        std::fs::write(path, bytes).map_err(|error| LexicalError::Io(error.to_string()))?;
+        Ok((digest, length))
     }
 
     /// Loads and validates a deterministic lexical source artifact.
