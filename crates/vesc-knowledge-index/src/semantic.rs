@@ -1,6 +1,8 @@
 //! Optional local semantic retrieval contracts and vector artifacts.
 
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
+use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,6 +40,8 @@ pub enum EmbeddingError {
     UnknownChunk(ChunkId),
     #[error("vector artifact model metadata does not match the requested model")]
     ModelMismatch,
+    #[error("vector artifact schema {0} is unsupported; rebuild the semantic artifact")]
+    UnsupportedSchema(u16),
     #[error("embedding provider failed: {0}")]
     Provider(String),
     #[error("vector artifact JSON is invalid: {0}")]
@@ -64,6 +68,34 @@ pub struct EmbeddingProfile {
     pub max_length: usize,
     pub dimension: usize,
     pub normalize: bool,
+}
+
+/// The configured outer batch is the memory boundary for provider calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmbeddingBatchSize(NonZeroUsize);
+
+impl EmbeddingBatchSize {
+    /// Creates a batch size, rejecting zero at the configuration boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when `value` is zero.
+    pub fn new(value: usize) -> Result<Self, EmbeddingError> {
+        NonZeroUsize::new(value)
+            .map(Self)
+            .ok_or_else(|| EmbeddingError::Provider("embedding batch size must be nonzero".into()))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl Default for EmbeddingBatchSize {
+    fn default() -> Self {
+        Self(NonZeroUsize::new(8).expect("non-zero default batch size"))
+    }
 }
 
 impl EmbeddingProfile {
@@ -95,7 +127,7 @@ impl EmbeddingProfile {
 
     /// Profile for Jina Embeddings v2 Base Code.
     #[must_use]
-    pub fn jina_v2_base_code() -> Self {
+    pub const fn jina_v2_base_code() -> Self {
         Self {
             pooling: Pooling::Mean,
             query_prefix: String::new(),
@@ -126,6 +158,18 @@ impl EmbeddingProfile {
 
 /// Synchronous provider boundary for batch document and query embeddings.
 pub trait EmbeddingProvider {
+    /// Returns the validated outer batch size used by corpus generation.
+    #[must_use]
+    fn embedding_batch_size(&self) -> EmbeddingBatchSize {
+        EmbeddingBatchSize::default()
+    }
+
+    /// Reports whether this provider has a verified normalized-output contract.
+    #[must_use]
+    fn outputs_normalized(&self) -> bool {
+        false
+    }
+
     /// Embeds documents in input order.
     ///
     /// # Errors
@@ -149,8 +193,14 @@ pub trait EmbeddingProvider {
 /// and tags rather than in the short body summary. Keep those fields in the
 /// semantic input so vector retrieval sees the same corpus concepts that the
 /// lexical fields expose.
-fn embedding_text(chunk: &Chunk) -> String {
-    let mut text = String::new();
+pub(crate) fn embedding_text(chunk: &Chunk) -> String {
+    let capacity = chunk.title.len()
+        + chunk.heading_path.iter().map(String::len).sum::<usize>()
+        + chunk.identifiers.iter().map(String::len).sum::<usize>()
+        + chunk.tags.iter().map(String::len).sum::<usize>()
+        + chunk.text.len()
+        + 64;
+    let mut text = String::with_capacity(capacity);
     if !chunk.title.is_empty() {
         text.push_str("Title: ");
         text.push_str(&chunk.title);
@@ -158,39 +208,58 @@ fn embedding_text(chunk: &Chunk) -> String {
     }
     if !chunk.heading_path.is_empty() {
         text.push_str("Headings: ");
-        text.push_str(&chunk.heading_path.join(" / "));
+        append_joined(
+            &mut text,
+            chunk.heading_path.iter().map(String::as_str),
+            " / ",
+        );
         text.push('\n');
     }
     if !chunk.identifiers.is_empty() {
         text.push_str("Identifiers: ");
-        text.push_str(
-            &chunk
-                .identifiers
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", "),
+        append_joined(
+            &mut text,
+            chunk.identifiers.iter().map(String::as_str),
+            ", ",
         );
         text.push('\n');
-        let aliases = chunk
+        if chunk
             .identifiers
             .iter()
-            .filter_map(|identifier| identifier_semantic_alias(identifier))
-            .collect::<Vec<_>>();
-        if !aliases.is_empty() {
+            .any(|identifier| identifier_semantic_alias(identifier).is_some())
+        {
             text.push_str("Concepts: ");
-            text.push_str(&aliases.join("; "));
+            append_joined(
+                &mut text,
+                chunk
+                    .identifiers
+                    .iter()
+                    .filter_map(|identifier| identifier_semantic_alias(identifier)),
+                "; ",
+            );
             text.push('\n');
         }
     }
     if !chunk.tags.is_empty() {
         text.push_str("Tags: ");
-        text.push_str(&chunk.tags.iter().cloned().collect::<Vec<_>>().join(", "));
+        append_joined(&mut text, chunk.tags.iter().map(String::as_str), ", ");
         text.push('\n');
     }
     text.push_str("Content: ");
     text.push_str(&chunk.text);
     text
+}
+
+fn append_joined<'a, I>(output: &mut String, values: I, separator: &str)
+where
+    I: Iterator<Item = &'a str>,
+{
+    for (index, value) in values.enumerate() {
+        if index > 0 {
+            output.push_str(separator);
+        }
+        output.push_str(value);
+    }
 }
 
 fn identifier_semantic_alias(identifier: &str) -> Option<&'static str> {
@@ -285,6 +354,10 @@ impl FakeEmbeddingProvider {
 }
 
 impl EmbeddingProvider for FakeEmbeddingProvider {
+    fn outputs_normalized(&self) -> bool {
+        true
+    }
+
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         texts.iter().map(|text| self.embed(text)).collect()
     }
@@ -301,24 +374,44 @@ impl EmbeddingProvider for FakeEmbeddingProvider {
 #[cfg(feature = "semantic-fastembed")]
 pub struct FastEmbedProvider {
     model: fastembed::TextEmbedding,
-    batch_size: Option<usize>,
+    batch_size: EmbeddingBatchSize,
     profile: EmbeddingProfile,
 }
 
 #[cfg(feature = "semantic-fastembed")]
 impl FastEmbedProvider {
     /// Wrap an initialized `FastEmbed` model.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when `batch_size` is zero.
     pub fn new(
         model: fastembed::TextEmbedding,
         batch_size: Option<usize>,
         profile: EmbeddingProfile,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EmbeddingError> {
+        let batch_size = batch_size.map_or_else(
+            || Ok(EmbeddingBatchSize::default()),
+            EmbeddingBatchSize::new,
+        )?;
+        Ok(Self {
             model,
             batch_size,
             profile,
-        }
+        })
+    }
+
+    /// Change the outer document batch used by subsequent embedding calls.
+    ///
+    /// Model initialization is intentionally independent from this setting so
+    /// a benchmark can sweep batch sizes without reloading the model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when `batch_size` is zero.
+    pub fn set_batch_size(&mut self, batch_size: usize) -> Result<(), EmbeddingError> {
+        self.batch_size = EmbeddingBatchSize::new(batch_size)?;
+        Ok(())
     }
 
     /// Load a user-provisioned `FastEmbed` model without contacting a registry.
@@ -353,6 +446,7 @@ impl FastEmbedProvider {
                 "FastEmbed requires a non-zero, normalized embedding profile".into(),
             ));
         }
+        require_ort_runtime()?;
         let read = |name: &str| {
             std::fs::read(root.join(name)).map_err(|error| EmbeddingError::Io(error.to_string()))
         };
@@ -374,7 +468,7 @@ impl FastEmbedProvider {
             .with_execution_providers(semantic_execution_providers());
         let model = fastembed::TextEmbedding::try_new_from_user_defined(model, options)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        Ok(Self::new(model, batch_size, profile))
+        Self::new(model, batch_size, profile)
     }
 
     fn validate_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), EmbeddingError> {
@@ -390,8 +484,24 @@ impl FastEmbedProvider {
     }
 
     fn effective_batch_size(&self, input_len: usize) -> Option<usize> {
-        self.batch_size.map(|size| size.min(input_len))
+        (input_len > 0).then(|| self.batch_size.get().min(input_len))
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn require_ort_runtime() -> Result<(), EmbeddingError> {
+    let Some(path) = std::env::var_os("ORT_DYLIB_PATH") else {
+        return Err(EmbeddingError::Provider(
+            "ORT_DYLIB_PATH must point to a local ONNX Runtime dylib".into(),
+        ));
+    };
+    if !std::path::Path::new(&path).is_file() {
+        return Err(EmbeddingError::Provider(format!(
+            "ORT_DYLIB_PATH does not point to a file: {}",
+            std::path::Path::new(&path).display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(all(
@@ -426,14 +536,28 @@ fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
 
 #[cfg(feature = "semantic-fastembed")]
 impl EmbeddingProvider for FastEmbedProvider {
+    fn embedding_batch_size(&self) -> EmbeddingBatchSize {
+        self.batch_size
+    }
+
+    fn outputs_normalized(&self) -> bool {
+        self.profile.normalize
+    }
+
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        let texts = texts
-            .iter()
-            .map(|text| format!("{}{}", self.profile.document_prefix, text))
-            .collect::<Vec<_>>();
+        let prefixed;
+        let texts = if self.profile.document_prefix.is_empty() {
+            texts
+        } else {
+            prefixed = texts
+                .iter()
+                .map(|text| format!("{}{}", self.profile.document_prefix, text))
+                .collect::<Vec<_>>();
+            &prefixed
+        };
         let vectors = self
             .model
-            .embed(&texts, self.effective_batch_size(texts.len()))
+            .embed(texts, self.effective_batch_size(texts.len()))
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         self.validate_vectors(&vectors)?;
         Ok(vectors)
@@ -457,7 +581,7 @@ pub struct SemanticHit {
     pub similarity: f32,
 }
 
-/// Reproducible vector artifact keyed by stable chunk IDs.
+/// Reproducible row-major vector artifact keyed by sorted stable chunk IDs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VectorArtifact {
@@ -467,7 +591,10 @@ pub struct VectorArtifact {
     pub dimension: usize,
     pub normalized: bool,
     pub corpus_digest: ContentDigest,
-    pub vectors: BTreeMap<ChunkId, Vec<f32>>,
+    /// Chunk IDs in ascending order, one per vector row.
+    pub ids: Vec<ChunkId>,
+    /// Row-major vector values (`ids.len() * dimension`).
+    pub values: Vec<f32>,
 }
 
 impl VectorArtifact {
@@ -484,12 +611,11 @@ impl VectorArtifact {
         model_revision: impl Into<String>,
         corpus_digest: ContentDigest,
     ) -> Result<Self, EmbeddingError> {
-        const BATCH_SIZE: usize = 8;
-
-        let mut vectors = BTreeMap::new();
+        let batch_size = provider.embedding_batch_size().get();
+        let mut rows = Vec::with_capacity(chunks.len());
         let mut dimension = None;
 
-        for chunk_batch in chunks.chunks(BATCH_SIZE) {
+        for chunk_batch in chunks.chunks(batch_size) {
             let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
             let batch_vectors = provider.embed_documents(&texts)?;
 
@@ -501,8 +627,6 @@ impl VectorArtifact {
             }
 
             for (chunk, mut vector) in chunk_batch.iter().zip(batch_vectors) {
-                normalize(&mut vector)?;
-
                 match dimension {
                     None => dimension = Some(vector.len()),
                     Some(expected) if expected != vector.len() => {
@@ -514,18 +638,36 @@ impl VectorArtifact {
                     Some(_) => {}
                 }
 
-                vectors.insert(chunk.chunk_id.clone(), vector);
+                if provider.outputs_normalized() {
+                    validate_vector(&vector, true)?;
+                } else {
+                    normalize(&mut vector)?;
+                }
+                rows.push((chunk.chunk_id.clone(), vector));
             }
         }
 
+        rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let mut ids = Vec::with_capacity(rows.len());
+        let mut values = Vec::with_capacity(
+            rows.len()
+                .checked_mul(dimension.unwrap_or(0))
+                .ok_or(EmbeddingError::TooLarge)?,
+        );
+        for (chunk_id, vector) in rows {
+            ids.push(chunk_id);
+            values.extend_from_slice(&vector);
+        }
+
         let artifact = Self {
-            schema: 1,
+            schema: 2,
             model_id: model_id.into(),
             model_revision: model_revision.into(),
             dimension: dimension.unwrap_or(0),
             normalized: true,
             corpus_digest,
-            vectors,
+            ids,
+            values,
         };
         artifact.validate()?;
         Ok(artifact)
@@ -537,23 +679,29 @@ impl VectorArtifact {
     ///
     /// Returns [`EmbeddingError`] if any vector violates the artifact contract.
     pub fn validate(&self) -> Result<(), EmbeddingError> {
-        if self.schema != 1
+        if self.schema != 2
             || self.dimension == 0
             || self.model_id.trim().is_empty()
             || self.model_revision.trim().is_empty()
         {
             return Err(EmbeddingError::InvalidHeader);
         }
-        for vector in self.vectors.values() {
-            if vector.len() != self.dimension {
-                return Err(EmbeddingError::DimensionMismatch {
-                    expected: self.dimension,
-                    actual: vector.len(),
-                });
-            }
-            if vector.iter().any(|value| !value.is_finite()) {
-                return Err(EmbeddingError::NonFinite);
-            }
+        if self.ids.windows(2).any(|ids| ids[0] >= ids[1]) {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        let expected_values = self
+            .ids
+            .len()
+            .checked_mul(self.dimension)
+            .ok_or(EmbeddingError::TooLarge)?;
+        if self.values.len() != expected_values {
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: expected_values,
+                actual: self.values.len(),
+            });
+        }
+        for vector in self.values.chunks_exact(self.dimension) {
+            validate_vector(vector, self.normalized)?;
         }
         Ok(())
     }
@@ -568,7 +716,7 @@ impl VectorArtifact {
     pub fn validate_for_corpus(
         &self,
         corpus_digest: &ContentDigest,
-        chunk_ids: &std::collections::BTreeSet<ChunkId>,
+        chunk_ids: &BTreeSet<ChunkId>,
         model_id: &str,
         model_revision: &str,
     ) -> Result<(), EmbeddingError> {
@@ -580,11 +728,11 @@ impl VectorArtifact {
             return Err(EmbeddingError::ModelMismatch);
         }
         for chunk_id in chunk_ids {
-            if !self.vectors.contains_key(chunk_id) {
+            if self.ids.binary_search(chunk_id).is_err() {
                 return Err(EmbeddingError::MissingChunk(chunk_id.clone()));
             }
         }
-        for chunk_id in self.vectors.keys() {
+        for chunk_id in &self.ids {
             if !chunk_ids.contains(chunk_id) {
                 return Err(EmbeddingError::UnknownChunk(chunk_id.clone()));
             }
@@ -592,7 +740,7 @@ impl VectorArtifact {
         Ok(())
     }
 
-    /// Encodes the artifact with a stable magic header and canonical JSON body.
+    /// Encodes the artifact with a stable magic header and checked row-major body.
     ///
     /// # Errors
     ///
@@ -604,7 +752,7 @@ impl VectorArtifact {
         let model_id_len = u32::try_from(model_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
         let model_revision_len =
             u32::try_from(model_revision.len()).map_err(|_| EmbeddingError::TooLarge)?;
-        let count = u32::try_from(self.vectors.len()).map_err(|_| EmbeddingError::TooLarge)?;
+        let count = u32::try_from(self.ids.len()).map_err(|_| EmbeddingError::TooLarge)?;
         let dimension = u32::try_from(self.dimension).map_err(|_| EmbeddingError::TooLarge)?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
@@ -617,7 +765,11 @@ impl VectorArtifact {
         bytes.extend_from_slice(model_revision);
         bytes.push(u8::from(self.normalized));
         bytes.extend_from_slice(&digest_bytes(&self.corpus_digest)?);
-        for (chunk_id, vector) in &self.vectors {
+        for (chunk_id, vector) in self
+            .ids
+            .iter()
+            .zip(self.values.chunks_exact(self.dimension))
+        {
             let chunk_id = chunk_id.as_str().as_bytes();
             let chunk_id_len =
                 u16::try_from(chunk_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
@@ -666,6 +818,12 @@ impl VectorArtifact {
         let mut reader = BinaryReader::new(&bytes[..checksum_start]);
         reader.take(MAGIC.len())?;
         let schema = u16::try_from(reader.u32()?).map_err(|_| EmbeddingError::InvalidHeader)?;
+        if schema == 1 {
+            return Err(EmbeddingError::UnsupportedSchema(schema));
+        }
+        if schema != 2 {
+            return Err(EmbeddingError::InvalidHeader);
+        }
         let dimension = usize::try_from(reader.u32()?).map_err(|_| EmbeddingError::TooLarge)?;
         if dimension == 0 || dimension > MAX_ARTIFACT_BYTES / std::mem::size_of::<f32>() {
             return Err(EmbeddingError::TooLarge);
@@ -684,22 +842,26 @@ impl VectorArtifact {
             _ => return Err(EmbeddingError::InvalidHeader),
         };
         let corpus_digest = digest_from_bytes(reader.take(32)?)?;
-        let mut vectors = BTreeMap::new();
+        let mut ids = Vec::with_capacity(count);
+        let value_count = count
+            .checked_mul(dimension)
+            .ok_or(EmbeddingError::TooLarge)?;
+        let mut values = Vec::with_capacity(value_count);
         for _ in 0..count {
             let chunk_id_len = u32::from(reader.u16()?);
             let chunk_id = ChunkId::try_from(reader.string(chunk_id_len)?)
                 .map_err(|_| EmbeddingError::InvalidHeader)?;
-            let mut vector = Vec::with_capacity(dimension);
             for _ in 0..dimension {
                 let bytes = reader
                     .take(4)?
                     .try_into()
                     .map_err(|_| EmbeddingError::Truncated)?;
-                vector.push(f32::from_le_bytes(bytes));
+                values.push(f32::from_le_bytes(bytes));
             }
-            if vectors.insert(chunk_id, vector).is_some() {
+            if ids.last().is_some_and(|last| last >= &chunk_id) {
                 return Err(EmbeddingError::InvalidHeader);
             }
+            ids.push(chunk_id);
         }
         if !reader.is_empty() {
             return Err(EmbeddingError::InvalidHeader);
@@ -711,7 +873,8 @@ impl VectorArtifact {
             dimension,
             normalized,
             corpus_digest,
-            vectors,
+            ids,
+            values,
         };
         artifact.validate()?;
         Ok(artifact)
@@ -724,7 +887,23 @@ impl VectorArtifact {
     /// Returns [`EmbeddingError`] when encoding fails or the destination cannot
     /// be written.
     pub fn write_artifact(&self, path: &std::path::Path) -> Result<(), EmbeddingError> {
-        std::fs::write(path, self.encode()?).map_err(|error| EmbeddingError::Io(error.to_string()))
+        self.write_artifact_with_digest(path).map(|_| ())
+    }
+
+    /// Writes the encoded bytes and returns their digest and exact length.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when encoding or writing fails.
+    pub fn write_artifact_with_digest(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(ContentDigest, u64), EmbeddingError> {
+        let bytes = self.encode()?;
+        let digest = ContentDigest::of(&bytes);
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        std::fs::write(path, bytes).map_err(|error| EmbeddingError::Io(error.to_string()))?;
+        Ok((digest, length))
     }
 
     /// Opens and validates a checked binary vector artifact.
@@ -758,27 +937,69 @@ impl VectorArtifact {
         }
         let mut query = query.to_vec();
         normalize(&mut query)?;
-        let mut hits: Vec<_> = self
-            .vectors
-            .iter()
-            .map(|(chunk_id, vector)| SemanticHit {
-                chunk_id: chunk_id.clone(),
-                similarity: vector
-                    .iter()
-                    .zip(&query)
-                    .map(|(left, right)| left * right)
-                    .sum(),
+        let limit = limit.max(1).min(self.ids.len());
+        let mut winners = Vec::with_capacity(limit);
+        for (row, vector) in self.values.chunks_exact(self.dimension).enumerate() {
+            let similarity = dot(vector, &query);
+            if winners.len() < limit {
+                winners.push((row, similarity));
+                continue;
+            }
+            let Some((worst, _)) = winners
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| compare_ranked_rows(self, left, right))
+            else {
+                continue;
+            };
+            let candidate = (row, similarity);
+            if compare_ranked_rows(self, &candidate, &winners[worst]) == Ordering::Less {
+                winners[worst] = candidate;
+            }
+        }
+        winners.sort_by(|left, right| compare_ranked_rows(self, left, right));
+        Ok(winners
+            .into_iter()
+            .map(|(row, similarity)| SemanticHit {
+                chunk_id: self.ids[row].clone(),
+                similarity,
             })
-            .collect();
-        hits.sort_by(|left, right| {
-            right
-                .similarity
-                .total_cmp(&left.similarity)
-                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
-        });
-        hits.truncate(limit.max(1));
-        Ok(hits)
+            .collect())
     }
+}
+
+fn dot(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum()
+}
+
+fn compare_ranked_rows(
+    artifact: &VectorArtifact,
+    left: &(usize, f32),
+    right: &(usize, f32),
+) -> Ordering {
+    right
+        .1
+        .total_cmp(&left.1)
+        .then_with(|| artifact.ids[left.0].cmp(&artifact.ids[right.0]))
+}
+
+fn validate_vector(vector: &[f32], normalized: bool) -> Result<(), EmbeddingError> {
+    if vector.iter().any(|value| !value.is_finite()) {
+        return Err(EmbeddingError::NonFinite);
+    }
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return Err(EmbeddingError::ZeroNorm);
+    }
+    if normalized && (norm - 1.0).abs() > 0.01 {
+        return Err(EmbeddingError::Provider(
+            "provider declared normalized output but returned a non-unit vector".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn normalize(vector: &mut [f32]) -> Result<(), EmbeddingError> {
@@ -950,8 +1171,43 @@ mod tests {
             ContentDigest::of(b"corpus"),
         )
         .expect("artifact");
-        assert_eq!(artifact.vectors.len(), 2);
-        assert!(artifact.vectors.values().all(|vector| vector.len() == 4));
+        assert_eq!(artifact.ids.len(), 2);
+        assert_eq!(artifact.values.len(), 8);
+    }
+
+    #[test]
+    fn outer_batch_size_rejects_zero() {
+        assert!(EmbeddingBatchSize::new(0).is_err());
+        assert_eq!(EmbeddingBatchSize::new(3).expect("batch").get(), 3);
+    }
+
+    #[test]
+    fn unnormalized_provider_is_normalized_once() {
+        struct RawProvider;
+
+        impl EmbeddingProvider for RawProvider {
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                Ok(texts.iter().map(|_| vec![3.0, 4.0]).collect())
+            }
+
+            fn embed_query(&mut self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                Ok(vec![3.0, 4.0])
+            }
+        }
+
+        let mut provider = RawProvider;
+        let artifact = VectorArtifact::from_provider(
+            &mut provider,
+            &chunks()[..1],
+            "raw",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("artifact");
+        assert_eq!(artifact.values, vec![0.6, 0.8]);
     }
 
     #[test]
@@ -976,7 +1232,13 @@ mod tests {
         }
 
         let source = chunks().remove(0);
-        let chunks = (0..17).map(|_| source.clone()).collect::<Vec<_>>();
+        let chunks = (0..17)
+            .map(|index| {
+                let mut chunk = source.clone();
+                chunk.chunk_id = ChunkId::try_from(format!("chunk-{index:02}")).expect("chunk id");
+                chunk
+            })
+            .collect::<Vec<_>>();
         let mut provider = TrackingProvider {
             inner: FakeEmbeddingProvider::new(4),
             largest_batch: 0,
@@ -1024,7 +1286,29 @@ mod tests {
     }
 
     #[test]
-    fn vector_artifact_uses_checked_binary_v1_layout() {
+    fn vector_artifact_reports_v1_as_unsupported() {
+        let mut provider = FakeEmbeddingProvider::new(4);
+        let artifact = VectorArtifact::from_provider(
+            &mut provider,
+            &chunks(),
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("artifact");
+        let mut encoded = artifact.encode().expect("encode");
+        let checksum_start = encoded.len() - CHECKSUM_LEN;
+        encoded[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        let checksum = Sha256::digest(&encoded[..checksum_start]);
+        encoded[checksum_start..].copy_from_slice(&checksum);
+        assert_eq!(
+            VectorArtifact::decode(&encoded).expect_err("v1 artifact"),
+            EmbeddingError::UnsupportedSchema(1)
+        );
+    }
+
+    #[test]
+    fn vector_artifact_uses_checked_binary_v2_layout() {
         let mut provider = FakeEmbeddingProvider::new(4);
         let artifact = VectorArtifact::from_provider(
             &mut provider,
@@ -1039,7 +1323,7 @@ mod tests {
         assert_eq!(&encoded[..8], b"VESCRAG1");
         assert_eq!(
             u32::from_le_bytes(encoded[8..12].try_into().expect("schema")),
-            1
+            2
         );
         assert_eq!(
             u32::from_le_bytes(encoded[12..16].try_into().expect("dimension")),

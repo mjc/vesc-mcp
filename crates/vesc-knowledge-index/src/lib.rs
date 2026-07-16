@@ -32,7 +32,8 @@ pub use fusion::{
 };
 pub use lexical::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{
-    BuildSummary, LifecycleError, active_manifest_path, build_allowlisted_artifacts,
+    BuildObservations, BuildPhase, BuildSummary, LifecycleError,
+    PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_manifest_path, build_allowlisted_artifacts,
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
     build_embedded_artifacts_with_provider, inspect_manifest,
 };
@@ -46,6 +47,6 @@ pub use search::{ScoredEntry, rank_entries};
 #[cfg(feature = "semantic-fastembed")]
 pub use semantic::FastEmbedProvider;
 pub use semantic::{
-    EmbeddingError, EmbeddingProfile, EmbeddingProvider, FakeEmbeddingProvider, Pooling,
-    SemanticHit, VectorArtifact, semantic_query_text,
+    EmbeddingBatchSize, EmbeddingError, EmbeddingProfile, EmbeddingProvider, FakeEmbeddingProvider,
+    Pooling, SemanticHit, VectorArtifact, semantic_query_text,
 };

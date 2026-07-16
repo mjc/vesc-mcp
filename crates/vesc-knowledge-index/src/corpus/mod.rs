@@ -703,7 +703,7 @@ fn default_component_versions() -> BTreeMap<String, String> {
         ("corpus-schema".into(), "1.0".into()),
         ("lexical-format".into(), "tantivy-0.26".into()),
         ("markdown-parser".into(), "pulldown-cmark-0.13".into()),
-        ("vector-format".into(), "dense-cosine-v1".into()),
+        ("vector-format".into(), "dense-cosine-v2".into()),
     ])
 }
 
