@@ -732,25 +732,11 @@ impl VectorArtifact {
         let output_normalization = provider.output_normalization();
         let mut observations = VectorBuildObservations::default();
 
-        let sort_started = Instant::now();
-        let mut order = (0..chunks.len()).collect::<Vec<_>>();
-        order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
-        let ids = order
-            .iter()
-            .map(|&index| chunks[index].chunk_id.clone())
-            .collect::<Vec<_>>();
-        observations.vector_finalization_us = observations
-            .vector_finalization_us
-            .saturating_add(elapsed_us(sort_started));
-
         let mut dimension = None;
-        let mut values = Vec::new();
-        for input_batch in order.chunks(batch_size) {
+        let mut values = Vec::with_capacity(chunks.len());
+        for chunk_batch in chunks.chunks(batch_size) {
             let input_started = Instant::now();
-            let texts = input_batch
-                .iter()
-                .map(|&index| embedding_text(&chunks[index]))
-                .collect::<Vec<_>>();
+            let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
             observations.embedding_input_us = observations
                 .embedding_input_us
                 .saturating_add(elapsed_us(input_started));
@@ -772,9 +758,9 @@ impl VectorArtifact {
                 .provider_us
                 .saturating_add(elapsed_us(provider_started));
 
-            if batch_vectors.len() != input_batch.len() {
+            if batch_vectors.len() != chunk_batch.len() {
                 return Err(EmbeddingError::DimensionMismatch {
-                    expected: input_batch.len(),
+                    expected: chunk_batch.len(),
                     actual: batch_vectors.len(),
                 });
             }
@@ -782,7 +768,15 @@ impl VectorArtifact {
             let finalization_started = Instant::now();
             for mut vector in batch_vectors {
                 match dimension {
-                    None => dimension = Some(vector.len()),
+                    None => {
+                        let vector_dimension = vector.len();
+                        let total_values = chunks
+                            .len()
+                            .checked_mul(vector_dimension)
+                            .ok_or(EmbeddingError::TooLarge)?;
+                        values.reserve(total_values.saturating_sub(values.len()));
+                        dimension = Some(vector_dimension);
+                    }
                     Some(expected) if expected != vector.len() => {
                         return Err(EmbeddingError::DimensionMismatch {
                             expected,
@@ -803,15 +797,35 @@ impl VectorArtifact {
                 .saturating_add(elapsed_us(finalization_started));
         }
 
+        let dimension = dimension.unwrap_or(0);
+        let sort_started = Instant::now();
+        let mut order = (0..chunks.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
+        let mut ids = Vec::with_capacity(chunks.len());
+        let mut sorted_values = Vec::with_capacity(values.len());
+        for input_index in order {
+            ids.push(chunks[input_index].chunk_id.clone());
+            let start = input_index
+                .checked_mul(dimension)
+                .ok_or(EmbeddingError::TooLarge)?;
+            let end = start
+                .checked_add(dimension)
+                .ok_or(EmbeddingError::TooLarge)?;
+            sorted_values.extend_from_slice(&values[start..end]);
+        }
+        observations.vector_finalization_us = observations
+            .vector_finalization_us
+            .saturating_add(elapsed_us(sort_started));
+
         let artifact = Self {
             schema: 2,
             model_id: model_id.into(),
             model_revision: model_revision.into(),
-            dimension: dimension.unwrap_or(0),
+            dimension,
             normalized: true,
             corpus_digest,
             ids,
-            values,
+            values: sorted_values,
         };
         artifact.validate()?;
         Ok((artifact, observations))
