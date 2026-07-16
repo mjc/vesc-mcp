@@ -463,9 +463,7 @@ fn stage_chunks(
         observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
         observations.record_duration(
             BuildPhase::VectorFinalization,
-            vector_build
-                .normalization_us
-                .saturating_add(vector_build.sort_and_flatten_us),
+            vector_build.vector_finalization_us,
         );
         observations.vector_build = Some(vector_build);
         observations.vector_count = vector.ids.len();

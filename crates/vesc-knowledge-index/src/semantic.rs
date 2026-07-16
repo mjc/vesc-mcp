@@ -77,8 +77,7 @@ pub enum OutputNormalization {
 pub struct VectorBuildObservations {
     pub embedding_input_us: u64,
     pub provider_us: u64,
-    pub normalization_us: u64,
-    pub sort_and_flatten_us: u64,
+    pub vector_finalization_us: u64,
     pub input_bytes: u64,
 }
 
@@ -734,27 +733,24 @@ impl VectorArtifact {
         let mut observations = VectorBuildObservations::default();
 
         let sort_started = Instant::now();
-        let mut order = chunks
+        let mut order = (0..chunks.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
+        let ids = order
             .iter()
-            .enumerate()
-            .map(|(index, chunk)| (chunk.chunk_id.clone(), index))
+            .map(|&index| chunks[index].chunk_id.clone())
             .collect::<Vec<_>>();
-        order.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        let mut rank_by_input = vec![0; chunks.len()];
-        let mut ids = Vec::with_capacity(chunks.len());
-        for (rank, (chunk_id, input_index)) in order.into_iter().enumerate() {
-            rank_by_input[input_index] = rank;
-            ids.push(chunk_id);
-        }
-        observations.sort_and_flatten_us = observations
-            .sort_and_flatten_us
+        observations.vector_finalization_us = observations
+            .vector_finalization_us
             .saturating_add(elapsed_us(sort_started));
 
         let mut dimension = None;
         let mut values = Vec::new();
-        for (batch_index, chunk_batch) in chunks.chunks(batch_size).enumerate() {
+        for input_batch in order.chunks(batch_size) {
             let input_started = Instant::now();
-            let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
+            let texts = input_batch
+                .iter()
+                .map(|&index| embedding_text(&chunks[index]))
+                .collect::<Vec<_>>();
             observations.embedding_input_us = observations
                 .embedding_input_us
                 .saturating_add(elapsed_us(input_started));
@@ -776,26 +772,17 @@ impl VectorArtifact {
                 .provider_us
                 .saturating_add(elapsed_us(provider_started));
 
-            if batch_vectors.len() != chunk_batch.len() {
+            if batch_vectors.len() != input_batch.len() {
                 return Err(EmbeddingError::DimensionMismatch {
-                    expected: chunk_batch.len(),
+                    expected: input_batch.len(),
                     actual: batch_vectors.len(),
                 });
             }
 
-            for (offset, mut vector) in batch_vectors.into_iter().enumerate() {
+            let finalization_started = Instant::now();
+            for mut vector in batch_vectors {
                 match dimension {
-                    None => {
-                        let vector_dimension = vector.len();
-                        dimension = Some(vector_dimension);
-                        values = vec![
-                            0.0;
-                            chunks
-                                .len()
-                                .checked_mul(vector_dimension)
-                                .ok_or(EmbeddingError::TooLarge)?
-                        ];
-                    }
+                    None => dimension = Some(vector.len()),
                     Some(expected) if expected != vector.len() => {
                         return Err(EmbeddingError::DimensionMismatch {
                             expected,
@@ -805,30 +792,15 @@ impl VectorArtifact {
                     Some(_) => {}
                 }
 
-                let normalization_started = Instant::now();
                 match output_normalization {
                     OutputNormalization::Guaranteed => validate_vector(&vector, true)?,
                     OutputNormalization::Unknown => normalize(&mut vector)?,
                 }
-                observations.normalization_us = observations
-                    .normalization_us
-                    .saturating_add(elapsed_us(normalization_started));
-
-                let flatten_started = Instant::now();
-                let vector_dimension = dimension.expect("dimension initialized above");
-                let input_index = batch_index
-                    .checked_mul(batch_size)
-                    .and_then(|start| start.checked_add(offset))
-                    .ok_or(EmbeddingError::TooLarge)?;
-                let row = rank_by_input[input_index];
-                let start = row
-                    .checked_mul(vector_dimension)
-                    .ok_or(EmbeddingError::TooLarge)?;
-                values[start..start + vector_dimension].copy_from_slice(&vector);
-                observations.sort_and_flatten_us = observations
-                    .sort_and_flatten_us
-                    .saturating_add(elapsed_us(flatten_started));
+                values.extend_from_slice(&vector);
             }
+            observations.vector_finalization_us = observations
+                .vector_finalization_us
+                .saturating_add(elapsed_us(finalization_started));
         }
 
         let artifact = Self {
@@ -1460,6 +1432,30 @@ mod tests {
         .expect("artifact");
 
         assert_eq!(provider.largest_batch, 8);
+    }
+
+    #[test]
+    #[ignore = "run explicitly when comparing finalization components"]
+    fn vector_finalization_components_microbenchmark() {
+        let mut vectors = (0..1024)
+            .map(|row| vec![row as f32 + 1.0, 2.0, 3.0, 4.0])
+            .collect::<Vec<_>>();
+        let normalization_started = Instant::now();
+        for vector in &mut vectors {
+            normalize(vector).expect("vector is normalizable");
+        }
+        let normalization_us = elapsed_us(normalization_started);
+
+        let flatten_started = Instant::now();
+        let mut flattened = Vec::with_capacity(vectors.len() * 4);
+        for vector in &vectors {
+            flattened.extend_from_slice(vector);
+        }
+        let flatten_us = elapsed_us(flatten_started);
+        std::hint::black_box(flattened);
+        eprintln!(
+            "vector-finalization-microbenchmark normalization_us={normalization_us} flatten_us={flatten_us}"
+        );
     }
 
     #[test]
