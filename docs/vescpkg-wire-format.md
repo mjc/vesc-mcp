@@ -184,7 +184,7 @@ Integration tests: `tool_inspect_vescpkg_rejects_bad_magic`, `tool_inspect_vescp
 
 In-repo reader: `crates/vesc-domain/src/wire/mod.rs`.
 
-Set `$VESC_TOOL_ROOT` (or sibling checkout paths) per [configuration.md](configuration.md).
+Set `$VESC_VESC_TOOL_ROOT` per [configuration.md](configuration.md).
 
 ## Golden stability strategy
 

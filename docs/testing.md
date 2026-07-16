@@ -42,7 +42,8 @@ Configuration lives in [`.config/nextest.toml`](../.config/nextest.toml). The `c
 |------|----------|----------|
 | Unit | `crates/*/src/**/*.rs` (`#[cfg(test)]`) | `parse_pkgdesc_qml`, `decide_ping_echo` |
 | Integration | `crates/*/tests/*.rs` | `fixtures_refloat_minimal_validates` |
-| MCP | `crates/vesc-mcp-server/tests/*.rs` | `mcp_harness_lists_tools` |
+| MCP service | `crates/vesc-mcp-core/tests/*.rs` | tool/resource routing through `McpTestHarness` |
+| Transport smoke | `crates/vesc-mcp-server/tests/*.rs` | stdio and Streamable HTTP behavior |
 
 ## Fixtures
 
@@ -64,7 +65,7 @@ let pkgdesc = read_fixture_file("refloat-minimal", "pkgdesc.qml");
 1. **RED** — Add a failing test that names the behavior (e.g. `inspect_pkgdesc_returns_json_for_refloat_fixture`).
 2. **GREEN** — Implement the minimum code to pass; run `cargo nextest run --workspace`.
 3. **REFACTOR** — Extract shared logic into domain or `test_support`; keep tests green.
-4. Commit with `test(...)` or `feat(...)` prefix and reference the Beads task id.
+4. Commit with `test(...)` or `feat(...)` prefix and reference the Lific `VESCM-*` issue when applicable.
 
 ## Optional live-repo tests
 
@@ -97,15 +98,12 @@ nix develop -c cargo run -p vesc-knowledge-index --features semantic-fastembed -
   --semantic-model-revision <revision-from-manifest>
 ```
 
-The hybrid path uses a shallow lexical floor during staged semantic rollout:
-RRF still records overlapping semantic evidence, semantic-only chunks can fill
-gaps, and the top lexical evidence cannot be displaced by an uncalibrated
-model. The 2026-07-15 local run with `Xenova/bge-small-en-v1.5` on the
-231-document, 696-chunk allowlisted corpus passed the locked gate with Recall@5
-0.9167, MRR@10 0.8903, nDCG@10 0.8690, and exact-identifier top-one 1.0. Its
-conceptual intent recall was 0.8333 versus the lexical baseline's 0.8. The
-default server path remains lexical/offline; hybrid is available when the
-pinned local semantic capability is explicitly configured.
+The hybrid path uses a shallow lexical floor: RRF records overlapping semantic
+evidence, semantic-only chunks can fill gaps, and top lexical evidence cannot
+be displaced by an uncalibrated model. Keep run-specific metrics in Lific or CI
+artifacts rather than this guide. The default server path remains
+lexical/offline; hybrid is available only when a pinned local semantic
+capability is explicitly configured.
 
 ## Negative fixtures
 
@@ -124,9 +122,9 @@ Per-crate **line coverage floor: 80%** for `vesc-domain`, `vesc-knowledge-index`
 Excluded from reports: `vendor/` and std. See [`.config/coverage-exclude.regex`](../.config/coverage-exclude.regex).
 
 ```bash
-nix develop -c make coverage           # workspace run
-nix develop -c make coverage-summary     # per-crate lib src % vs 80% floor
-nix develop -c make coverage-html        # HTML report (same exclusions)
+nix develop -c make coverage          # workspace run
+nix develop -c make coverage-summary  # per-crate lib src % vs 80% floor
+nix develop -c make coverage-html     # HTML report (same exclusions)
 ```
 
 After `make coverage`, open the HTML report or inspect a single crate:

@@ -1,4 +1,61 @@
-# Retrieval troubleshooting
+# Troubleshooting
+
+## Server does not start or connect
+
+Run the binary in the project shell first:
+
+```bash
+nix develop -c vesc-mcp-server
+```
+
+Stdio is the default and writes protocol messages to stdout; tracing belongs on
+stderr. Set `RUST_LOG=info` for diagnostics. For a shared endpoint, start
+`nix develop -c vesc-mcp-server --http` and connect to
+`http://127.0.0.1:8080/mcp` unless `VESC_MCP_HTTP_BIND` or
+`VESC_MCP_HTTP_PATH` overrides it.
+
+If HTTP returns a policy or authorization error, check the request `Host`,
+browser `Origin`, and bearer token against the `VESC_MCP_HTTP_*` settings. A
+successful HTTP connection still lists only `ping` and
+`search_vesc_knowledge`; package tools are stdio-only by design.
+
+## A package path is rejected
+
+Set `VESC_PACKAGE_ROOTS` to the parent directories the stdio server may access:
+
+```bash
+export VESC_PACKAGE_ROOTS="$HOME/projects/refloat:$HOME/projects/vesc-packages"
+```
+
+Paths are canonicalized and rejected when they escape those roots. The fixture
+root is added automatically only in test builds with the `test-fixtures`
+feature. `VESC_PACKAGE_ROOTS` does not make package tools available over HTTP.
+
+## `build_vescpkg` cannot find VESC Tool
+
+`VESC_TOOL_PATH` must name a runnable `vesc_tool` binary. This is separate from
+`VESC_VESC_TOOL_ROOT`, which points at a source checkout used for documentation
+and catalog attribution.
+
+```bash
+export VESC_TOOL_PATH="$(command -v vesc_tool)"
+```
+
+## NixOS service diagnosis
+
+The flake's NixOS module creates `vesc-mcp.service`. Inspect its effective
+environment and logs with:
+
+```bash
+systemctl status vesc-mcp.service
+journalctl -u vesc-mcp.service -b
+```
+
+For remote exposure, set `services.vesc-mcp.bind`, `allowedHosts`,
+`allowedOrigins`, and `authTokenFile` together. The token file is a systemd
+EnvironmentFile containing `VESC_MCP_HTTP_AUTH_TOKEN=...`.
+
+## Retrieval artifacts
 
 ## Check the active artifact
 

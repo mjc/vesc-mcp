@@ -1,17 +1,22 @@
 # Architecture
 
-vesc-mcp is a **stdio MCP server** that wraps VESC firmware and vescpkg domain logic for AI assistants. The host process never loads device FFI; builds and inspections run on the developer machine under configurable path sandboxes.
+vesc-mcp is an MCP server for VESC firmware and vescpkg domain knowledge. The
+binary serves one stdio client by default or a shared Streamable HTTP endpoint
+with `--http`. The host process never loads device FFI; package builds and
+inspection remain local, sandboxed stdio operations.
 
 ## Crate graph
 
 ```mermaid
 flowchart TB
-  subgraph client [MCP Client]
-    IDE[Cursor / Claude / other]
+  subgraph clients [MCP Clients]
+    LOCAL[Local stdio client]
+    REMOTE[HTTP clients]
   end
 
   subgraph server_bin [Binary]
     SRV[vesc-mcp-server]
+    HTTP[HTTP session and policy]
   end
 
   subgraph core [vesc-mcp-core]
@@ -32,6 +37,7 @@ flowchart TB
 
   subgraph external [External]
     VTOOL[vesc_tool CLI]
+    UPSTREAM[Configured upstream checkouts]
   end
 
   subgraph data [In-repo data]
@@ -39,7 +45,9 @@ flowchart TB
     FIX[tests/fixtures/]
   end
 
-  IDE -->|stdio JSON-RPC| SRV
+  LOCAL -->|stdio JSON-RPC: all tools| SRV
+  REMOTE -->|Streamable HTTP: ping, search, resources| HTTP
+  HTTP --> SRV
   SRV --> core
   TOOLS --> DOM
   TOOLS --> ADP
@@ -53,6 +61,7 @@ flowchart TB
   CAT --> CATALOG
   ADP --> DOM
   TOOLS -->|build_vescpkg| VTOOL
+  CORPUS --> UPSTREAM
   CFG --> FIX
   DOM --> FIX
 ```
@@ -61,12 +70,13 @@ flowchart TB
 
 | Layer | Crate / path | Responsibility |
 |-------|----------------|----------------|
-| Transport | `vesc-mcp-server` | stdio MCP session, tracing to stderr |
+| Transport | `vesc-mcp-server` | Default stdio session; optional shared Streamable HTTP sessions, Host/Origin policy, and bearer authentication |
 | MCP surface | `vesc-mcp-core` | Tool router, resource registry, config, workspace discovery |
 | Domain | `vesc-domain` | `pkgdesc.qml` parsing, `.vescpkg` wire read/parse, validation types |
 | Build adapter | `vesc-mcp-adapters` | Locate `pkgdesc.qml` and inspect `.vescpkg` wire artifacts |
 | Knowledge | `vesc-knowledge-index` | Versioned normalized corpus, deterministic chunking, fielded lexical retrieval, optional local vectors, fusion, and artifact lifecycle |
-| Catalog | `catalog/` | YAML indexes (build flows, commands, ABI, doc topics) — no GPL source vendored |
+| Catalog | `catalog/` | Reviewed YAML indexes for build flows, commands, ABI, and doc topics |
+| Upstream sources | `vendor/` or configured roots | Optional local reference checkouts used for validation, attribution, and knowledge builds |
 | Fixtures | `tests/fixtures/` | Synthetic offline package trees for CI |
 
 ## Tool flow (example)
@@ -97,6 +107,10 @@ Static resources are registered at startup from `catalog/` and fixture metadata.
 - `vesc://catalog/commands/refloat/{command}` — render markdown from indexed command docs
 - `vesc://knowledge/chunk/{id}` — read the bounded normalized passage returned by retrieval
 - `vesc://knowledge/document/{id}` — read the complete normalized document assembled from its chunks
+
+Both transports expose the resource registry, including subscriptions. HTTP
+does not expose package-tree tools because package roots are process-global;
+the full sandboxed package tool surface remains on stdio.
 
 ## Retrieval flow
 
@@ -138,6 +152,15 @@ Build-recipe and doc-topic bodies include **source attribution** footers pointin
 | Sandboxed path access | Default-on flash/upload |
 | `vesc_tool` subprocess builds | Loading `vesc-ffi` / BLE protocol in MCP host |
 | Read-only wire parsing in `vesc-domain` | In-repo `.vescpkg` packers |
+| Shared HTTP knowledge search/resources | Package-tree tools over shared HTTP |
+
+## Deployment
+
+`flake.nix` exports the server package, an overlay, and
+`nixosModules.default`. The NixOS module runs `vesc-mcp-server --http` under a
+dynamic systemd user with state/cache directories and hardening. See
+[configuration.md](configuration.md#nixos-deployment) for the declarative
+service options.
 
 ## Testing architecture
 

@@ -4,13 +4,13 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 ## Summary
 
-| Area | refloat | vesc-mcp (fixtures) | Impact |
-|------|---------|---------------------|--------|
+| Area | Refloat | POC / vesc-mcp handling | Impact |
+|------|---------|-------------------------|--------|
 | Package packer | vesc_tool CLI | `build_vescpkg` + committed golden bytes | Same packer; golden is read-only offline anchor |
-| Descriptor dialect | vesc_tool (`pkgName`, …) | Legacy POC mistake (`packageName`, …) | POC must migrate to vesc_tool schema |
+| Descriptor dialect | vesc_tool (`pkgName`, …) | Canonical fixtures; legacy POC fields rejected | One accepted schema |
 | Native payload | C via vesc_pkg_lib | Rust staticlib + C shim | Toolchain and symbol audit differ |
 | BLE / device test | Manual VESC Tool upload | Host `loopback` CLI | POC has automated hw path; refloat docs none |
-| Command protocol | 12 doc/commands | Not implemented | POC scope is packaging, not app comms |
+| Command protocol | 7 public + 2 internal docs | Indexed catalog resources; absent from POC | POC scope is packaging, not app comms |
 | BMS integration | Conditional lisp/bms.lisp | Same pattern in POC fixture | Parity at loader level |
 
 ## Descriptor {#descriptor}
@@ -25,9 +25,9 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 - Uses invented `packageName`, `packageVersion`, `nativeLibraryPath`, `loaderScriptPath`
 - These fields are **not** read by `vesc_tool` (`codeloader.cpp` only reads `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput`)
 
-**Gap:** POC pkgdesc used a non-authoritative property naming scheme. Canonical schema is vesc_tool/refloat only (`br-flj.12` decision).
+**Gap:** POC pkgdesc used a non-authoritative property naming scheme. Canonical schema is vesc_tool/refloat only.
 
-**Mitigation:** `vesc-domain` rejects legacy POC-only fields with `DomainError::LegacyPocDialect`. Fix tracked in vesc-rust-poc beads; vesc-mcp fixture `native-lib-minimal/` already uses vesc_tool schema.
+**Mitigation:** `vesc-domain` rejects legacy POC-only fields with `DomainError::LegacyPocDialect`. The vesc-mcp fixture `native-lib-minimal/` already uses the vesc_tool schema.
 
 ## Packer {#packer}
 
@@ -92,7 +92,8 @@ Both import native binary and call `load-native-lib`:
 
 **POC** has no package command catalog; BLE loopback is transport-level, not Refloat command IDs.
 
-**Gap:** Knowledge index must tag refloat commands separately from firmware API search results.
+The knowledge corpus keeps Refloat command documents distinct from firmware API
+sources through category and source metadata.
 
 ## Catalog coverage
 
@@ -106,13 +107,15 @@ Both import native binary and call `load-native-lib`:
 | XML config codegen | — | Not in POC |
 | NVM persistence | `read_nvm`, `write_nvm`, `wipe_nvm` | Not in minimal ABI |
 
-## Recommended sequencing for vesc-mcp
+## Implementation status
 
-1. **P0:** Catalog paths validated (`catalog_paths_exist` tests with env vars).
-2. **P0:** Domain dialect parsing (parallel epic `br-domain-model-oli`).
-3. **P1:** POC adapter for inspect/build; do not reimplement wire format.
-4. **P1:** MCP resources from catalog YAML (`br-mcp-resources-9at`).
-5. **P2:** Full command doc embedding in search index.
+- Catalog paths are validated with environment-aware tests.
+- Domain dialect parsing and POC inspection/build adaptation live in the Rust crates.
+- Catalog YAML is exposed through MCP resources.
+- The normalized knowledge corpus includes reviewed command documentation.
+
+Track remaining gaps and sequencing in the Lific `VESCM` project rather than
+embedding issue IDs here.
 
 ## References
 

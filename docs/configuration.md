@@ -43,7 +43,7 @@ Relative paths in config (e.g. `vendor/refloat`) resolve against the vesc-mcp wo
 
 | Variable | Config key | Default | Description |
 |----------|------------|---------|-------------|
-| `VESC_MCP_ENABLE_FLASH` | `[features] enable_flash` | `false` | Gate flash/upload tools. Accepts `1`, `true`, `yes`, `on` (case-insensitive). **Leave unset in normal development.** |
+| `VESC_MCP_ENABLE_FLASH` | `[features] enable_flash` | `false` | Reserved gate for future flash/upload tools. It does not register any tools today. Accepts `1`, `true`, `yes`, `on` (case-insensitive). |
 
 ### Config file location
 

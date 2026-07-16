@@ -72,7 +72,7 @@ Optional CI smoke: `./scripts/docs-smoke.sh` (spawns server, checks `tools/list`
 
 | Crate | Role |
 |-------|------|
-| `vesc-mcp-server` | stdio MCP binary |
+| `vesc-mcp-server` | MCP binary: stdio by default, Streamable HTTP with `--http` |
 | `vesc-mcp-core` | tools, resources, config, MCP service |
 | `vesc-domain` | VESC / vescpkg domain types and parsers |
 | `vesc-mcp-adapters` | Host-side pkgdesc discovery and `.vescpkg` inspect |
@@ -157,17 +157,6 @@ embedding, copies the five required files, and writes SHA-256 hashes to
 by passing that model directory, model ID, model revision, and the semantic
 artifact root to `evaluate --mode hybrid`.
 
-## Beads backlog
-
-Task graph lives in **`~/cfg/beads/vesc-mcp`** (Beads MCP or CLI). Do not use an in-repo `.beads/` directory.
-
-```bash
-br --project-db-root ~/cfg/beads ready
-br --project-db-root ~/cfg/beads show br-docs-dx-8tw
-```
-
-In Cursor, prefer the **Beads MCP** (`user-br`) for `list_issues`, `create_issue`, and `close_issue`. Coordination epic: `br-flj` (multitask delivery waves).
-
 ## MCP SDK
 
-Uses [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (official Rust MCP SDK) with stdio transport.
+Uses [rmcp](https://github.com/modelcontextprotocol/rust-sdk) (official Rust MCP SDK) for stdio and Streamable HTTP transports.

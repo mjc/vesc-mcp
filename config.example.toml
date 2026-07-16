@@ -21,7 +21,7 @@ vesc_tool_root = "vendor/vesc_tool"
 vesc_tool = "vesc_tool"
 
 [features]
-# Flash/upload tools stay disabled unless true or VESC_MCP_ENABLE_FLASH=1.
+# Reserved default-off gate; no flash/upload tools currently ship.
 enable_flash = false
 
 [knowledge]

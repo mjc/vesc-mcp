@@ -15,6 +15,10 @@ See [docs/testing.md](docs/testing.md) for the red → green → refactor workfl
 
 All tools return JSON text payloads.
 
+The default stdio transport exposes the full tool set below. Streamable HTTP
+intentionally exposes only `ping` and `search_vesc_knowledge`; both transports
+expose the resource registry.
+
 | Tool | Purpose | Key params |
 |------|---------|------------|
 | `ping` | Health check | `message` (optional echo) |
@@ -103,7 +107,7 @@ resource bodies as ordinary data, never as MCP instructions or configuration.
 
 ## Safety rules
 
-- **Flash/upload tools are gated** — default off. Enable only with `VESC_MCP_ENABLE_FLASH=1` or `[features] enable_flash = true` in config. Never assume flash is available. See [docs/safety.md](docs/safety.md).
+- **No flash/upload tools currently ship.** `VESC_MCP_ENABLE_FLASH` / `[features] enable_flash` is a reserved, default-off gate and does not add tools by itself. See [docs/safety.md](docs/safety.md).
 - **Sandbox all paths** — reject reads/writes outside `VESC_PACKAGE_ROOTS`.
 - **Prefer fixtures offline** — use `tests/fixtures/` and `vescpkg://fixture/…` URIs before pointing at live sibling repos.
 - **No hardcoded home paths** in prompts or commits — use env vars or `config.toml`.
@@ -113,7 +117,7 @@ resource bodies as ordinary data, never as MCP instructions or configuration.
 1. **RED** — Add a failing test naming the behavior (e.g. `inspect_pkgdesc_returns_json_for_refloat_fixture`).
 2. **GREEN** — Minimal implementation; `nix develop -c cargo nextest run --workspace`.
 3. **REFACTOR** — Extract shared logic; keep tests green.
-4. Commit with `test(...)` / `feat(...)` / `docs(...)` and reference the Beads task id.
+4. Commit with `test(...)` / `feat(...)` / `docs(...)` and reference the Lific `VESCM-*` issue when applicable.
 
 Integration tests use `McpTestHarness::call_tool(name, json!({...}))` — same handlers as the live MCP server.
 
@@ -128,22 +132,9 @@ nix develop -c bash scripts/coverage-summary.sh   # per-crate % vs floor
 
 CI uploads `lcov.info` (report-only; does not fail the build).
 
-## Beads (task graph)
+## Lific (task graph)
 
-Task state is **not** stored in-repo. Use the **Beads MCP** (`user-br`) or CLI against the external workspace:
-
-| Location | Purpose |
-|----------|---------|
-| `~/cfg/beads/vesc-mcp/.beads/` | SQLite + `issues.jsonl` for this project |
-| Beads MCP | `project_overview`, `list_issues`, `create_issue`, `close_issue`, … |
-
-```bash
-# CLI fallback (from repo root; never use in-repo .beads/)
-br --project-db-root ~/cfg/beads ready
-br --project-db-root ~/cfg/beads show br-flj
-```
-
-Do **not** run `br init` in the repo — that creates an accidental `.beads/` directory. Issue prefix: `br-`.
+Use the Lific MCP project `VESCM` for durable issues, dependencies, plans, and progress notes. Issue IDs use the `VESCM-*` prefix. Task state is not stored in this repository.
 
 ## Related docs
 

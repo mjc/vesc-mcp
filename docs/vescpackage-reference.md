@@ -174,61 +174,65 @@ Use this reference alongside live MCP tools (offline fixtures first):
 | `vesc://catalog/build-recipe/refloat-vesc-tool` | Refloat Makefile + vesc_tool |
 | `vesc://catalog/abi/minimal-test-package` | 12-symbol POC ABI JSON |
 
-Env vars: see [configuration.md](configuration.md). Flash/upload tools remain gated — see [safety.md](safety.md).
+Env vars: see [configuration.md](configuration.md). No device upload or flash
+tools currently ship; see [safety.md](safety.md).
 
 ## Part 9 — annotated source walkthroughs
 
-Each table lists **file path**, **line range**, **what to read**, and **connection to the next step**. Line numbers verified against in-repo `vendor/` submodules (2026-06); sibling checkouts use the same paths via `$VESC_REFLOAT_ROOT`, `$VESC_BLDC_ROOT`, `$VESC_TOOL_ROOT`, `$VESC_POC_ROOT` (see [configuration.md](configuration.md)).
+Each table uses paths and code anchors instead of line numbers so it remains
+valid across upstream revisions. Roots resolve through `$VESC_REFLOAT_ROOT`,
+`$VESC_BLDC_ROOT`, `$VESC_VESC_TOOL_ROOT`, and `$VESC_POC_ROOT`; see
+[configuration.md](configuration.md).
 
 ### Example A — Refloat production package (authoring → artifact)
 
-| Step | Path | Lines | What it proves | Next |
-|------|------|-------|----------------|------|
-| 1. Descriptor | `$VESC_REFLOAT_ROOT/pkgdesc.qml` | 1–18 | Canonical vesc_tool QML: `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput`; `isCompatible` guard | → Makefile pack target |
-| 2. Build entry | `$VESC_REFLOAT_ROOT/Makefile` | 10–15 | `vesc_tool --buildPkgFromDesc pkgdesc.qml`; L12 legacy `--buildPkg` when `OLDVT=1` | → native dep |
-| 3. Native dep | `$VESC_REFLOAT_ROOT/Makefile` | 17–18 | `make -C src` builds `package_lib.bin` before pack | → Lisp loader |
-| 4. Lisp loader | `$VESC_REFLOAT_ROOT/lisp/package.lisp` | 1–2 | `(import "src/package_lib.bin" 'package-lib)` + `(load-native-lib package-lib)` | → firmware runtime (Example C) |
-| 5. BMS conditional | `$VESC_REFLOAT_ROOT/lisp/package.lisp` | 7–16 | Firmware-gated `(import "bms.lisp" 'bms)` — refloat-specific | — |
-| 6. HEADER | `$VESC_REFLOAT_ROOT/src/main.c` | 58 | `.program_ptr` section word | → INIT_FUN |
-| 7. INIT_FUN | `$VESC_REFLOAT_ROOT/src/main.c` | 2665–2677 | `init(lib_info)`: `INIT_START`, `info->arg`, `info->stop_fun` | → extensions |
-| 8. Extensions | `$VESC_REFLOAT_ROOT/src/main.c` | 2708–2709 | `VESC_IF->lbm_add_extension` after native load | → Example C step 4 |
-| 9. Native build | `$VESC_REFLOAT_ROOT/src/Makefile` | 7–22 | `TARGET=package_lib`; `VESC_C_LIB_PATH=../vesc_pkg_lib/`; includes `rules.mk` | → bin output |
-| 10. Output | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | 62–66 | `package_lib.bin` → consumed by lisp import | → wire packer (Example D) |
+| Step | Path | Code anchor | What it proves | Next |
+|------|------|-------------|----------------|------|
+| 1. Descriptor | `$VESC_REFLOAT_ROOT/pkgdesc.qml` | `pkgName`, `isCompatible` | Canonical vesc_tool QML fields and compatibility guard | → Makefile pack target |
+| 2. Build entry | `$VESC_REFLOAT_ROOT/Makefile` | `--buildPkgFromDesc`, `OLDVT` | Current descriptor build and legacy colon build | → native dep |
+| 3. Native dep | `$VESC_REFLOAT_ROOT/Makefile` | `make -C src` | Native binary is built before packaging | → Lisp loader |
+| 4. Lisp loader | `$VESC_REFLOAT_ROOT/lisp/package.lisp` | `load-native-lib` | Imported native bytes are loaded by Lisp | → firmware runtime (Example C) |
+| 5. BMS conditional | `$VESC_REFLOAT_ROOT/lisp/package.lisp` | `bms.lisp` | Firmware-gated Refloat BMS import | — |
+| 6. Header | `$VESC_REFLOAT_ROOT/src/main.c` | `HEADER` | `.program_ptr` section word | → init |
+| 7. Init | `$VESC_REFLOAT_ROOT/src/main.c` | `INIT_FUN`, `INIT_START` | Library argument and stop callback setup | → extensions |
+| 8. Extensions | `$VESC_REFLOAT_ROOT/src/main.c` | `lbm_add_extension` | Lisp extensions are registered after native load | → Example C step 4 |
+| 9. Native build | `$VESC_REFLOAT_ROOT/src/Makefile` | `TARGET`, `VESC_C_LIB_PATH` | Refloat includes the shared native-library rules | → bin output |
+| 10. Output | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | `objcopy` | `package_lib.bin` is produced for the Lisp import | → wire packer (Example D) |
 
 ### Example B — vesc_pkg_lib toolchain
 
-| Step | Path | Lines | What it proves | Next |
-|------|------|-------|----------------|------|
-| 1. Header (refloat) | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/vesc_c_if.h` | 675–704 | `lib_info`, `VESC_IF`, `HEADER`, `INIT_FUN`, `INIT_START`, `PROG_ADDR`, `ARG` | → link script |
-| 2. Header (bldc canonical) | `$VESC_BLDC_ROOT/lispBM/c_libs/vesc_c_if.h` | 675–704 | Same macros — firmware source of truth | → compile |
-| 3. Link script | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/link.ld` | 11–21 | `.program_ptr` and `.init_fun` at MEM start | → flags |
-| 4. Compile flags | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | 35–49 | cortex-m4, `-DIS_VESC_LIB`, `--undefined=init` | → bin output |
-| 5. bin output | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | 62–66 | objcopy → `package_lib.bin`; `conv.py` → `.lisp` | → import or conv path |
-| 6. conv.py | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/conv.py` | 13–31 | Alternate: `(def name [0x..])` byte array embedding | Contrast: refloat default uses `.bin` import |
+| Step | Path | Code anchor | What it proves | Next |
+|------|------|-------------|----------------|------|
+| 1. Header (Refloat) | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/vesc_c_if.h` | `lib_info`, `HEADER`, `INIT_FUN` | Native library entry contract | → link script |
+| 2. Header (bldc canonical) | `$VESC_BLDC_ROOT/lispBM/c_libs/vesc_c_if.h` | same macros | Firmware source of truth | → compile |
+| 3. Link script | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/link.ld` | `.program_ptr`, `.init_fun` | Entry sections are placed at memory start | → flags |
+| 4. Compile flags | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | `IS_VESC_LIB`, `--undefined=init` | Cortex-M native-library build settings | → bin output |
+| 5. Binary output | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | `objcopy`, `conv.py` | Binary and optional Lisp representations | → import or conversion path |
+| 6. Converter | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/conv.py` | Lisp `def` emission | Alternate byte-array embedding | Contrast: Refloat defaults to `.bin` import |
 
 ### Example C — bldc firmware runtime (`load-native-lib`)
 
-| Step | Path | Lines | What it proves | Next |
-|------|------|-------|----------------|------|
-| 1. Register ext | `$VESC_BLDC_ROOT/lispBM/lispif_vesc_extensions.c` | 6681–6682 | `load-native-lib` / `unload-native-lib` registered | → entry |
-| 2. Entry | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | 738–743 | `ext_load_native_lib`: one byte-array arg | → CIF table |
-| 3. CIF table | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | 747–1082 | First load fills `cif.cif` for native lib | → load sequence |
-| 4. Load sequence | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | 1084–1099 | `addr = array->data`; `addr += 4` skip prog_ptr; `addr \|= 1` thumb; call init | → result |
-| 5. Result | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | 1101–1115 | `SYM_TRUE` or *"Library init failed"* | → unload |
-| 6. Unload | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | 1120–1144 | `stop_fun` cleanup | — |
-| 7. pkg import docs | `$VESC_BLDC_ROOT/lispBM/README.md` | 6070+ | `(import "pkg@path.vescpkg" 'name)` syntax | — |
+| Step | Path | Code anchor | What it proves | Next |
+|------|------|-------------|----------------|------|
+| 1. Register extension | `$VESC_BLDC_ROOT/lispBM/lispif_vesc_extensions.c` | `load-native-lib`, `unload-native-lib` | Lisp entry points are registered | → entry |
+| 2. Entry | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `ext_load_native_lib` | One byte-array argument enters the loader | → CIF table |
+| 3. CIF table | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `cif.cif` | First load fills the firmware interface table | → load sequence |
+| 4. Load sequence | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `array->data`, `addr += 4`, `addr \|= 1` | Skip program pointer, set Thumb bit, call init | → result |
+| 5. Result | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `SYM_TRUE`, `Library init failed` | Loader success/error contract | → unload |
+| 6. Unload | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `stop_fun` | Library cleanup callback | — |
+| 7. Package import docs | `$VESC_BLDC_ROOT/lispBM/README.md` | `pkg@path.vescpkg` | Package import syntax | — |
 
 **Swimlane:** `lispData` embedded `.bin` → Lisp byte array → skip 4-byte `prog_ptr` → `INIT_FUN` (cross-link Example A step 7).
 
 ### Example D — vesc_tool wire writer (packer; not in bldc)
 
-| Step | Path | Lines | What it proves | Next |
-|------|------|-------|----------------|------|
-| 1. pkgdesc | `$VESC_TOOL_ROOT/codeloader.cpp` | 1177–1256 | QML property reads: `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput` | → lisp pack |
-| 2. lisp pack call | `$VESC_TOOL_ROOT/codeloader.cpp` | 1217 | `lispPackImports(..., fi.canonicalPath(), …)` — **editor path is lisp file dir** | → algorithm |
-| 3. lispPackImports | `$VESC_TOOL_ROOT/codeloader.cpp` | 173–252 | flags i16=0, parse imports, `editorPath + "/" + path` resolve | → spine |
-| 4. packVescPackage | `$VESC_TOOL_ROOT/codeloader.cpp` | 817–868 | `"VESC Packet"` + wire fields + `qCompress` | → unpack |
-| 5. unpack | `$VESC_TOOL_ROOT/codeloader.cpp` | 871–929 | Parser mirror for `vesc-domain` parity | → in-repo reader |
+| Step | Path | Code anchor | What it proves | Next |
+|------|------|-------------|----------------|------|
+| 1. Descriptor | `$VESC_VESC_TOOL_ROOT/codeloader.cpp` | `pkgName`, `pkgLisp`, `pkgOutput` | Canonical QML properties | → Lisp pack |
+| 2. Lisp pack call | `$VESC_VESC_TOOL_ROOT/codeloader.cpp` | `lispPackImports`, `canonicalPath` | Imports resolve relative to the Lisp file | → algorithm |
+| 3. Import packing | `$VESC_VESC_TOOL_ROOT/codeloader.cpp` | `lispPackImports` | Header, imports, offsets, and payload packing | → spine |
+| 4. Package packing | `$VESC_VESC_TOOL_ROOT/codeloader.cpp` | `packVescPackage`, `qCompress` | Magic, wire fields, and compression | → unpack |
+| 5. Unpack | `$VESC_VESC_TOOL_ROOT/codeloader.cpp` | package unpack routine | Parser mirror for `vesc-domain` parity | → in-repo reader |
 
 In-repo reader: `crates/vesc-domain/src/wire/mod.rs` (`FIELD_SPINE`, `package_fields`, `parse_lisp_imports`).
 
@@ -245,7 +249,7 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs` (`FIELD_SPINE`, `package_fi
 
 | Path | What it proves |
 |------|----------------|
-| `$VESC_TOOL_ROOT/codeloader.cpp` | Authoritative pack/unpack |
+| `$VESC_VESC_TOOL_ROOT/codeloader.cpp` | Authoritative pack/unpack |
 | `tests/fixtures/golden/native-lib-minimal.vescpkg` | Committed wire reference bytes |
 
 ## Further reading

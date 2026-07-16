@@ -141,14 +141,14 @@ sequenceDiagram
 
 ### bldc implementation anchors
 
-| Step | Path | Lines | Content |
-|------|------|-------|---------|
-| Register ext | `$VESC_BLDC_ROOT/lispBM/lispif_vesc_extensions.c` | ~6681–6682 | `load-native-lib` / `unload-native-lib` |
-| Entry | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | ~738–743 | `ext_load_native_lib` — one byte-array arg |
-| CIF table | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | ~747–1082 | First load fills `cif.cif` |
-| Load sequence | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | ~1084–1099 | `addr = array->data; addr += 4; addr \|= 1`; call init |
-| Result | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | ~1101–1115 | `SYM_TRUE` or *"Library init failed"* |
-| Unload | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | ~1120–1144 | `stop_fun` cleanup |
+| Step | Path | Code anchor | Content |
+|------|------|-------------|---------|
+| Register extension | `$VESC_BLDC_ROOT/lispBM/lispif_vesc_extensions.c` | `load-native-lib`, `unload-native-lib` | Lisp entry-point registration |
+| Entry | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `ext_load_native_lib` | One byte-array argument |
+| CIF table | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `cif.cif` | First load fills the interface table |
+| Load sequence | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `array->data`, `addr += 4`, `addr \|= 1` | Skip program pointer, set Thumb bit, call init |
+| Result | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `SYM_TRUE`, `Library init failed` | Success/error contract |
+| Unload | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `stop_fun` | Cleanup callback |
 
 **Thumb rule:** firmware sets bit 0 on init address before calling.
 

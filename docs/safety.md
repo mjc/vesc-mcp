@@ -1,14 +1,15 @@
 # Safety: flash, upload, and device access
 
-vesc-mcp defaults to **read-only, sandboxed** package tooling. Operations that write firmware or packages to hardware are gated and deferred.
+vesc-mcp provides sandboxed local package tooling and read-only knowledge
+retrieval. It has no device discovery, upload, or firmware-flash tools.
 
 See also the summary in [AGENTS.md](../AGENTS.md#safety-rules).
 
 ---
 
-## Flash and upload tools are off by default
+## Flash and upload tools do not ship
 
-Flash and upload MCP tools are **not registered** unless explicitly enabled:
+The configuration retains a default-off gate for future device tooling:
 
 | Enable via | Value |
 |------------|-------|
@@ -17,15 +18,14 @@ Flash and upload MCP tools are **not registered** unless explicitly enabled:
 
 Precedence and full env reference: [configuration.md](configuration.md).
 
-**Normal development:** leave `VESC_MCP_ENABLE_FLASH` unset and `enable_flash = false`.
-
-Wave 1 (`br-mcp-tools-ief`) shipped discovery, inspect, validate, and build tools only. Phase-2 device tools (upload `.vescpkg`, flash firmware, BLE pairing helpers) remain **out of scope** until a dedicated epic lands with the same gate.
+Setting this flag currently changes no MCP tool registration. Leave it unset in
+normal development, and never infer device capability from the flag alone.
 
 ---
 
 ## Agent and human confirmation rules
 
-When flash/upload tools eventually ship:
+If device tools are added later:
 
 1. **Never assume availability** — call `tools/list` and confirm the upload/flash tool names exist before proposing device steps.
 2. **Require explicit human confirmation** in the agent prompt before any upload or flash, including:
@@ -67,13 +67,18 @@ keep them local, and never enable automatic download at startup.
 
 ## What is safe without the flash gate
 
-These tools are always registered (Wave 3 baseline):
+The stdio transport registers these tools:
 
 - `ping`, `list_vesc_packages`, `inspect_pkgdesc`, `inspect_vescpkg`
 - `validate_package_layout`, `build_vescpkg`, `run_package_checks`
 - `search_vesc_knowledge`
 
 They operate on configured directories and catalog resources under `tests/fixtures/` or user-declared package roots. They do **not** open serial ports or initiate VESC Tool uploads.
+
+Shared Streamable HTTP intentionally exposes only `ping` and
+`search_vesc_knowledge`, plus resources. It defaults to loopback and should not
+be exposed remotely without an explicit bind address, Host/Origin allowlists,
+and bearer authentication. Package-tree tools are not available over HTTP.
 
 Offline walkthroughs: [examples/inspect-refloat-session.md](examples/inspect-refloat-session.md), [examples/build-native-lib-package-session.md](examples/build-native-lib-package-session.md).
 
