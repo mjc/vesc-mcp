@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -56,6 +57,25 @@ pub enum EmbeddingError {
 pub enum Pooling {
     Cls,
     Mean,
+}
+
+/// Contract for whether a provider's output vectors are already normalized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputNormalization {
+    Guaranteed,
+    Unknown,
+}
+
+/// Timings and byte counts observed while constructing a vector artifact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorBuildObservations {
+    pub embedding_input_us: u64,
+    pub provider_us: u64,
+    pub normalization_us: u64,
+    pub sort_and_flatten_us: u64,
+    pub input_bytes: u64,
 }
 
 /// Model-specific contract shared by corpus generation and query embedding.
@@ -166,8 +186,8 @@ pub trait EmbeddingProvider {
 
     /// Reports whether this provider has a verified normalized-output contract.
     #[must_use]
-    fn outputs_normalized(&self) -> bool {
-        false
+    fn output_normalization(&self) -> OutputNormalization {
+        OutputNormalization::Unknown
     }
 
     /// Embeds documents in input order.
@@ -194,12 +214,7 @@ pub trait EmbeddingProvider {
 /// semantic input so vector retrieval sees the same corpus concepts that the
 /// lexical fields expose.
 pub(crate) fn embedding_text(chunk: &Chunk) -> String {
-    let capacity = chunk.title.len()
-        + chunk.heading_path.iter().map(String::len).sum::<usize>()
-        + chunk.identifiers.iter().map(String::len).sum::<usize>()
-        + chunk.tags.iter().map(String::len).sum::<usize>()
-        + chunk.text.len()
-        + 64;
+    let capacity = embedding_text_capacity(chunk);
     let mut text = String::with_capacity(capacity);
     if !chunk.title.is_empty() {
         text.push_str("Title: ");
@@ -248,6 +263,75 @@ pub(crate) fn embedding_text(chunk: &Chunk) -> String {
     text.push_str("Content: ");
     text.push_str(&chunk.text);
     text
+}
+
+fn joined_capacity<I>(items: I, separator_len: usize) -> usize
+where
+    I: IntoIterator<Item = usize>,
+{
+    let mut total = 0_usize;
+    let mut count = 0_usize;
+    for item_len in items {
+        total = total.saturating_add(item_len);
+        count += 1;
+    }
+    total.saturating_add(count.saturating_sub(1).saturating_mul(separator_len))
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+fn embedding_text_capacity(chunk: &Chunk) -> usize {
+    let mut capacity = "Content: ".len().saturating_add(chunk.text.len());
+    if !chunk.title.is_empty() {
+        capacity = capacity
+            .saturating_add("Title: ".len())
+            .saturating_add(chunk.title.len())
+            .saturating_add(1);
+    }
+    if !chunk.heading_path.is_empty() {
+        capacity = capacity
+            .saturating_add("Headings: ".len())
+            .saturating_add(joined_capacity(
+                chunk.heading_path.iter().map(String::len),
+                " / ".len(),
+            ))
+            .saturating_add(1);
+    }
+    if !chunk.identifiers.is_empty() {
+        capacity = capacity
+            .saturating_add("Identifiers: ".len())
+            .saturating_add(joined_capacity(
+                chunk.identifiers.iter().map(String::len),
+                ", ".len(),
+            ))
+            .saturating_add(1);
+        let aliases = chunk
+            .identifiers
+            .iter()
+            .filter_map(|identifier| identifier_semantic_alias(identifier));
+        let aliases = aliases.collect::<Vec<_>>();
+        if !aliases.is_empty() {
+            capacity = capacity
+                .saturating_add("Concepts: ".len())
+                .saturating_add(joined_capacity(
+                    aliases.iter().map(|alias| alias.len()),
+                    "; ".len(),
+                ))
+                .saturating_add(1);
+        }
+    }
+    if !chunk.tags.is_empty() {
+        capacity = capacity
+            .saturating_add("Tags: ".len())
+            .saturating_add(joined_capacity(
+                chunk.tags.iter().map(String::len),
+                ", ".len(),
+            ))
+            .saturating_add(1);
+    }
+    capacity
 }
 
 fn append_joined<'a, I>(output: &mut String, values: I, separator: &str)
@@ -354,8 +438,8 @@ impl FakeEmbeddingProvider {
 }
 
 impl EmbeddingProvider for FakeEmbeddingProvider {
-    fn outputs_normalized(&self) -> bool {
-        true
+    fn output_normalization(&self) -> OutputNormalization {
+        OutputNormalization::Guaranteed
     }
 
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
@@ -540,8 +624,12 @@ impl EmbeddingProvider for FastEmbedProvider {
         self.batch_size
     }
 
-    fn outputs_normalized(&self) -> bool {
-        self.profile.normalize
+    fn output_normalization(&self) -> OutputNormalization {
+        if self.profile.normalize {
+            OutputNormalization::Guaranteed
+        } else {
+            OutputNormalization::Unknown
+        }
     }
 
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
@@ -611,13 +699,56 @@ impl VectorArtifact {
         model_revision: impl Into<String>,
         corpus_digest: ContentDigest,
     ) -> Result<Self, EmbeddingError> {
+        Self::from_provider_with_observations(
+            provider,
+            chunks,
+            model_id,
+            model_revision,
+            corpus_digest,
+        )
+        .map(|(artifact, _)| artifact)
+    }
+
+    /// Builds an artifact and reports the non-overlapping vector-build intervals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when provider output is empty, inconsistent,
+    /// non-finite, or not normalizable.
+    pub fn from_provider_with_observations<P: EmbeddingProvider + ?Sized>(
+        provider: &mut P,
+        chunks: &[Chunk],
+        model_id: impl Into<String>,
+        model_revision: impl Into<String>,
+        corpus_digest: ContentDigest,
+    ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
         let batch_size = provider.embedding_batch_size().get();
         let mut rows = Vec::with_capacity(chunks.len());
         let mut dimension = None;
+        let mut observations = VectorBuildObservations::default();
 
         for chunk_batch in chunks.chunks(batch_size) {
+            let input_started = Instant::now();
             let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
+            observations.embedding_input_us = observations
+                .embedding_input_us
+                .saturating_add(elapsed_us(input_started));
+            observations.input_bytes = observations.input_bytes.saturating_add(
+                texts
+                    .iter()
+                    .map(String::len)
+                    .try_fold(0_u64, |total, len| {
+                        u64::try_from(len)
+                            .ok()
+                            .and_then(|len| total.checked_add(len))
+                    })
+                    .unwrap_or(u64::MAX),
+            );
+            let provider_started = Instant::now();
             let batch_vectors = provider.embed_documents(&texts)?;
+            observations.provider_us = observations
+                .provider_us
+                .saturating_add(elapsed_us(provider_started));
 
             if batch_vectors.len() != chunk_batch.len() {
                 return Err(EmbeddingError::DimensionMismatch {
@@ -626,6 +757,7 @@ impl VectorArtifact {
                 });
             }
 
+            let normalization_started = Instant::now();
             for (chunk, mut vector) in chunk_batch.iter().zip(batch_vectors) {
                 match dimension {
                     None => dimension = Some(vector.len()),
@@ -638,15 +770,18 @@ impl VectorArtifact {
                     Some(_) => {}
                 }
 
-                if provider.outputs_normalized() {
-                    validate_vector(&vector, true)?;
-                } else {
-                    normalize(&mut vector)?;
+                match provider.output_normalization() {
+                    OutputNormalization::Guaranteed => validate_vector(&vector, true)?,
+                    OutputNormalization::Unknown => normalize(&mut vector)?,
                 }
                 rows.push((chunk.chunk_id.clone(), vector));
             }
+            observations.normalization_us = observations
+                .normalization_us
+                .saturating_add(elapsed_us(normalization_started));
         }
 
+        let sort_started = Instant::now();
         rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         let mut ids = Vec::with_capacity(rows.len());
         let mut values = Vec::with_capacity(
@@ -658,6 +793,7 @@ impl VectorArtifact {
             ids.push(chunk_id);
             values.extend_from_slice(&vector);
         }
+        observations.sort_and_flatten_us = elapsed_us(sort_started);
 
         let artifact = Self {
             schema: 2,
@@ -670,7 +806,7 @@ impl VectorArtifact {
             values,
         };
         artifact.validate()?;
-        Ok(artifact)
+        Ok((artifact, observations))
     }
 
     /// Validates dimensions, finiteness, and artifact schema.

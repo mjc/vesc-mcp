@@ -16,7 +16,8 @@ use crate::corpus::{
     RepositoryId, Revision,
 };
 use crate::{
-    EmbeddingError, EmbeddingProvider, LexicalError, LexicalIndex, VectorArtifact, embedded_entries,
+    EmbeddingError, EmbeddingProvider, LexicalError, LexicalIndex, VectorArtifact,
+    VectorBuildObservations, embedded_entries,
 };
 
 /// Errors while building or inspecting generated retrieval artifacts.
@@ -80,14 +81,12 @@ pub struct BuildObservations {
     pub vector_dimension: Option<usize>,
     pub artifact_bytes: u64,
     pub corpus_bytes: u64,
-    pub inventory_bytes: u64,
-    pub rejection_bytes: u64,
     pub manifest_bytes: u64,
     pub active_manifest_bytes: u64,
-    pub diagnostic_bytes: u64,
     pub inventory_count: usize,
     pub rejection_count: usize,
     pub resolved_batch_size: Option<usize>,
+    pub vector_build: Option<VectorBuildObservations>,
 }
 
 impl BuildObservations {
@@ -115,6 +114,10 @@ impl BuildObservations {
 
     fn record(&mut self, phase: BuildPhase, started: Instant) {
         self.phases_us.insert(phase, elapsed_us(started));
+    }
+
+    fn record_duration(&mut self, phase: BuildPhase, duration_us: u64) {
+        self.phases_us.insert(phase, duration_us);
     }
 }
 
@@ -320,8 +323,9 @@ pub fn build_git_artifacts_with_provider(
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
 ) -> Result<BuildSummary, LifecycleError> {
     let started = Instant::now();
-    let ingest_started = Instant::now();
-    let mut documents = Vec::new();
+    let mut ingestion_us = 0_u64;
+    let mut chunking_us = 0_u64;
+    let mut chunks = legacy_chunks()?;
     let mut rejected = Vec::new();
     let mut inventory = Vec::new();
     let mut visited_files = 0_u64;
@@ -332,6 +336,7 @@ pub fn build_git_artifacts_with_provider(
             .then_with(|| left.revision.cmp(&right.revision))
     });
     for source in ordered_sources {
+        let ingest_started = Instant::now();
         let report = ingest_git_commit(
             &source.repository_path,
             &source.repository_id,
@@ -340,23 +345,24 @@ pub fn build_git_artifacts_with_provider(
             &source.license,
             &source.policy,
         )?;
+        ingestion_us = ingestion_us.saturating_add(elapsed_us(ingest_started));
         visited_files =
             visited_files.saturating_add(u64::try_from(report.visited_files).unwrap_or(u64::MAX));
-        documents.extend(report.documents);
+        let chunking_started = Instant::now();
+        for document in report.documents {
+            chunks.extend(
+                chunk_document(&document, ChunkingConfig::default()).map_err(|error| {
+                    LifecycleError::Contract(format!("{}: {error}", document.path))
+                })?,
+            );
+        }
+        chunking_us = chunking_us.saturating_add(elapsed_us(chunking_started));
         rejected.extend(report.rejected);
         inventory.extend(report.sources);
     }
-    let chunking_started = Instant::now();
-    let mut chunks = legacy_chunks()?;
-    for document in documents {
-        chunks.extend(
-            chunk_document(&document, ChunkingConfig::default())
-                .map_err(|error| LifecycleError::Contract(format!("{}: {error}", document.path)))?,
-        );
-    }
     let mut observations = BuildObservations::default();
-    observations.record(BuildPhase::Ingestion, ingest_started);
-    observations.record(BuildPhase::Chunking, chunking_started);
+    observations.record_duration(BuildPhase::Ingestion, ingestion_us);
+    observations.record_duration(BuildPhase::Chunking, chunking_us);
     observations.visited_files = visited_files;
     observations.inventory_count = inventory.len();
     observations.rejection_count = rejected.len();
@@ -404,19 +410,6 @@ fn stage_chunks(
         .collect::<BTreeSet<_>>()
         .len();
     observations.chunks = chunks.len();
-    let embedding_input_started = Instant::now();
-    observations.embedding_input_bytes = chunks
-        .iter()
-        .map(|chunk| {
-            u64::try_from(crate::semantic::embedding_text(chunk).len()).unwrap_or(u64::MAX)
-        })
-        .sum();
-    observations.record(BuildPhase::EmbeddingInput, embedding_input_started);
-    observations.diagnostic_bytes =
-        u64::try_from(serde_json::to_vec(&diagnostics)?.len()).unwrap_or(u64::MAX);
-    observations.rejection_bytes = observations.diagnostic_bytes;
-    observations.inventory_bytes =
-        u64::try_from(serde_json::to_vec(&sources)?.len()).unwrap_or(u64::MAX);
     observations.inventory_count = observations.inventory_count.max(sources.len());
     observations.rejection_count = observations.rejection_count.max(diagnostics.len());
     observations.visited_files = observations.visited_files.max(
@@ -458,16 +451,23 @@ fn stage_chunks(
     let (lexical_checksum, lexical_bytes) = lexical.write_artifact_with_digest(&lexical_path)?;
     observations.record(BuildPhase::Encoding, encoding_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
-        let inference_started = Instant::now();
-        let vector = VectorArtifact::from_provider(
+        let (vector, vector_build) = VectorArtifact::from_provider_with_observations(
             semantic.provider,
             chunks,
             semantic.model_id,
             semantic.model_revision,
             corpus.content_digest.clone(),
         )?;
-        observations.record(BuildPhase::Inference, inference_started);
-        observations.record(BuildPhase::VectorFinalization, inference_started);
+        observations.embedding_input_bytes = vector_build.input_bytes;
+        observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
+        observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
+        observations.record_duration(
+            BuildPhase::VectorFinalization,
+            vector_build
+                .normalization_us
+                .saturating_add(vector_build.sort_and_flatten_us),
+        );
+        observations.vector_build = Some(vector_build);
         observations.vector_count = vector.ids.len();
         observations.vector_dimension = Some(vector.dimension);
         observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
@@ -648,9 +648,6 @@ mod tests {
             summary.observations.manifest_bytes
         );
         assert!(summary.observations.corpus_bytes > 0);
-        assert!(summary.observations.inventory_bytes > 0);
-        assert!(summary.observations.rejection_bytes > 0);
-        assert!(summary.observations.diagnostic_bytes > 0);
         assert_eq!(
             summary.observations.provenance_bytes(),
             summary.observations.manifest_bytes + summary.observations.active_manifest_bytes
