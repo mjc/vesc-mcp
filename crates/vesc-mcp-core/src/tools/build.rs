@@ -265,7 +265,15 @@ fn artifact_metadata(path: &Path) -> Result<(String, usize), ToolError> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let digest_bytes: &[u8] = digest.as_ref();
+    let mut output = String::with_capacity(digest_bytes.len() * 2);
+    for byte in digest_bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 /// Serialize a tool response as JSON text for rmcp handlers.

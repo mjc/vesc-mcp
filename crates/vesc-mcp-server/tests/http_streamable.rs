@@ -1,0 +1,80 @@
+use std::net::SocketAddr;
+
+use rmcp::{
+    ServiceExt,
+    model::{CallToolRequestParams, ClientInfo, ReadResourceRequestParams},
+    transport::{
+        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
+    },
+};
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
+use vesc_mcp_core::{VescMcpService, resources::VESC_C_IF_URI};
+use vesc_mcp_server::http::{HttpServerConfig, router};
+
+#[tokio::test]
+async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> anyhow::Result<()> {
+    let cancellation = CancellationToken::new();
+    let config = HttpServerConfig {
+        bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+        path: "/mcp".into(),
+        allowed_hosts: vec!["127.0.0.1".into()],
+        allowed_origins: Vec::new(),
+        auth_token: None,
+    };
+    let app = router(&config, VescMcpService::new().http_service(), &cancellation);
+    let listener = TcpListener::bind(config.bind).await?;
+    let address = listener.local_addr()?;
+    let server_cancellation = cancellation.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(server_cancellation.cancelled_owned())
+            .await
+    });
+    let endpoint = format!("http://{address}/mcp");
+
+    let first = ClientInfo::default()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(endpoint.clone()),
+        ))
+        .await?;
+    let second = ClientInfo::default()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(endpoint),
+        ))
+        .await?;
+
+    let tools = first.list_all_tools().await?;
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["ping", "search_vesc_knowledge"]
+    );
+    let resources = first.list_all_resources().await?;
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource.uri == VESC_C_IF_URI)
+    );
+    let resource = first
+        .read_resource(ReadResourceRequestParams::new(VESC_C_IF_URI))
+        .await?;
+    assert!(!resource.contents.is_empty());
+
+    let arguments = serde_json::json!({"message": "shared"})
+        .as_object()
+        .cloned()
+        .expect("object arguments");
+    let response = second
+        .call_tool(CallToolRequestParams::new("ping").with_arguments(arguments))
+        .await?;
+    assert_eq!(response.is_error, Some(false));
+
+    first.cancel().await?;
+    second.cancel().await?;
+    cancellation.cancel();
+    server.await??;
+    Ok(())
+}

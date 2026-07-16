@@ -1,9 +1,10 @@
 //! Integration tests for the MCP resource URI scheme and registry.
 
 use vesc_mcp_core::resources::{
-    CatalogResourceUri, FixtureManifestUri, ManifestResourceHandler, ManifestResourceUri,
-    ParsedResourceUri, REFLOAT_MINIMAL_MANIFEST_URI, RefloatCommandUri, ResourceMeta,
-    ResourceRegistry, parse_resource_uri, register_manifest_resources,
+    CatalogResourceUri, FixtureManifestUri, KnowledgeChunkUri, KnowledgeDocumentUri,
+    ManifestResourceHandler, ManifestResourceUri, ParsedResourceUri, REFLOAT_MINIMAL_MANIFEST_URI,
+    RefloatCommandUri, ResourceMeta, ResourceRegistry, parse_resource_uri,
+    register_manifest_resources,
 };
 use vesc_mcp_core::test_support::fixture_sandbox_roots;
 
@@ -40,6 +41,18 @@ fn resource_registry_parses_valid_uris() {
             "vesc://catalog/commands/refloat/REALTIME_DATA",
             ParsedResourceUri::RefloatCommand(RefloatCommandUri {
                 command: "REALTIME_DATA".into(),
+            }),
+        ),
+        (
+            "vesc://knowledge/chunk/chunk-123",
+            ParsedResourceUri::KnowledgeChunk(KnowledgeChunkUri {
+                id: "chunk-123".into(),
+            }),
+        ),
+        (
+            "vesc://knowledge/document/doc-123",
+            ParsedResourceUri::KnowledgeDocument(KnowledgeDocumentUri {
+                id: "doc-123".into(),
             }),
         ),
     ];

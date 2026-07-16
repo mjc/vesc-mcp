@@ -6,9 +6,37 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedResourceUri {
     Catalog(CatalogResourceUri),
+    KnowledgeChunk(KnowledgeChunkUri),
+    KnowledgeDocument(KnowledgeDocumentUri),
     RefloatCommand(RefloatCommandUri),
     FixtureManifest(FixtureManifestUri),
     DynamicManifest(ManifestResourceUri),
+}
+
+/// `vesc://knowledge/chunk/{id}` — a normalized retrieval passage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeChunkUri {
+    pub id: String,
+}
+
+impl KnowledgeChunkUri {
+    #[must_use]
+    pub fn to_uri(&self) -> String {
+        format!("vesc://knowledge/chunk/{}", self.id)
+    }
+}
+
+/// `vesc://knowledge/document/{id}` — a normalized retrieval document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeDocumentUri {
+    pub id: String,
+}
+
+impl KnowledgeDocumentUri {
+    #[must_use]
+    pub fn to_uri(&self) -> String {
+        format!("vesc://knowledge/document/{}", self.id)
+    }
 }
 
 /// `vesc://catalog/{kind}/{id}` — first path segment is kind, remainder is id.
@@ -93,6 +121,8 @@ impl ParsedResourceUri {
     pub fn to_uri(&self) -> String {
         match self {
             Self::Catalog(catalog) => catalog.to_uri(),
+            Self::KnowledgeChunk(chunk) => chunk.to_uri(),
+            Self::KnowledgeDocument(document) => document.to_uri(),
             Self::RefloatCommand(command) => command.to_uri(),
             Self::FixtureManifest(fixture) => fixture.to_uri(),
             Self::DynamicManifest(manifest) => manifest.to_uri(),
@@ -135,6 +165,29 @@ fn parse_vesc_uri(full: &str, rest: &str) -> Result<ParsedResourceUri, ResourceU
             "vesc URI must include an authority and path",
         ));
     };
+
+    if authority == "knowledge" {
+        let (kind, id) = path.split_once('/').unwrap_or(("", ""));
+        if !matches!(kind, "chunk" | "document") {
+            return Err(ResourceUriError::malformed(
+                full,
+                "knowledge URI must match vesc://knowledge/{chunk|document}/<id>",
+            ));
+        }
+        if id.is_empty() || id.contains('/') || id.chars().any(char::is_whitespace) {
+            return Err(ResourceUriError::malformed(
+                full,
+                "knowledge chunk id must be a non-empty opaque token",
+            ));
+        }
+        return Ok(match kind {
+            "chunk" => ParsedResourceUri::KnowledgeChunk(KnowledgeChunkUri { id: id.into() }),
+            "document" => {
+                ParsedResourceUri::KnowledgeDocument(KnowledgeDocumentUri { id: id.into() })
+            }
+            _ => unreachable!("knowledge kind was validated"),
+        });
+    }
 
     if authority != "catalog" {
         return Err(ResourceUriError::malformed(
@@ -326,6 +379,30 @@ mod tests {
     fn catalog_uri_round_trips() {
         let parsed = parse_resource_uri("vesc://catalog/commands/refloat/balance").unwrap();
         assert_eq!(parsed.to_uri(), "vesc://catalog/commands/refloat/balance");
+    }
+
+    #[test]
+    fn knowledge_chunk_uri_round_trips() {
+        let parsed = parse_resource_uri("vesc://knowledge/chunk/chunk-123").unwrap();
+        assert_eq!(
+            parsed,
+            ParsedResourceUri::KnowledgeChunk(KnowledgeChunkUri {
+                id: "chunk-123".into(),
+            })
+        );
+        assert_eq!(parsed.to_uri(), "vesc://knowledge/chunk/chunk-123");
+    }
+
+    #[test]
+    fn knowledge_document_uri_round_trips() {
+        let parsed = parse_resource_uri("vesc://knowledge/document/doc-123").unwrap();
+        assert_eq!(
+            parsed,
+            ParsedResourceUri::KnowledgeDocument(KnowledgeDocumentUri {
+                id: "doc-123".into()
+            })
+        );
+        assert_eq!(parsed.to_uri(), "vesc://knowledge/document/doc-123");
     }
 
     #[test]

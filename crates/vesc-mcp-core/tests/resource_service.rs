@@ -31,10 +31,12 @@ fn service_registry_lists_default_static_resources() {
 fn service_registry_lists_resource_templates() {
     let service = VescMcpService::new();
     let templates = service.resource_registry().list_mcp_templates();
-    assert_eq!(templates.len(), 2);
+    assert_eq!(templates.len(), 4);
     let template_uris: Vec<_> = templates.iter().map(|t| t.uri_template.as_str()).collect();
     assert!(template_uris.contains(&"vescpkg://manifest/{path}"));
     assert!(template_uris.contains(&"vesc://catalog/commands/refloat/{command}"));
+    assert!(template_uris.contains(&"vesc://knowledge/chunk/{id}"));
+    assert!(template_uris.contains(&"vesc://knowledge/document/{id}"));
 }
 
 #[test]

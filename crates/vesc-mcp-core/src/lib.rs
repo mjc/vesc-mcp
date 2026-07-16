@@ -1,5 +1,6 @@
 //! Core types and MCP tool wiring for the vesc-mcp server.
 
+pub mod benchmark;
 pub mod catalog;
 pub mod config;
 pub mod error;
@@ -16,4 +17,4 @@ pub use catalog::{
     find_duplicate_catalog_ids, validate_catalog_paths,
 };
 pub use error::{CoreError, CoreResult};
-pub use server::VescMcpService;
+pub use server::{HttpMcpService, VescMcpService};

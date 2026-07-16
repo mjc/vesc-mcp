@@ -9,6 +9,7 @@ mod abi;
 mod attribution;
 mod catalog;
 mod catalog_watch;
+mod knowledge;
 mod manifest;
 mod refloat_command;
 mod r#static;
@@ -23,6 +24,11 @@ pub use catalog::{
     read_build_recipe, register_build_recipe_resources,
 };
 pub use catalog_watch::CatalogSourceWatcher;
+pub use knowledge::{
+    ConfiguredKnowledgeChunkResourceHandler, ConfiguredKnowledgeDocumentResourceHandler,
+    KnowledgeChunkResourceHandler, KnowledgeDocumentResourceHandler, read_knowledge_chunk,
+    read_knowledge_document,
+};
 pub use manifest::{
     ManifestResourceHandler, NATIVE_LIB_MINIMAL_MANIFEST_URI, REFLOAT_MINIMAL_MANIFEST_URI,
     read_manifest, register_manifest_resources,
@@ -37,15 +43,15 @@ pub use r#static::{
 };
 pub use subscriptions::ResourceSubscriptions;
 pub use uri::{
-    CatalogResourceUri, FixtureManifestUri, ManifestResourceUri, ParsedResourceUri,
-    RefloatCommandUri, ResourceUriError, decode_manifest_path, encode_manifest_path,
-    parse_resource_uri,
+    CatalogResourceUri, FixtureManifestUri, KnowledgeChunkUri, KnowledgeDocumentUri,
+    ManifestResourceUri, ParsedResourceUri, RefloatCommandUri, ResourceUriError,
+    decode_manifest_path, encode_manifest_path, parse_resource_uri,
 };
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use rmcp::model::{RawResource, RawResourceTemplate};
+use rmcp::model::{Resource as McpResource, ResourceTemplate as McpResourceTemplate};
 
 /// Metadata for a statically registered MCP resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,8 +64,8 @@ pub struct ResourceMeta {
 
 impl ResourceMeta {
     #[must_use]
-    pub fn to_mcp_resource(&self) -> RawResource {
-        let mut resource = RawResource::new(&self.uri, &self.name).with_mime_type(&self.mime_type);
+    pub fn to_mcp_resource(&self) -> McpResource {
+        let mut resource = McpResource::new(&self.uri, &self.name).with_mime_type(&self.mime_type);
         if let Some(description) = &self.description {
             resource = resource.with_description(description);
         }
@@ -169,7 +175,7 @@ impl ResourceRegistry {
 
     /// Convert registered static resources to rmcp list payload entries.
     #[must_use]
-    pub fn list_mcp_resources(&self) -> Vec<RawResource> {
+    pub fn list_mcp_resources(&self) -> Vec<McpResource> {
         self.static_resources
             .values()
             .map(ResourceMeta::to_mcp_resource)
@@ -209,7 +215,7 @@ impl ResourceRegistry {
 
     /// List MCP resource templates served by registered handlers.
     #[must_use]
-    pub fn list_mcp_templates(&self) -> Vec<RawResourceTemplate> {
+    pub fn list_mcp_templates(&self) -> Vec<McpResourceTemplate> {
         let mut templates = Vec::new();
         let manifest_probe =
             ParsedResourceUri::DynamicManifest(ManifestResourceUri { path: "_".into() });
@@ -230,6 +236,26 @@ impl ResourceRegistry {
             .any(|handler| handler.matches(&command_probe))
         {
             templates.push(Self::refloat_command_template());
+        }
+
+        let knowledge_probe =
+            ParsedResourceUri::KnowledgeChunk(KnowledgeChunkUri { id: "_".into() });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&knowledge_probe))
+        {
+            templates.push(Self::knowledge_chunk_template());
+        }
+
+        let document_probe =
+            ParsedResourceUri::KnowledgeDocument(KnowledgeDocumentUri { id: "_".into() });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&document_probe))
+        {
+            templates.push(Self::knowledge_document_template());
         }
 
         templates
@@ -253,21 +279,23 @@ impl ResourceRegistry {
         registry.register_handler(AbiResourceHandler::new());
         registry.register_handler(RefloatCommandResourceHandler::new());
         registry.register_handler(ManifestResourceHandler::from_config());
+        registry.register_handler(ConfiguredKnowledgeChunkResourceHandler::from_config());
+        registry.register_handler(ConfiguredKnowledgeDocumentResourceHandler::from_config());
         Ok(registry)
     }
 
     /// MCP resource template for sandboxed live manifest reads.
     #[must_use]
-    pub fn manifest_template() -> RawResourceTemplate {
-        RawResourceTemplate::new("vescpkg://manifest/{path}", "vescpkg manifest")
+    pub fn manifest_template() -> McpResourceTemplate {
+        McpResourceTemplate::new("vescpkg://manifest/{path}", "vescpkg manifest")
             .with_description("Parsed pkgdesc for a package root under configured sandbox paths")
             .with_mime_type("application/json")
     }
 
     /// MCP resource template for refloat command docs indexed in the catalog.
     #[must_use]
-    pub fn refloat_command_template() -> RawResourceTemplate {
-        RawResourceTemplate::new(
+    pub fn refloat_command_template() -> McpResourceTemplate {
+        McpResourceTemplate::new(
             "vesc://catalog/commands/refloat/{command}",
             "refloat command doc",
         )
@@ -275,6 +303,22 @@ impl ResourceRegistry {
             "Markdown summary for a refloat package command from catalog/refloat/commands.yaml",
         )
         .with_mime_type("text/markdown")
+    }
+
+    /// MCP resource template for normalized retrieval passages.
+    #[must_use]
+    pub fn knowledge_chunk_template() -> McpResourceTemplate {
+        McpResourceTemplate::new("vesc://knowledge/chunk/{id}", "knowledge chunk")
+            .with_description("Stable normalized passage returned by knowledge search")
+            .with_mime_type("application/json")
+    }
+
+    /// MCP resource template for full normalized retrieval documents.
+    #[must_use]
+    pub fn knowledge_document_template() -> McpResourceTemplate {
+        McpResourceTemplate::new("vesc://knowledge/document/{id}", "knowledge document")
+            .with_description("Full normalized document assembled from a stable knowledge corpus")
+            .with_mime_type("application/json")
     }
 }
 

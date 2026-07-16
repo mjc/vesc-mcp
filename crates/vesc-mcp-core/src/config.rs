@@ -2,9 +2,10 @@
 
 use std::env;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::catalog::CatalogRepo;
 use crate::workspace;
@@ -17,6 +18,71 @@ pub const VESC_TOOL_PATH_ENV: &str = "VESC_TOOL_PATH";
 pub const VESC_MCP_ENABLE_FLASH_ENV: &str = "VESC_MCP_ENABLE_FLASH";
 /// Environment variable overriding the config TOML file path.
 pub const VESC_MCP_CONFIG_ENV: &str = "VESC_MCP_CONFIG";
+/// Environment variable selecting the staged knowledge retrieval mode.
+pub const VESC_RAG_MODE_ENV: &str = "VESC_RAG_MODE";
+/// Environment variable selecting the generated knowledge artifact path.
+pub const VESC_RAG_ARTIFACT_ENV: &str = "VESC_RAG_ARTIFACT";
+/// Environment variable selecting the local semantic model directory.
+pub const VESC_RAG_SEMANTIC_MODEL_DIR_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_DIR";
+/// Environment variable identifying the provisioned semantic model.
+pub const VESC_RAG_SEMANTIC_MODEL_ID_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_ID";
+/// Environment variable identifying the provisioned semantic model revision.
+pub const VESC_RAG_SEMANTIC_MODEL_REVISION_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_REVISION";
+
+/// Knowledge retrieval rollout mode.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalMode {
+    #[default]
+    Lexical,
+    Legacy,
+    Auto,
+    Hybrid,
+}
+
+impl FromStr for RetrievalMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "legacy" => Ok(Self::Legacy),
+            "lexical" => Ok(Self::Lexical),
+            "auto" => Ok(Self::Auto),
+            "hybrid" => Ok(Self::Hybrid),
+            other => Err(format!("unsupported retrieval mode {other:?}")),
+        }
+    }
+}
+
+/// Bounded knowledge retrieval configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeConfig {
+    pub mode: RetrievalMode,
+    pub artifact_path: Option<PathBuf>,
+    pub semantic_model_dir: Option<PathBuf>,
+    pub semantic_model_id: Option<String>,
+    pub semantic_model_revision: Option<String>,
+    pub max_limit: usize,
+    pub max_query_bytes: usize,
+    pub max_response_bytes: usize,
+    pub max_passage_bytes: usize,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            mode: RetrievalMode::Lexical,
+            artifact_path: None,
+            semantic_model_dir: None,
+            semantic_model_id: None,
+            semantic_model_revision: None,
+            max_limit: 50,
+            max_query_bytes: 4 * 1024,
+            max_response_bytes: 64 * 1024,
+            max_passage_bytes: 8 * 1024,
+        }
+    }
+}
 
 static CONFIG: OnceLock<McpConfig> = OnceLock::new();
 
@@ -30,6 +96,7 @@ pub struct McpConfig {
     pub vesc_tool_root: PathBuf,
     pub vesc_tool_path: PathBuf,
     pub enable_flash: bool,
+    pub knowledge: KnowledgeConfig,
 }
 
 impl McpConfig {
@@ -61,6 +128,7 @@ impl McpConfig {
 struct ConfigFile {
     paths: Option<PathsSection>,
     features: Option<FeaturesSection>,
+    knowledge: Option<KnowledgeSection>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -78,6 +146,25 @@ struct FeaturesSection {
     enable_flash: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct KnowledgeSection {
+    mode: Option<RetrievalMode>,
+    artifact_path: Option<String>,
+    semantic: Option<SemanticSection>,
+    max_limit: Option<usize>,
+    max_query_bytes: Option<usize>,
+    max_response_bytes: Option<usize>,
+    max_passage_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(clippy::struct_field_names)]
+struct SemanticSection {
+    model_dir: Option<String>,
+    model_id: Option<String>,
+    model_revision: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct EnvOverrides {
     package_roots: Option<Vec<PathBuf>>,
@@ -87,6 +174,11 @@ struct EnvOverrides {
     vesc_tool_root: Option<PathBuf>,
     vesc_tool_path: Option<PathBuf>,
     enable_flash: Option<bool>,
+    knowledge_mode: Option<RetrievalMode>,
+    knowledge_artifact: Option<PathBuf>,
+    semantic_model_dir: Option<PathBuf>,
+    semantic_model_id: Option<String>,
+    semantic_model_revision: Option<String>,
 }
 
 /// Default config file location: `~/.config/vesc-mcp/config.toml`.
@@ -135,12 +227,24 @@ fn read_env_overrides() -> EnvOverrides {
             .ok()
             .as_deref()
             .map(parse_enable_flash_env),
+        knowledge_mode: env::var(VESC_RAG_MODE_ENV)
+            .ok()
+            .and_then(|value| RetrievalMode::from_str(&value).ok()),
+        knowledge_artifact: env::var(VESC_RAG_ARTIFACT_ENV)
+            .ok()
+            .map(|value| workspace::expand_path(&value)),
+        semantic_model_dir: env::var(VESC_RAG_SEMANTIC_MODEL_DIR_ENV)
+            .ok()
+            .map(|value| workspace::expand_path(&value)),
+        semantic_model_id: env::var(VESC_RAG_SEMANTIC_MODEL_ID_ENV).ok(),
+        semantic_model_revision: env::var(VESC_RAG_SEMANTIC_MODEL_REVISION_ENV).ok(),
     }
 }
 
 fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
     let paths = file.paths.as_ref();
     let features = file.features.as_ref();
+    let knowledge = file.knowledge.as_ref();
 
     let package_roots = env
         .package_roots
@@ -157,6 +261,7 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
         })
         .unwrap_or_default();
 
+    let defaults = KnowledgeConfig::default();
     McpConfig {
         package_roots,
         refloat_root: env.refloat_root.clone().unwrap_or_else(|| {
@@ -194,6 +299,45 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
             .enable_flash
             .or_else(|| features.and_then(|section| section.enable_flash))
             .unwrap_or(false),
+        knowledge: KnowledgeConfig {
+            mode: env
+                .knowledge_mode
+                .or_else(|| knowledge.and_then(|section| section.mode))
+                .unwrap_or(defaults.mode),
+            artifact_path: env.knowledge_artifact.clone().or_else(|| {
+                knowledge
+                    .and_then(|section| section.artifact_path.as_deref())
+                    .map(workspace::expand_path)
+            }),
+            semantic_model_dir: env.semantic_model_dir.clone().or_else(|| {
+                knowledge
+                    .and_then(|section| section.semantic.as_ref())
+                    .and_then(|semantic| semantic.model_dir.as_deref())
+                    .map(workspace::expand_path)
+            }),
+            semantic_model_id: env.semantic_model_id.clone().or_else(|| {
+                knowledge
+                    .and_then(|section| section.semantic.as_ref())
+                    .and_then(|semantic| semantic.model_id.clone())
+            }),
+            semantic_model_revision: env.semantic_model_revision.clone().or_else(|| {
+                knowledge
+                    .and_then(|section| section.semantic.as_ref())
+                    .and_then(|semantic| semantic.model_revision.clone())
+            }),
+            max_limit: knowledge
+                .and_then(|section| section.max_limit)
+                .unwrap_or(defaults.max_limit),
+            max_query_bytes: knowledge
+                .and_then(|section| section.max_query_bytes)
+                .unwrap_or(defaults.max_query_bytes),
+            max_response_bytes: knowledge
+                .and_then(|section| section.max_response_bytes)
+                .unwrap_or(defaults.max_response_bytes),
+            max_passage_bytes: knowledge
+                .and_then(|section| section.max_passage_bytes)
+                .unwrap_or(defaults.max_passage_bytes),
+        },
     }
 }
 
@@ -429,6 +573,57 @@ package_roots = ["/from/file"]
     fn enable_flash_defaults_off() {
         let merged = merge_config(&ConfigFile::default(), &EnvOverrides::default());
         assert!(!merged.enable_flash);
+        assert_eq!(merged.knowledge.mode, RetrievalMode::Lexical);
+        assert_eq!(merged.knowledge.max_limit, 50);
+    }
+
+    #[test]
+    fn knowledge_config_reads_toml_and_env_precedence() {
+        let file: ConfigFile = toml::from_str(
+            r#"
+[knowledge]
+mode = "lexical"
+artifact_path = "cache/knowledge.json"
+max_limit = 20
+
+[knowledge.semantic]
+model_dir = "models/bge-small"
+model_id = "bge-small-en-v1.5"
+model_revision = "sha256:model"
+"#,
+        )
+        .expect("parse knowledge config");
+        let merged = merge_config(
+            &file,
+            &EnvOverrides {
+                knowledge_mode: Some(RetrievalMode::Auto),
+                ..EnvOverrides::default()
+            },
+        );
+        assert_eq!(merged.knowledge.mode, RetrievalMode::Auto);
+        assert_eq!(merged.knowledge.max_limit, 20);
+        assert_eq!(
+            merged.knowledge.artifact_path,
+            Some(workspace::expand_path("cache/knowledge.json"))
+        );
+        assert_eq!(
+            merged.knowledge.semantic_model_dir,
+            Some(workspace::expand_path("models/bge-small"))
+        );
+        assert_eq!(
+            merged.knowledge.semantic_model_id.as_deref(),
+            Some("bge-small-en-v1.5")
+        );
+        assert_eq!(
+            merged.knowledge.semantic_model_revision.as_deref(),
+            Some("sha256:model")
+        );
+    }
+
+    #[test]
+    fn knowledge_mode_rejects_unknown_values() {
+        let error = RetrievalMode::from_str("not-a-mode").expect_err("invalid mode");
+        assert!(error.contains("unsupported retrieval mode"));
     }
 
     #[test]
