@@ -210,13 +210,20 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustToolchain pkg-config cargo-nextest cargo-llvm-cov cargo-deny
-            cargo-audit clippy rustfmt jq onnxruntime
+            cargo-audit clippy rustfmt jq hyperfine onnxruntime
+            python3Packages.onnx python3Packages.onnxruntime
+          ]
+          ++ lib.optionals stdenv.isLinux [
+            perf
+            rocmPackages.rocm-runtime
+            rocmPackages.rocminfo
+            vulkan-tools
           ];
           shellHook = ''
             export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
             export CARGO_TARGET_DIR="$PWD/target"
             export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
-            echo "vesc-mcp dev shell (host-only, stable Rust)"
+            echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)"
           '';
         };
         formatter = pkgs.rustfmt;
