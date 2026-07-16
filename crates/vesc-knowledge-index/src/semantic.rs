@@ -60,6 +60,10 @@ pub enum Pooling {
 }
 
 /// Contract for whether a provider's output vectors are already normalized.
+///
+/// `Guaranteed` is reserved for an explicitly normalized FastEmbed profile or
+/// a model implementation covered by a normalization test. The artifact
+/// builder still validates every vector before accepting that contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputNormalization {
@@ -307,18 +311,21 @@ fn embedding_text_capacity(chunk: &Chunk) -> usize {
                 ", ".len(),
             ))
             .saturating_add(1);
-        let aliases = chunk
+        let mut alias_count = 0_usize;
+        let mut alias_bytes = 0_usize;
+        for alias in chunk
             .identifiers
             .iter()
-            .filter_map(|identifier| identifier_semantic_alias(identifier));
-        let aliases = aliases.collect::<Vec<_>>();
-        if !aliases.is_empty() {
+            .filter_map(|identifier| identifier_semantic_alias(identifier))
+        {
+            alias_count += 1;
+            alias_bytes = alias_bytes.saturating_add(alias.len());
+        }
+        if alias_count > 0 {
             capacity = capacity
                 .saturating_add("Concepts: ".len())
-                .saturating_add(joined_capacity(
-                    aliases.iter().map(|alias| alias.len()),
-                    "; ".len(),
-                ))
+                .saturating_add(alias_bytes)
+                .saturating_add(alias_count.saturating_sub(1).saturating_mul("; ".len()))
                 .saturating_add(1);
         }
     }
@@ -723,11 +730,29 @@ impl VectorArtifact {
         corpus_digest: ContentDigest,
     ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
         let batch_size = provider.embedding_batch_size().get();
-        let mut rows = Vec::with_capacity(chunks.len());
-        let mut dimension = None;
+        let output_normalization = provider.output_normalization();
         let mut observations = VectorBuildObservations::default();
 
-        for chunk_batch in chunks.chunks(batch_size) {
+        let sort_started = Instant::now();
+        let mut order = chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| (chunk.chunk_id.clone(), index))
+            .collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        let mut rank_by_input = vec![0; chunks.len()];
+        let mut ids = Vec::with_capacity(chunks.len());
+        for (rank, (chunk_id, input_index)) in order.into_iter().enumerate() {
+            rank_by_input[input_index] = rank;
+            ids.push(chunk_id);
+        }
+        observations.sort_and_flatten_us = observations
+            .sort_and_flatten_us
+            .saturating_add(elapsed_us(sort_started));
+
+        let mut dimension = None;
+        let mut values = Vec::new();
+        for (batch_index, chunk_batch) in chunks.chunks(batch_size).enumerate() {
             let input_started = Instant::now();
             let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
             observations.embedding_input_us = observations
@@ -744,6 +769,7 @@ impl VectorArtifact {
                     })
                     .unwrap_or(u64::MAX),
             );
+
             let provider_started = Instant::now();
             let batch_vectors = provider.embed_documents(&texts)?;
             observations.provider_us = observations
@@ -757,10 +783,19 @@ impl VectorArtifact {
                 });
             }
 
-            let normalization_started = Instant::now();
-            for (chunk, mut vector) in chunk_batch.iter().zip(batch_vectors) {
+            for (offset, mut vector) in batch_vectors.into_iter().enumerate() {
                 match dimension {
-                    None => dimension = Some(vector.len()),
+                    None => {
+                        let vector_dimension = vector.len();
+                        dimension = Some(vector_dimension);
+                        values = vec![
+                            0.0;
+                            chunks
+                                .len()
+                                .checked_mul(vector_dimension)
+                                .ok_or(EmbeddingError::TooLarge)?
+                        ];
+                    }
                     Some(expected) if expected != vector.len() => {
                         return Err(EmbeddingError::DimensionMismatch {
                             expected,
@@ -770,30 +805,31 @@ impl VectorArtifact {
                     Some(_) => {}
                 }
 
-                match provider.output_normalization() {
+                let normalization_started = Instant::now();
+                match output_normalization {
                     OutputNormalization::Guaranteed => validate_vector(&vector, true)?,
                     OutputNormalization::Unknown => normalize(&mut vector)?,
                 }
-                rows.push((chunk.chunk_id.clone(), vector));
-            }
-            observations.normalization_us = observations
-                .normalization_us
-                .saturating_add(elapsed_us(normalization_started));
-        }
+                observations.normalization_us = observations
+                    .normalization_us
+                    .saturating_add(elapsed_us(normalization_started));
 
-        let sort_started = Instant::now();
-        rows.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        let mut ids = Vec::with_capacity(rows.len());
-        let mut values = Vec::with_capacity(
-            rows.len()
-                .checked_mul(dimension.unwrap_or(0))
-                .ok_or(EmbeddingError::TooLarge)?,
-        );
-        for (chunk_id, vector) in rows {
-            ids.push(chunk_id);
-            values.extend_from_slice(&vector);
+                let flatten_started = Instant::now();
+                let vector_dimension = dimension.expect("dimension initialized above");
+                let input_index = batch_index
+                    .checked_mul(batch_size)
+                    .and_then(|start| start.checked_add(offset))
+                    .ok_or(EmbeddingError::TooLarge)?;
+                let row = rank_by_input[input_index];
+                let start = row
+                    .checked_mul(vector_dimension)
+                    .ok_or(EmbeddingError::TooLarge)?;
+                values[start..start + vector_dimension].copy_from_slice(&vector);
+                observations.sort_and_flatten_us = observations
+                    .sort_and_flatten_us
+                    .saturating_add(elapsed_us(flatten_started));
+            }
         }
-        observations.sort_and_flatten_us = elapsed_us(sort_started);
 
         let artifact = Self {
             schema: 2,
@@ -1344,6 +1380,40 @@ mod tests {
         )
         .expect("artifact");
         assert_eq!(artifact.values, vec![0.6, 0.8]);
+    }
+
+    #[test]
+    fn guaranteed_provider_output_is_verified_at_runtime() {
+        struct LyingProvider;
+
+        impl EmbeddingProvider for LyingProvider {
+            fn output_normalization(&self) -> OutputNormalization {
+                OutputNormalization::Guaranteed
+            }
+
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                Ok(texts.iter().map(|_| vec![3.0, 4.0]).collect())
+            }
+
+            fn embed_query(&mut self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                Ok(vec![3.0, 4.0])
+            }
+        }
+
+        let mut provider = LyingProvider;
+        assert!(matches!(
+            VectorArtifact::from_provider(
+                &mut provider,
+                &chunks()[..1],
+                "lying",
+                "test",
+                ContentDigest::of(b"corpus"),
+            ),
+            Err(EmbeddingError::Provider(message)) if message.contains("normalized")
+        ));
     }
 
     #[test]
