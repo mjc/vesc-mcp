@@ -214,7 +214,7 @@
           default = pkgs.mkShell {
           packages = with pkgs; [
             rustToolchain pkg-config cargo-nextest cargo-llvm-cov cargo-deny
-            cargo-audit clippy rustfmt jq hyperfine onnxruntime
+            cargo-audit clippy rustfmt jq hyperfine time onnxruntime
             python3Packages.onnx python3Packages.onnxruntime
           ]
           ++ lib.optionals stdenv.isLinux [
@@ -233,7 +233,7 @@
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           rocm = pkgs.mkShell {
             packages = with pkgs; [
-              rustToolchain pkg-config cargo-nextest clippy rustfmt jq hyperfine
+              rustToolchain pkg-config cargo-nextest clippy rustfmt jq hyperfine time
               python3Packages.onnx python3Packages.onnxruntime rocmOnnxruntime
               rocmPackages.rocm-runtime rocmPackages.rocminfo
             ];
