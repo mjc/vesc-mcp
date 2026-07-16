@@ -1,9 +1,12 @@
 //! Fielded lexical retrieval over normalized chunks.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tantivy::collector::TopDocs;
 use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
@@ -71,6 +74,49 @@ struct LexicalArtifact {
 struct LexicalArtifactRef<'a> {
     schema: u16,
     chunks: Vec<&'a Chunk>,
+}
+
+struct DigestingWriter<W> {
+    inner: W,
+    digest: Sha256,
+    bytes: u64,
+}
+
+impl<W> DigestingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            digest: Sha256::new(),
+            bytes: 0,
+        }
+    }
+
+    fn finish(self) -> (ContentDigest, u64) {
+        let digest = self.digest.finalize();
+        let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
+        encoded.push_str("sha256:");
+        for byte in digest {
+            encoded.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+            encoded.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
+        }
+        (
+            ContentDigest::try_from(encoded).expect("sha256 digest is valid"),
+            self.bytes,
+        )
+    }
+}
+
+impl<W: Write> Write for DigestingWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        self.digest.update(&bytes[..written]);
+        self.bytes = self.bytes.saturating_add(written as u64);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// In-memory fielded lexical index. Artifact persistence is added by the lifecycle phase.
@@ -148,12 +194,14 @@ impl LexicalIndex {
             schema: 1,
             chunks: self.chunks.values().collect(),
         };
-        let bytes = serde_json::to_vec(&artifact)
+        let file = File::create(path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        let mut writer = DigestingWriter::new(BufWriter::new(file));
+        serde_json::to_writer(&mut writer, &artifact)
             .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        let digest = ContentDigest::of(&bytes);
-        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        std::fs::write(path, bytes).map_err(|error| LexicalError::Io(error.to_string()))?;
-        Ok((digest, length))
+        writer
+            .flush()
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        Ok(writer.finish())
     }
 
     /// Loads and validates a deterministic lexical source artifact.
@@ -635,7 +683,14 @@ mod tests {
             LexicalIndex::build(&[chunk("NVM", "persistent bytes", "write_nvm")]).expect("index");
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("lexical.json");
-        index.write_artifact(&path).expect("write artifact");
+        let (digest, bytes) = index
+            .write_artifact_with_digest(&path)
+            .expect("write artifact");
+        assert_eq!(bytes, std::fs::metadata(&path).expect("metadata").len());
+        assert_eq!(
+            digest,
+            ContentDigest::of(&std::fs::read(&path).expect("artifact"))
+        );
         let reopened = LexicalIndex::open_artifact(&path).expect("open artifact");
         assert_eq!(
             reopened
