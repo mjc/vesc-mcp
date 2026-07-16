@@ -1500,6 +1500,35 @@ mod tests {
     }
 
     #[test]
+    fn vector_artifact_is_stable_when_inference_order_changes() {
+        let original = chunks();
+        let mut reordered = original.clone();
+        reordered.reverse();
+
+        let mut first_provider = FakeEmbeddingProvider::new(4);
+        let first = VectorArtifact::from_provider(
+            &mut first_provider,
+            &original,
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("original artifact");
+
+        let mut second_provider = FakeEmbeddingProvider::new(4);
+        let second = VectorArtifact::from_provider(
+            &mut second_provider,
+            &reordered,
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("reordered artifact");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
     fn outer_batch_size_rejects_zero() {
         assert!(EmbeddingBatchSize::new(0).is_err());
         assert_eq!(EmbeddingBatchSize::new(3).expect("batch").get(), 3);
