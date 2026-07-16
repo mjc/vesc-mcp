@@ -23,7 +23,7 @@ use vesc_knowledge_index::evaluation::{
 use vesc_knowledge_index::{
     Chunk, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig, VectorArtifact,
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts_with_provider,
-    fuse_candidates,
+    embedding_text, fuse_candidates,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
@@ -835,6 +835,25 @@ fn run_semantic_benchmark(
         batch_size.is_none() || batch_sizes_argument.is_none(),
         "use --semantic-batch-size or --semantic-batch-sizes, not both"
     );
+    let intra_threads = argument_value(args, "--semantic-intra-threads").map(|value| {
+        value
+            .parse::<usize>()
+            .expect("--semantic-intra-threads must be a positive integer")
+    });
+    assert!(
+        intra_threads.is_none_or(|threads| threads > 0),
+        "--semantic-intra-threads must be a positive integer"
+    );
+    let sample_size = argument_value(args, "--semantic-sample-chunks").map(|value| {
+        let size = value
+            .parse::<usize>()
+            .expect("--semantic-sample-chunks must be a positive integer");
+        assert!(
+            size > 0,
+            "--semantic-sample-chunks must be a positive integer"
+        );
+        size
+    });
     let limits = argument_value(args, "--limits")
         .unwrap_or_else(|| "5,10,20,50".into())
         .split(',')
@@ -855,11 +874,18 @@ fn run_semantic_benchmark(
         .map(|query| query.text)
         .collect::<Vec<_>>();
     let (chunks, corpus_digest) = semantic_benchmark_chunks(artifact_root);
+    let chunks = if let Some(size) = sample_size {
+        representative_chunk_sample(&chunks, size)
+    } else {
+        chunks
+    };
+    let embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let initialization_started = std::time::Instant::now();
-    let mut provider = FastEmbedProvider::from_model_dir_with_profile(
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
         &model_dir,
         Some(batch_sizes[0]),
         embedding_profile(&model_id),
+        intra_threads,
     )
     .unwrap_or_else(|error| panic!("load semantic model: {error}"));
     let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
@@ -883,6 +909,12 @@ fn run_semantic_benchmark(
         )
         .unwrap_or_else(|error| panic!("run semantic benchmark: {error}"));
         report.cold_initialization = Some(initialization.clone());
+        report.intra_threads = intra_threads;
+        report.token_statistics = Some(
+            provider
+                .token_statistics(&embedding_texts)
+                .unwrap_or_else(|error| panic!("measure semantic token statistics: {error}")),
+        );
         reports.push(report);
     }
     if reports.len() == 1 {
@@ -960,7 +992,72 @@ fn semantic_benchmark_chunks(artifact_root: Option<&Path>) -> (Vec<Chunk>, Conte
     };
     let index = LexicalIndex::open_artifact(&path)
         .unwrap_or_else(|error| panic!("open benchmark lexical artifact: {error}"));
-    (index.chunks().values().cloned().collect(), corpus_digest)
+    let mut chunks = index.chunks().values().cloned().collect::<Vec<_>>();
+    chunks.sort_unstable_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+            .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+    });
+    (chunks, corpus_digest)
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn representative_chunk_sample(chunks: &[Chunk], limit: usize) -> Vec<Chunk> {
+    if limit >= chunks.len() {
+        return chunks.to_vec();
+    }
+
+    let mut buckets = BTreeMap::<String, Vec<usize>>::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        let language: String = chunk
+            .path
+            .rsplit('.')
+            .next()
+            .map(str::to_ascii_lowercase)
+            .map_or_else(
+                || "other".into(),
+                |extension| match extension.as_str() {
+                    "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "hh" => "c".into(),
+                    "rs" => "rust".into(),
+                    "md" | "markdown" | "mdown" => "markdown".into(),
+                    "qml" => "qml".into(),
+                    _ => "other".into(),
+                },
+            );
+        let length = match chunk.byte_count {
+            0..=512 => "short",
+            4096.. => "long",
+            _ => "medium",
+        };
+        buckets
+            .entry(format!("{language}:{length}"))
+            .or_default()
+            .push(index);
+    }
+
+    let keys = buckets.keys().cloned().collect::<Vec<_>>();
+    let mut cursors = BTreeMap::<String, usize>::new();
+    let mut selected = Vec::with_capacity(limit);
+    while selected.len() < limit {
+        let mut added = false;
+        for key in &keys {
+            let cursor = cursors.entry(key.clone()).or_default();
+            let Some(index) = buckets[key].get(*cursor).copied() else {
+                continue;
+            };
+            *cursor += 1;
+            selected.push(chunks[index].clone());
+            added = true;
+            if selected.len() == limit {
+                break;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    selected
 }
 
 fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {

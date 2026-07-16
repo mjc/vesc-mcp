@@ -81,6 +81,23 @@ pub struct VectorBuildObservations {
     pub input_bytes: u64,
 }
 
+/// Tokenization and padding measurements for the exact provider inputs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenStatistics {
+    pub chunks: usize,
+    pub total_real_tokens: u64,
+    pub total_padded_tokens: u64,
+    pub total_untruncated_tokens: u64,
+    pub min_tokens: usize,
+    pub median_tokens: usize,
+    pub p95_tokens: usize,
+    pub maximum_tokens: usize,
+    pub truncated_chunks: usize,
+    /// Padding waste expressed as parts per million of padded tokens.
+    pub padding_ratio_ppm: u64,
+}
+
 /// Model-specific contract shared by corpus generation and query embedding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -216,7 +233,7 @@ pub trait EmbeddingProvider {
 /// and tags rather than in the short body summary. Keep those fields in the
 /// semantic input so vector retrieval sees the same corpus concepts that the
 /// lexical fields expose.
-pub(crate) fn embedding_text(chunk: &Chunk) -> String {
+pub fn embedding_text(chunk: &Chunk) -> String {
     let capacity = embedding_text_capacity(chunk);
     let mut text = String::with_capacity(capacity);
     if !chunk.title.is_empty() {
@@ -531,6 +548,20 @@ impl FastEmbedProvider {
         batch_size: Option<usize>,
         profile: EmbeddingProfile,
     ) -> Result<Self, EmbeddingError> {
+        Self::from_model_dir_with_profile_and_threads(root, batch_size, profile, None)
+    }
+
+    /// Load a local model with an optional ONNX Runtime intra-op thread count.
+    ///
+    /// `None` preserves FastEmbed's default. This is intentionally an
+    /// initialization option because ONNX Runtime does not expose it as a
+    /// mutable session setting.
+    pub fn from_model_dir_with_profile_and_threads(
+        root: &std::path::Path,
+        batch_size: Option<usize>,
+        profile: EmbeddingProfile,
+        intra_threads: Option<usize>,
+    ) -> Result<Self, EmbeddingError> {
         if profile.max_length == 0 || profile.dimension == 0 || !profile.normalize {
             return Err(EmbeddingError::Provider(
                 "FastEmbed requires a non-zero, normalized embedding profile".into(),
@@ -553,12 +584,90 @@ impl FastEmbedProvider {
             Pooling::Cls => fastembed::Pooling::Cls,
             Pooling::Mean => fastembed::Pooling::Mean,
         });
-        let options = fastembed::InitOptionsUserDefined::new()
+        let mut options = fastembed::InitOptionsUserDefined::new()
             .with_max_length(profile.max_length)
             .with_execution_providers(semantic_execution_providers());
+        if let Some(intra_threads) = intra_threads {
+            if intra_threads == 0 {
+                return Err(EmbeddingError::Provider(
+                    "ONNX Runtime intra-op thread count must be nonzero".into(),
+                ));
+            }
+            options = options.with_intra_threads(intra_threads);
+        }
         let model = fastembed::TextEmbedding::try_new_from_user_defined(model, options)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         Self::new(model, batch_size, profile)
+    }
+
+    /// Measures the token counts and padding used by FastEmbed's configured
+    /// tokenizer, one outer provider batch at a time.
+    pub fn token_statistics(&self, texts: &[String]) -> Result<TokenStatistics, EmbeddingError> {
+        if texts.is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        let mut untruncated_tokenizer = self.model.tokenizer.clone();
+        untruncated_tokenizer.with_padding(None);
+        untruncated_tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+
+        let mut real_tokens = Vec::with_capacity(texts.len());
+        let mut total_real_tokens = 0_u64;
+        let mut total_padded_tokens = 0_u64;
+        let mut total_untruncated_tokens = 0_u64;
+        let mut truncated_chunks = 0_usize;
+
+        for batch in texts.chunks(self.batch_size.get()) {
+            let inputs = batch.iter().map(String::as_str).collect::<Vec<_>>();
+            let configured = self
+                .model
+                .tokenizer
+                .encode_batch(inputs.clone(), true)
+                .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+            let untruncated = untruncated_tokenizer
+                .encode_batch(inputs, true)
+                .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+            for (configured, untruncated) in configured.iter().zip(untruncated.iter()) {
+                let real = configured
+                    .get_attention_mask()
+                    .iter()
+                    .filter(|&&value| value != 0)
+                    .count();
+                let padded = configured.get_ids().len();
+                let raw = untruncated.get_ids().len();
+                real_tokens.push(real);
+                total_real_tokens = total_real_tokens.saturating_add(real as u64);
+                total_padded_tokens = total_padded_tokens.saturating_add(padded as u64);
+                total_untruncated_tokens = total_untruncated_tokens.saturating_add(raw as u64);
+                truncated_chunks += usize::from(raw > self.profile.max_length);
+            }
+        }
+
+        real_tokens.sort_unstable();
+        let percentile = |percentile: usize| {
+            let index = ((percentile * real_tokens.len()).saturating_add(99) / 100)
+                .saturating_sub(1)
+                .min(real_tokens.len().saturating_sub(1));
+            real_tokens[index]
+        };
+        let padding_waste = total_padded_tokens.saturating_sub(total_real_tokens);
+        Ok(TokenStatistics {
+            chunks: texts.len(),
+            total_real_tokens,
+            total_padded_tokens,
+            total_untruncated_tokens,
+            min_tokens: real_tokens[0],
+            median_tokens: percentile(50),
+            p95_tokens: percentile(95),
+            maximum_tokens: real_tokens[real_tokens.len() - 1],
+            truncated_chunks,
+            padding_ratio_ppm: if total_padded_tokens == 0 {
+                0
+            } else {
+                padding_waste.saturating_mul(1_000_000) / total_padded_tokens
+            },
+        })
     }
 
     fn validate_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), EmbeddingError> {

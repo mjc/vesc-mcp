@@ -48,6 +48,6 @@ pub use search::{ScoredEntry, rank_entries};
 pub use semantic::FastEmbedProvider;
 pub use semantic::{
     EmbeddingBatchSize, EmbeddingError, EmbeddingProfile, EmbeddingProvider, FakeEmbeddingProvider,
-    OutputNormalization, Pooling, SemanticHit, VectorArtifact, VectorBuildObservations,
-    semantic_query_text,
+    OutputNormalization, Pooling, SemanticHit, TokenStatistics, VectorArtifact,
+    VectorBuildObservations, embedding_text, semantic_query_text,
 };

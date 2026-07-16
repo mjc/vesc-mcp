@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::evaluation::EvaluationMode;
 use crate::{
     Chunk, ContentDigest, EmbeddingProvider, FusionConfig, LexicalFilters, LexicalIndex,
-    VectorArtifact, embedded_entries, fuse_candidates,
+    TokenStatistics, VectorArtifact, VectorBuildObservations, embedded_entries, fuse_candidates,
 };
 
 /// A percentile summary over monotonic elapsed-time samples in microseconds.
@@ -135,6 +135,8 @@ pub struct SemanticBenchmarkReport {
     pub build_identity: String,
     pub outer_batch_size: usize,
     #[serde(default)]
+    pub intra_threads: Option<usize>,
+    #[serde(default)]
     pub cold_initialization: Option<TimingDistribution>,
     pub warmup_iterations: usize,
     pub repetitions: usize,
@@ -146,6 +148,12 @@ pub struct SemanticBenchmarkReport {
     /// The first query after build/provider setup, not a cold-start query.
     pub first_query_after_build: TimingDistribution,
     pub build: TimingDistribution,
+    pub embedding_input: TimingDistribution,
+    pub provider_inference: TimingDistribution,
+    pub vector_finalization: TimingDistribution,
+    pub embedding_input_bytes: u64,
+    #[serde(default)]
+    pub token_statistics: Option<TokenStatistics>,
     pub embedding: TimingDistribution,
     pub exact_search: BTreeMap<usize, TimingDistribution>,
     /// Process RSS immediately before query measurements; this is retained RSS,
@@ -302,16 +310,25 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
         return Err(BenchmarkError::InvalidRepetitions);
     }
     let mut build_samples = Vec::with_capacity(repetitions);
+    let mut embedding_input_samples = Vec::with_capacity(repetitions);
+    let mut provider_samples = Vec::with_capacity(repetitions);
+    let mut vector_finalization_samples = Vec::with_capacity(repetitions);
+    let mut embedding_input_bytes = 0_u64;
     let mut build = || {
         let started = Instant::now();
-        let artifact = VectorArtifact::from_provider(
-            provider,
-            chunks,
-            model_id,
-            model_revision,
-            corpus_digest.clone(),
-        )?;
+        let (artifact, observations): (VectorArtifact, VectorBuildObservations) =
+            VectorArtifact::from_provider_with_observations(
+                provider,
+                chunks,
+                model_id,
+                model_revision,
+                corpus_digest.clone(),
+            )?;
         build_samples.push(elapsed_us(started));
+        embedding_input_samples.push(observations.embedding_input_us);
+        provider_samples.push(observations.provider_us);
+        vector_finalization_samples.push(observations.vector_finalization_us);
+        embedding_input_bytes = observations.input_bytes;
         Ok::<_, BenchmarkError>(artifact)
     };
     let mut artifact = build()?;
@@ -371,6 +388,7 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
             host_target()
         ),
         outer_batch_size: provider.embedding_batch_size().get(),
+        intra_threads: None,
         cold_initialization: None,
         warmup_iterations,
         repetitions,
@@ -381,6 +399,11 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
         artifact_bytes,
         first_query_after_build,
         build: TimingDistribution::from_samples(build_samples),
+        embedding_input: TimingDistribution::from_samples(embedding_input_samples),
+        provider_inference: TimingDistribution::from_samples(provider_samples),
+        vector_finalization: TimingDistribution::from_samples(vector_finalization_samples),
+        embedding_input_bytes,
+        token_statistics: None,
         embedding: TimingDistribution::from_samples(embedding_samples),
         exact_search,
         rss_before_queries_bytes,
