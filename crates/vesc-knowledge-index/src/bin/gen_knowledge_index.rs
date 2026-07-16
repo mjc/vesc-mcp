@@ -1014,9 +1014,8 @@ fn semantic_benchmark_chunks(artifact_root: Option<&Path>) -> (Vec<Chunk>, Conte
             return (chunks, ContentDigest::of(b"embedded-benchmark"));
         }
     };
-    let index = LexicalIndex::open_artifact(&path)
-        .unwrap_or_else(|error| panic!("open benchmark lexical artifact: {error}"));
-    let mut chunks = index.chunks().values().cloned().collect::<Vec<_>>();
+    let mut chunks = LexicalIndex::read_artifact_chunks(&path)
+        .unwrap_or_else(|error| panic!("read benchmark lexical artifact: {error}"));
     chunks.sort_unstable_by(|left, right| {
         left.path
             .cmp(&right.path)

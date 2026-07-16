@@ -211,6 +211,24 @@ impl LexicalIndex {
     /// Returns [`LexicalError::Io`] for read failures, [`LexicalError::Artifact`]
     /// for malformed or incompatible JSON, or normal build errors.
     pub fn open_artifact(path: &Path) -> Result<Self, LexicalError> {
+        let artifact = Self::read_artifact(path)?;
+        Self::build(&artifact.chunks)
+    }
+
+    /// Reads the compact lexical source artifact without constructing Tantivy.
+    ///
+    /// Provider benchmarks use this to select a bounded sample without paying
+    /// the full-corpus index construction cost or including it in RSS results.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError::Io`] for read failures or
+    /// [`LexicalError::Artifact`] for malformed or incompatible JSON.
+    pub fn read_artifact_chunks(path: &Path) -> Result<Vec<Chunk>, LexicalError> {
+        Ok(Self::read_artifact(path)?.chunks)
+    }
+
+    fn read_artifact(path: &Path) -> Result<LexicalArtifact, LexicalError> {
         let bytes = std::fs::read(path).map_err(|error| LexicalError::Io(error.to_string()))?;
         let artifact: LexicalArtifact = serde_json::from_slice(&bytes)
             .map_err(|error| LexicalError::Artifact(error.to_string()))?;
@@ -220,7 +238,7 @@ impl LexicalIndex {
                 artifact.schema
             )));
         }
-        Self::build(&artifact.chunks)
+        Ok(artifact)
     }
 
     /// Searches title, identifiers, headings/body, and tags with conjunctive term matching.
