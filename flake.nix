@@ -31,7 +31,9 @@
             knowledge="$out/share/vesc-mcp/knowledge"
             mkdir -p "$knowledge"
             cp -R ${./release/knowledge}/. "$knowledge/"
-            find "$knowledge" -name '*.gz' -exec gzip -df '{}' \;
+            gzip -dc "$knowledge/active.json.gz" > "$knowledge/active.json"
+            rm "$knowledge/active.json.gz"
+            gzip -d "$knowledge"/generations/*/lexical.json.gz
             test -s "$knowledge/active.json"
             test -s "$knowledge/generations/"*/lexical.json
             wrapProgram "$out/bin/vesc-mcp-server" \
