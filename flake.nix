@@ -18,7 +18,10 @@
           };
           rustToolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-          semanticModelId = "Xenova/bge-small-en-v1.5:quantized";
+          # The committed vector artifact records the repository model ID. The
+          # ONNX file is quantized, but the variant tag is not part of the
+          # artifact identity and caused runtime metadata validation to fail.
+          semanticModelId = "Xenova/bge-small-en-v1.5";
           semanticModelRepository = "Xenova/bge-small-en-v1.5";
           semanticModelRevision = "ea104dacec62c0de699686887e3f920caeb4f3e3";
           semanticFeatures = "semantic-fastembed"
