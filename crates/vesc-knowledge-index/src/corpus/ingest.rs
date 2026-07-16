@@ -66,6 +66,9 @@ pub struct IngestionReport {
     pub documents: Vec<NormalizedDocument>,
     pub rejected: Vec<SourceRejection>,
     pub sources: Vec<SourceInventory>,
+    /// Number of source entries examined, including entries later rejected by policy.
+    #[serde(default)]
+    pub visited_files: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -214,6 +217,7 @@ pub fn ingest_allowlisted(
         documents: Vec::new(),
         rejected: Vec::new(),
         sources: Vec::new(),
+        visited_files: specs.len(),
     };
     for spec in specs {
         match ingest_one(&canonical_root, repository, revision, spec) {

@@ -105,6 +105,7 @@ struct Candidate {
 /// Returns [`GitIngestionError`] when the policy is unsafe, the repository or
 /// exact commit cannot be read, a snapshot bound is exceeded, or normalized
 /// corpus metadata violates its contract.
+#[allow(clippy::too_many_lines)]
 pub fn ingest_git_commit(
     repository_path: &Path,
     repository_id: &RepositoryId,
@@ -153,6 +154,7 @@ pub fn ingest_git_commit(
         documents: Vec::with_capacity(candidates.len()),
         rejected,
         sources: Vec::with_capacity(candidates.len()),
+        visited_files,
     };
     for candidate in candidates {
         let object = repo

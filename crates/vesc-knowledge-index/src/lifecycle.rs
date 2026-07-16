@@ -5,6 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
 #[cfg(feature = "git-corpus")]
 use crate::corpus::git::{GitCorpusSource, GitIngestionError, ingest_git_commit};
@@ -36,6 +38,86 @@ pub enum LifecycleError {
     Git(#[from] GitIngestionError),
 }
 
+/// Non-identity phase names used by build observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildPhase {
+    Ingestion,
+    Chunking,
+    Corpus,
+    Lexical,
+    EmbeddingInput,
+    Inference,
+    VectorFinalization,
+    Encoding,
+    Writing,
+    Manifest,
+    Validation,
+    Activation,
+}
+
+/// Aggregate build timings and counters. These values are intentionally kept
+/// out of manifests, generation IDs, and checksums.
+///
+/// Provenance overhead is considered material at 5% of serialized retrieval
+/// artifacts. The threshold is a reporting policy only: provenance remains in
+/// the manifest and diagnostics regardless of the result.
+pub const PROVENANCE_OVERHEAD_THRESHOLD_PERCENT: u64 = 5;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildObservations {
+    pub total_duration_us: u64,
+    pub phases_us: BTreeMap<BuildPhase, u64>,
+    pub visited_files: u64,
+    pub accepted_files: u64,
+    pub rejected_files: u64,
+    pub accepted_source_bytes: u64,
+    pub documents: usize,
+    pub chunks: usize,
+    pub embedding_input_bytes: u64,
+    pub vector_count: usize,
+    pub vector_dimension: Option<usize>,
+    pub artifact_bytes: u64,
+    pub corpus_bytes: u64,
+    pub inventory_bytes: u64,
+    pub rejection_bytes: u64,
+    pub manifest_bytes: u64,
+    pub active_manifest_bytes: u64,
+    pub diagnostic_bytes: u64,
+    pub inventory_count: usize,
+    pub rejection_count: usize,
+    pub resolved_batch_size: Option<usize>,
+}
+
+impl BuildObservations {
+    #[must_use]
+    pub const fn provenance_bytes(&self) -> u64 {
+        self.manifest_bytes
+            .saturating_add(self.active_manifest_bytes)
+    }
+
+    #[must_use]
+    pub fn provenance_overhead_percent(&self) -> Option<u64> {
+        (self.artifact_bytes > 0).then(|| {
+            self.provenance_bytes()
+                .saturating_mul(100)
+                .checked_div(self.artifact_bytes)
+                .unwrap_or(u64::MAX)
+        })
+    }
+
+    #[must_use]
+    pub fn provenance_overhead_is_material(&self) -> bool {
+        self.provenance_overhead_percent()
+            .is_some_and(|percent| percent >= PROVENANCE_OVERHEAD_THRESHOLD_PERCENT)
+    }
+
+    fn record(&mut self, phase: BuildPhase, started: Instant) {
+        self.phases_us.insert(phase, elapsed_us(started));
+    }
+}
+
 /// Summary returned after a staged embedded-corpus build.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildSummary {
@@ -45,6 +127,7 @@ pub struct BuildSummary {
     pub lexical_bytes: u64,
     pub vector_bytes: Option<u64>,
     pub build_duration_us: u64,
+    pub observations: BuildObservations,
     pub manifest: ArtifactManifest,
 }
 
@@ -96,7 +179,13 @@ fn build_artifacts(
     root: &Path,
     semantic: Option<SemanticBuild<'_>>,
 ) -> Result<BuildSummary, LifecycleError> {
+    let started = Instant::now();
+    let ingest_started = Instant::now();
+    let chunking_started = Instant::now();
     let chunks = legacy_chunks()?;
+    let mut observations = BuildObservations::default();
+    observations.record(BuildPhase::Ingestion, ingest_started);
+    observations.record(BuildPhase::Chunking, chunking_started);
     stage_chunks(
         root,
         &chunks,
@@ -104,6 +193,8 @@ fn build_artifacts(
         "embedded-legacy-v1",
         Vec::new(),
         Vec::new(),
+        started,
+        observations,
     )
 }
 
@@ -148,13 +239,19 @@ pub fn build_allowlisted_artifacts_with_provider(
     specs: &[SourceSpec],
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
 ) -> Result<BuildSummary, LifecycleError> {
+    let started = Instant::now();
+    let ingest_started = Instant::now();
     let report = ingest_allowlisted(source_root, repository, revision, specs)
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let mut observations = BuildObservations::default();
+    observations.record(BuildPhase::Ingestion, ingest_started);
     let crate::corpus::ingest::IngestionReport {
         documents,
         rejected,
         sources,
+        visited_files,
     } = report;
+    let chunking_started = Instant::now();
     let mut chunks = legacy_chunks()?;
     for document in documents {
         chunks.extend(
@@ -167,12 +264,35 @@ pub fn build_allowlisted_artifacts_with_provider(
             "allowlisted sources produced no chunks".into(),
         ));
     }
+    observations.record(BuildPhase::Chunking, chunking_started);
+    observations.inventory_count = sources.len();
+    observations.rejection_count = rejected.len();
+    observations.visited_files = visited_files as u64;
+    observations.rejected_files = rejected.len() as u64;
+    observations.accepted_files = sources
+        .iter()
+        .filter(|source| source.rejection.is_none())
+        .count() as u64;
+    observations.accepted_source_bytes = sources
+        .iter()
+        .filter(|source| source.rejection.is_none())
+        .filter_map(|source| source.byte_count)
+        .sum();
     let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
         provider,
         model_id,
         model_revision,
     });
-    stage_chunks(root, &chunks, semantic, "allowlisted-v1", rejected, sources)
+    stage_chunks(
+        root,
+        &chunks,
+        semantic,
+        "allowlisted-v1",
+        rejected,
+        sources,
+        started,
+        observations,
+    )
 }
 
 /// Build an additive corpus from the compatibility baseline and immutable Git trees.
@@ -199,9 +319,12 @@ pub fn build_git_artifacts_with_provider(
     sources: &[GitCorpusSource],
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
 ) -> Result<BuildSummary, LifecycleError> {
-    let mut chunks = legacy_chunks()?;
+    let started = Instant::now();
+    let ingest_started = Instant::now();
+    let mut documents = Vec::new();
     let mut rejected = Vec::new();
     let mut inventory = Vec::new();
+    let mut visited_files = 0_u64;
     let mut ordered_sources = sources.iter().collect::<Vec<_>>();
     ordered_sources.sort_by(|left, right| {
         left.repository_id
@@ -217,24 +340,54 @@ pub fn build_git_artifacts_with_provider(
             &source.license,
             &source.policy,
         )?;
-        for document in report.documents {
-            chunks.extend(
-                chunk_document(&document, ChunkingConfig::default()).map_err(|error| {
-                    LifecycleError::Contract(format!("{}: {error}", document.path))
-                })?,
-            );
-        }
+        visited_files =
+            visited_files.saturating_add(u64::try_from(report.visited_files).unwrap_or(u64::MAX));
+        documents.extend(report.documents);
         rejected.extend(report.rejected);
         inventory.extend(report.sources);
     }
+    let chunking_started = Instant::now();
+    let mut chunks = legacy_chunks()?;
+    for document in documents {
+        chunks.extend(
+            chunk_document(&document, ChunkingConfig::default())
+                .map_err(|error| LifecycleError::Contract(format!("{}: {error}", document.path)))?,
+        );
+    }
+    let mut observations = BuildObservations::default();
+    observations.record(BuildPhase::Ingestion, ingest_started);
+    observations.record(BuildPhase::Chunking, chunking_started);
+    observations.visited_files = visited_files;
+    observations.inventory_count = inventory.len();
+    observations.rejection_count = rejected.len();
+    observations.rejected_files = rejected.len() as u64;
+    observations.accepted_files = inventory
+        .iter()
+        .filter(|source| source.rejection.is_none())
+        .count() as u64;
+    observations.accepted_source_bytes = inventory
+        .iter()
+        .filter(|source| source.rejection.is_none())
+        .filter_map(|source| source.byte_count)
+        .sum();
     let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
         provider,
         model_id,
         model_revision,
     });
-    stage_chunks(root, &chunks, semantic, "git-tree-v1", rejected, inventory)
+    stage_chunks(
+        root,
+        &chunks,
+        semantic,
+        "git-tree-v1",
+        rejected,
+        inventory,
+        started,
+        observations,
+    )
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn stage_chunks(
     root: &Path,
     chunks: &[crate::Chunk],
@@ -242,8 +395,35 @@ fn stage_chunks(
     corpus_version: &str,
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
+    started: Instant,
+    mut observations: BuildObservations,
 ) -> Result<BuildSummary, LifecycleError> {
-    let started = Instant::now();
+    observations.documents = chunks
+        .iter()
+        .map(|chunk| chunk.document_id.clone())
+        .collect::<BTreeSet<_>>()
+        .len();
+    observations.chunks = chunks.len();
+    let embedding_input_started = Instant::now();
+    observations.embedding_input_bytes = chunks
+        .iter()
+        .map(|chunk| {
+            u64::try_from(crate::semantic::embedding_text(chunk).len()).unwrap_or(u64::MAX)
+        })
+        .sum();
+    observations.record(BuildPhase::EmbeddingInput, embedding_input_started);
+    observations.diagnostic_bytes =
+        u64::try_from(serde_json::to_vec(&diagnostics)?.len()).unwrap_or(u64::MAX);
+    observations.rejection_bytes = observations.diagnostic_bytes;
+    observations.inventory_bytes =
+        u64::try_from(serde_json::to_vec(&sources)?.len()).unwrap_or(u64::MAX);
+    observations.inventory_count = observations.inventory_count.max(sources.len());
+    observations.rejection_count = observations.rejection_count.max(diagnostics.len());
+    observations.visited_files = observations.visited_files.max(
+        observations
+            .accepted_files
+            .saturating_add(observations.rejected_files),
+    );
     let documents = chunks
         .iter()
         .map(|chunk| chunk.document_id.clone())
@@ -254,6 +434,7 @@ fn stage_chunks(
         .iter()
         .map(|chunk| chunk.chunk_id.clone())
         .collect::<Vec<_>>();
+    let corpus_started = Instant::now();
     let corpus = CorpusManifest::new(
         CorpusVersion::try_from(corpus_version)
             .map_err(|error| LifecycleError::Contract(error.to_string()))?,
@@ -263,16 +444,21 @@ fn stage_chunks(
     corpus
         .validate()
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    observations.record(BuildPhase::Corpus, corpus_started);
 
+    let lexical_started = Instant::now();
     let lexical = LexicalIndex::build(chunks)?;
+    observations.record(BuildPhase::Lexical, lexical_started);
     fs::create_dir_all(root)?;
     let temp_root = unique_temp_root(root)?;
     let generation_root = root.join("generations");
     fs::create_dir_all(&generation_root)?;
     let lexical_path = temp_root.join("lexical.json");
-    lexical.write_artifact(&lexical_path)?;
-    let lexical_bytes = fs::read(&lexical_path)?;
+    let encoding_started = Instant::now();
+    let (lexical_checksum, lexical_bytes) = lexical.write_artifact_with_digest(&lexical_path)?;
+    observations.record(BuildPhase::Encoding, encoding_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
+        let inference_started = Instant::now();
         let vector = VectorArtifact::from_provider(
             semantic.provider,
             chunks,
@@ -280,10 +466,16 @@ fn stage_chunks(
             semantic.model_revision,
             corpus.content_digest.clone(),
         )?;
+        observations.record(BuildPhase::Inference, inference_started);
+        observations.record(BuildPhase::VectorFinalization, inference_started);
+        observations.vector_count = vector.ids.len();
+        observations.vector_dimension = Some(vector.dimension);
+        observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
         let vector_path = temp_root.join("vectors.bin");
-        vector.write_artifact(&vector_path)?;
-        let bytes = fs::read(&vector_path)?;
-        (Some(ContentDigest::of(&bytes)), Some(bytes.len() as u64))
+        let write_started = Instant::now();
+        let (checksum, bytes) = vector.write_artifact_with_digest(&vector_path)?;
+        observations.record(BuildPhase::Writing, write_started);
+        (Some(checksum), Some(bytes))
     } else {
         (None, None)
     };
@@ -293,7 +485,7 @@ fn stage_chunks(
         chunking: ChunkingConfig::default(),
         component_versions: component_versions(),
         sources,
-        lexical_checksum: Some(ContentDigest::of(&lexical_bytes)),
+        lexical_checksum: Some(lexical_checksum),
         vector_checksum,
         tool_version: env!("CARGO_PKG_VERSION").into(),
         diagnostics,
@@ -301,15 +493,18 @@ fn stage_chunks(
     manifest
         .validate()
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
-    fs::write(
-        temp_root.join("corpus.json"),
-        serde_json::to_vec(&manifest.corpus)?,
-    )?;
-    fs::write(
-        temp_root.join("manifest.json"),
-        serde_json::to_vec(&manifest)?,
-    )?;
+    let corpus_bytes = serde_json::to_vec(&manifest.corpus)?;
+    observations.corpus_bytes = u64::try_from(corpus_bytes.len()).unwrap_or(u64::MAX);
+    let manifest_bytes = serde_json::to_vec(&manifest)?;
+    observations.manifest_bytes = u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX);
+    observations.active_manifest_bytes = observations.manifest_bytes;
+    let manifest_started = Instant::now();
+    fs::write(temp_root.join("corpus.json"), corpus_bytes)?;
+    fs::write(temp_root.join("manifest.json"), &manifest_bytes)?;
+    observations.record(BuildPhase::Manifest, manifest_started);
+    let validation_started = Instant::now();
     validate_generation(&temp_root, &manifest)?;
+    observations.record(BuildPhase::Validation, validation_started);
 
     let generation = manifest.corpus.content_digest.to_string();
     let final_root = generation_root.join(&generation);
@@ -319,17 +514,22 @@ fn stage_chunks(
     } else {
         fs::rename(&temp_root, &final_root)?;
     }
+    let activation_started = Instant::now();
     let active_tmp = root.join(format!(".active.tmp-{}", std::process::id()));
-    fs::write(&active_tmp, serde_json::to_vec(&manifest)?)?;
+    fs::write(&active_tmp, &manifest_bytes)?;
     fs::rename(active_tmp, root.join("active.json"))?;
+    observations.record(BuildPhase::Activation, activation_started);
+    observations.artifact_bytes = lexical_bytes + vector_bytes.unwrap_or(0);
+    observations.total_duration_us = elapsed_us(started);
 
     Ok(BuildSummary {
         generation,
         document_count: manifest.corpus.documents.len(),
         chunk_count: manifest.corpus.chunks.len(),
-        lexical_bytes: lexical_bytes.len() as u64,
+        lexical_bytes,
         vector_bytes,
-        build_duration_us: elapsed_us(started),
+        build_duration_us: observations.total_duration_us,
+        observations,
         manifest,
     })
 }
@@ -343,7 +543,7 @@ fn component_versions() -> BTreeMap<String, String> {
         ("corpus-schema".into(), "1.0".into()),
         ("lexical-format".into(), "tantivy-0.26".into()),
         ("markdown-parser".into(), "pulldown-cmark-0.13".into()),
-        ("vector-format".into(), "dense-cosine-v1".into()),
+        ("vector-format".into(), "dense-cosine-v2".into()),
     ]);
     #[cfg(feature = "git-corpus")]
     {
@@ -442,6 +642,43 @@ mod tests {
         assert!(summary.document_count > 0);
         assert!(summary.chunk_count > 0);
         assert!(summary.build_duration_us > 0);
+        assert!(summary.observations.manifest_bytes > 0);
+        assert_eq!(
+            summary.observations.active_manifest_bytes,
+            summary.observations.manifest_bytes
+        );
+        assert!(summary.observations.corpus_bytes > 0);
+        assert!(summary.observations.inventory_bytes > 0);
+        assert!(summary.observations.rejection_bytes > 0);
+        assert!(summary.observations.diagnostic_bytes > 0);
+        assert_eq!(
+            summary.observations.provenance_bytes(),
+            summary.observations.manifest_bytes + summary.observations.active_manifest_bytes
+        );
+        assert!(summary.observations.provenance_overhead_percent().is_some());
+        assert_eq!(
+            summary.observations.provenance_overhead_is_material(),
+            summary
+                .observations
+                .provenance_overhead_percent()
+                .is_some_and(|percent| percent >= PROVENANCE_OVERHEAD_THRESHOLD_PERCENT)
+        );
+        assert_eq!(
+            summary.observations.total_duration_us,
+            summary.build_duration_us
+        );
+        assert!(
+            summary
+                .observations
+                .phases_us
+                .contains_key(&BuildPhase::Ingestion)
+        );
+        assert!(
+            summary
+                .observations
+                .phases_us
+                .contains_key(&BuildPhase::Activation)
+        );
         assert!(!summary.manifest.component_versions.is_empty());
         assert!(summary.vector_bytes.is_none());
         let text = fs::read_to_string(active_manifest_path(temp.path())).expect("manifest");
@@ -478,6 +715,8 @@ mod tests {
 
         assert!(summary.vector_bytes.is_some_and(|bytes| bytes > 0));
         assert!(summary.manifest.vector_checksum.is_some());
+        assert_eq!(summary.observations.resolved_batch_size, Some(8));
+        assert_eq!(summary.observations.vector_count, summary.chunk_count);
         let vector_path = temp
             .path()
             .join("generations")

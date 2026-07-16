@@ -150,6 +150,7 @@ fn bare_commit_ingestion_yields_bounded_code_with_exact_provenance() {
     .expect("ingest bare commit");
 
     assert_eq!(report.documents.len(), 4);
+    assert_eq!(report.visited_files, 9);
     let document = document_at(&report, "imu/imu.c");
     assert_eq!(document.path, "imu/imu.c");
     assert_eq!(document.revision.as_str(), revision);
