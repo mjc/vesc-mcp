@@ -3,11 +3,12 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    crane.url = "github:ipetkov/crane";
     rust-overlay.url = "github:oxalica/rust-overlay";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
+  outputs = { self, nixpkgs, crane, rust-overlay, flake-utils }:
     let
       packageFor = system:
         let
@@ -15,32 +16,44 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
-        in pkgs.rustPlatform.buildRustPackage {
-          pname = "vesc-mcp";
-          version = "0.1.0";
-          # Include local workspace modules even when they are not tracked yet.
-          src = builtins.path {
-            path = ./.;
-            name = "vesc-mcp-source";
+          rustToolchain = pkgs.rust-bin.stable.latest.default;
+          craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type:
+              craneLib.filterCargoSources path type
+              || pkgs.lib.hasInfix "/crates/vesc-knowledge-index/generated" path
+              || pkgs.lib.hasInfix "/crates/vesc-mcp-core/src/resources/snippets" path;
           };
-          cargoLock.lockFile = ./Cargo.lock;
-          cargoBuildFlags = [ "-p" "vesc-mcp-server" ];
+          commonArgs = {
+            pname = "vesc-mcp";
+            version = "0.1.0";
+            inherit src;
+            strictDeps = true;
+            cargoExtraArgs = "-p vesc-mcp-server";
+            nativeBuildInputs = [ pkgs.pkg-config ];
+          };
+          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        in craneLib.buildPackage (commonArgs // {
+          inherit cargoArtifacts;
           doCheck = false;
-          nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper pkgs.gzip ];
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper pkgs.gzip ];
           postInstall = ''
             knowledge="$out/share/vesc-mcp/knowledge"
-            mkdir -p "$knowledge"
-            cp -R ${./release/knowledge}/. "$knowledge/"
-            gzip -dc "$knowledge/active.json.gz" > "$knowledge/active.json"
-            rm "$knowledge/active.json.gz"
-            gzip -d "$knowledge"/generations/*/lexical.json.gz
+            mkdir -p "$knowledge/generations"
+            gzip -dc ${./release/knowledge}/active.json.gz > "$knowledge/active.json"
+            for source in ${./release/knowledge}/generations/*/lexical.json.gz; do
+              generation="$(basename "$(dirname "$source")")"
+              mkdir "$knowledge/generations/$generation"
+              gzip -dc "$source" > "$knowledge/generations/$generation/lexical.json"
+            done
             test -s "$knowledge/active.json"
             test -s "$knowledge/generations/"*/lexical.json
             wrapProgram "$out/bin/vesc-mcp-server" \
               --set-default VESC_RAG_ARTIFACT "$knowledge"
           '';
           meta.mainProgram = "vesc-mcp-server";
-        };
+        });
 
       nixosModule = { config, lib, pkgs, ... }:
         let
