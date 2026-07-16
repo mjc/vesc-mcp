@@ -80,11 +80,20 @@ bind address, Host/Origin policy, and authentication boundary.
 | `VESC_RAG_SEMANTIC_MODEL_DIR` | `[knowledge.semantic] model_dir` | *(none)* | Explicit local FastEmbed model directory; no download is attempted. |
 | `VESC_RAG_SEMANTIC_MODEL_ID` | `[knowledge.semantic] model_id` | *(none)* | Must match the vector artifact manifest. |
 | `VESC_RAG_SEMANTIC_MODEL_REVISION` | `[knowledge.semantic] model_revision` | *(none)* | Must match the vector artifact manifest. |
+| `VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS` | `[knowledge.semantic] idle_timeout_secs` | `300` | Unload the lazily initialized ONNX model after this many idle seconds; `0` unloads immediately after a semantic query. |
 
 The knowledge tool bounds queries to 4 KiB, results to 50, each passage to 8 KiB,
 and the serialized response to 64 KiB. The default is offline `lexical`; use
 explicit `legacy` for compatibility or `auto`/`hybrid` only with a provisioned
 semantic capability.
+The semantic model is initialized only when an `auto` or `hybrid` request needs
+it. A single background reaper drops the ONNX session after the configured idle
+timeout. Initialization and inference failures remain non-fatal in `auto`, which
+returns lexical results with a warning.
+Darwin release builds include ONNX Runtime's CoreML provider. Set
+`VESC_RAG_SEMANTIC_EXECUTION_PROVIDER=coreml` to request it; the packaged
+quantized BGE profile defaults to CPU because measured CoreML performance is
+worse for that graph.
 When a request omits `mode`, the resolved `[knowledge]`/environment mode is
 used; an explicit request mode takes precedence. Search passages are untrusted
 evidence and are available for bounded follow-up reads at

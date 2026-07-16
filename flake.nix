@@ -18,6 +18,26 @@
           };
           rustToolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+          semanticModelId = "Xenova/bge-small-en-v1.5:quantized";
+          semanticModelRepository = "Xenova/bge-small-en-v1.5";
+          semanticModelRevision = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+          semanticFeatures = "semantic-fastembed"
+            + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ",semantic-coreml";
+          semanticModel = pkgs.linkFarm "bge-small-en-v1.5" (map
+            (file: {
+              name = file.name;
+              path = pkgs.fetchurl {
+                url = "https://huggingface.co/${semanticModelRepository}/resolve/${semanticModelRevision}/${file.source}";
+                inherit (file) hash;
+              };
+            })
+            [
+              { name = "model.onnx"; source = "onnx/model_quantized.onnx"; hash = "sha256-bJxhAalW1i37XnGQxTgibAxbucsntlEjS23wY+59v+Q="; }
+              { name = "tokenizer.json"; source = "tokenizer.json"; hash = "sha256-0kGmDV6PBMwbKz6e96SSGye/Um2fYFCrkPkmeh+eXGY="; }
+              { name = "config.json"; source = "config.json"; hash = "sha256-+nP5C/ksjKzh+8twliYwbyvbyeo+W1+UtEDfm2qlY1A="; }
+              { name = "special_tokens_map.json"; source = "special_tokens_map.json"; hash = "sha256-ttNGvjZqfR1IMy28n987+JYLXYeVIrd5ndulnnYjfuM="; }
+              { name = "tokenizer_config.json"; source = "tokenizer_config.json"; hash = "sha256-kmHn15tEyBlcHK2itFPlWwCuuB6QemZkl0tNd3YXKrM="; }
+            ]);
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: type:
@@ -30,7 +50,7 @@
             version = "0.1.0";
             inherit src;
             strictDeps = true;
-            cargoExtraArgs = "-p vesc-mcp-server";
+            cargoExtraArgs = "-p vesc-mcp-server --features ${semanticFeatures}";
             nativeBuildInputs = [ pkgs.pkg-config ];
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -46,11 +66,21 @@
               generation="$(basename "$(dirname "$source")")"
               mkdir "$knowledge/generations/$generation"
               gzip -dc "$source" > "$knowledge/generations/$generation/lexical.json"
+              if [ -f "$(dirname "$source")/vectors.bin.gz" ]; then
+                gzip -dc "$(dirname "$source")/vectors.bin.gz" \
+                  > "$knowledge/generations/$generation/vectors.bin"
+              fi
             done
             test -s "$knowledge/active.json"
             test -s "$knowledge/generations/"*/lexical.json
             wrapProgram "$out/bin/vesc-mcp-server" \
-              --set-default VESC_RAG_ARTIFACT "$knowledge"
+              --set-default VESC_RAG_ARTIFACT "$knowledge" \
+              --set-default VESC_RAG_MODE auto \
+              --set-default VESC_RAG_SEMANTIC_MODEL_DIR "${semanticModel}" \
+              --set-default VESC_RAG_SEMANTIC_MODEL_ID "${semanticModelId}" \
+              --set-default VESC_RAG_SEMANTIC_MODEL_REVISION "${semanticModelRevision}" \
+              --set-default VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS 300 \
+              --set-default ORT_DYLIB_PATH "${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
           '';
           meta.mainProgram = "vesc-mcp-server";
         });
@@ -66,6 +96,7 @@
             VESC_MCP_HTTP_ALLOWED_HOSTS = lib.concatStringsSep "," cfg.allowedHosts;
             VESC_MCP_HTTP_ALLOWED_ORIGINS = lib.concatStringsSep "," cfg.allowedOrigins;
             VESC_RAG_MODE = cfg.retrievalMode;
+            VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS = toString cfg.semanticIdleTimeoutSecs;
             VESC_PACKAGE_ROOTS = lib.concatStringsSep ":" (map toString cfg.packageRoots);
           } // lib.optionalAttrs (cfg.artifactPath != null) {
             VESC_RAG_ARTIFACT = toString cfg.artifactPath;
@@ -122,7 +153,7 @@
             };
             retrievalMode = lib.mkOption {
               type = lib.types.enum [ "lexical" "legacy" "auto" "hybrid" ];
-              default = "lexical";
+              default = "auto";
             };
             semanticModelDir = lib.mkOption {
               type = lib.types.nullOr lib.types.path;
@@ -135,6 +166,10 @@
             semanticModelRevision = lib.mkOption {
               type = lib.types.nullOr lib.types.str;
               default = null;
+            };
+            semanticIdleTimeoutSecs = lib.mkOption {
+              type = lib.types.nonnegativeInt;
+              default = 300;
             };
           };
 

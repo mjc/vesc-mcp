@@ -12,7 +12,8 @@ workspace = true
 
 [features]
 git-corpus = ["dep:gix"]
-semantic-fastembed = ["dep:fastembed", "fastembed/ort-download-binaries-native-tls"]
+semantic-fastembed = ["dep:fastembed", "fastembed/ort-load-dynamic"]
+semantic-coreml = ["semantic-fastembed", "dep:ort", "ort/coreml"]
 semantic-fastembed-online = ["semantic-fastembed", "fastembed/online"]
 
 [dependencies]
@@ -24,6 +25,7 @@ pulldown-cmark.workspace = true
 tantivy.workspace = true
 gix = { workspace = true, optional = true }
 fastembed = { workspace = true, optional = true }
+ort = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [[bin]]

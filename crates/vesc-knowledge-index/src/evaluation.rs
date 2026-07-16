@@ -24,6 +24,7 @@ pub enum Intent {
 pub enum EvaluationMode {
     Legacy,
     Lexical,
+    Semantic,
     Hybrid,
 }
 
@@ -35,6 +36,8 @@ pub struct EvaluationQuery {
     pub id: String,
     pub text: String,
     pub intent: Intent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_category: Option<String>,
     pub relevant: BTreeMap<String, u8>,
 }
 
@@ -63,6 +66,7 @@ pub struct QueryEvaluation {
     pub id: String,
     pub intent: Intent,
     pub recall_at_5: f64,
+    pub recall_at_10: f64,
     pub reciprocal_rank_at_10: f64,
     pub ndcg_at_10: f64,
     pub zero_result: bool,
@@ -79,6 +83,7 @@ pub struct QueryEvaluation {
 pub struct IntentEvaluation {
     pub query_count: usize,
     pub recall_at_5: f64,
+    pub recall_at_10: f64,
     pub mrr_at_10: f64,
     pub ndcg_at_10: f64,
     pub zero_result_rate: f64,
@@ -95,6 +100,7 @@ pub struct EvaluationReport {
     pub warnings: Vec<String>,
     pub query_count: usize,
     pub recall_at_5: f64,
+    pub recall_at_10: f64,
     pub mrr_at_10: f64,
     pub ndcg_at_10: f64,
     pub zero_result_rate: f64,
@@ -104,6 +110,7 @@ pub struct EvaluationReport {
     pub by_intent: BTreeMap<Intent, IntentEvaluation>,
     pub by_category: BTreeMap<String, IntentEvaluation>,
     pub by_source: BTreeMap<String, IntentEvaluation>,
+    pub by_failure_category: BTreeMap<String, IntentEvaluation>,
     pub queries: Vec<QueryEvaluation>,
 }
 
@@ -217,6 +224,17 @@ pub fn evaluate_query_with_hits(
         })
         .count();
     let recall_at_5 = ratio(found_at_five, relevant_count);
+    let found_at_ten = ranked_ids
+        .iter()
+        .take(10)
+        .filter(|id| {
+            query
+                .relevant
+                .get(id.as_str())
+                .is_some_and(|value| *value > 0)
+        })
+        .count();
+    let recall_at_10 = ratio(found_at_ten, relevant_count);
     let reciprocal_rank_at_10 = ranked_ids
         .iter()
         .take(10)
@@ -249,6 +267,7 @@ pub fn evaluate_query_with_hits(
         id: query.id.clone(),
         intent: query.intent,
         recall_at_5,
+        recall_at_10,
         reciprocal_rank_at_10,
         ndcg_at_10: if idcg == 0.0 { 0.0 } else { dcg / idcg },
         zero_result: ranked.is_empty(),
@@ -320,12 +339,22 @@ where
         .collect();
     let by_category = grouped_metrics(queries, &results, category_group);
     let by_source = grouped_metrics(queries, &results, source_group);
+    let by_failure_category = grouped_metrics(queries, &results, |query| {
+        query
+            .failure_category
+            .clone()
+            .unwrap_or_else(|| "unclassified".into())
+    });
     EvaluationReport {
         mode,
         warnings,
         query_count,
         recall_at_5: mean(
             results.iter().map(|result| result.recall_at_5),
+            query_count_f,
+        ),
+        recall_at_10: mean(
+            results.iter().map(|result| result.recall_at_10),
             query_count_f,
         ),
         mrr_at_10: mean(
@@ -355,6 +384,7 @@ where
         by_intent,
         by_category,
         by_source,
+        by_failure_category,
         queries: results,
     }
 }
@@ -368,6 +398,10 @@ fn summarize_intent(results: &[&QueryEvaluation]) -> IntentEvaluation {
         query_count,
         recall_at_5: mean(
             results.iter().map(|result| result.recall_at_5),
+            query_count_f,
+        ),
+        recall_at_10: mean(
+            results.iter().map(|result| result.recall_at_10),
             query_count_f,
         ),
         mrr_at_10: mean(
@@ -506,6 +540,7 @@ mod tests {
             id: "q1".into(),
             text: "find it".into(),
             intent: Intent::Concept,
+            failure_category: None,
             relevant: BTreeMap::from([(String::from("a"), 2), (String::from("b"), 1)]),
         };
         let result = evaluate_query(&query, &[String::from("b"), String::from("x")]);
@@ -530,12 +565,14 @@ mod tests {
                 id: "identifier-one".into(),
                 text: "one".into(),
                 intent: Intent::Identifier,
+                failure_category: None,
                 relevant: BTreeMap::from([(String::from("one"), 2)]),
             },
             EvaluationQuery {
                 id: "concept-one".into(),
                 text: "concept".into(),
                 intent: Intent::Concept,
+                failure_category: None,
                 relevant: BTreeMap::from([(String::from("concept"), 2)]),
             },
         ];
@@ -549,6 +586,7 @@ mod tests {
             id: "identifier-miss".into(),
             text: "one".into(),
             intent: Intent::Identifier,
+            failure_category: None,
             relevant: BTreeMap::from([(String::from("one"), 2)]),
         }];
         let report = evaluate_suite(&queries, |_| vec!["wrong".into()]);
@@ -570,6 +608,7 @@ mod tests {
             id: "native-query".into(),
             text: "native".into(),
             intent: Intent::Concept,
+            failure_category: Some("conceptual_to_implementation".into()),
             relevant: BTreeMap::from([(String::from("priority.native-lib-minimal-abi"), 2)]),
         }];
         let report =

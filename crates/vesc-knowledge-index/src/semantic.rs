@@ -46,6 +46,84 @@ pub enum EmbeddingError {
     Io(String),
 }
 
+/// Token pooling used to turn model output into one embedding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pooling {
+    Cls,
+    Mean,
+}
+
+/// Model-specific contract shared by corpus generation and query embedding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingProfile {
+    pub pooling: Pooling,
+    pub query_prefix: String,
+    pub document_prefix: String,
+    pub max_length: usize,
+    pub dimension: usize,
+    pub normalize: bool,
+}
+
+impl EmbeddingProfile {
+    /// Profile for the packaged BGE small English v1.5 model.
+    #[must_use]
+    pub fn bge_small_en_v1_5() -> Self {
+        Self {
+            pooling: Pooling::Cls,
+            query_prefix: "Represent this sentence for searching relevant passages: ".into(),
+            document_prefix: String::new(),
+            max_length: 512,
+            dimension: 384,
+            normalize: true,
+        }
+    }
+
+    /// Profile for Snowflake Arctic Embed XS or S.
+    #[must_use]
+    pub fn snowflake_arctic() -> Self {
+        Self {
+            pooling: Pooling::Cls,
+            query_prefix: "Represent this sentence for searching relevant passages: ".into(),
+            document_prefix: String::new(),
+            max_length: 512,
+            dimension: 384,
+            normalize: true,
+        }
+    }
+
+    /// Profile for Jina Embeddings v2 Base Code.
+    #[must_use]
+    pub fn jina_v2_base_code() -> Self {
+        Self {
+            pooling: Pooling::Mean,
+            query_prefix: String::new(),
+            document_prefix: String::new(),
+            max_length: 8192,
+            dimension: 768,
+            normalize: true,
+        }
+    }
+
+    /// Resolves the supported profile from a model identity.
+    #[must_use]
+    pub fn for_model_id(model_id: &str) -> Option<Self> {
+        let model_id = model_id.to_ascii_lowercase();
+        if model_id.contains("bge-small-en-v1.5") {
+            Some(Self::bge_small_en_v1_5())
+        } else if model_id.contains("snowflake-arctic-embed-xs")
+            || model_id.contains("snowflake-arctic-embed-s")
+        {
+            Some(Self::snowflake_arctic())
+        } else if model_id.contains("jina-embeddings-v2-base-code") {
+            Some(Self::jina_v2_base_code())
+        } else {
+            None
+        }
+    }
+}
+
 /// Synchronous provider boundary for batch document and query embeddings.
 pub trait EmbeddingProvider {
     /// Embeds documents in input order.
@@ -224,14 +302,23 @@ impl EmbeddingProvider for FakeEmbeddingProvider {
 pub struct FastEmbedProvider {
     model: fastembed::TextEmbedding,
     batch_size: Option<usize>,
+    profile: EmbeddingProfile,
 }
 
 #[cfg(feature = "semantic-fastembed")]
 impl FastEmbedProvider {
     /// Wrap an initialized `FastEmbed` model.
     #[must_use]
-    pub const fn new(model: fastembed::TextEmbedding, batch_size: Option<usize>) -> Self {
-        Self { model, batch_size }
+    pub fn new(
+        model: fastembed::TextEmbedding,
+        batch_size: Option<usize>,
+        profile: EmbeddingProfile,
+    ) -> Self {
+        Self {
+            model,
+            batch_size,
+            profile,
+        }
     }
 
     /// Load a user-provisioned `FastEmbed` model without contacting a registry.
@@ -247,6 +334,25 @@ impl FastEmbedProvider {
         root: &std::path::Path,
         batch_size: Option<usize>,
     ) -> Result<Self, EmbeddingError> {
+        Self::from_model_dir_with_profile(root, batch_size, EmbeddingProfile::bge_small_en_v1_5())
+    }
+
+    /// Load a local model using an explicit embedding contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the profile is invalid, model files are
+    /// missing, or ONNX/tokenizer initialization fails.
+    pub fn from_model_dir_with_profile(
+        root: &std::path::Path,
+        batch_size: Option<usize>,
+        profile: EmbeddingProfile,
+    ) -> Result<Self, EmbeddingError> {
+        if profile.max_length == 0 || profile.dimension == 0 || !profile.normalize {
+            return Err(EmbeddingError::Provider(
+                "FastEmbed requires a non-zero, normalized embedding profile".into(),
+            ));
+        }
         let read = |name: &str| {
             std::fs::read(root.join(name)).map_err(|error| EmbeddingError::Io(error.to_string()))
         };
@@ -258,32 +364,89 @@ impl FastEmbedProvider {
                 special_tokens_map_file: read("special_tokens_map.json")?,
                 tokenizer_config_file: read("tokenizer_config.json")?,
             },
-        );
-        let model = fastembed::TextEmbedding::try_new_from_user_defined(
-            model,
-            fastembed::InitOptionsUserDefined::new(),
         )
-        .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        Ok(Self::new(model, batch_size))
+        .with_pooling(match profile.pooling {
+            Pooling::Cls => fastembed::Pooling::Cls,
+            Pooling::Mean => fastembed::Pooling::Mean,
+        });
+        let options = fastembed::InitOptionsUserDefined::new()
+            .with_max_length(profile.max_length)
+            .with_execution_providers(semantic_execution_providers());
+        let model = fastembed::TextEmbedding::try_new_from_user_defined(model, options)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        Ok(Self::new(model, batch_size, profile))
     }
+
+    fn validate_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), EmbeddingError> {
+        for vector in vectors {
+            if vector.len() != self.profile.dimension {
+                return Err(EmbeddingError::DimensionMismatch {
+                    expected: self.profile.dimension,
+                    actual: vector.len(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn effective_batch_size(&self, input_len: usize) -> Option<usize> {
+        self.batch_size.map(|size| size.min(input_len))
+    }
+}
+
+#[cfg(all(
+    feature = "semantic-fastembed",
+    feature = "semantic-coreml",
+    target_os = "macos"
+))]
+fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
+    if std::env::var("VESC_RAG_SEMANTIC_EXECUTION_PROVIDER")
+        .ok()
+        .is_none_or(|provider| !provider.eq_ignore_ascii_case("coreml"))
+    {
+        return Vec::new();
+    }
+    vec![
+        ort::ep::CoreML::default()
+            .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+            .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+            .with_specialization_strategy(ort::ep::coreml::SpecializationStrategy::FastPrediction)
+            .with_low_precision_accumulation_on_gpu(true)
+            .build(),
+    ]
+}
+
+#[cfg(all(
+    feature = "semantic-fastembed",
+    not(all(feature = "semantic-coreml", target_os = "macos"))
+))]
+fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
+    Vec::new()
 }
 
 #[cfg(feature = "semantic-fastembed")]
 impl EmbeddingProvider for FastEmbedProvider {
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        self.model
-            .embed(texts, self.batch_size)
-            .map(|vectors| vectors.into_iter().collect())
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))
+        let texts = texts
+            .iter()
+            .map(|text| format!("{}{}", self.profile.document_prefix, text))
+            .collect::<Vec<_>>();
+        let vectors = self
+            .model
+            .embed(&texts, self.effective_batch_size(texts.len()))
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        self.validate_vectors(&vectors)?;
+        Ok(vectors)
     }
 
     fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        self.model
-            .embed([text], self.batch_size)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?
-            .into_iter()
-            .next()
-            .ok_or(EmbeddingError::EmptyInput)
+        let text = format!("{}{}", self.profile.query_prefix, text);
+        let vectors = self
+            .model
+            .embed([text], self.effective_batch_size(1))
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        self.validate_vectors(&vectors)?;
+        vectors.into_iter().next().ok_or(EmbeddingError::EmptyInput)
     }
 }
 
@@ -321,28 +484,45 @@ impl VectorArtifact {
         model_revision: impl Into<String>,
         corpus_digest: ContentDigest,
     ) -> Result<Self, EmbeddingError> {
-        let texts: Vec<String> = chunks.iter().map(embedding_text).collect();
-        let vectors = provider.embed_documents(&texts)?;
-        if vectors.len() != chunks.len() {
-            return Err(EmbeddingError::DimensionMismatch {
-                expected: chunks.len(),
-                actual: vectors.len(),
-            });
-        }
-        let dimension = vectors.first().map_or(0, Vec::len);
-        let vectors = chunks
-            .iter()
-            .zip(vectors)
-            .map(|(chunk, mut vector)| {
+        const BATCH_SIZE: usize = 8;
+
+        let mut vectors = BTreeMap::new();
+        let mut dimension = None;
+
+        for chunk_batch in chunks.chunks(BATCH_SIZE) {
+            let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
+            let batch_vectors = provider.embed_documents(&texts)?;
+
+            if batch_vectors.len() != chunk_batch.len() {
+                return Err(EmbeddingError::DimensionMismatch {
+                    expected: chunk_batch.len(),
+                    actual: batch_vectors.len(),
+                });
+            }
+
+            for (chunk, mut vector) in chunk_batch.iter().zip(batch_vectors) {
                 normalize(&mut vector)?;
-                Ok((chunk.chunk_id.clone(), vector))
-            })
-            .collect::<Result<BTreeMap<_, _>, EmbeddingError>>()?;
+
+                match dimension {
+                    None => dimension = Some(vector.len()),
+                    Some(expected) if expected != vector.len() => {
+                        return Err(EmbeddingError::DimensionMismatch {
+                            expected,
+                            actual: vector.len(),
+                        });
+                    }
+                    Some(_) => {}
+                }
+
+                vectors.insert(chunk.chunk_id.clone(), vector);
+            }
+        }
+
         let artifact = Self {
             schema: 1,
             model_id: model_id.into(),
             model_revision: model_revision.into(),
-            dimension,
+            dimension: dimension.unwrap_or(0),
             normalized: true,
             corpus_digest,
             vectors,
@@ -772,6 +952,46 @@ mod tests {
         .expect("artifact");
         assert_eq!(artifact.vectors.len(), 2);
         assert!(artifact.vectors.values().all(|vector| vector.len() == 4));
+    }
+
+    #[test]
+    fn vector_generation_bounds_provider_batches() {
+        struct TrackingProvider {
+            inner: FakeEmbeddingProvider,
+            largest_batch: usize,
+        }
+
+        impl EmbeddingProvider for TrackingProvider {
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                self.largest_batch = self.largest_batch.max(texts.len());
+                self.inner.embed_documents(texts)
+            }
+
+            fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                self.inner.embed_query(text)
+            }
+        }
+
+        let source = chunks().remove(0);
+        let chunks = (0..17).map(|_| source.clone()).collect::<Vec<_>>();
+        let mut provider = TrackingProvider {
+            inner: FakeEmbeddingProvider::new(4),
+            largest_batch: 0,
+        };
+
+        VectorArtifact::from_provider(
+            &mut provider,
+            &chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("artifact");
+
+        assert_eq!(provider.largest_batch, 8);
     }
 
     #[test]

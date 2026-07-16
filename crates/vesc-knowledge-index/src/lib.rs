@@ -46,6 +46,6 @@ pub use search::{ScoredEntry, rank_entries};
 #[cfg(feature = "semantic-fastembed")]
 pub use semantic::FastEmbedProvider;
 pub use semantic::{
-    EmbeddingError, EmbeddingProvider, FakeEmbeddingProvider, SemanticHit, VectorArtifact,
-    semantic_query_text,
+    EmbeddingError, EmbeddingProfile, EmbeddingProvider, FakeEmbeddingProvider, Pooling,
+    SemanticHit, VectorArtifact, semantic_query_text,
 };

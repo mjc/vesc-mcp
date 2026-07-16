@@ -4,7 +4,11 @@ use crate::config::{KnowledgeConfig, RetrievalMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "semantic-fastembed")]
+use std::sync::{Condvar, MutexGuard, Once};
 use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "semantic-fastembed")]
+use std::time::Duration;
 use std::time::Instant;
 use vesc_knowledge_index::{
     Category, ExpandedContext, FusionConfig, LexicalHit, LexicalIndex, SemanticHit, VectorArtifact,
@@ -752,35 +756,22 @@ fn semantic_hits(
 
     #[cfg(feature = "semantic-fastembed")]
     {
-        let model_dir = config
-            .semantic_model_dir
-            .as_deref()
-            .ok_or_else(|| "semantic model directory is not configured".to_string())?;
-        let model_id = config
-            .semantic_model_id
-            .as_deref()
-            .ok_or_else(|| "semantic model identity is not configured".to_string())?;
-        let model_revision = config
-            .semantic_model_revision
-            .as_deref()
-            .ok_or_else(|| "semantic model revision is not configured".to_string())?;
-        let cache_key = format!("{}\0{}\0{}", model_dir.display(), model_id, model_revision);
-        let cache = SEMANTIC_PROVIDER.get_or_init(|| Mutex::new(None));
-        let mut cache = cache
-            .lock()
-            .map_err(|_| "semantic provider cache is poisoned".to_string())?;
-        if cache.as_ref().is_none_or(|entry| entry.key != cache_key) {
-            let provider = vesc_knowledge_index::FastEmbedProvider::from_model_dir(model_dir, None)
-                .map_err(|error| format!("semantic provider unavailable: {error}"))?;
-            *cache = Some(CachedSemanticProvider {
-                key: cache_key,
-                provider,
-            });
-        }
-        let entry = cache
+        let mut state = initialize_semantic_model(config)?;
+        let entry = state
+            .entry
             .as_mut()
             .ok_or_else(|| "semantic provider cache is empty".to_string())?;
-        semantic_hits_with_provider(query, filters, limit, &vector, chunks, &mut entry.provider)
+        let result = semantic_hits_with_provider(
+            query,
+            filters,
+            limit,
+            &vector,
+            chunks,
+            &mut entry.provider,
+        );
+        entry.last_used = Instant::now();
+        semantic_model_cache().wake.notify_one();
+        result
     }
 
     #[cfg(not(feature = "semantic-fastembed"))]
@@ -791,12 +782,117 @@ fn semantic_hits(
 }
 
 #[cfg(feature = "semantic-fastembed")]
-static SEMANTIC_PROVIDER: OnceLock<Mutex<Option<CachedSemanticProvider>>> = OnceLock::new();
+static SEMANTIC_PROVIDER: OnceLock<SemanticModelCache> = OnceLock::new();
+
+#[cfg(feature = "semantic-fastembed")]
+static SEMANTIC_REAPER: Once = Once::new();
+
+#[cfg(feature = "semantic-fastembed")]
+struct SemanticModelCache {
+    state: Mutex<SemanticModelState>,
+    wake: Condvar,
+}
+
+#[cfg(feature = "semantic-fastembed")]
+#[derive(Default)]
+struct SemanticModelState {
+    entry: Option<CachedSemanticProvider>,
+}
 
 #[cfg(feature = "semantic-fastembed")]
 struct CachedSemanticProvider {
     key: String,
     provider: vesc_knowledge_index::FastEmbedProvider,
+    last_used: Instant,
+    idle_timeout: Duration,
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_model_cache() -> &'static SemanticModelCache {
+    let cache = SEMANTIC_PROVIDER.get_or_init(|| SemanticModelCache {
+        state: Mutex::new(SemanticModelState::default()),
+        wake: Condvar::new(),
+    });
+    SEMANTIC_REAPER.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("vesc-semantic-model-reaper".into())
+            .spawn(reap_idle_semantic_model);
+    });
+    cache
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn initialize_semantic_model(
+    config: &KnowledgeConfig,
+) -> Result<MutexGuard<'static, SemanticModelState>, String> {
+    let model_dir = config
+        .semantic_model_dir
+        .as_deref()
+        .ok_or_else(|| "semantic model directory is not configured".to_string())?;
+    let model_id = config
+        .semantic_model_id
+        .as_deref()
+        .ok_or_else(|| "semantic model identity is not configured".to_string())?;
+    let model_revision = config
+        .semantic_model_revision
+        .as_deref()
+        .ok_or_else(|| "semantic model revision is not configured".to_string())?;
+    let key = format!("{}\0{}\0{}", model_dir.display(), model_id, model_revision);
+    let cache = semantic_model_cache();
+    let mut state = cache
+        .state
+        .lock()
+        .map_err(|_| "semantic provider cache is poisoned".to_string())?;
+    if state.entry.as_ref().is_none_or(|entry| entry.key != key) {
+        let profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(model_id)
+            .ok_or_else(|| format!("no embedding profile is registered for {model_id}"))?;
+        let provider = vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile(
+            model_dir, None, profile,
+        )
+        .map_err(|error| format!("semantic provider unavailable: {error}"))?;
+        state.entry = Some(CachedSemanticProvider {
+            key,
+            provider,
+            last_used: Instant::now(),
+            idle_timeout: Duration::from_secs(config.semantic_idle_timeout_secs),
+        });
+    }
+    if let Some(entry) = state.entry.as_mut() {
+        entry.last_used = Instant::now();
+        entry.idle_timeout = Duration::from_secs(config.semantic_idle_timeout_secs);
+    }
+    cache.wake.notify_one();
+    Ok(state)
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn reap_idle_semantic_model() {
+    let cache = SEMANTIC_PROVIDER
+        .get()
+        .expect("semantic cache initialized before reaper");
+    let mut state = cache
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    loop {
+        let Some(entry) = state.entry.as_ref() else {
+            state = cache
+                .wake
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+            continue;
+        };
+        let remaining = entry.idle_timeout.saturating_sub(entry.last_used.elapsed());
+        if remaining.is_zero() {
+            state.entry = None;
+            continue;
+        }
+        let (next, _) = cache
+            .wake
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(|error| error.into_inner());
+        state = next;
+    }
 }
 
 fn load_vector_artifact(
@@ -1164,6 +1260,7 @@ mod tests {
             semantic_model_dir: None,
             semantic_model_id: None,
             semantic_model_revision: None,
+            semantic_idle_timeout_secs: 300,
             max_limit: 1,
             max_query_bytes: 32,
             max_response_bytes: 1024,

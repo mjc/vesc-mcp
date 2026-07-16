@@ -17,7 +17,7 @@ use vesc_knowledge_index::evaluation::{
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{
-    Chunk, EmbeddingProvider, FastEmbedProvider, FusionConfig, VectorArtifact,
+    Chunk, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig, VectorArtifact,
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts_with_provider,
     fuse_candidates,
 };
@@ -28,7 +28,7 @@ use vesc_knowledge_index::{
 };
 #[cfg(feature = "git-corpus")]
 use vesc_knowledge_index::{
-    LicenseStatus, TrustTier, build_git_artifacts,
+    LicenseStatus, TrustTier, build_git_artifacts, build_git_artifacts_with_provider,
     corpus::git::{GitCorpusPolicy, GitCorpusSource},
 };
 
@@ -94,8 +94,44 @@ fn run_build_default(args: &[String]) {
         fs::remove_dir_all(&staging)
             .unwrap_or_else(|error| panic!("remove staging {}: {error}", staging.display()));
     }
-    let summary = build_git_artifacts(&staging, &sources)
-        .unwrap_or_else(|error| panic!("build default corpus: {error}"));
+    let model_dir = argument_value(args, "--semantic-model-dir");
+    let summary = if let Some(model_dir) = model_dir {
+        let model_id = argument_value(args, "--semantic-model-id")
+            .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
+        let model_revision = argument_value(args, "--semantic-model-revision")
+            .unwrap_or_else(|| {
+                panic!("--semantic-model-revision is required with --semantic-model-dir")
+            });
+        #[cfg(feature = "semantic-fastembed")]
+        {
+            let batch_size = argument_value(args, "--semantic-batch-size").map(|value| {
+                value
+                    .parse::<usize>()
+                    .expect("--semantic-batch-size must be an integer")
+            });
+            let mut provider = FastEmbedProvider::from_model_dir_with_profile(
+                &PathBuf::from(model_dir),
+                batch_size,
+                embedding_profile(&model_id),
+            )
+            .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+            build_git_artifacts_with_provider(
+                &staging,
+                &sources,
+                Some((&mut provider, &model_id, &model_revision)),
+            )
+        }
+        #[cfg(not(feature = "semantic-fastembed"))]
+        {
+            let _ = (model_dir, model_id, model_revision);
+            panic!(
+                "semantic model builds require the semantic-fastembed feature; rerun with --features semantic-fastembed"
+            );
+        }
+    } else {
+        build_git_artifacts(&staging, &sources)
+    }
+    .unwrap_or_else(|error| panic!("build default corpus: {error}"));
     let generation = staging.join("generations").join(&summary.generation);
     let generated_generation = generated.join("generations").join(&summary.generation);
     if generated.exists() {
@@ -109,6 +145,13 @@ fn run_build_default(args: &[String]) {
         generated_generation.join("lexical.json"),
     )
     .unwrap_or_else(|error| panic!("copy default lexical artifact: {error}"));
+    if summary.vector_bytes.is_some() {
+        fs::copy(
+            generation.join("vectors.bin"),
+            generated_generation.join("vectors.bin"),
+        )
+        .unwrap_or_else(|error| panic!("copy default vector artifact: {error}"));
+    }
     fs::copy(staging.join("active.json"), generated.join("active.json"))
         .unwrap_or_else(|error| panic!("copy default manifest: {error}"));
     println!("documents: {}", summary.document_count);
@@ -291,11 +334,12 @@ fn run_build(args: &[String]) {
             });
         #[cfg(feature = "semantic-fastembed")]
         {
-            let mut provider = FastEmbedProvider::from_model_dir(
+            let mut provider = FastEmbedProvider::from_model_dir_with_profile(
                 &PathBuf::from(model_dir),
                 semantic_batch_size,
+                embedding_profile(&model_id),
             )
-                .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+            .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             match source_root.as_deref() {
                 Some(source_root) => build_allowlisted_artifacts_with_provider(
                     &out,
@@ -408,14 +452,18 @@ fn run_evaluation(args: &[String]) {
     let modes = match mode_name.as_str() {
         "legacy" => vec![EvaluationMode::Legacy],
         "lexical" => vec![EvaluationMode::Lexical],
+        "semantic" => vec![EvaluationMode::Semantic],
         "hybrid" => vec![EvaluationMode::Hybrid],
         "all" => vec![
             EvaluationMode::Legacy,
             EvaluationMode::Lexical,
+            EvaluationMode::Semantic,
             EvaluationMode::Hybrid,
         ],
         other => {
-            panic!("unsupported evaluation mode {other:?}; use legacy, lexical, hybrid, or all")
+            panic!(
+                "unsupported evaluation mode {other:?}; use legacy, lexical, semantic, hybrid, or all"
+            )
         }
     };
     let raw = fs::read_to_string(&suite_path).unwrap_or_else(|err| {
@@ -503,7 +551,7 @@ fn evaluate_mode(
         EvaluationMode::Lexical => evaluate_suite_with_mode(queries, mode, Vec::new(), |query| {
             lexical_result_ids(query, artifact)
         }),
-        EvaluationMode::Hybrid => {
+        EvaluationMode::Semantic | EvaluationMode::Hybrid => {
             #[cfg(feature = "semantic-fastembed")]
             if let (Some(artifact), Some(model_dir), Some(model_id), Some(model_revision)) = (
                 artifact,
@@ -511,8 +559,9 @@ fn evaluate_mode(
                 semantic_model_id,
                 semantic_model_revision,
             ) {
-                return evaluate_hybrid(
+                return evaluate_semantic(
                     queries,
+                    mode,
                     artifact,
                     model_dir,
                     model_id,
@@ -531,8 +580,9 @@ fn evaluate_mode(
 }
 
 #[cfg(feature = "semantic-fastembed")]
-fn evaluate_hybrid(
+fn evaluate_semantic(
     queries: &[EvaluationQuery],
+    mode: EvaluationMode,
     artifact: &Path,
     model_dir: &Path,
     model_id: &str,
@@ -568,13 +618,21 @@ fn evaluate_hybrid(
             model_revision,
         )
         .unwrap_or_else(|error| panic!("validate semantic evaluation artifact: {error}"));
-    let mut provider = FastEmbedProvider::from_model_dir(model_dir, Some(16))
-        .unwrap_or_else(|error| panic!("load semantic evaluation model: {error}"));
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile(
+        model_dir,
+        Some(8),
+        embedding_profile(model_id),
+    )
+    .unwrap_or_else(|error| panic!("load semantic evaluation model: {error}"));
 
-    evaluate_suite_with_mode(queries, EvaluationMode::Hybrid, Vec::new(), |query| {
-        let lexical_hits = lexical
-            .search(query, &LexicalFilters::default(), 50)
-            .unwrap_or_default();
+    evaluate_suite_with_mode(queries, mode, Vec::new(), |query| {
+        let lexical_hits = if mode == EvaluationMode::Hybrid {
+            lexical
+                .search(query, &LexicalFilters::default(), 50)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let query_vector = provider
             .embed_query(&vesc_knowledge_index::semantic_query_text(query))
             .unwrap_or_else(|error| panic!("embed evaluation query: {error}"));
@@ -584,26 +642,37 @@ fn evaluate_hybrid(
             .into_iter()
             .filter(|hit| semantic_min_similarity.is_none_or(|minimum| hit.similarity >= minimum))
             .collect::<Vec<_>>();
-        fuse_candidates(
-            &lexical_hits,
-            &semantic_hits,
-            &chunks,
-            FusionConfig {
-                limit: 50,
-                lexical_floor: true,
-                ..FusionConfig::default()
-            },
-        )
-        .into_iter()
-        .flat_map(|hit| {
-            if hit.chunk.legacy_ids.is_empty() {
-                vec![hit.chunk.chunk_id.to_string()]
-            } else {
-                hit.chunk.legacy_ids
-            }
-        })
-        .collect()
+        if mode == EvaluationMode::Semantic {
+            semantic_hits
+                .into_iter()
+                .filter_map(|hit| chunks.get(&hit.chunk_id))
+                .flat_map(chunk_result_ids)
+                .collect()
+        } else {
+            fuse_candidates(
+                &lexical_hits,
+                &semantic_hits,
+                &chunks,
+                FusionConfig {
+                    limit: 50,
+                    lexical_floor: true,
+                    ..FusionConfig::default()
+                },
+            )
+            .into_iter()
+            .flat_map(|hit| chunk_result_ids(&hit.chunk))
+            .collect()
+        }
     })
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn chunk_result_ids(chunk: &Chunk) -> Vec<String> {
+    if chunk.legacy_ids.is_empty() {
+        vec![chunk.chunk_id.to_string()]
+    } else {
+        chunk.legacy_ids.clone()
+    }
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -689,6 +758,12 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
         .map(|pair| pair[1].clone())
 }
 
+#[cfg(feature = "semantic-fastembed")]
+fn embedding_profile(model_id: &str) -> EmbeddingProfile {
+    EmbeddingProfile::for_model_id(model_id)
+        .unwrap_or_else(|| panic!("no embedding profile is registered for {model_id}"))
+}
+
 fn print_text_report(report: &EvaluationReport) {
     println!("mode: {:?}", report.mode);
     for warning in &report.warnings {
@@ -696,6 +771,7 @@ fn print_text_report(report: &EvaluationReport) {
     }
     println!("queries: {}", report.query_count);
     println!("recall@5: {:.4}", report.recall_at_5);
+    println!("recall@10: {:.4}", report.recall_at_10);
     println!("mrr@10: {:.4}", report.mrr_at_10);
     println!("ndcg@10: {:.4}", report.ndcg_at_10);
     println!("zero-result-rate: {:.4}", report.zero_result_rate);
@@ -734,6 +810,12 @@ fn print_text_report(report: &EvaluationReport) {
             metrics.zero_result_rate,
             metrics.duplicate_rate_at_5,
             metrics.diversity_at_5,
+        );
+    }
+    for (category, metrics) in &report.by_failure_category {
+        println!(
+            "failure-{category}: queries={} recall@5={:.4} recall@10={:.4} mrr@10={:.4}",
+            metrics.query_count, metrics.recall_at_5, metrics.recall_at_10, metrics.mrr_at_10
         );
     }
 }

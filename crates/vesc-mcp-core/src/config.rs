@@ -28,6 +28,8 @@ pub const VESC_RAG_SEMANTIC_MODEL_DIR_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_DIR";
 pub const VESC_RAG_SEMANTIC_MODEL_ID_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_ID";
 /// Environment variable identifying the provisioned semantic model revision.
 pub const VESC_RAG_SEMANTIC_MODEL_REVISION_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_REVISION";
+/// Environment variable controlling how long an idle semantic model remains loaded.
+pub const VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV: &str = "VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS";
 
 /// Knowledge retrieval rollout mode.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +64,7 @@ pub struct KnowledgeConfig {
     pub semantic_model_dir: Option<PathBuf>,
     pub semantic_model_id: Option<String>,
     pub semantic_model_revision: Option<String>,
+    pub semantic_idle_timeout_secs: u64,
     pub max_limit: usize,
     pub max_query_bytes: usize,
     pub max_response_bytes: usize,
@@ -76,6 +79,7 @@ impl Default for KnowledgeConfig {
             semantic_model_dir: None,
             semantic_model_id: None,
             semantic_model_revision: None,
+            semantic_idle_timeout_secs: 5 * 60,
             max_limit: 50,
             max_query_bytes: 4 * 1024,
             max_response_bytes: 64 * 1024,
@@ -161,6 +165,7 @@ struct SemanticSection {
     model_dir: Option<String>,
     model_id: Option<String>,
     model_revision: Option<String>,
+    idle_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -177,6 +182,7 @@ struct EnvOverrides {
     semantic_model_dir: Option<PathBuf>,
     semantic_model_id: Option<String>,
     semantic_model_revision: Option<String>,
+    semantic_idle_timeout_secs: Option<u64>,
 }
 
 /// Default config file location: `~/.config/vesc-mcp/config.toml`.
@@ -236,6 +242,9 @@ fn read_env_overrides() -> EnvOverrides {
             .map(|value| workspace::expand_path(&value)),
         semantic_model_id: env::var(VESC_RAG_SEMANTIC_MODEL_ID_ENV).ok(),
         semantic_model_revision: env::var(VESC_RAG_SEMANTIC_MODEL_REVISION_ENV).ok(),
+        semantic_idle_timeout_secs: env::var(VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV)
+            .ok()
+            .and_then(|value| value.parse().ok()),
     }
 }
 
@@ -323,6 +332,14 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
                     .and_then(|section| section.semantic.as_ref())
                     .and_then(|semantic| semantic.model_revision.clone())
             }),
+            semantic_idle_timeout_secs: env
+                .semantic_idle_timeout_secs
+                .or_else(|| {
+                    knowledge
+                        .and_then(|section| section.semantic.as_ref())
+                        .and_then(|semantic| semantic.idle_timeout_secs)
+                })
+                .unwrap_or(defaults.semantic_idle_timeout_secs),
             max_limit: knowledge
                 .and_then(|section| section.max_limit)
                 .unwrap_or(defaults.max_limit),
@@ -588,6 +605,7 @@ max_limit = 20
 model_dir = "models/bge-small"
 model_id = "bge-small-en-v1.5"
 model_revision = "sha256:model"
+idle_timeout_secs = 60
 "#,
         )
         .expect("parse knowledge config");
@@ -616,6 +634,7 @@ model_revision = "sha256:model"
             merged.knowledge.semantic_model_revision.as_deref(),
             Some("sha256:model")
         );
+        assert_eq!(merged.knowledge.semantic_idle_timeout_secs, 60);
     }
 
     #[test]
