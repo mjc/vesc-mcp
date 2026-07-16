@@ -100,9 +100,9 @@ pub fn chunk_markdown(
 
 /// Chunks a normalized document according to its media type.
 ///
-/// Structured catalog records are already split into semantic records by
-/// ingestion, so each bounded record remains one passage instead of being
-/// cut through unrelated fields.
+/// Markdown uses heading/code-block semantics. Code, plain text, and structured
+/// records use deterministic bounded text splitting so source indentation and
+/// preprocessor directives are not misread as Markdown.
 ///
 /// # Errors
 ///
@@ -112,7 +112,7 @@ pub fn chunk_document(
     document: &NormalizedDocument,
     config: ChunkingConfig,
 ) -> Result<Vec<Chunk>, ChunkingError> {
-    if document.media_type.ends_with("yaml") || document.media_type.ends_with("json") {
+    if document.media_type != "text/markdown" {
         validate_config(config)?;
         let heading_path = document
             .path

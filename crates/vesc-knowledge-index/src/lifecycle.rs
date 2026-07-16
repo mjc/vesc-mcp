@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
+#[cfg(feature = "git-corpus")]
+use crate::corpus::git::{GitCorpusSource, GitIngestionError, ingest_git_commit};
 use crate::corpus::ingest::{SourceInventory, SourceRejection, SourceSpec, ingest_allowlisted};
 use crate::corpus::{
     ArtifactManifest, ContentDigest, CorpusManifest, CorpusVersion, NormalizedDocument,
@@ -29,6 +31,9 @@ pub enum LifecycleError {
     Lexical(#[from] LexicalError),
     #[error("vector artifact failed: {0}")]
     Vector(#[from] EmbeddingError),
+    #[cfg(feature = "git-corpus")]
+    #[error("Git corpus ingestion failed: {0}")]
+    Git(#[from] GitIngestionError),
 }
 
 /// Summary returned after a staged embedded-corpus build.
@@ -170,6 +175,66 @@ pub fn build_allowlisted_artifacts_with_provider(
     stage_chunks(root, &chunks, semantic, "allowlisted-v1", rejected, sources)
 }
 
+/// Build an additive corpus from the compatibility baseline and immutable Git trees.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when Git ingestion, chunking, or artifact staging fails.
+#[cfg(feature = "git-corpus")]
+pub fn build_git_artifacts(
+    root: &Path,
+    sources: &[GitCorpusSource],
+) -> Result<BuildSummary, LifecycleError> {
+    build_git_artifacts_with_provider(root, sources, None)
+}
+
+/// Build an additive immutable Git-tree corpus with an optional embedding provider.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when Git ingestion, chunking, embedding, or artifact staging fails.
+#[cfg(feature = "git-corpus")]
+pub fn build_git_artifacts_with_provider(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+) -> Result<BuildSummary, LifecycleError> {
+    let mut chunks = legacy_chunks()?;
+    let mut rejected = Vec::new();
+    let mut inventory = Vec::new();
+    let mut ordered_sources = sources.iter().collect::<Vec<_>>();
+    ordered_sources.sort_by(|left, right| {
+        left.repository_id
+            .cmp(&right.repository_id)
+            .then_with(|| left.revision.cmp(&right.revision))
+    });
+    for source in ordered_sources {
+        let report = ingest_git_commit(
+            &source.repository_path,
+            &source.repository_id,
+            &source.revision,
+            source.trust_tier,
+            &source.license,
+            &source.policy,
+        )?;
+        for document in report.documents {
+            chunks.extend(
+                chunk_document(&document, ChunkingConfig::default()).map_err(|error| {
+                    LifecycleError::Contract(format!("{}: {error}", document.path))
+                })?,
+            );
+        }
+        rejected.extend(report.rejected);
+        inventory.extend(report.sources);
+    }
+    let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
+        provider,
+        model_id,
+        model_revision,
+    });
+    stage_chunks(root, &chunks, semantic, "git-tree-v1", rejected, inventory)
+}
+
 fn stage_chunks(
     root: &Path,
     chunks: &[crate::Chunk],
@@ -270,7 +335,7 @@ fn stage_chunks(
 }
 
 fn component_versions() -> BTreeMap<String, String> {
-    BTreeMap::from([
+    let versions = BTreeMap::from([
         (
             "vesc-knowledge-index".into(),
             env!("CARGO_PKG_VERSION").into(),
@@ -279,7 +344,20 @@ fn component_versions() -> BTreeMap<String, String> {
         ("lexical-format".into(), "tantivy-0.26".into()),
         ("markdown-parser".into(), "pulldown-cmark-0.13".into()),
         ("vector-format".into(), "dense-cosine-v1".into()),
-    ])
+    ]);
+    #[cfg(feature = "git-corpus")]
+    {
+        let mut versions = versions;
+        versions.insert(
+            "git-corpus-policy".into(),
+            crate::corpus::git::GIT_CORPUS_POLICY_VERSION.into(),
+        );
+        versions
+    }
+    #[cfg(not(feature = "git-corpus"))]
+    {
+        versions
+    }
 }
 
 fn elapsed_us(start: Instant) -> u64 {

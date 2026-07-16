@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use crate::{Category, IndexEntry};
 
 pub mod chunking;
+#[cfg(feature = "git-corpus")]
+pub mod git;
 pub mod ingest;
 
 use self::ingest::{SourceInventory, SourceRejection};
@@ -285,6 +287,7 @@ pub enum SourceKind {
     CatalogJson,
     Fixture,
     VendorFile,
+    GitBlob,
 }
 
 /// Trust classification retained with every document and chunk.

@@ -12,13 +12,14 @@ use tantivy::schema::{
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
 use crate::corpus::{Chunk, ChunkId, SourceKind, TrustTier};
-use crate::{Category, RepositoryId};
+use crate::{Category, RepositoryId, Revision};
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LexicalFilters {
     pub category: Option<Category>,
     pub repository: Option<RepositoryId>,
+    pub revision: Option<Revision>,
     pub source_kind: Option<SourceKind>,
     pub trust_tier: Option<TrustTier>,
     pub tags: Vec<String>,
@@ -77,6 +78,7 @@ pub struct LexicalIndex {
 #[derive(Clone, Copy)]
 struct LexicalFields {
     title: Field,
+    path: Field,
     identifiers: Field,
     identifiers_raw: Field,
     body: Field,
@@ -182,6 +184,7 @@ impl LexicalIndex {
             .map(|term| {
                 let field_clauses: Vec<(Occur, Box<dyn Query>)> = [
                     self.fields.title,
+                    self.fields.path,
                     self.fields.identifiers,
                     self.fields.body,
                     self.fields.tags,
@@ -250,19 +253,7 @@ impl LexicalIndex {
                 score,
             });
         }
-        hits.sort_by(|left, right| {
-            right
-                .exact_identifier
-                .cmp(&left.exact_identifier)
-                .then_with(|| {
-                    left.chunk
-                        .legacy_ids
-                        .is_empty()
-                        .cmp(&right.chunk.legacy_ids.is_empty())
-                })
-                .then_with(|| right.score.total_cmp(&left.score))
-                .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
-        });
+        sort_hits(&mut hits, &raw_terms);
         hits.truncate(limit.max(1));
         Ok(hits)
     }
@@ -280,6 +271,50 @@ impl LexicalIndex {
     }
 }
 
+fn sort_hits(hits: &mut [LexicalHit], raw_terms: &[String]) {
+    hits.sort_by(|left, right| {
+        right
+            .exact_identifier
+            .cmp(&left.exact_identifier)
+            .then_with(|| {
+                if left.exact_identifier && right.exact_identifier {
+                    left.chunk
+                        .legacy_ids
+                        .is_empty()
+                        .cmp(&right.chunk.legacy_ids.is_empty())
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| {
+                term_coverage(&right.chunk, raw_terms).cmp(&term_coverage(&left.chunk, raw_terms))
+            })
+            .then_with(|| right.score.total_cmp(&left.score))
+            .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
+    });
+}
+
+fn term_coverage(chunk: &Chunk, terms: &[String]) -> usize {
+    let haystack = format!(
+        "{} {} {} {} {}",
+        chunk.title,
+        chunk.path,
+        chunk
+            .identifiers
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" "),
+        chunk.heading_path.join(" "),
+        chunk.text
+    )
+    .to_ascii_lowercase();
+    terms
+        .iter()
+        .filter(|term| haystack.contains(String::as_str(term)))
+        .count()
+}
+
 fn schema() -> (Schema, LexicalFields) {
     let mut builder = Schema::builder();
     let text = TextOptions::default().set_indexing_options(
@@ -288,6 +323,7 @@ fn schema() -> (Schema, LexicalFields) {
             .set_index_option(IndexRecordOption::WithFreqs),
     );
     let title = builder.add_text_field("title", text.clone());
+    let path = builder.add_text_field("path", text.clone());
     let identifiers = builder.add_text_field("identifiers", text.clone());
     let identifiers_raw = builder.add_text_field("identifiers_raw", STRING | STORED);
     let body = builder.add_text_field("body", text.clone());
@@ -301,6 +337,7 @@ fn schema() -> (Schema, LexicalFields) {
         schema,
         LexicalFields {
             title,
+            path,
             identifiers,
             identifiers_raw,
             body,
@@ -316,6 +353,7 @@ fn schema() -> (Schema, LexicalFields) {
 fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk) {
     let mut document = TantivyDocument::default();
     document.add_text(fields.title, &chunk.title);
+    document.add_text(fields.path, &chunk.path);
     for identifier in &chunk.identifiers {
         document.add_text(fields.identifiers, identifier);
         document.add_text(fields.identifiers_raw, identifier);
@@ -418,6 +456,10 @@ fn matches_filters(chunk: &Chunk, filters: &LexicalFilters) -> bool {
             .repository
             .as_ref()
             .is_none_or(|repository| &chunk.repository == repository)
+        && filters
+            .revision
+            .as_ref()
+            .is_none_or(|revision| &chunk.revision == revision)
         && filters
             .source_kind
             .is_none_or(|source_kind| chunk.source_kind == source_kind)

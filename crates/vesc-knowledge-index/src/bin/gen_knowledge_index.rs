@@ -26,6 +26,11 @@ use vesc_knowledge_index::{
     build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest, search_knowledge,
     search_lexical_knowledge, vesc_mcp_source_specs,
 };
+#[cfg(feature = "git-corpus")]
+use vesc_knowledge_index::{
+    LicenseStatus, TrustTier, build_git_artifacts,
+    corpus::git::{GitCorpusPolicy, GitCorpusSource},
+};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -45,12 +50,77 @@ fn main() {
         run_build(&args[1..]);
         return;
     }
+    if args.first().is_some_and(|arg| arg == "build-default") {
+        run_build_default(&args[1..]);
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "inspect") {
         run_inspect(&args[1..]);
         return;
     }
 
     generate_index();
+}
+
+#[cfg(feature = "git-corpus")]
+fn run_build_default(args: &[String]) {
+    let generated = argument_value(args, "--generated-dir").map_or_else(
+        || PathBuf::from("crates/vesc-knowledge-index/generated"),
+        PathBuf::from,
+    );
+    let staging = argument_value(args, "--staging-dir").map_or_else(
+        || PathBuf::from("target/default-knowledge-artifacts"),
+        PathBuf::from,
+    );
+    let source = |name: &str| {
+        let path = argument_value(args, &format!("--{name}-path"))
+            .unwrap_or_else(|| panic!("--{name}-path is required"));
+        let revision = argument_value(args, &format!("--{name}-revision"))
+            .unwrap_or_else(|| panic!("--{name}-revision is required"));
+        let mut policy = GitCorpusPolicy::default();
+        policy.extensions.remove("md");
+        policy.max_file_bytes = 512 * 1024;
+        GitCorpusSource {
+            repository_path: PathBuf::from(path),
+            repository_id: RepositoryId::try_from(name).expect("valid repository identifier"),
+            revision: Revision::try_from(revision).expect("valid immutable revision"),
+            trust_tier: TrustTier::CuratedUpstream,
+            license: LicenseStatus::ReferenceOnly,
+            policy,
+        }
+    };
+    let sources = [source("vesc"), source("vesc-tool"), source("refloat")];
+    if staging.exists() {
+        fs::remove_dir_all(&staging)
+            .unwrap_or_else(|error| panic!("remove staging {}: {error}", staging.display()));
+    }
+    let summary = build_git_artifacts(&staging, &sources)
+        .unwrap_or_else(|error| panic!("build default corpus: {error}"));
+    let generation = staging.join("generations").join(&summary.generation);
+    let generated_generation = generated.join("generations").join(&summary.generation);
+    if generated.exists() {
+        fs::remove_dir_all(&generated)
+            .unwrap_or_else(|error| panic!("remove {}: {error}", generated.display()));
+    }
+    fs::create_dir_all(&generated_generation)
+        .unwrap_or_else(|error| panic!("create {}: {error}", generated_generation.display()));
+    fs::copy(
+        generation.join("lexical.json"),
+        generated_generation.join("lexical.json"),
+    )
+    .unwrap_or_else(|error| panic!("copy default lexical artifact: {error}"));
+    fs::copy(staging.join("active.json"), generated.join("active.json"))
+        .unwrap_or_else(|error| panic!("copy default manifest: {error}"));
+    println!("documents: {}", summary.document_count);
+    println!("chunks: {}", summary.chunk_count);
+    println!("sources: {}", summary.manifest.sources.len());
+    println!("diagnostics: {}", summary.manifest.diagnostics.len());
+    println!("generated-dir: {}", generated.display());
+}
+
+#[cfg(not(feature = "git-corpus"))]
+fn run_build_default(_args: &[String]) {
+    panic!("default corpus generation requires --features git-corpus");
 }
 
 #[cfg(feature = "semantic-fastembed-online")]

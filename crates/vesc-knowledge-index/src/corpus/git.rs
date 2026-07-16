@@ -1,0 +1,404 @@
+//! Bounded ingestion of immutable Git commit trees without a worktree.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use gix::bstr::ByteSlice;
+
+use super::ingest::{IngestionReport, SourceInventory, SourceRejection, normalize_text_ref};
+use super::{
+    ContentDigest, CorpusError, LicenseStatus, NormalizedDocument, RepositoryId, Revision,
+    SourceKind, SourceSpan, TrustTier,
+};
+
+const DEFAULT_EXTENSIONS: &[&str] = &[
+    "c", "cc", "cpp", "h", "hh", "hpp", "json", "lisp", "md", "qml", "rs", "toml", "ts", "txt",
+    "yaml", "yml",
+];
+const DEFAULT_FILENAMES: &[&str] = &["CMakeLists.txt", "Kconfig", "Makefile"];
+const DEFAULT_EXCLUDES: &[&str] = &[
+    ".git",
+    "build",
+    "dist",
+    "target",
+    "ChibiOS_3.0.5",
+    "lispBM/lispBM/repl/windows",
+    "lispBM/lispBM/test_reports",
+    "lispBM/c_libs/stdperiph_stm32f4",
+    "vesc_pkg_lib/stdperiph_stm32f4",
+];
+
+/// Version of the reviewed default code-corpus path and resource policy.
+pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v1";
+
+/// Reviewed path and resource bounds for one immutable repository snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCorpusPolicy {
+    pub include_prefixes: Vec<String>,
+    pub exclude_prefixes: Vec<String>,
+    pub extensions: BTreeSet<String>,
+    pub filenames: BTreeSet<String>,
+    pub max_file_bytes: u64,
+    pub max_files: usize,
+    pub max_total_bytes: u64,
+}
+
+impl Default for GitCorpusPolicy {
+    fn default() -> Self {
+        Self {
+            include_prefixes: Vec::new(),
+            exclude_prefixes: DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect(),
+            extensions: DEFAULT_EXTENSIONS.iter().map(ToString::to_string).collect(),
+            filenames: DEFAULT_FILENAMES.iter().map(ToString::to_string).collect(),
+            max_file_bytes: 4 * 1024 * 1024,
+            max_files: 20_000,
+            max_total_bytes: 128 * 1024 * 1024,
+        }
+    }
+}
+
+/// One already-managed repository and immutable commit selected for a corpus build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCorpusSource {
+    pub repository_path: PathBuf,
+    pub repository_id: RepositoryId,
+    pub revision: Revision,
+    pub trust_tier: TrustTier,
+    pub license: LicenseStatus,
+    pub policy: GitCorpusPolicy,
+}
+
+/// Failures that prevent producing a trustworthy commit-tree corpus.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum GitIngestionError {
+    #[error("open managed Git repository: {0}")]
+    Open(String),
+    #[error("invalid immutable commit id: {0}")]
+    InvalidCommit(String),
+    #[error("read immutable commit tree: {0}")]
+    ReadTree(String),
+    #[error("invalid Git corpus policy: {0}")]
+    InvalidPolicy(String),
+    #[error("Git corpus exceeds {limit} file limit")]
+    FileLimit { limit: usize },
+    #[error("Git corpus exceeds {limit} byte limit")]
+    ByteLimit { limit: u64 },
+    #[error(transparent)]
+    Contract(#[from] CorpusError),
+}
+
+#[derive(Debug)]
+struct Candidate {
+    path: String,
+    id: gix::ObjectId,
+    size: u64,
+}
+
+/// Ingest approved text/code blobs reachable from one exact commit.
+///
+/// The repository may be bare. Branch and tag resolution belongs to the managed
+/// repository layer; this boundary accepts only an immutable object ID.
+///
+/// # Errors
+///
+/// Returns [`GitIngestionError`] when the policy is unsafe, the repository or
+/// exact commit cannot be read, a snapshot bound is exceeded, or normalized
+/// corpus metadata violates its contract.
+pub fn ingest_git_commit(
+    repository_path: &Path,
+    repository_id: &RepositoryId,
+    revision: &Revision,
+    trust_tier: TrustTier,
+    license: &LicenseStatus,
+    policy: &GitCorpusPolicy,
+) -> Result<IngestionReport, GitIngestionError> {
+    validate_policy(policy)?;
+    let repo =
+        gix::open(repository_path).map_err(|error| GitIngestionError::Open(error.to_string()))?;
+    let commit_id = gix::ObjectId::from_hex(revision.as_str().as_bytes())
+        .map_err(|error| GitIngestionError::InvalidCommit(error.to_string()))?;
+    let commit = repo
+        .find_commit(commit_id)
+        .map_err(|error| GitIngestionError::InvalidCommit(error.to_string()))?;
+    let tree = commit
+        .tree()
+        .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
+    let mut candidates = Vec::new();
+    let mut rejected = Vec::new();
+    let mut visited_files = 0_usize;
+    collect_tree(
+        &tree,
+        "",
+        policy,
+        &mut visited_files,
+        &mut candidates,
+        &mut rejected,
+    )?;
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    let total_bytes = candidates.iter().try_fold(0_u64, |total, candidate| {
+        total
+            .checked_add(candidate.size)
+            .ok_or(GitIngestionError::ByteLimit {
+                limit: policy.max_total_bytes,
+            })
+    })?;
+    if total_bytes > policy.max_total_bytes {
+        return Err(GitIngestionError::ByteLimit {
+            limit: policy.max_total_bytes,
+        });
+    }
+
+    let mut report = IngestionReport {
+        documents: Vec::with_capacity(candidates.len()),
+        rejected,
+        sources: Vec::with_capacity(candidates.len()),
+    };
+    for candidate in candidates {
+        let object = repo
+            .find_object(candidate.id)
+            .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
+        if object.data.contains(&0) {
+            report.rejected.push(source_rejection(
+                &candidate.path,
+                "binary",
+                "Git blob contains binary data",
+            ));
+            continue;
+        }
+        let Ok(content) = normalize_text_ref(&object.data) else {
+            report.rejected.push(source_rejection(
+                &candidate.path,
+                "encoding",
+                "Git blob is not UTF-8 text",
+            ));
+            continue;
+        };
+        let digest = ContentDigest::of(content.as_bytes());
+        let mut document = NormalizedDocument::new(
+            candidate.path.clone(),
+            SourceKind::GitBlob,
+            repository_id.clone(),
+            revision.clone(),
+            candidate.path.clone(),
+            media_type(&candidate.path),
+            content,
+        )?;
+        document.trust_tier = trust_tier;
+        document.license = license.clone();
+        document.source_span = SourceSpan::new(
+            1,
+            u32::try_from(document.content.lines().count().max(1)).unwrap_or(u32::MAX),
+            Some(0),
+            u64::try_from(document.content.len()).ok(),
+        )
+        .ok();
+        document.identifiers = identifiers(&document.path, &document.content);
+        document.canonical_uri =
+            Some(format!("vesc://knowledge/document/{}", document.document_id).try_into()?);
+        report.sources.push(SourceInventory {
+            relative_path: candidate.path.clone().into(),
+            title: candidate.path,
+            repository: repository_id.clone(),
+            revision: revision.clone(),
+            media_type: document.media_type.clone(),
+            source_kind: SourceKind::GitBlob,
+            trust_tier,
+            license: license.clone(),
+            required: false,
+            byte_count: Some(candidate.size),
+            content_digest: Some(digest),
+            document_count: 1,
+            rejection: None,
+        });
+        report.documents.push(document);
+    }
+    Ok(report)
+}
+
+fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngestionError> {
+    for prefix in policy
+        .include_prefixes
+        .iter()
+        .chain(&policy.exclude_prefixes)
+    {
+        let path = Path::new(prefix);
+        if prefix.is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(GitIngestionError::InvalidPolicy(format!(
+                "path prefix must be a relative normalized Git path: {prefix}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn collect_tree(
+    tree: &gix::Tree<'_>,
+    prefix: &str,
+    policy: &GitCorpusPolicy,
+    visited_files: &mut usize,
+    candidates: &mut Vec<Candidate>,
+    rejected: &mut Vec<SourceRejection>,
+) -> Result<(), GitIngestionError> {
+    for entry in tree.iter() {
+        let entry = entry.map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
+        let filename = entry
+            .filename()
+            .to_str()
+            .map_err(|_| GitIngestionError::ReadTree("tree contains a non-UTF-8 path".into()))?;
+        let path = if prefix.is_empty() {
+            filename.to_owned()
+        } else {
+            format!("{prefix}/{filename}")
+        };
+        match entry.kind() {
+            gix::object::tree::EntryKind::Tree => {
+                if !is_excluded(&path, policy) {
+                    let subtree = entry
+                        .object()
+                        .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?
+                        .into_tree();
+                    collect_tree(&subtree, &path, policy, visited_files, candidates, rejected)?;
+                }
+            }
+            gix::object::tree::EntryKind::Blob | gix::object::tree::EntryKind::BlobExecutable => {
+                count_file(visited_files, policy.max_files)?;
+                if !is_selected(&path, policy) {
+                    rejected.push(source_rejection(
+                        &path,
+                        "unsupported",
+                        "path or media type is outside the configured corpus policy",
+                    ));
+                    continue;
+                }
+                let header = entry
+                    .id()
+                    .header()
+                    .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
+                if header.size() > policy.max_file_bytes {
+                    rejected.push(source_rejection(
+                        &path,
+                        "oversized",
+                        "Git blob exceeds its per-file byte bound",
+                    ));
+                    continue;
+                }
+                candidates.push(Candidate {
+                    path,
+                    id: entry.object_id(),
+                    size: header.size(),
+                });
+            }
+            gix::object::tree::EntryKind::Link | gix::object::tree::EntryKind::Commit => {
+                count_file(visited_files, policy.max_files)?;
+                rejected.push(source_rejection(
+                    &path,
+                    "unsupported",
+                    "symlinks and Gitlinks are metadata and are not followed",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+const fn count_file(visited: &mut usize, limit: usize) -> Result<(), GitIngestionError> {
+    *visited = visited.saturating_add(1);
+    if *visited > limit {
+        Err(GitIngestionError::FileLimit { limit })
+    } else {
+        Ok(())
+    }
+}
+
+fn is_selected(path: &str, policy: &GitCorpusPolicy) -> bool {
+    !is_excluded(path, policy)
+        && (policy.include_prefixes.is_empty()
+            || policy
+                .include_prefixes
+                .iter()
+                .any(|prefix| path_is_under(path, prefix)))
+        && Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                policy.filenames.contains(name)
+                    || Path::new(name)
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| {
+                            policy.extensions.contains(&extension.to_ascii_lowercase())
+                        })
+            })
+}
+
+fn is_excluded(path: &str, policy: &GitCorpusPolicy) -> bool {
+    policy
+        .exclude_prefixes
+        .iter()
+        .any(|prefix| path_is_under(path, prefix))
+}
+
+fn path_is_under(path: &str, prefix: &str) -> bool {
+    let prefix = prefix.trim_matches('/');
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn media_type(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some("c" | "h") => "text/x-c",
+        Some("cc" | "cpp" | "hh" | "hpp") => "text/x-c++",
+        Some("json") => "application/json",
+        Some("md") => "text/markdown",
+        Some("qml") => "text/x-qml",
+        Some("rs") => "text/x-rust",
+        Some("toml") => "application/toml",
+        Some("yaml" | "yml") => "application/yaml",
+        _ => "text/plain",
+    }
+}
+
+fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
+    let mut values = BTreeSet::new();
+    values.insert(path.to_owned());
+    if let Some(stem) = Path::new(path).file_stem().and_then(|stem| stem.to_str()) {
+        values.insert(stem.to_owned());
+    }
+    for token in
+        content.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+    {
+        if token.len() >= 3
+            && token.len() <= 128
+            && token
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+        {
+            values.insert(token.to_owned());
+            if values.len() == 4096 {
+                break;
+            }
+        }
+    }
+    values
+}
+
+fn source_rejection(path: &str, code: &str, message: &str) -> SourceRejection {
+    SourceRejection {
+        source: path.to_owned(),
+        code: code.to_owned(),
+        message: message.to_owned(),
+        required: false,
+    }
+}

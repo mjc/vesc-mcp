@@ -11,6 +11,7 @@ description = "Searchable firmware and package knowledge index types and builder
 workspace = true
 
 [features]
+git-corpus = ["dep:gix"]
 semantic-fastembed = ["dep:fastembed", "fastembed/ort-download-binaries-native-tls"]
 semantic-fastembed-online = ["semantic-fastembed", "fastembed/online"]
 
@@ -21,6 +22,7 @@ serde_yaml.workspace = true
 sha2.workspace = true
 pulldown-cmark.workspace = true
 tantivy.workspace = true
+gix = { workspace = true, optional = true }
 fastembed = { workspace = true, optional = true }
 thiserror.workspace = true
 

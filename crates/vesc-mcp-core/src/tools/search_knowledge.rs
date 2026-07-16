@@ -62,6 +62,9 @@ pub struct SearchVescKnowledgeFilters {
     pub category: Option<String>,
     #[serde(default)]
     pub repository: Option<String>,
+    /// Exact immutable source revision filter.
+    #[serde(default)]
+    pub revision: Option<String>,
     #[serde(default)]
     pub trust_tier: Option<String>,
     #[serde(default)]
@@ -474,6 +477,13 @@ fn parse_filters(
         .map(vesc_knowledge_index::RepositoryId::try_from)
         .transpose()
         .map_err(|_| "repository filter must be non-empty".to_string())?;
+    let revision = params
+        .filters
+        .revision
+        .as_deref()
+        .map(vesc_knowledge_index::Revision::try_from)
+        .transpose()
+        .map_err(|_| "revision filter must be non-empty".to_string())?;
     let trust_tier = params
         .filters
         .trust_tier
@@ -509,6 +519,7 @@ fn parse_filters(
         vesc_knowledge_index::LexicalFilters {
             category,
             repository,
+            revision,
             source_kind,
             trust_tier,
             tags,
@@ -1060,6 +1071,9 @@ fn filter_effects(filters: &vesc_knowledge_index::LexicalFilters) -> Vec<String>
     if let Some(repository) = &filters.repository {
         effects.push(format!("repository={repository}"));
     }
+    if let Some(revision) = &filters.revision {
+        effects.push(format!("revision={revision}"));
+    }
     if let Some(trust_tier) = filters.trust_tier {
         effects.push(format!("trust_tier={trust_tier:?}"));
     }
@@ -1308,6 +1322,7 @@ mod tests {
                 mode: Some(SearchMode::Lexical),
                 filters: SearchVescKnowledgeFilters {
                     category: Some("firmware_api".into()),
+                    revision: Some("legacy".into()),
                     ..SearchVescKnowledgeFilters::default()
                 },
                 max_response_bytes: None,
@@ -1327,7 +1342,7 @@ mod tests {
                 .as_ref()
                 .expect("explanation")
                 .filter_effects,
-            vec!["category=firmware_api"]
+            vec!["category=firmware_api", "revision=legacy"]
         );
     }
 

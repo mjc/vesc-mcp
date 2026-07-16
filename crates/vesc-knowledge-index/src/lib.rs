@@ -36,6 +36,8 @@ pub use lifecycle::{
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
     build_embedded_artifacts_with_provider, inspect_manifest,
 };
+#[cfg(feature = "git-corpus")]
+pub use lifecycle::{build_git_artifacts, build_git_artifacts_with_provider};
 pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;
 pub use parsers::refloat_commands::RefloatCommandsParseError;
