@@ -83,8 +83,10 @@ fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
                 bytes.samples, bytes.min_bytes, bytes.p50_bytes, bytes.p95_bytes, bytes.max_bytes
             );
             println!(
-                "rss-bytes: before={:?} after={:?} delta={:?}",
-                report.rss_before_bytes, report.rss_after_bytes, report.rss_delta_bytes
+                "rss-retained-bytes: before={:?} after={:?} delta={:?}",
+                report.rss_before_queries_bytes,
+                report.rss_after_queries_bytes,
+                report.rss_retained_delta_bytes
             );
             for warning in &report.warnings {
                 println!("warning: {warning}");

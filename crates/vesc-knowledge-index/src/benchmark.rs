@@ -109,9 +109,15 @@ pub struct BenchmarkReport {
     pub query: TimingDistribution,
     pub fusion: TimingDistribution,
     pub response_bytes: ByteDistribution,
-    pub rss_before_bytes: Option<u64>,
-    pub rss_after_bytes: Option<u64>,
-    pub rss_delta_bytes: Option<i64>,
+    /// Process RSS immediately before query measurements; this is retained RSS,
+    /// not peak RSS.
+    pub rss_before_queries_bytes: Option<u64>,
+    /// Process RSS immediately after query measurements; this is retained RSS,
+    /// not peak RSS.
+    pub rss_after_queries_bytes: Option<u64>,
+    /// Difference between the retained RSS samples; peak RSS is measured by an
+    /// external host harness.
+    pub rss_retained_delta_bytes: Option<i64>,
     pub machine: MachineProfile,
     pub warnings: Vec<String>,
 }
@@ -137,13 +143,20 @@ pub struct SemanticBenchmarkReport {
     pub vector_count: usize,
     pub vector_dimension: usize,
     pub artifact_bytes: u64,
-    pub cold_query: TimingDistribution,
+    /// The first query after build/provider setup, not a cold-start query.
+    pub first_query_after_build: TimingDistribution,
     pub build: TimingDistribution,
     pub embedding: TimingDistribution,
     pub exact_search: BTreeMap<usize, TimingDistribution>,
-    pub rss_before_bytes: Option<u64>,
-    pub rss_after_bytes: Option<u64>,
-    pub rss_delta_bytes: Option<i64>,
+    /// Process RSS immediately before query measurements; this is retained RSS,
+    /// not peak RSS.
+    pub rss_before_queries_bytes: Option<u64>,
+    /// Process RSS immediately after query measurements; this is retained RSS,
+    /// not peak RSS.
+    pub rss_after_queries_bytes: Option<u64>,
+    /// Difference between the retained RSS samples; peak RSS is measured by an
+    /// external host harness.
+    pub rss_retained_delta_bytes: Option<i64>,
     pub machine: MachineProfile,
     pub warnings: Vec<String>,
 }
@@ -166,7 +179,7 @@ impl SemanticBenchmarkMatrixReport {
         writeln!(markdown).expect("write to String");
         writeln!(
             markdown,
-            "| Batch | Build p50 (µs) | Cold query p50 (µs) | Embedding p50 (µs) | Exact K=5 p50 (µs) | Exact K=50 p50 (µs) |"
+            "| Batch | Build p50 (µs) | First query after build p50 (µs) | Embedding p50 (µs) | Exact K=5 p50 (µs) | Exact K=50 p50 (µs) |"
         )
         .expect("write to String");
         writeln!(markdown, "| ---: | ---: | ---: | ---: | ---: | ---: |").expect("write to String");
@@ -184,7 +197,7 @@ impl SemanticBenchmarkMatrixReport {
                 "| {} | {} | {} | {} | {} | {} |",
                 report.outer_batch_size,
                 report.build.p50_us,
-                report.cold_query.p50_us,
+                report.first_query_after_build.p50_us,
                 report.embedding.p50_us,
                 k5,
                 k50,
@@ -218,7 +231,11 @@ impl SemanticBenchmarkReport {
         if let Some(initialization) = &self.cold_initialization {
             write_timing_row(&mut markdown, "Cold initialization", initialization);
         }
-        write_timing_row(&mut markdown, "Cold first query", &self.cold_query);
+        write_timing_row(
+            &mut markdown,
+            "First query after build",
+            &self.first_query_after_build,
+        );
         write_timing_row(&mut markdown, "Build", &self.build);
         write_timing_row(&mut markdown, "Query embedding", &self.embedding);
         for (limit, timing) in &self.exact_search {
@@ -303,7 +320,7 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
     }
     let artifact_bytes = u64::try_from(artifact.encode()?.len()).unwrap_or(u64::MAX);
 
-    let cold_query = {
+    let first_query_after_build = {
         let started = Instant::now();
         let vector = provider.embed_query(&queries[0])?;
         let _ = artifact.search(&vector, search_limits[0])?;
@@ -316,7 +333,7 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
         }
     }
 
-    let rss_before_bytes = current_rss_bytes();
+    let rss_before_queries_bytes = current_rss_bytes();
     let mut embedding_samples = Vec::with_capacity(queries.len() * repetitions);
     let mut search_samples = search_limits
         .iter()
@@ -337,13 +354,13 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
             }
         }
     }
-    let rss_after_bytes = current_rss_bytes();
+    let rss_after_queries_bytes = current_rss_bytes();
     let exact_search = search_samples
         .into_iter()
         .map(|(limit, samples)| (limit, TimingDistribution::from_samples(samples)))
         .collect();
     Ok(SemanticBenchmarkReport {
-        schema: 1,
+        schema: 2,
         mode: EvaluationMode::Semantic,
         model_id: model_id.into(),
         model_revision: model_revision.into(),
@@ -362,14 +379,14 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
         vector_count: artifact.ids.len(),
         vector_dimension: artifact.dimension,
         artifact_bytes,
-        cold_query,
+        first_query_after_build,
         build: TimingDistribution::from_samples(build_samples),
         embedding: TimingDistribution::from_samples(embedding_samples),
         exact_search,
-        rss_before_bytes,
-        rss_after_bytes,
-        rss_delta_bytes: rss_before_bytes
-            .zip(rss_after_bytes)
+        rss_before_queries_bytes,
+        rss_after_queries_bytes,
+        rss_retained_delta_bytes: rss_before_queries_bytes
+            .zip(rss_after_queries_bytes)
             .and_then(|(before, after)| {
                 i64::try_from(after)
                     .ok()?
@@ -452,7 +469,7 @@ pub fn benchmark_lexical(
         }
     }
 
-    let rss_before_bytes = current_rss_bytes();
+    let rss_before_queries_bytes = current_rss_bytes();
     let mut query_samples = Vec::with_capacity(queries.len() * repetitions);
     let mut fusion_samples = Vec::with_capacity(queries.len() * repetitions);
     let mut response_sizes = Vec::with_capacity(queries.len() * repetitions);
@@ -482,7 +499,7 @@ pub fn benchmark_lexical(
             fusion_samples.push(elapsed_us(start));
         }
     }
-    let rss_after_bytes = current_rss_bytes();
+    let rss_after_queries_bytes = current_rss_bytes();
     let corpus_documents = index
         .chunks()
         .values()
@@ -503,10 +520,10 @@ pub fn benchmark_lexical(
         query: TimingDistribution::from_samples(query_samples),
         fusion: TimingDistribution::from_samples(fusion_samples),
         response_bytes: ByteDistribution::from_samples(response_sizes),
-        rss_before_bytes,
-        rss_after_bytes,
-        rss_delta_bytes: rss_before_bytes
-            .zip(rss_after_bytes)
+        rss_before_queries_bytes,
+        rss_after_queries_bytes,
+        rss_retained_delta_bytes: rss_before_queries_bytes
+            .zip(rss_after_queries_bytes)
             .and_then(|(before, after)| {
                 i64::try_from(after)
                     .ok()?
@@ -614,7 +631,7 @@ mod tests {
         )
         .expect("semantic benchmark");
         assert_eq!(report.build.samples, 2);
-        assert_eq!(report.cold_query.samples, 1);
+        assert_eq!(report.first_query_after_build.samples, 1);
         assert_eq!(report.embedding.samples, 2);
         assert_eq!(report.exact_search[&5].samples, 2);
         assert_eq!(report.exact_search[&10].samples, 2);

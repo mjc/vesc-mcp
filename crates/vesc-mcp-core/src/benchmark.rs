@@ -53,9 +53,9 @@ pub struct McpBenchmarkReport {
     pub query_count: usize,
     pub handler_and_serialization: TimingDistribution,
     pub response_bytes: ByteDistribution,
-    pub rss_before_bytes: Option<u64>,
-    pub rss_after_bytes: Option<u64>,
-    pub rss_delta_bytes: Option<i64>,
+    pub rss_before_queries_bytes: Option<u64>,
+    pub rss_after_queries_bytes: Option<u64>,
+    pub rss_retained_delta_bytes: Option<i64>,
     pub machine: MachineProfile,
     pub warnings: Vec<String>,
 }
@@ -111,7 +111,7 @@ pub fn benchmark_search(
         }
     }
 
-    let rss_before_bytes = process_rss_bytes();
+    let rss_before_queries_bytes = process_rss_bytes();
     let mut timings = Vec::with_capacity(queries.len() * repetitions);
     let mut response_sizes = Vec::with_capacity(queries.len() * repetitions);
     for _ in 0..repetitions {
@@ -123,9 +123,9 @@ pub fn benchmark_search(
             response_sizes.push(bytes.len() as u64);
         }
     }
-    let rss_after_bytes = process_rss_bytes();
-    let rss_delta_bytes = rss_before_bytes
-        .zip(rss_after_bytes)
+    let rss_after_queries_bytes = process_rss_bytes();
+    let rss_retained_delta_bytes = rss_before_queries_bytes
+        .zip(rss_after_queries_bytes)
         .and_then(|(before, after)| {
             i64::try_from(after)
                 .ok()?
@@ -140,9 +140,9 @@ pub fn benchmark_search(
         query_count: queries.len(),
         handler_and_serialization: TimingDistribution::from_samples(timings),
         response_bytes: ByteDistribution::from_samples(response_sizes),
-        rss_before_bytes,
-        rss_after_bytes,
-        rss_delta_bytes,
+        rss_before_queries_bytes,
+        rss_after_queries_bytes,
+        rss_retained_delta_bytes,
         machine: machine_profile(),
         warnings: vec!["measures the in-process MCP handler, not stdio transport".into()],
     })

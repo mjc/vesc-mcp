@@ -179,8 +179,6 @@ fn run_build_default(args: &[String]) {
         summary.observations.provenance_bytes()
     );
     println!("corpus-bytes: {}", summary.observations.corpus_bytes);
-    println!("inventory-bytes: {}", summary.observations.inventory_bytes);
-    println!("rejection-bytes: {}", summary.observations.rejection_bytes);
     println!(
         "generation-manifest-bytes: {}",
         summary.observations.manifest_bytes
@@ -429,8 +427,6 @@ fn run_build(args: &[String]) {
         summary.observations.provenance_bytes()
     );
     println!("corpus-bytes: {}", summary.observations.corpus_bytes);
-    println!("inventory-bytes: {}", summary.observations.inventory_bytes);
-    println!("rejection-bytes: {}", summary.observations.rejection_bytes);
     println!(
         "generation-manifest-bytes: {}",
         summary.observations.manifest_bytes
@@ -1113,7 +1109,9 @@ fn print_benchmark_report(report: &BenchmarkReport) {
     );
     println!(
         "rss-bytes: before={:?} after={:?} delta={:?}",
-        report.rss_before_bytes, report.rss_after_bytes, report.rss_delta_bytes
+        report.rss_before_queries_bytes,
+        report.rss_after_queries_bytes,
+        report.rss_retained_delta_bytes
     );
     for warning in &report.warnings {
         println!("warning: {warning}");
@@ -1138,16 +1136,19 @@ fn print_semantic_benchmark_report(report: &SemanticBenchmarkReport) {
     if let Some(initialization) = &report.cold_initialization {
         print_timing("cold-initialization", initialization);
     }
-    print_timing("cold-query", &report.cold_query);
+    print_timing("first-query-after-build", &report.first_query_after_build);
     print_timing("build", &report.build);
     print_timing("embedding", &report.embedding);
     for (limit, timing) in &report.exact_search {
         print_timing(&format!("exact-search-{limit}"), timing);
     }
-    if let (Some(before), Some(after)) = (report.rss_before_bytes, report.rss_after_bytes) {
+    if let (Some(before), Some(after)) = (
+        report.rss_before_queries_bytes,
+        report.rss_after_queries_bytes,
+    ) {
         println!(
             "rss: before={before} after={after} delta={:?}",
-            report.rss_delta_bytes
+            report.rss_retained_delta_bytes
         );
     }
 }

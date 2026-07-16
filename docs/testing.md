@@ -25,7 +25,7 @@ nix develop -c cargo run -p vesc-mcp-server -- --benchmark-search --artifact tar
 nonzero and includes failed metrics plus the affected query IDs and returned
 top-five IDs. `benchmark` records warmup/repetition counts, corpus/artifact
 size, build/load/query/fusion percentiles, response-size percentiles, and
-best-effort RSS measurements. Evaluation reports also include duplicate rate
+retained-RSS measurements. Evaluation reports also include duplicate rate
 and diversity at five, plus deterministic category/source-family breakdowns
 derived from the judged relevant IDs. Reports contain no timestamps or network
 data.
@@ -116,8 +116,10 @@ capability is explicitly configured.
 
 Semantic measurements keep model inference separate from exact vector search and
 record the model ID/revision, corpus digest, build identity, batch size, vector
-artifact size, warmup/repetition counts, cold initialization/query timings,
-timing percentiles, and best-effort RSS. Use `--semantic-batch-sizes
+artifact size, warmup/repetition counts, cold initialization and first-query-
+after-build timings, timing percentiles, and retained-RSS measurements. The
+RSS fields are `rss_before_queries_bytes`, `rss_after_queries_bytes`, and
+`rss_retained_delta_bytes`; they are not peak RSS. Use `--semantic-batch-sizes
 4,8,16,32,64` to emit one JSON/Markdown batch-sweep report while reusing the
 same initialized model.
 Use a pinned local model and select JSON for machine-readable storage or
@@ -140,9 +142,11 @@ matching ONNX Runtime shared library. If the command is launched outside the
 Nix shell, the adapter fails fast with an actionable runtime error rather than
 allowing the loader to stall.
 
-Run the command in release mode for production numbers and capture process
-peak RSS with the host tool (`/usr/bin/time -lp` on macOS, `/usr/bin/time -v`
-on Linux). The benchmark does not claim to measure MCP transport overhead.
+Run the command in release mode for production numbers. Capture peak RSS
+separately with the host tool (`/usr/bin/time -lp` on macOS,
+`/usr/bin/time -v` on Linux), `getrusage`, or a sampling harness; do not put
+that external peak result in the retained-RSS comparison fields or table. The
+benchmark does not claim to measure MCP transport overhead.
 The vector artifact format is versioned; rebuild artifacts generated before
 the current dense-cosine-v2 format before benchmarking them.
 
