@@ -137,6 +137,8 @@ pub struct SemanticBenchmarkReport {
     #[serde(default)]
     pub intra_threads: Option<usize>,
     #[serde(default)]
+    pub length_bucketed: bool,
+    #[serde(default)]
     pub cold_initialization: Option<TimingDistribution>,
     pub warmup_iterations: usize,
     pub repetitions: usize,
@@ -187,12 +189,12 @@ impl SemanticBenchmarkMatrixReport {
         writeln!(markdown).expect("write to String");
         writeln!(
             markdown,
-            "| Batch | Intra threads | Chunks | Provider p50 (µs) | Chunks/sec | Padding (ppm) | Exact K=5 p50 (µs) |"
+            "| Batch | Intra threads | Order | Chunks | Provider p50 (µs) | Chunks/sec | Padding (ppm) | Exact K=5 p50 (µs) |"
         )
         .expect("write to String");
         writeln!(
             markdown,
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+            "| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |"
         )
         .expect("write to String");
         for report in &self.runs {
@@ -211,9 +213,14 @@ impl SemanticBenchmarkMatrixReport {
                 .map_or(0, |statistics| statistics.padding_ratio_ppm);
             writeln!(
                 markdown,
-                "| {} | {:?} | {} | {} | {} | {} | {} |",
+                "| {} | {:?} | {} | {} | {} | {} | {} | {} |",
                 report.outer_batch_size,
                 report.intra_threads,
+                if report.length_bucketed {
+                    "token-length"
+                } else {
+                    "source"
+                },
                 report.corpus_chunks,
                 report.provider_inference.p50_us,
                 chunks_per_second,
@@ -432,6 +439,7 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
         ),
         outer_batch_size: provider.embedding_batch_size().get(),
         intra_threads: None,
+        length_bucketed: false,
         cold_initialization: None,
         warmup_iterations,
         repetitions,

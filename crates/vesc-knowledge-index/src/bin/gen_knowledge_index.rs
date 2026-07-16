@@ -844,6 +844,8 @@ fn run_semantic_benchmark(
         intra_threads.is_none_or(|threads| threads > 0),
         "--semantic-intra-threads must be a positive integer"
     );
+    let length_bucketed = argument_value(args, "--semantic-length-bucketed")
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     let sample_size = argument_value(args, "--semantic-sample-chunks").map(|value| {
         let size = value
             .parse::<usize>()
@@ -879,7 +881,7 @@ fn run_semantic_benchmark(
     } else {
         chunks
     };
-    let embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
+    let mut embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let initialization_started = std::time::Instant::now();
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
         &model_dir,
@@ -888,6 +890,27 @@ fn run_semantic_benchmark(
         intra_threads,
     )
     .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+    let chunks = if length_bucketed {
+        let lengths = provider
+            .token_lengths(&embedding_texts)
+            .unwrap_or_else(|error| panic!("measure token lengths: {error}"));
+        let mut indexed = chunks.into_iter().zip(lengths).collect::<Vec<_>>();
+        indexed.sort_unstable_by(|(left_chunk, left_length), (right_chunk, right_length)| {
+            left_length
+                .cmp(right_length)
+                .then_with(|| left_chunk.path.cmp(&right_chunk.path))
+                .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
+                .then_with(|| left_chunk.chunk_id.cmp(&right_chunk.chunk_id))
+        });
+        let chunks = indexed
+            .into_iter()
+            .map(|(chunk, _)| chunk)
+            .collect::<Vec<_>>();
+        embedding_texts = chunks.iter().map(embedding_text).collect();
+        chunks
+    } else {
+        chunks
+    };
     let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
         u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
     );
@@ -910,6 +933,7 @@ fn run_semantic_benchmark(
         .unwrap_or_else(|error| panic!("run semantic benchmark: {error}"));
         report.cold_initialization = Some(initialization.clone());
         report.intra_threads = intra_threads;
+        report.length_bucketed = length_bucketed;
         report.token_statistics = Some(
             provider
                 .token_statistics(&embedding_texts)

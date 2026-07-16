@@ -680,6 +680,41 @@ impl FastEmbedProvider {
         })
     }
 
+    /// Returns post-truncation token lengths in input order for benchmark
+    /// length bucketing.
+    pub fn token_lengths(&self, texts: &[String]) -> Result<Vec<usize>, EmbeddingError> {
+        if texts.is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        let prefixed;
+        let texts = if self.profile.document_prefix.is_empty() {
+            texts
+        } else {
+            prefixed = texts
+                .iter()
+                .map(|text| format!("{}{}", self.profile.document_prefix, text))
+                .collect::<Vec<_>>();
+            &prefixed
+        };
+        let mut lengths = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(self.batch_size.get()) {
+            let inputs = batch.iter().map(String::as_str).collect::<Vec<_>>();
+            let configured = self
+                .model
+                .tokenizer
+                .encode_batch(inputs, true)
+                .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+            lengths.extend(configured.iter().map(|encoding| {
+                encoding
+                    .get_attention_mask()
+                    .iter()
+                    .filter(|&&value| value != 0)
+                    .count()
+            }));
+        }
+        Ok(lengths)
+    }
+
     fn validate_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), EmbeddingError> {
         for vector in vectors {
             if vector.len() != self.profile.dimension {
