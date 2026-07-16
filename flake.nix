@@ -210,11 +210,12 @@
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustToolchain pkg-config cargo-nextest cargo-llvm-cov cargo-deny
-            cargo-audit clippy rustfmt jq
+            cargo-audit clippy rustfmt jq onnxruntime
           ];
           shellHook = ''
             export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
             export CARGO_TARGET_DIR="$PWD/target"
+            export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
             echo "vesc-mcp dev shell (host-only, stable Rust)"
           '';
         };

@@ -112,6 +112,40 @@ artifacts rather than this guide. The default server path remains
 lexical/offline; hybrid is available only when a pinned local semantic
 capability is explicitly configured.
 
+## Semantic benchmark reports
+
+Semantic measurements keep model inference separate from exact vector search and
+record the model ID/revision, corpus digest, build identity, batch size, vector
+artifact size, warmup/repetition counts, cold initialization/query timings,
+timing percentiles, and best-effort RSS. Use `--semantic-batch-sizes
+4,8,16,32,64` to emit one JSON/Markdown batch-sweep report while reusing the
+same initialized model.
+Use a pinned local model and select JSON for machine-readable storage or
+Markdown for review:
+
+```bash
+nix develop -c cargo run -p vesc-knowledge-index --release \
+  --features semantic-fastembed --bin gen-knowledge-index -- \
+  benchmark --mode semantic \
+  --artifact target/knowledge-artifacts-semantic-v2 \
+  --semantic-model-dir target/models/bge-small-en-v1.5 \
+  --semantic-model-id Xenova/bge-small-en-v1.5 \
+  --semantic-model-revision <revision-from-manifest> \
+  --semantic-batch-size 8 --limits 5,10,20,50 \
+  --warmup 3 --repetitions 10 --format json
+```
+
+Run the semantic command through `nix develop`; the dev shell supplies the
+matching ONNX Runtime shared library. If the command is launched outside the
+Nix shell, the adapter fails fast with an actionable runtime error rather than
+allowing the loader to stall.
+
+Run the command in release mode for production numbers and capture process
+peak RSS with the host tool (`/usr/bin/time -lp` on macOS, `/usr/bin/time -v`
+on Linux). The benchmark does not claim to measure MCP transport overhead.
+The vector artifact format is versioned; rebuild artifacts generated before
+the current dense-cosine-v2 format before benchmarking them.
+
 ## Negative fixtures
 
 Broken fixtures under `tests/fixtures/broken-*` drive validation tests. A test asserting missing assets or bad wire bytes should **pass** when the fixture is broken; the tool under test should return errors when pointed at those paths.

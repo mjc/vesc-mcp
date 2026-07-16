@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "semantic-fastembed-online")]
 use sha2::{Digest, Sha256};
 use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
+#[cfg(feature = "semantic-fastembed")]
+use vesc_knowledge_index::benchmark::{
+    SemanticBenchmarkMatrixReport, SemanticBenchmarkReport, benchmark_semantic,
+};
 use vesc_knowledge_index::evaluation::{
     EvaluationMode, EvaluationQuery, EvaluationReport, QualityThresholds, evaluate_quality_gate,
     evaluate_suite_with_mode,
@@ -21,6 +25,8 @@ use vesc_knowledge_index::{
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts_with_provider,
     fuse_candidates,
 };
+#[cfg(feature = "semantic-fastembed")]
+use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
 use vesc_knowledge_index::{
     IndexBuilder, LexicalFilters, LexicalIndex, RepositoryId, Revision, active_manifest_path,
     build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest, search_knowledge,
@@ -63,6 +69,7 @@ fn main() {
 }
 
 #[cfg(feature = "git-corpus")]
+#[allow(clippy::option_if_let_else, clippy::too_many_lines)]
 fn run_build_default(args: &[String]) {
     let generated = argument_value(args, "--generated-dir").map_or_else(
         || PathBuf::from("crates/vesc-knowledge-index/generated"),
@@ -156,8 +163,35 @@ fn run_build_default(args: &[String]) {
         .unwrap_or_else(|error| panic!("copy default manifest: {error}"));
     println!("documents: {}", summary.document_count);
     println!("chunks: {}", summary.chunk_count);
+    println!("build-duration-us: {}", summary.build_duration_us);
+    for (phase, duration) in &summary.observations.phases_us {
+        println!("phase-{phase:?}-us: {duration}");
+    }
     println!("sources: {}", summary.manifest.sources.len());
     println!("diagnostics: {}", summary.manifest.diagnostics.len());
+    println!(
+        "embedding-input-bytes: {}",
+        summary.observations.embedding_input_bytes
+    );
+    println!("visited-files: {}", summary.observations.visited_files);
+    println!(
+        "provenance-bytes: {}",
+        summary.observations.provenance_bytes()
+    );
+    println!("corpus-bytes: {}", summary.observations.corpus_bytes);
+    println!("inventory-bytes: {}", summary.observations.inventory_bytes);
+    println!("rejection-bytes: {}", summary.observations.rejection_bytes);
+    println!(
+        "generation-manifest-bytes: {}",
+        summary.observations.manifest_bytes
+    );
+    println!(
+        "active-manifest-bytes: {}",
+        summary.observations.active_manifest_bytes
+    );
+    if let Some(batch) = summary.observations.resolved_batch_size {
+        println!("semantic-batch-size: {batch}");
+    }
     println!("generated-dir: {}", generated.display());
 }
 
@@ -304,6 +338,7 @@ mod provisioning_tests {
 }
 
 #[allow(clippy::option_if_let_else)]
+#[allow(clippy::too_many_lines)]
 fn run_build(args: &[String]) {
     let out = argument_value(args, "--out").map_or_else(
         || PathBuf::from("target/knowledge-artifacts"),
@@ -380,6 +415,33 @@ fn run_build(args: &[String]) {
     println!("chunks: {}", summary.chunk_count);
     println!("lexical-bytes: {}", summary.lexical_bytes);
     println!("build-duration-us: {}", summary.build_duration_us);
+    for (phase, duration) in &summary.observations.phases_us {
+        println!("phase-{phase:?}-us: {duration}");
+    }
+    println!("artifact-bytes: {}", summary.observations.artifact_bytes);
+    println!(
+        "embedding-input-bytes: {}",
+        summary.observations.embedding_input_bytes
+    );
+    println!("visited-files: {}", summary.observations.visited_files);
+    println!(
+        "provenance-bytes: {}",
+        summary.observations.provenance_bytes()
+    );
+    println!("corpus-bytes: {}", summary.observations.corpus_bytes);
+    println!("inventory-bytes: {}", summary.observations.inventory_bytes);
+    println!("rejection-bytes: {}", summary.observations.rejection_bytes);
+    println!(
+        "generation-manifest-bytes: {}",
+        summary.observations.manifest_bytes
+    );
+    println!(
+        "active-manifest-bytes: {}",
+        summary.observations.active_manifest_bytes
+    );
+    if let Some(batch) = summary.observations.resolved_batch_size {
+        println!("semantic-batch-size: {batch}");
+    }
     println!("sources: {}", summary.manifest.sources.len());
     if let Some(vector_bytes) = summary.vector_bytes {
         println!("vector-bytes: {vector_bytes}");
@@ -702,6 +764,17 @@ fn run_benchmark(args: &[String]) {
         .parse::<usize>()
         .expect("--repetitions must be an integer");
     let artifact = argument_value(args, "--artifact").map(PathBuf::from);
+    if argument_value(args, "--mode").as_deref() == Some("semantic") {
+        run_semantic_benchmark(
+            args,
+            artifact.as_deref(),
+            &suite_path,
+            &format,
+            warmup,
+            repetitions,
+        );
+        return;
+    }
     let raw = fs::read_to_string(&suite_path).unwrap_or_else(|error| {
         panic!("read benchmark suite {}: {error}", suite_path.display());
     });
@@ -717,8 +790,181 @@ fn run_benchmark(args: &[String]) {
             serde_json::to_string_pretty(&report).expect("serialize benchmark report")
         ),
         "text" => print_benchmark_report(&report),
-        other => panic!("unsupported benchmark format {other:?}; use json or text"),
+        other => panic!("unsupported benchmark format {other:?}; use json, text, or markdown"),
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_semantic_benchmark(
+    args: &[String],
+    artifact_root: Option<&Path>,
+    suite_path: &Path,
+    format: &str,
+    warmup: usize,
+    repetitions: usize,
+) {
+    let model_dir = argument_value(args, "--semantic-model-dir").map_or_else(
+        || panic!("--semantic-model-dir is required for semantic benchmarks"),
+        PathBuf::from,
+    );
+    let model_id = argument_value(args, "--semantic-model-id")
+        .unwrap_or_else(|| panic!("--semantic-model-id is required for semantic benchmarks"));
+    let model_revision = argument_value(args, "--semantic-model-revision")
+        .unwrap_or_else(|| panic!("--semantic-model-revision is required for semantic benchmarks"));
+    let batch_size = argument_value(args, "--semantic-batch-size").map(|value| {
+        value
+            .parse::<usize>()
+            .expect("--semantic-batch-size must be an integer")
+    });
+    let batch_sizes_argument = argument_value(args, "--semantic-batch-sizes");
+    let batch_sizes = batch_sizes_argument.as_deref().map_or_else(
+        || vec![batch_size.unwrap_or(8)],
+        |value| {
+            value
+                .split(',')
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .expect("--semantic-batch-sizes must be comma-separated integers")
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+    assert!(
+        !batch_sizes.is_empty(),
+        "--semantic-batch-sizes must contain at least one value"
+    );
+    assert!(
+        batch_size.is_none() || batch_sizes_argument.is_none(),
+        "use --semantic-batch-size or --semantic-batch-sizes, not both"
+    );
+    let limits = argument_value(args, "--limits")
+        .unwrap_or_else(|| "5,10,20,50".into())
+        .split(',')
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("--limits must be comma-separated integers")
+        })
+        .collect::<Vec<_>>();
+    let raw = fs::read_to_string(suite_path).unwrap_or_else(|error| {
+        panic!("read benchmark suite {}: {error}", suite_path.display());
+    });
+    let queries: Vec<EvaluationQuery> = serde_json::from_str(&raw).unwrap_or_else(|error| {
+        panic!("parse benchmark suite {}: {error}", suite_path.display());
+    });
+    let texts = queries
+        .into_iter()
+        .map(|query| query.text)
+        .collect::<Vec<_>>();
+    let (chunks, corpus_digest) = semantic_benchmark_chunks(artifact_root);
+    let initialization_started = std::time::Instant::now();
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile(
+        &model_dir,
+        Some(batch_sizes[0]),
+        embedding_profile(&model_id),
+    )
+    .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+    let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
+        u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+    );
+    let mut reports = Vec::with_capacity(batch_sizes.len());
+    for batch_size in batch_sizes {
+        provider
+            .set_batch_size(batch_size)
+            .unwrap_or_else(|error| panic!("set semantic batch size: {error}"));
+        let mut report = benchmark_semantic(
+            &mut provider,
+            &chunks,
+            &texts,
+            &model_id,
+            &model_revision,
+            &corpus_digest,
+            &limits,
+            warmup,
+            repetitions,
+        )
+        .unwrap_or_else(|error| panic!("run semantic benchmark: {error}"));
+        report.cold_initialization = Some(initialization.clone());
+        reports.push(report);
+    }
+    if reports.len() == 1 {
+        let report = reports.pop().expect("one semantic benchmark report");
+        match format {
+            "json" => println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("serialize semantic benchmark report")
+            ),
+            "text" => print_semantic_benchmark_report(&report),
+            "markdown" => print!("{}", report.to_markdown()),
+            other => panic!("unsupported benchmark format {other:?}; use json, text, or markdown"),
+        }
+    } else {
+        let report = SemanticBenchmarkMatrixReport {
+            schema: 1,
+            runs: reports,
+        };
+        match format {
+            "json" => println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("serialize semantic benchmark matrix")
+            ),
+            "text" => {
+                for run in &report.runs {
+                    println!("batch-size: {}", run.outer_batch_size);
+                    print_semantic_benchmark_report(run);
+                }
+            }
+            "markdown" => print!("{}", report.to_markdown()),
+            other => panic!("unsupported benchmark format {other:?}; use json, text, or markdown"),
+        }
+    }
+}
+
+#[cfg(not(feature = "semantic-fastembed"))]
+fn run_semantic_benchmark(
+    _args: &[String],
+    _artifact_root: Option<&Path>,
+    _suite_path: &Path,
+    _format: &str,
+    _warmup: usize,
+    _repetitions: usize,
+) {
+    panic!(
+        "semantic benchmarks require the semantic-fastembed feature; rerun with --features semantic-fastembed"
+    );
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_benchmark_chunks(artifact_root: Option<&Path>) -> (Vec<Chunk>, ContentDigest) {
+    let (path, corpus_digest) = match artifact_root {
+        Some(root) if root.is_file() => (root.to_owned(), ContentDigest::of(b"benchmark-artifact")),
+        Some(root) => {
+            let manifest = inspect_manifest(&active_manifest_path(root))
+                .unwrap_or_else(|error| panic!("inspect benchmark artifact: {error}"));
+            (
+                root.join("generations")
+                    .join(manifest.corpus.content_digest.to_string())
+                    .join("lexical.json"),
+                manifest.corpus.content_digest,
+            )
+        }
+        None => {
+            let chunks = embedded_entries()
+                .iter()
+                .filter_map(|entry| {
+                    NormalizedDocument::from_legacy(entry)
+                        .ok()
+                        .and_then(|document| document.legacy_chunk().ok())
+                })
+                .collect();
+            return (chunks, ContentDigest::of(b"embedded-benchmark"));
+        }
+    };
+    let index = LexicalIndex::open_artifact(&path)
+        .unwrap_or_else(|error| panic!("open benchmark lexical artifact: {error}"));
+    (index.chunks().values().cloned().collect(), corpus_digest)
 }
 
 fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {
@@ -871,6 +1117,38 @@ fn print_benchmark_report(report: &BenchmarkReport) {
     );
     for warning in &report.warnings {
         println!("warning: {warning}");
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn print_semantic_benchmark_report(report: &SemanticBenchmarkReport) {
+    println!("mode: {:?}", report.mode);
+    println!(
+        "identity: model={} revision={} corpus={} build={}",
+        report.model_id, report.model_revision, report.corpus_digest, report.build_identity
+    );
+    println!(
+        "corpus: chunks={} vectors={} dimension={} artifact-bytes={} outer-batch={}",
+        report.corpus_chunks,
+        report.vector_count,
+        report.vector_dimension,
+        report.artifact_bytes,
+        report.outer_batch_size
+    );
+    if let Some(initialization) = &report.cold_initialization {
+        print_timing("cold-initialization", initialization);
+    }
+    print_timing("cold-query", &report.cold_query);
+    print_timing("build", &report.build);
+    print_timing("embedding", &report.embedding);
+    for (limit, timing) in &report.exact_search {
+        print_timing(&format!("exact-search-{limit}"), timing);
+    }
+    if let (Some(before), Some(after)) = (report.rss_before_bytes, report.rss_after_bytes) {
+        println!(
+            "rss: before={before} after={after} delta={:?}",
+            report.rss_delta_bytes
+        );
     }
 }
 

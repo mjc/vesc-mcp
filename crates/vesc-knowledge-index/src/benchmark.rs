@@ -1,6 +1,7 @@
 //! Reproducible local retrieval benchmark measurements.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -8,7 +9,10 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::evaluation::EvaluationMode;
-use crate::{Chunk, FusionConfig, LexicalFilters, LexicalIndex, embedded_entries, fuse_candidates};
+use crate::{
+    Chunk, ContentDigest, EmbeddingProvider, FusionConfig, LexicalFilters, LexicalIndex,
+    VectorArtifact, embedded_entries, fuse_candidates,
+};
 
 /// A percentile summary over monotonic elapsed-time samples in microseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +37,17 @@ pub struct ByteDistribution {
 }
 
 impl TimingDistribution {
+    #[must_use]
+    pub const fn single(micros: u64) -> Self {
+        Self {
+            samples: 1,
+            min_us: micros,
+            p50_us: micros,
+            p95_us: micros,
+            max_us: micros,
+        }
+    }
+
     fn from_samples(mut samples: Vec<u64>) -> Self {
         samples.sort_unstable();
         let index = |percentile: usize| {
@@ -101,6 +116,127 @@ pub struct BenchmarkReport {
     pub warnings: Vec<String>,
 }
 
+/// Release-mode semantic build/query measurements with inference and exact
+/// search kept separate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBenchmarkReport {
+    pub schema: u16,
+    pub mode: EvaluationMode,
+    pub model_id: String,
+    pub model_revision: String,
+    pub corpus_digest: ContentDigest,
+    pub build_identity: String,
+    pub outer_batch_size: usize,
+    #[serde(default)]
+    pub cold_initialization: Option<TimingDistribution>,
+    pub warmup_iterations: usize,
+    pub repetitions: usize,
+    pub query_count: usize,
+    pub corpus_chunks: usize,
+    pub vector_count: usize,
+    pub vector_dimension: usize,
+    pub artifact_bytes: u64,
+    pub cold_query: TimingDistribution,
+    pub build: TimingDistribution,
+    pub embedding: TimingDistribution,
+    pub exact_search: BTreeMap<usize, TimingDistribution>,
+    pub rss_before_bytes: Option<u64>,
+    pub rss_after_bytes: Option<u64>,
+    pub rss_delta_bytes: Option<i64>,
+    pub machine: MachineProfile,
+    pub warnings: Vec<String>,
+}
+
+/// A stable collection of semantic benchmark runs over different outer
+/// embedding batch sizes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBenchmarkMatrixReport {
+    pub schema: u16,
+    pub runs: Vec<SemanticBenchmarkReport>,
+}
+
+impl SemanticBenchmarkMatrixReport {
+    /// Render one compact comparison table from the JSON-compatible runs.
+    #[must_use]
+    pub fn to_markdown(&self) -> String {
+        let mut markdown = String::new();
+        writeln!(markdown, "# Semantic batch sweep").expect("write to String");
+        writeln!(markdown).expect("write to String");
+        writeln!(
+            markdown,
+            "| Batch | Build p50 (µs) | Cold query p50 (µs) | Embedding p50 (µs) | Exact K=5 p50 (µs) | Exact K=50 p50 (µs) |"
+        )
+        .expect("write to String");
+        writeln!(markdown, "| ---: | ---: | ---: | ---: | ---: | ---: |").expect("write to String");
+        for report in &self.runs {
+            let k5 = report
+                .exact_search
+                .get(&5)
+                .map_or(0, |timing| timing.p50_us);
+            let k50 = report
+                .exact_search
+                .get(&50)
+                .map_or(0, |timing| timing.p50_us);
+            writeln!(
+                markdown,
+                "| {} | {} | {} | {} | {} | {} |",
+                report.outer_batch_size,
+                report.build.p50_us,
+                report.cold_query.p50_us,
+                report.embedding.p50_us,
+                k5,
+                k50,
+            )
+            .expect("write to String");
+        }
+        markdown
+    }
+}
+
+impl SemanticBenchmarkReport {
+    /// Render the stable benchmark fields as a reviewable Markdown report.
+    #[must_use]
+    pub fn to_markdown(&self) -> String {
+        let mut markdown = String::new();
+        writeln!(markdown, "# Semantic benchmark").expect("write to String");
+        writeln!(markdown).expect("write to String");
+        writeln!(markdown, "- Mode: `{:?}`", self.mode).expect("write to String");
+        writeln!(markdown, "- Model: `{}`", self.model_id).expect("write to String");
+        writeln!(markdown, "- Model revision: `{}`", self.model_revision).expect("write to String");
+        writeln!(markdown, "- Corpus digest: `{}`", self.corpus_digest).expect("write to String");
+        writeln!(markdown, "- Build identity: `{}`", self.build_identity).expect("write to String");
+        writeln!(markdown, "- Machine: `{}`", self.machine.rust_target).expect("write to String");
+        writeln!(markdown).expect("write to String");
+        writeln!(
+            markdown,
+            "| Measurement | Samples | p50 (µs) | p95 (µs) | max (µs) |"
+        )
+        .expect("write to String");
+        writeln!(markdown, "| --- | ---: | ---: | ---: | ---: |").expect("write to String");
+        if let Some(initialization) = &self.cold_initialization {
+            write_timing_row(&mut markdown, "Cold initialization", initialization);
+        }
+        write_timing_row(&mut markdown, "Cold first query", &self.cold_query);
+        write_timing_row(&mut markdown, "Build", &self.build);
+        write_timing_row(&mut markdown, "Query embedding", &self.embedding);
+        for (limit, timing) in &self.exact_search {
+            write_timing_row(&mut markdown, &format!("Exact search K={limit}"), timing);
+        }
+        markdown
+    }
+}
+
+fn write_timing_row(markdown: &mut String, label: &str, timing: &TimingDistribution) {
+    writeln!(
+        markdown,
+        "| {label} | {} | {} | {} | {} |",
+        timing.samples, timing.p50_us, timing.p95_us, timing.max_us
+    )
+    .expect("write to String");
+}
+
 /// Errors raised while measuring a local lexical artifact.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -113,6 +249,139 @@ pub enum BenchmarkError {
     Io(#[from] std::io::Error),
     #[error("benchmark lexical artifact failed: {0}")]
     Lexical(#[from] crate::LexicalError),
+    #[error("benchmark requires at least one search limit")]
+    EmptyLimits,
+    #[error("benchmark semantic artifact failed: {0}")]
+    Semantic(#[from] crate::EmbeddingError),
+}
+
+/// Measures semantic generation, query embedding, and exact search limits.
+/// The provider and all inputs are supplied by the caller, so this remains
+/// offline and can be run with a pinned local model.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when inputs are empty, repetitions are invalid,
+/// or the provider/artifact contract rejects a measurement.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
+    provider: &mut P,
+    chunks: &[Chunk],
+    queries: &[String],
+    model_id: &str,
+    model_revision: &str,
+    corpus_digest: &ContentDigest,
+    search_limits: &[usize],
+    warmup_iterations: usize,
+    repetitions: usize,
+) -> Result<SemanticBenchmarkReport, BenchmarkError> {
+    if queries.is_empty() {
+        return Err(BenchmarkError::EmptyQueries);
+    }
+    if search_limits.is_empty() {
+        return Err(BenchmarkError::EmptyLimits);
+    }
+    if repetitions == 0 {
+        return Err(BenchmarkError::InvalidRepetitions);
+    }
+    let mut build_samples = Vec::with_capacity(repetitions);
+    let mut build = || {
+        let started = Instant::now();
+        let artifact = VectorArtifact::from_provider(
+            provider,
+            chunks,
+            model_id,
+            model_revision,
+            corpus_digest.clone(),
+        )?;
+        build_samples.push(elapsed_us(started));
+        Ok::<_, BenchmarkError>(artifact)
+    };
+    let mut artifact = build()?;
+    for _ in 1..repetitions {
+        artifact = build()?;
+    }
+    let artifact_bytes = u64::try_from(artifact.encode()?.len()).unwrap_or(u64::MAX);
+
+    let cold_query = {
+        let started = Instant::now();
+        let vector = provider.embed_query(&queries[0])?;
+        let _ = artifact.search(&vector, search_limits[0])?;
+        TimingDistribution::single(elapsed_us(started))
+    };
+    for _ in 0..warmup_iterations {
+        for query in queries {
+            let vector = provider.embed_query(query)?;
+            let _ = artifact.search(&vector, search_limits[0])?;
+        }
+    }
+
+    let rss_before_bytes = current_rss_bytes();
+    let mut embedding_samples = Vec::with_capacity(queries.len() * repetitions);
+    let mut search_samples = search_limits
+        .iter()
+        .map(|limit| (*limit, Vec::with_capacity(queries.len() * repetitions)))
+        .collect::<BTreeMap<_, _>>();
+    for _ in 0..repetitions {
+        for query in queries {
+            let started = Instant::now();
+            let vector = provider.embed_query(query)?;
+            embedding_samples.push(elapsed_us(started));
+            for limit in search_limits {
+                let started = Instant::now();
+                let _ = artifact.search(&vector, *limit)?;
+                let Some(samples) = search_samples.get_mut(limit) else {
+                    return Err(BenchmarkError::EmptyLimits);
+                };
+                samples.push(elapsed_us(started));
+            }
+        }
+    }
+    let rss_after_bytes = current_rss_bytes();
+    let exact_search = search_samples
+        .into_iter()
+        .map(|(limit, samples)| (limit, TimingDistribution::from_samples(samples)))
+        .collect();
+    Ok(SemanticBenchmarkReport {
+        schema: 1,
+        mode: EvaluationMode::Semantic,
+        model_id: model_id.into(),
+        model_revision: model_revision.into(),
+        corpus_digest: corpus_digest.clone(),
+        build_identity: format!(
+            "vesc-knowledge-index@{};{}",
+            env!("CARGO_PKG_VERSION"),
+            host_target()
+        ),
+        outer_batch_size: provider.embedding_batch_size().get(),
+        cold_initialization: None,
+        warmup_iterations,
+        repetitions,
+        query_count: queries.len(),
+        corpus_chunks: chunks.len(),
+        vector_count: artifact.ids.len(),
+        vector_dimension: artifact.dimension,
+        artifact_bytes,
+        cold_query,
+        build: TimingDistribution::from_samples(build_samples),
+        embedding: TimingDistribution::from_samples(embedding_samples),
+        exact_search,
+        rss_before_bytes,
+        rss_after_bytes,
+        rss_delta_bytes: rss_before_bytes
+            .zip(rss_after_bytes)
+            .and_then(|(before, after)| {
+                i64::try_from(after)
+                    .ok()?
+                    .checked_sub(i64::try_from(before).ok()?)
+            }),
+        machine: MachineProfile {
+            os: std::env::consts::OS.into(),
+            arch: std::env::consts::ARCH.into(),
+            rust_target: host_target().into(),
+        },
+        warnings: Vec::new(),
+    })
 }
 
 /// Measures the local lexical pipeline without network or wall-clock metadata.
@@ -326,5 +595,31 @@ mod tests {
         assert!(report.corpus_chunks > 0);
         assert_eq!(report.query.samples, 2);
         assert_eq!(report.fusion.samples, 2);
+    }
+
+    #[test]
+    fn semantic_benchmark_separates_embedding_and_search() {
+        let chunks = embedded_chunks();
+        let mut provider = crate::FakeEmbeddingProvider::new(4);
+        let report = benchmark_semantic(
+            &mut provider,
+            &chunks,
+            &["extension".into()],
+            "fake",
+            "test",
+            &ContentDigest::of(b"benchmark"),
+            &[5, 10],
+            1,
+            2,
+        )
+        .expect("semantic benchmark");
+        assert_eq!(report.build.samples, 2);
+        assert_eq!(report.cold_query.samples, 1);
+        assert_eq!(report.embedding.samples, 2);
+        assert_eq!(report.exact_search[&5].samples, 2);
+        assert_eq!(report.exact_search[&10].samples, 2);
+        let markdown = report.to_markdown();
+        assert!(markdown.contains("Model: `fake`"));
+        assert!(markdown.contains("Exact search K=5"));
     }
 }
