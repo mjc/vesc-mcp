@@ -493,17 +493,26 @@ fn stage_chunks(
     manifest
         .validate()
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let manifest_started = Instant::now();
     let corpus_bytes = serde_json::to_vec(&manifest.corpus)?;
     observations.corpus_bytes = u64::try_from(corpus_bytes.len()).unwrap_or(u64::MAX);
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     observations.manifest_bytes = u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX);
     observations.active_manifest_bytes = observations.manifest_bytes;
-    let manifest_started = Instant::now();
-    fs::write(temp_root.join("corpus.json"), corpus_bytes)?;
+    let corpus_byte_count = u64::try_from(corpus_bytes.len()).unwrap_or(u64::MAX);
+    let manifest_byte_count = u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX);
+    fs::write(temp_root.join("corpus.json"), &corpus_bytes)?;
     fs::write(temp_root.join("manifest.json"), &manifest_bytes)?;
     observations.record(BuildPhase::Manifest, manifest_started);
     let validation_started = Instant::now();
-    validate_generation(&temp_root, &manifest)?;
+    validate_written_generation(
+        &temp_root,
+        &manifest,
+        lexical_bytes,
+        vector_bytes,
+        corpus_byte_count,
+        manifest_byte_count,
+    )?;
     observations.record(BuildPhase::Validation, validation_started);
 
     let generation = manifest.corpus.content_digest.to_string();
@@ -606,6 +615,37 @@ fn validate_generation(root: &Path, expected: &ArtifactManifest) -> Result<(), L
             ));
         }
         VectorArtifact::decode(&vector_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_written_generation(
+    root: &Path,
+    expected: &ArtifactManifest,
+    lexical_bytes: u64,
+    vector_bytes: Option<u64>,
+    corpus_bytes: u64,
+    manifest_bytes: u64,
+) -> Result<(), LifecycleError> {
+    expected
+        .validate()
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let mut expected_files = vec![
+        ("corpus.json", corpus_bytes),
+        ("manifest.json", manifest_bytes),
+        ("lexical.json", lexical_bytes),
+    ];
+    if let Some(vector_bytes) = vector_bytes {
+        expected_files.push(("vectors.bin", vector_bytes));
+    }
+    for (name, expected_bytes) in expected_files {
+        let path = root.join(name);
+        let actual_bytes = fs::metadata(&path)?.len();
+        if actual_bytes != expected_bytes {
+            return Err(LifecycleError::Contract(format!(
+                "fresh artifact {name} has {actual_bytes} bytes, expected {expected_bytes}"
+            )));
+        }
     }
     Ok(())
 }
