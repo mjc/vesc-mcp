@@ -7,12 +7,13 @@ Run the release executable in a terminal so its error remains visible.
 Ubuntu and macOS:
 
 ```bash
-RUST_LOG=info ./vesc-mcp-server --http
+VESC_MCP_WORKSPACE_ROOT="$PWD" RUST_LOG=info ./vesc-mcp-server --http
 ```
 
 Windows PowerShell:
 
 ```powershell
+$env:VESC_MCP_WORKSPACE_ROOT = (Get-Location).Path
 $env:RUST_LOG = "info"
 .\vesc-mcp-server.exe --http
 ```

@@ -14,7 +14,7 @@ Requires a `vesc_tool` binary with `--buildPkgFromDesc` support (`VESC_TOOL_PATH
 ```bash
 export VESC_TOOL_PATH=/path/to/vesc_tool   # optional if vesc_tool is on PATH
 cd tests/fixtures/native-lib-minimal/package
-"$VESC_TOOL_PATH" --buildPkgFromDesc pkgdesc.qml
+"${VESC_TOOL_PATH:-vesc_tool}" --buildPkgFromDesc pkgdesc.qml
 cp native-lib-minimal.vescpkg ../../golden/native-lib-minimal.vescpkg
 shasum -a 256 ../../golden/native-lib-minimal.vescpkg \
   | awk '{print $1 "  native-lib-minimal.vescpkg"}' > ../../golden/native-lib-minimal.sha256
