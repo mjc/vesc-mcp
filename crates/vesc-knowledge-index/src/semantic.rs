@@ -870,18 +870,21 @@ fn resolve_semantic_execution_provider(
 
     #[cfg(all(feature = "semantic-rocm", target_os = "linux"))]
     {
-        return SemanticExecutionProvider::Rocm { device_id: 0 };
+        SemanticExecutionProvider::Rocm { device_id: 0 }
     }
-    #[cfg(all(feature = "semantic-coreml", target_os = "macos"))]
+    #[cfg(not(all(feature = "semantic-rocm", target_os = "linux")))]
     {
-        if std::env::var("VESC_RAG_SEMANTIC_EXECUTION_PROVIDER")
-            .ok()
-            .is_some_and(|provider| provider.eq_ignore_ascii_case("coreml"))
+        #[cfg(all(feature = "semantic-coreml", target_os = "macos"))]
         {
-            return SemanticExecutionProvider::CoreMl;
+            if std::env::var("VESC_RAG_SEMANTIC_EXECUTION_PROVIDER")
+                .ok()
+                .is_some_and(|provider| provider.eq_ignore_ascii_case("coreml"))
+            {
+                return SemanticExecutionProvider::CoreMl;
+            }
         }
+        SemanticExecutionProvider::Cpu
     }
-    SemanticExecutionProvider::Cpu
 }
 
 #[cfg(feature = "semantic-fastembed")]
