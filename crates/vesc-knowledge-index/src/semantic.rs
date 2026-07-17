@@ -515,7 +515,7 @@ pub struct FastEmbedProvider {
     length_bucketed: bool,
 }
 
-/// Runtime execution provider requested for a FastEmbed session.
+/// Runtime execution provider requested for a `FastEmbed` session.
 #[cfg(feature = "semantic-fastembed")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SemanticExecutionProvider {
@@ -613,9 +613,14 @@ impl FastEmbedProvider {
 
     /// Load a local model with an optional ONNX Runtime intra-op thread count.
     ///
-    /// `None` preserves FastEmbed's default. This is intentionally an
+    /// `None` preserves `FastEmbed`'s default. This is intentionally an
     /// initialization option because ONNX Runtime does not expose it as a
     /// mutable session setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the model files or ORT runtime cannot
+    /// be loaded, or when the profile/thread settings are invalid.
     pub fn from_model_dir_with_profile_and_threads(
         root: &std::path::Path,
         batch_size: Option<usize>,
@@ -632,6 +637,12 @@ impl FastEmbedProvider {
     }
 
     /// Load a local model with explicit ONNX Runtime provider selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the model files or ORT runtime cannot
+    /// be loaded, when the profile/thread settings are invalid, or when an
+    /// explicitly requested execution provider cannot be registered.
     pub fn from_model_dir_with_profile_and_threads_and_provider(
         root: &std::path::Path,
         batch_size: Option<usize>,
@@ -925,7 +936,7 @@ fn semantic_execution_providers(
 
 #[cfg(feature = "semantic-fastembed")]
 fn provider_availability_entry<E: ort::ep::ExecutionProvider>(
-    provider: E,
+    provider: &E,
 ) -> Result<String, EmbeddingError> {
     let name = provider.name();
     let available = provider
@@ -935,22 +946,29 @@ fn provider_availability_entry<E: ort::ep::ExecutionProvider>(
 }
 
 /// Return the loaded ORT build and provider capabilities before model setup.
+///
+/// # Errors
+///
+/// Returns [`EmbeddingError`] when ORT cannot be loaded or its provider
+/// availability cannot be queried.
 #[cfg(feature = "semantic-fastembed")]
 pub fn semantic_runtime_diagnostics(
     requested: SemanticExecutionProvider,
 ) -> Result<SemanticRuntimeDiagnostics, EmbeddingError> {
+    // `require_ort_runtime` validates the same setting before the ORT API is
+    // touched; use a fallible read here so this public API never panics.
     require_ort_runtime()?;
     let selected = resolve_semantic_execution_provider(requested);
     let path = std::env::var_os("ORT_DYLIB_PATH")
-        .expect("ORT_DYLIB_PATH was checked above")
+        .ok_or_else(|| EmbeddingError::Provider("ORT_DYLIB_PATH is not set".into()))?
         .to_string_lossy()
         .into_owned();
     #[allow(unused_mut)]
-    let mut provider_availability = vec![provider_availability_entry(ort::ep::CPU::default())?];
+    let mut provider_availability = vec![provider_availability_entry(&ort::ep::CPU::default())?];
     #[cfg(feature = "semantic-rocm")]
-    provider_availability.push(provider_availability_entry(ort::ep::ROCm::default())?);
+    provider_availability.push(provider_availability_entry(&ort::ep::ROCm::default())?);
     #[cfg(feature = "semantic-coreml")]
-    provider_availability.push(provider_availability_entry(ort::ep::CoreML::default())?);
+    provider_availability.push(provider_availability_entry(&ort::ep::CoreML::default())?);
 
     let (selected_provider, selected_device) = match selected {
         SemanticExecutionProvider::Auto => ("Auto".to_string(), None),
@@ -973,6 +991,11 @@ pub fn semantic_runtime_diagnostics(
 }
 
 /// Enable verbose ORT graph/provider logging before the first session is built.
+///
+/// # Errors
+///
+/// Returns [`EmbeddingError`] when the configured ORT runtime cannot be loaded
+/// or its environment cannot be initialized.
 #[cfg(feature = "semantic-fastembed")]
 pub fn configure_ort_verbose_logging(verbose: bool) -> Result<(), EmbeddingError> {
     if !verbose {
