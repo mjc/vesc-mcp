@@ -246,6 +246,8 @@
               export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
               export CARGO_TARGET_DIR="$PWD/target"
               export ORT_DYLIB_PATH="${rocmOnnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
+              export ORT_MIGRAPHX_MODEL_CACHE_PATH="$PWD/target/provider-bench/migraphx-cache"
+              mkdir -p "$ORT_MIGRAPHX_MODEL_CACHE_PATH"
               echo "vesc-mcp ROCm shell; build with --features semantic-fastembed,semantic-rocm"
             '';
           };
