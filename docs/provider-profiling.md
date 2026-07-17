@@ -58,6 +58,55 @@ manifest `2,706,783` B, lexical artifact `135,840,360` B, and combined
 generation-plus-active provenance `5,413,566` B (3.985% of the lexical
 artifact). No inventory or diagnostic fields were removed.
 
+## Full semantic artifact and quality result
+
+After the battery-limited Mac run, the same pinned corpus was built on Tali.
+This is the meaningful x86 CPU baseline: explicit `CPUExecutionProvider`,
+quantized BGE Small, batch 8, stable length bucketing, and 12 intra-op
+threads. The model revision was
+`ea104dacec62c0de699686887e3f920caeb4f3e3`; the source revisions are the ones
+listed above. Two fresh release builds were byte-identical.
+
+| Measurement | First run | Repeat |
+|---|---:|---:|
+| Documents / chunks | 2,854 / 13,689 | 2,854 / 13,689 |
+| Total build | 543.865 s | 543.468 s |
+| Provider inference | 533.834 s | 533.488 s |
+| Provider throughput | 25.643 chunks/s | 25.659 chunks/s |
+| Embedding input | 0.192 s | 0.190 s |
+| Vector finalization | 0.043 s | 0.032 s |
+| External elapsed | 9:04.45 | 9:04.06 |
+| External peak RSS | 2,453,948 kB | 2,469,500 kB |
+
+The first run used 1,146% process-tree CPU, consistent with approximately
+11 of Tali's 12 logical CPUs. The provider accounted for 98.2% of the measured
+build time, confirming that further Rust-side indexing work is not justified
+without new profiling.
+
+The output sizes and checksums were stable across both runs:
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| `corpus.json` | 1,202,110 | `e8f0337a616ea9fb7f22777f57c5db37efd1dcfe2c91236e03552078e593fef7` |
+| `lexical.json` | 135,840,360 | `8a98d234a06de40ac7aa46aa5b0fcfad193ca8625f9ae3404d74bebd212a1459` |
+| `vectors.bin` | 22,012,069 | `08f02a0b0add25adbcb7e88b4f8be68d5a8f6a69d86d916864f7a9675ddcfb8f` |
+| `manifest.json` | 2,706,852 | `e318935ee8f3cf2c26e00a82cede16344a43c4297805638badc8673a6e157e7e` |
+
+The full-corpus quality evaluation is informative but does not pass the
+locked retrieval gates (`recall@5 >= 0.90`, `MRR >= 0.80`, `nDCG >= 0.80`,
+identifier top-1 = 1.0):
+
+| Mode | Recall@5 | Recall@10 | MRR | nDCG | Identifier top-1 |
+|---|---:|---:|---:|---:|---:|
+| Legacy | 0.3333 | 0.3333 | 0.3333 | 0.3333 | 1.0000 |
+| Lexical | 0.4417 | 0.4667 | 0.4624 | 0.4525 | 1.0000 |
+| Semantic | 0.8083 | 0.8333 | 0.7860 | 0.7560 | 0.8500 |
+| Hybrid | 0.7444 | 0.8417 | 0.5818 | 0.6302 | 1.0000 |
+
+Consequently this artifact is retained as a reproducible benchmark result,
+not promoted into the Nix release payload. The semantic run is faster and
+deterministic, but the full-corpus quality gate still requires investigation.
+
 ## Batch-size sweep
 
 Source-order batching, one fresh process per point, 1,024 chunks, default ORT
@@ -195,7 +244,7 @@ Remaining validation:
 3. Run one integrated before/after build with the new opt-in policy and report
    external peak RSS before making it the default.
 
-The full 13,689-vector semantic build was started with the pinned model and
-production policy, then stopped after 485 s because the M1 host was on battery.
-It produced no semantic artifact or quality result; resume it on AC power or on
-Tali after the pinned source checkouts are available there.
+The earlier 13,689-vector semantic build on the M1 was stopped after 485 s
+because that host was on battery. The completed Tali run above supersedes that
+attempt for throughput profiling; the M1 remains unbenchmarked for this full
+corpus until it is on AC power.
