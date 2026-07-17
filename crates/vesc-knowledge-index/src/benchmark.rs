@@ -507,15 +507,17 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
     let mut provider_samples = Vec::with_capacity(repetitions);
     let mut vector_finalization_samples = Vec::with_capacity(repetitions);
     let mut embedding_input_bytes = 0_u64;
+    let inference_order = provider.inference_order(chunks)?;
     let mut build = || {
         let started = Instant::now();
         let (artifact, observations): (VectorArtifact, VectorBuildObservations) =
-            VectorArtifact::from_provider_with_observations(
+            VectorArtifact::from_provider_with_observations_and_order(
                 provider,
                 chunks,
                 model_id,
                 model_revision,
                 corpus_digest.clone(),
+                inference_order.as_deref(),
             )?;
         build_samples.push(elapsed_us(started));
         embedding_input_samples.push(observations.embedding_input_us);
