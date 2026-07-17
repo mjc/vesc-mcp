@@ -523,6 +523,7 @@ pub enum SemanticExecutionProvider {
     Cpu,
     CoreMl,
     Rocm { device_id: i32 },
+    Migraphx { device_id: i32 },
 }
 
 /// Observable ONNX Runtime/provider state used by provider benchmarks.
@@ -934,6 +935,24 @@ fn semantic_execution_providers(
                 ))
             }
         }
+        SemanticExecutionProvider::Migraphx { device_id } => {
+            #[cfg(all(feature = "semantic-migraphx", target_os = "linux"))]
+            {
+                Ok(vec![
+                    ort::ep::MIGraphX::default()
+                        .with_device_id(device_id)
+                        .build()
+                        .error_on_failure(),
+                ])
+            }
+            #[cfg(not(all(feature = "semantic-migraphx", target_os = "linux")))]
+            {
+                let _ = device_id;
+                Err(EmbeddingError::Provider(
+                    "MIGraphX provider requested, but this binary was not built with semantic-migraphx on Linux".into(),
+                ))
+            }
+        }
     }
 }
 
@@ -972,6 +991,8 @@ pub fn semantic_runtime_diagnostics(
     provider_availability.push(provider_availability_entry(&ort::ep::ROCm::default())?);
     #[cfg(feature = "semantic-coreml")]
     provider_availability.push(provider_availability_entry(&ort::ep::CoreML::default())?);
+    #[cfg(feature = "semantic-migraphx")]
+    provider_availability.push(provider_availability_entry(&ort::ep::MIGraphX::default())?);
 
     let (selected_provider, selected_device) = match selected {
         SemanticExecutionProvider::Auto => ("Auto".to_string(), None),
@@ -979,6 +1000,9 @@ pub fn semantic_runtime_diagnostics(
         SemanticExecutionProvider::CoreMl => ("CoreMLExecutionProvider".to_string(), None),
         SemanticExecutionProvider::Rocm { device_id } => {
             ("ROCMExecutionProvider".to_string(), Some(device_id))
+        }
+        SemanticExecutionProvider::Migraphx { device_id } => {
+            ("MIGraphXExecutionProvider".to_string(), Some(device_id))
         }
     };
     Ok(SemanticRuntimeDiagnostics {

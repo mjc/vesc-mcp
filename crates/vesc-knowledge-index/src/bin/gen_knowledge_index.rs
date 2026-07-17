@@ -1187,6 +1187,16 @@ fn semantic_execution_provider(args: &[String]) -> SemanticExecutionProvider {
         "auto" => SemanticExecutionProvider::Auto,
         "cpu" => SemanticExecutionProvider::Cpu,
         "coreml" => SemanticExecutionProvider::CoreMl,
+        "migraphx" => {
+            let device_id = argument_value(args, "--semantic-device-id")
+                .map(|value| {
+                    value
+                        .parse::<i32>()
+                        .expect("--semantic-device-id must be a signed integer")
+                })
+                .unwrap_or(0);
+            SemanticExecutionProvider::Migraphx { device_id }
+        }
         "rocm" => {
             let device_id = argument_value(args, "--semantic-device-id")
                 .map(|value| {
@@ -1198,7 +1208,9 @@ fn semantic_execution_provider(args: &[String]) -> SemanticExecutionProvider {
             SemanticExecutionProvider::Rocm { device_id }
         }
         other => {
-            panic!("unsupported --semantic-provider {other:?}; use auto, cpu, coreml, or rocm")
+            panic!(
+                "unsupported --semantic-provider {other:?}; use auto, cpu, coreml, migraphx, or rocm"
+            )
         }
     }
 }
