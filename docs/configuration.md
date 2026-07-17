@@ -12,7 +12,7 @@ local Streamable HTTP knowledge search.
 The default file on Ubuntu and macOS is:
 
 ```text
-~/.config/vesc-mcp/config.toml
+$HOME/.config/vesc-mcp/config.toml
 ```
 
 On Windows, choose a location and set `VESC_MCP_CONFIG` to its full path in

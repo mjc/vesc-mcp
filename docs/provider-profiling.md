@@ -42,7 +42,7 @@ candidate. Diagnostic probes may select fewer complete chunks instead.
 Performance results are meaningful only when they include the operating
 system, CPU architecture, model ID and revision, corpus digest, batch size,
 warmup and repetition counts, latency percentiles, and memory measurement
-method. Do not publish user names, host names, personal paths, or unrelated
+method. Do not publish user names, hostnames, personal paths, or unrelated
 hardware inventory.
 
 See [configuration.md](configuration.md#knowledge-search) to enable a local

@@ -56,8 +56,8 @@ error paths.
 3. Implement the minimum change.
 4. Run the narrow test, then `cargo nextest run --workspace`.
 5. Refactor while tests remain green.
-6. Use a `test(...)`, `feat(...)`, `fix(...)`, or `docs(...)` commit prefix and
-   reference the relevant `VESCM-*` issue when one exists.
+6. Use a `test(...)`, `feat(...)`, or `docs(...)` commit prefix and reference
+   the relevant `VESCM-*` issue when one exists.
 
 Integration tests should call tools through
 `McpTestHarness::call_tool(name, json!({...}))` so they exercise the same

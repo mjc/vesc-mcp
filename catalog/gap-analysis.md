@@ -125,6 +125,6 @@ embedding issue IDs here.
 - `catalog/refloat/build-flow.yaml`
 - `catalog/refloat/lisp-loader.yaml`
 - `catalog/bldc/vesc_c_if.yaml`
+- `catalog/abi/minimal-test-package-abi.yaml`
 - `vesc-rust-poc/docs/package-flow.md`
-- `vesc-rust-poc/docs/abi-inventory.md`
 - `catalog/priorities.json`

@@ -1,6 +1,6 @@
 # vesc-mcp configuration
 #
-# Ubuntu/macOS: copy to ~/.config/vesc-mcp/config.toml.
+# Ubuntu/macOS: copy to $HOME/.config/vesc-mcp/config.toml.
 # Windows: choose a location and set VESC_MCP_CONFIG to its full path.
 # Environment variables override this file.
 
@@ -34,6 +34,6 @@ max_passage_bytes = 8192
 
 [knowledge.semantic]
 # Optional: explicitly provisioned local FastEmbed model metadata.
-# model_dir = "~/.cache/vesc-mcp/models/your-pinned-model"
+# model_dir = "/path/to/your-pinned-model"
 # model_id = "your-model-id"
 # model_revision = "your-model-revision"
