@@ -116,7 +116,9 @@ Fixture loader (`tests/fixtures/native-lib-minimal/package/code.lisp`):
 (load-native-lib package-lib)
 ```
 
-With `lisp_editor_path` = fixture root (`native-lib-minimal/`), not `package/`.
+`inspect_vescpkg` currently reports the first import tag in its
+`lisp_editor_path` compatibility field; for this fixture the value is
+`package-lib`.
 
 ## Firmware load path
 
@@ -176,7 +178,7 @@ Guidelines:
 | Native output | `package_lib.bin` | `package_lib.bin` via staticlib | — |
 | Lisp loader | hand-written imports | same pattern | `(load-native-lib …)` omitted |
 | Build | `make -C src && make` | `make package` | `vesc_tool --buildPkgFromDesc` |
-| ABI doc | vendored `vesc_c_if.h` | `docs/abi-inventory.md` | — |
+| ABI reference | vendored `vesc_c_if.h` | `catalog/abi/minimal-test-package-abi.yaml` | — |
 
 ## Related documents
 

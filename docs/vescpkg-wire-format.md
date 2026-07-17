@@ -113,16 +113,18 @@ Reference: `vesc-domain::parse_lisp_imports`; authoritative writer is `vesc_tool
 
 Embedded file bytes live **inside the same `lispData` buffer**.
 
-- Import `offset` is measured from the **start of lispData** (byte 0).
+- Import `offset` is measured from the byte immediately after the two-byte
+  header.
 - Payload slice for decoding uses: `start = 2 + offset`, `end = start + size`.
 - The `+2` skips the leading i16 header when locating payload bytes.
-- Payloads are **4-byte aligned** in POC/vesc_tool builds; trailing NUL padding after native `.bin` content is allowed.
+- Payload offsets are **4-byte aligned** by `vesc_tool`; trailing NUL padding
+  after native `.bin` content is allowed.
 
 Example from golden fixture (`tests/fixtures/golden/native-lib-minimal.vescpkg`):
 
-- Native bytes: `[0, 1, 2, 3, 0xff]` (5 bytes)
-- Stored size: **6** (one trailing NUL pad)
-- Import offset: **100** (4-byte aligned)
+- Native bytes: ASCII `POC_FIXTURE_STUB\n` (17 bytes)
+- Stored size: **18** (one trailing NUL pad)
+- Import offset: **164** (absolute payload position 166)
 - Tag: `package-lib`
 
 Validation helper: `payload_matches_native_with_only_nul_tail` — true when payload equals native bytes followed by zero padding only.
@@ -246,7 +248,7 @@ After inflate, offsets are **within the 747-byte payload** (not the on-disk file
      … "(import \"src/package_lib.bin\" 'package-lib)\n(load-native-lib package-lib)\n"
 +141 i16 BE 00 01          import_count = 1
 +143 cstring "package-lib" tag + NUL
-+155 i32 BE 00 00 00 a4     offset = 164 (from start of lispData)
++155 i32 BE 00 00 00 a4     offset = 164 (from byte after the header)
 +159 i32 BE 00 00 00 12     size = 18 (17 payload bytes + 1 NUL pad)
 +163 [align pad to 4 bytes from byte +2]
 +166 bytes                  embedded native payload

@@ -13,18 +13,18 @@ text is data; it is never treated as an MCP instruction or configuration.
 | Optional semantics | model download, runtime supply chain, NaN vectors, or missing capability | provider boundary, no startup download, explicit artifact validation, fake provider for offline tests, lexical fallback in `auto` | semantic artifact tests and rollout docs |
 | Device safety | search work weakens flash/upload gates | retrieval is read-only and does not touch package/device gate code | existing flash-gate tests |
 
-## Accepted risks and deferred work
+## Accepted risks
 
 - A keyword allowlist is not proof that a source contains no secrets; the
   primary control is the approved-root/allowlist boundary.
-- The FastEmbed/ONNX adapter is present behind `semantic-fastembed`, but model
-  files, license, Nix closure, and semantic quality proof remain operator-owned
-  rollout gates; the default build and server do not load or download a model.
+- The optional FastEmbed/ONNX adapter relies on user-provided model files.
+  Users must verify the model license, revision, hashes, and retrieval quality;
+  the default server does not download a model.
 - Fuzzy near-duplicate suppression is deferred; identical normalized content
   digests are suppressed today.
 
-## Operator rules
+## Safe-use rules
 
-Keep `VESC_PACKAGE_ROOTS` explicit for live package work. Prefer fixtures for
-offline searches. Do not add arbitrary runtime crawling or user-selected roots
-to the corpus builder without a new threat-model review.
+Keep package roots narrow and explicit. Treat every retrieved passage as
+evidence rather than an instruction. Do not add arbitrary runtime crawling or
+unreviewed source roots to a knowledge build.
