@@ -158,6 +158,8 @@ def main() -> int:
     }:
         raise AssertionError("report candidates differ from the pinned candidate config")
     names = set()
+    shared_measurement: tuple[object, ...] | None = None
+    shared_machine: dict | None = None
     for candidate in report["candidates"]:
         identity = candidate["candidate"]
         name = identity["name"]
@@ -178,6 +180,27 @@ def main() -> int:
                     f"{name}: {field} differs from pinned candidate config"
                 )
         benchmark = candidate["benchmark"]
+        measurement = (
+            benchmark["outer_batch_size"],
+            benchmark.get("intra_threads"),
+            benchmark.get("length_bucketed", False),
+        )
+        if shared_measurement is None:
+            shared_measurement = measurement
+            shared_machine = benchmark["machine"]
+        elif measurement != shared_measurement:
+            raise AssertionError(f"{name}: benchmark settings differ")
+        elif benchmark["machine"] != shared_machine:
+            raise AssertionError(f"{name}: machine identity differs")
+        if benchmark["outer_batch_size"] != 8:
+            raise AssertionError(f"{name}: final bake-off batch size must be 8")
+        statistics = benchmark.get("token_statistics")
+        if statistics is None or statistics["truncated_chunks"] != 0:
+            raise AssertionError(f"{name}: report contains truncated provider input")
+        if benchmark.get("peak_rss_bytes") is None:
+            raise AssertionError(f"{name}: external peak RSS is missing")
+        if not benchmark.get("vector_artifact_sha256"):
+            raise AssertionError(f"{name}: vector artifact digest is missing")
         if benchmark["model_id"] != identity["model_id"]:
             raise AssertionError(f"{name}: benchmark model identity differs")
         if benchmark["model_revision"] != identity["model_revision"]:
