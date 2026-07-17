@@ -848,6 +848,28 @@ impl FastEmbedProvider {
         Ok(())
     }
 
+    fn ensure_document_lengths(&self, texts: &[&str]) -> Result<(), EmbeddingError> {
+        let mut tokenizer = self.model.tokenizer.clone();
+        tokenizer.with_padding(None);
+        tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        let encodings = tokenizer
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        if let Some(length) = encodings
+            .iter()
+            .map(|encoding| encoding.get_ids().len())
+            .find(|&length| length > self.profile.max_length)
+        {
+            return Err(EmbeddingError::Provider(format!(
+                "document input has {length} tokens, exceeding the model limit of {}; lossless windowing is required",
+                self.profile.max_length
+            )));
+        }
+        Ok(())
+    }
+
     fn effective_batch_size(&self, input_len: usize) -> Option<usize> {
         (input_len > 0).then(|| self.batch_size.get().min(input_len))
     }
@@ -1115,6 +1137,8 @@ impl EmbeddingProvider for FastEmbedProvider {
                 .collect::<Vec<_>>();
             &prefixed
         };
+        let inputs = texts.iter().map(String::as_str).collect::<Vec<_>>();
+        self.ensure_document_lengths(&inputs)?;
         let vectors = self
             .model
             .embed(texts, self.effective_batch_size(texts.len()))
