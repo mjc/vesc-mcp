@@ -60,7 +60,7 @@ pub struct SourceRejection {
 }
 
 /// Ingestion results in deterministic source-spec order.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IngestionReport {
     pub documents: Vec<NormalizedDocument>,
@@ -71,8 +71,20 @@ pub struct IngestionReport {
     pub visited_files: usize,
     #[cfg(feature = "git-corpus")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Non-identity profiling data; excluded from deterministic report equality.
     pub git_observations: Option<super::git::GitIngestionObservations>,
 }
+
+impl PartialEq for IngestionReport {
+    fn eq(&self, other: &Self) -> bool {
+        self.documents == other.documents
+            && self.rejected == other.rejected
+            && self.sources == other.sources
+            && self.visited_files == other.visited_files
+    }
+}
+
+impl Eq for IngestionReport {}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]

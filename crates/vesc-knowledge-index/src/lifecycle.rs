@@ -90,6 +90,7 @@ pub struct BuildObservations {
     pub resolved_batch_size: Option<usize>,
     pub vector_build: Option<VectorBuildObservations>,
     #[cfg(feature = "git-corpus")]
+    #[serde(default)]
     pub git_ingestion: Option<GitIngestionObservations>,
 }
 
