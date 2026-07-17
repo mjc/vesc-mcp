@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use crate::evaluation::EvaluationMode;
+use crate::evaluation::{EvaluationMode, EvaluationReport};
 use crate::{
     Chunk, ContentDigest, EmbeddingProvider, FusionConfig, LexicalFilters, LexicalIndex,
     TokenStatistics, VectorArtifact, VectorBuildObservations, embedded_entries, fuse_candidates,
@@ -167,6 +167,12 @@ pub struct SemanticBenchmarkReport {
     /// Difference between the retained RSS samples; peak RSS is measured by an
     /// external host harness.
     pub rss_retained_delta_bytes: Option<i64>,
+    /// Peak RSS supplied by an external process harness.
+    #[serde(default)]
+    pub peak_rss_bytes: Option<u64>,
+    /// SHA-256 of the encoded vector artifact when retained by a bake-off.
+    #[serde(default)]
+    pub vector_artifact_sha256: Option<String>,
     pub machine: MachineProfile,
     pub warnings: Vec<String>,
 }
@@ -178,6 +184,107 @@ pub struct SemanticBenchmarkReport {
 pub struct SemanticBenchmarkMatrixReport {
     pub schema: u16,
     pub runs: Vec<SemanticBenchmarkReport>,
+}
+
+/// One pinned model identity used by the reproducible embedding bake-off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BakeoffCandidateSpec {
+    pub name: String,
+    pub model_id: String,
+    pub model_revision: String,
+    /// Relative directory below the operator-provided model root.
+    pub directory: String,
+    pub quantization: String,
+}
+
+/// Quality and runtime evidence for one bake-off candidate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BakeoffCandidateReport {
+    pub candidate: BakeoffCandidateSpec,
+    pub benchmark: SemanticBenchmarkReport,
+    pub semantic: EvaluationReport,
+    pub hybrid: EvaluationReport,
+}
+
+/// Machine-readable comparison of the common lexical control and pinned
+/// embedding candidates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BakeoffReport {
+    pub schema: u16,
+    pub suite_id: String,
+    pub corpus_digest: ContentDigest,
+    pub corpus_documents: usize,
+    pub corpus_chunks: usize,
+    pub lexical: EvaluationReport,
+    pub candidates: Vec<BakeoffCandidateReport>,
+    pub machine: MachineProfile,
+    pub warnings: Vec<String>,
+}
+
+impl BakeoffReport {
+    /// Render the comparison table from the JSON report fields.
+    #[must_use]
+    pub fn to_markdown(&self) -> String {
+        let mut markdown = String::new();
+        writeln!(markdown, "# Embedding model bake-off").expect("write to String");
+        writeln!(markdown).expect("write to String");
+        writeln!(markdown, "- Suite: {}", self.suite_id).expect("write to String");
+        writeln!(markdown, "- Corpus digest: {}", self.corpus_digest).expect("write to String");
+        writeln!(
+            markdown,
+            "- Corpus: {} documents / {} chunks",
+            self.corpus_documents, self.corpus_chunks
+        )
+        .expect("write to String");
+        writeln!(markdown).expect("write to String");
+        writeln!(
+            markdown,
+            "| Candidate | Quantization | Provider p50 (s) | Chunks/s | Fused R@5 | Fused R@10 | Fused MRR@10 | Semantic R@5 | Peak RSS (MiB) |"
+        )
+        .expect("write to String");
+        writeln!(
+            markdown,
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        )
+        .expect("write to String");
+        writeln!(
+            markdown,
+            "| lexical control | — | — | — | {:.4} | {:.4} | {:.4} | — | — |",
+            self.lexical.recall_at_5, self.lexical.recall_at_10, self.lexical.mrr_at_10
+        )
+        .expect("write to String");
+        for candidate in &self.candidates {
+            let benchmark = &candidate.benchmark;
+            let provider_seconds = benchmark.provider_inference.p50_us as f64 / 1_000_000.0;
+            let chunks_per_second = if provider_seconds == 0.0 {
+                0.0
+            } else {
+                self.corpus_chunks as f64 / provider_seconds
+            };
+            let peak_rss = benchmark.peak_rss_bytes.map_or_else(
+                || "—".into(),
+                |bytes| format!("{:.1}", bytes as f64 / 1_048_576.0),
+            );
+            writeln!(
+                markdown,
+                "| {} | {} | {:.3} | {:.2} | {:.4} | {:.4} | {:.4} | {:.4} | {} |",
+                candidate.candidate.name,
+                candidate.candidate.quantization,
+                provider_seconds,
+                chunks_per_second,
+                candidate.hybrid.recall_at_5,
+                candidate.hybrid.recall_at_10,
+                candidate.hybrid.mrr_at_10,
+                candidate.semantic.recall_at_5,
+                peak_rss,
+            )
+            .expect("write to String");
+        }
+        markdown
+    }
 }
 
 impl SemanticBenchmarkMatrixReport {
@@ -350,6 +457,36 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
     warmup_iterations: usize,
     repetitions: usize,
 ) -> Result<SemanticBenchmarkReport, BenchmarkError> {
+    benchmark_semantic_with_artifact(
+        provider,
+        chunks,
+        queries,
+        model_id,
+        model_revision,
+        corpus_digest,
+        search_limits,
+        warmup_iterations,
+        repetitions,
+    )
+    .map(|(report, _)| report)
+}
+
+/// Measures semantic work and returns the final artifact for quality scoring.
+///
+/// Returning the artifact prevents a bake-off from embedding the full corpus
+/// a second time solely to evaluate the candidate.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
+    provider: &mut P,
+    chunks: &[Chunk],
+    queries: &[String],
+    model_id: &str,
+    model_revision: &str,
+    corpus_digest: &ContentDigest,
+    search_limits: &[usize],
+    warmup_iterations: usize,
+    repetitions: usize,
+) -> Result<(SemanticBenchmarkReport, VectorArtifact), BenchmarkError> {
     if queries.is_empty() {
         return Err(BenchmarkError::EmptyQueries);
     }
@@ -426,53 +563,58 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
         .into_iter()
         .map(|(limit, samples)| (limit, TimingDistribution::from_samples(samples)))
         .collect();
-    Ok(SemanticBenchmarkReport {
-        schema: 2,
-        mode: EvaluationMode::Semantic,
-        model_id: model_id.into(),
-        model_revision: model_revision.into(),
-        corpus_digest: corpus_digest.clone(),
-        build_identity: format!(
-            "vesc-knowledge-index@{};{}",
-            env!("CARGO_PKG_VERSION"),
-            host_target()
-        ),
-        outer_batch_size: provider.embedding_batch_size().get(),
-        intra_threads: None,
-        length_bucketed: false,
-        cold_initialization: None,
-        warmup_iterations,
-        repetitions,
-        query_count: queries.len(),
-        corpus_chunks: chunks.len(),
-        vector_count: artifact.ids.len(),
-        vector_dimension: artifact.dimension,
-        artifact_bytes,
-        first_query_after_build,
-        build: TimingDistribution::from_samples(build_samples),
-        embedding_input: TimingDistribution::from_samples(embedding_input_samples),
-        provider_inference: TimingDistribution::from_samples(provider_samples),
-        vector_finalization: TimingDistribution::from_samples(vector_finalization_samples),
-        embedding_input_bytes,
-        token_statistics: None,
-        embedding: TimingDistribution::from_samples(embedding_samples),
-        exact_search,
-        rss_before_queries_bytes,
-        rss_after_queries_bytes,
-        rss_retained_delta_bytes: rss_before_queries_bytes
-            .zip(rss_after_queries_bytes)
-            .and_then(|(before, after)| {
-                i64::try_from(after)
-                    .ok()?
-                    .checked_sub(i64::try_from(before).ok()?)
-            }),
-        machine: MachineProfile {
-            os: std::env::consts::OS.into(),
-            arch: std::env::consts::ARCH.into(),
-            rust_target: host_target().into(),
+    Ok((
+        SemanticBenchmarkReport {
+            schema: 2,
+            mode: EvaluationMode::Semantic,
+            model_id: model_id.into(),
+            model_revision: model_revision.into(),
+            corpus_digest: corpus_digest.clone(),
+            build_identity: format!(
+                "vesc-knowledge-index@{};{}",
+                env!("CARGO_PKG_VERSION"),
+                host_target()
+            ),
+            outer_batch_size: provider.embedding_batch_size().get(),
+            intra_threads: None,
+            length_bucketed: false,
+            cold_initialization: None,
+            warmup_iterations,
+            repetitions,
+            query_count: queries.len(),
+            corpus_chunks: chunks.len(),
+            vector_count: artifact.ids.len(),
+            vector_dimension: artifact.dimension,
+            artifact_bytes,
+            first_query_after_build,
+            build: TimingDistribution::from_samples(build_samples),
+            embedding_input: TimingDistribution::from_samples(embedding_input_samples),
+            provider_inference: TimingDistribution::from_samples(provider_samples),
+            vector_finalization: TimingDistribution::from_samples(vector_finalization_samples),
+            embedding_input_bytes,
+            token_statistics: None,
+            embedding: TimingDistribution::from_samples(embedding_samples),
+            exact_search,
+            rss_before_queries_bytes,
+            rss_after_queries_bytes,
+            rss_retained_delta_bytes: rss_before_queries_bytes
+                .zip(rss_after_queries_bytes)
+                .and_then(|(before, after)| {
+                    i64::try_from(after)
+                        .ok()?
+                        .checked_sub(i64::try_from(before).ok()?)
+                }),
+            peak_rss_bytes: None,
+            vector_artifact_sha256: None,
+            machine: MachineProfile {
+                os: std::env::consts::OS.into(),
+                arch: std::env::consts::ARCH.into(),
+                rust_target: host_target().into(),
+            },
+            warnings: Vec::new(),
         },
-        warnings: Vec::new(),
-    })
+        artifact,
+    ))
 }
 
 /// Measures the local lexical pipeline without network or wall-clock metadata.

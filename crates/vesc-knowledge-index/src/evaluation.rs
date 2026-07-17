@@ -41,6 +41,148 @@ pub struct EvaluationQuery {
     pub relevant: BTreeMap<String, u8>,
 }
 
+/// Versioned judged-suite metadata for full-corpus model comparisons.
+///
+/// The metadata is part of the fixture identity: a model result is not
+/// comparable when it was produced from another corpus or another set of
+/// judged queries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvaluationSuite {
+    pub schema: u16,
+    pub suite_id: String,
+    pub corpus_digest: String,
+    pub corpus_documents: usize,
+    pub corpus_chunks: usize,
+    pub queries: Vec<EvaluationQuery>,
+}
+
+/// Required VESCM-165 model-discrimination categories.
+pub const V2_FAILURE_CATEGORIES: [&str; 5] = [
+    "conceptual_to_implementation",
+    "identifier_to_declaration",
+    "description_to_obscure_c_function",
+    "vesc_tool_to_firmware",
+    "refloat_to_control_code",
+];
+
+impl EvaluationSuite {
+    /// Returns the five model-discrimination categories declared by VESCM-165.
+    #[must_use]
+    pub fn failure_categories(&self) -> BTreeSet<String> {
+        self.queries
+            .iter()
+            .filter_map(|query| query.failure_category.clone())
+            .collect()
+    }
+
+    /// Checks that this suite is comparable with one exact corpus artifact.
+    ///
+    /// Relevance IDs are intentionally checked against the artifact's actual
+    /// chunk IDs at runtime. This prevents a plausible-looking quality report
+    /// from silently evaluating a different corpus or stale judged IDs.
+    pub fn validate_for_corpus(
+        &self,
+        corpus_digest: &str,
+        corpus_documents: usize,
+        corpus_chunks: usize,
+        chunk_ids: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        if self.schema != 2 {
+            return Err(format!(
+                "expected evaluation suite schema 2, got {}",
+                self.schema
+            ));
+        }
+        if self.suite_id.trim().is_empty() {
+            return Err("evaluation suite_id must not be empty".into());
+        }
+        if self.corpus_digest != corpus_digest {
+            return Err(format!(
+                "evaluation suite corpus digest {} does not match artifact {}",
+                self.corpus_digest, corpus_digest
+            ));
+        }
+        if self.corpus_documents != corpus_documents {
+            return Err(format!(
+                "evaluation suite document count {} does not match artifact {}",
+                self.corpus_documents, corpus_documents
+            ));
+        }
+        if self.corpus_chunks != corpus_chunks {
+            return Err(format!(
+                "evaluation suite chunk count {} does not match artifact {}",
+                self.corpus_chunks, corpus_chunks
+            ));
+        }
+        if self.queries.is_empty() {
+            return Err("evaluation suite must contain at least one query".into());
+        }
+
+        let required_categories: BTreeSet<_> = V2_FAILURE_CATEGORIES
+            .iter()
+            .map(|category| (*category).to_owned())
+            .collect();
+        let categories = self.failure_categories();
+        if categories != required_categories {
+            return Err(format!(
+                "evaluation suite categories must be exactly {:?}, got {:?}",
+                required_categories, categories
+            ));
+        }
+
+        let mut query_ids = BTreeSet::new();
+        for query in &self.queries {
+            if query.id.trim().is_empty() || !query_ids.insert(query.id.clone()) {
+                return Err(format!(
+                    "evaluation query ID is empty or duplicated: {:?}",
+                    query.id
+                ));
+            }
+            if query.text.trim().is_empty() {
+                return Err(format!("evaluation query {} has empty text", query.id));
+            }
+            let category = query
+                .failure_category
+                .as_deref()
+                .ok_or_else(|| format!("evaluation query {} has no failure category", query.id))?;
+            if !required_categories.contains(category) {
+                return Err(format!(
+                    "evaluation query {} has unknown failure category {}",
+                    query.id, category
+                ));
+            }
+            if query.relevant.is_empty() {
+                return Err(format!(
+                    "evaluation query {} has no relevance judgments",
+                    query.id
+                ));
+            }
+            for (chunk_id, grade) in &query.relevant {
+                if !chunk_id.starts_with("chunk-") {
+                    return Err(format!(
+                        "evaluation query {} references non-corpus ID {}",
+                        query.id, chunk_id
+                    ));
+                }
+                if !chunk_ids.contains(chunk_id) {
+                    return Err(format!(
+                        "evaluation query {} references unknown corpus chunk {}",
+                        query.id, chunk_id
+                    ));
+                }
+                if *grade > 2 {
+                    return Err(format!(
+                        "evaluation query {} has invalid relevance grade {} for {}",
+                        query.id, grade, chunk_id
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A ranked result with optional identity metadata for diversity reporting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetrievedHit {
@@ -629,5 +771,62 @@ mod tests {
         assert_eq!(report.by_source["priority"].query_count, 1);
         assert!((report.duplicate_rate_at_5 - 0.5).abs() < f64::EPSILON);
         assert!((report.diversity_at_5 - 0.5).abs() < f64::EPSILON);
+    }
+
+    fn valid_v2_suite() -> EvaluationSuite {
+        EvaluationSuite {
+            schema: 2,
+            suite_id: "v2-test".into(),
+            corpus_digest: "sha256:test".into(),
+            corpus_documents: 1,
+            corpus_chunks: 5,
+            queries: V2_FAILURE_CATEGORIES
+                .iter()
+                .enumerate()
+                .map(|(index, category)| EvaluationQuery {
+                    id: format!("q{index}"),
+                    text: format!("query {index}"),
+                    intent: Intent::Concept,
+                    failure_category: Some((*category).into()),
+                    relevant: BTreeMap::from([(format!("chunk-{index}"), 2)]),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn v2_suite_validation_accepts_exact_corpus_identity() {
+        let suite = valid_v2_suite();
+        let ids = (0..5).map(|index| format!("chunk-{index}")).collect();
+        assert!(suite.validate_for_corpus("sha256:test", 1, 5, &ids).is_ok());
+    }
+
+    #[test]
+    fn v2_suite_validation_rejects_stale_or_unknown_judgments() {
+        let mut suite = valid_v2_suite();
+        suite.corpus_digest = "sha256:stale".into();
+        let ids = (0..5).map(|index| format!("chunk-{index}")).collect();
+        let error = suite
+            .validate_for_corpus("sha256:test", 1, 5, &ids)
+            .expect_err("stale corpus must fail");
+        assert!(error.contains("does not match artifact"));
+
+        let mut suite = valid_v2_suite();
+        suite.queries[0].relevant = BTreeMap::from([(String::from("chunk-missing"), 2)]);
+        let error = suite
+            .validate_for_corpus("sha256:test", 1, 5, &ids)
+            .expect_err("unknown chunk must fail");
+        assert!(error.contains("unknown corpus chunk"));
+    }
+
+    #[test]
+    fn v2_suite_validation_rejects_missing_category() {
+        let mut suite = valid_v2_suite();
+        suite.queries.pop();
+        let ids = (0..5).map(|index| format!("chunk-{index}")).collect();
+        let error = suite
+            .validate_for_corpus("sha256:test", 1, 5, &ids)
+            .expect_err("missing category must fail");
+        assert!(error.contains("categories must be exactly"));
     }
 }

@@ -1,0 +1,253 @@
+{
+  "schema": 2,
+  "suite_id": "vescm-165-v2-full-corpus",
+  "corpus_digest": "sha256:45e55039cc4bd6b3a74edbc605864facfbdb90b9d088cf0c1af7bde560ea632a",
+  "corpus_documents": 2869,
+  "corpus_chunks": 13720,
+  "queries": [
+    {
+      "id": "concept-imu-orientation",
+      "text": "How does the firmware turn corrected gyro and accelerometer samples into an orientation estimate?",
+      "intent": "concept",
+      "failure_category": "conceptual_to_implementation",
+      "relevant": {
+        "chunk-5bbf98be5c8d509672ee03e725ebf305a85b665c9adafaee5d8e1e74dd667795": 2,
+        "chunk-5e57aa2f3eb4b0dada615bdbde2ca611f132417367f75b9db0d889464f770e4b": 1
+      }
+    },
+    {
+      "id": "concept-custom-application-data",
+      "text": "Where is the low-level firmware path that forwards data produced by a custom application?",
+      "intent": "concept",
+      "failure_category": "conceptual_to_implementation",
+      "relevant": {
+        "chunk-10a526f879f0dcf21210877b90dee288756334a6ef754694f17f2c25faf3386a": 2,
+        "chunk-0441f290dd192614cbbbb6815787d51676355d4d60cb1fde7320d0830f655973": 1
+      }
+    },
+    {
+      "id": "concept-flash-package-validation",
+      "text": "What code checks the integrity of an installed graphical or script payload before it is accepted?",
+      "intent": "concept",
+      "failure_category": "conceptual_to_implementation",
+      "relevant": {
+        "chunk-0f208e6b7ad684e76255ebf1d501fe29360f7bf5a8e9f37a3a071d2e17f96b6f": 2,
+        "chunk-5d86ffaf5325898929f8b85d3bc89c1389949a5835229783ea4de24e4036772c": 1
+      }
+    },
+    {
+      "id": "concept-alert-tracking",
+      "text": "Which implementation keeps active faults and a history of alerts for the Refloat package?",
+      "intent": "concept",
+      "failure_category": "conceptual_to_implementation",
+      "relevant": {
+        "chunk-13b592963018bc9d67315a770a04e7b25d1eff113e511d709c53af11deab7f17": 2,
+        "chunk-2d8ebc45334e9b4746c9ebb0eb326a6652a3dcc60a7c57db20badd1e268f6764": 1
+      }
+    },
+    {
+      "id": "concept-realtime-fields",
+      "text": "How does the package expose a selectable set of live telemetry fields to its client?",
+      "intent": "concept",
+      "failure_category": "conceptual_to_implementation",
+      "relevant": {
+        "chunk-50201782e63585aadc2df13e7f2fcd3c334b32d55a8c08238868306219a88e2c": 2,
+        "chunk-220a7221ad164fbf5f5264d2a72b24b395364728a005fbdb25a0949a067fde1b": 1
+      }
+    },
+    {
+      "id": "identifier-ahrs-callback",
+      "text": "Where is ahrs_update_mahony_imu declared?",
+      "intent": "identifier",
+      "failure_category": "identifier_to_declaration",
+      "relevant": {
+        "chunk-10a344c8a4726cd72fa748738fcd61037bab180e3fbb056afce595e9968c7591": 2,
+        "chunk-621e78c50c0b5be9c48ead47c8d24e6be4cbf520eefc624cad0b6937240e0cda": 1
+      }
+    },
+    {
+      "id": "identifier-ahrs-header",
+      "text": "Which header declares the Mahony and Madgwick attitude-filter interface?",
+      "intent": "identifier",
+      "failure_category": "identifier_to_declaration",
+      "relevant": {
+        "chunk-3b22e1ba2bb5ce4189f8d51977c1c49de30d36fc523afe238d5b74cabe879160": 2,
+        "chunk-5bbf98be5c8d509672ee03e725ebf305a85b665c9adafaee5d8e1e74dd667795": 1
+      }
+    },
+    {
+      "id": "identifier-process-packet",
+      "text": "Find the declaration of commands_process_packet.",
+      "intent": "identifier",
+      "failure_category": "identifier_to_declaration",
+      "relevant": {
+        "chunk-0ee636f261296cb42dbbb2fdfb904d7fe7324a1d1846b5a587d5509ca6919e28": 2
+      }
+    },
+    {
+      "id": "identifier-flash-helper",
+      "text": "Where is the public flash helper interface defined?",
+      "intent": "identifier",
+      "failure_category": "identifier_to_declaration",
+      "relevant": {
+        "chunk-30428bbcc47e44b6ec36bc45667e3a5a4aef586c894e285f0542d215521cfb61": 2,
+        "chunk-450f7d709f7abc3239da5c8584b2e328e9426d8a84fcd337f6ca29e89e26fe6e": 1
+      }
+    },
+    {
+      "id": "identifier-comm-header",
+      "text": "Which header contains the firmware command dispatcher declarations?",
+      "intent": "identifier",
+      "failure_category": "identifier_to_declaration",
+      "relevant": {
+        "chunk-3fd807f6455d718072ddeb8682e765a8bb7caa7d234e57f62c6eacb7cee6c9d2": 2,
+        "chunk-2825d85c3e8511f3d932ba567426a832215e7365b5f50c2c5171ec0f5226642b": 1
+      }
+    },
+    {
+      "id": "obscure-qml-crc",
+      "text": "Locate the C routine that reads a stored UI image and verifies its checksum.",
+      "intent": "how_to",
+      "failure_category": "description_to_obscure_c_function",
+      "relevant": {
+        "chunk-0f208e6b7ad684e76255ebf1d501fe29360f7bf5a8e9f37a3a071d2e17f96b6f": 2
+      }
+    },
+    {
+      "id": "obscure-nrf-dispatch",
+      "text": "Which firmware function validates the CRC and hands an incoming radio frame to the next layer?",
+      "intent": "how_to",
+      "failure_category": "description_to_obscure_c_function",
+      "relevant": {
+        "chunk-5c782ae6ae60c3b4113a8a194a22a2d1794601a7dc788a815aa508342cf8df68": 2
+      }
+    },
+    {
+      "id": "obscure-erase-code",
+      "text": "Find the routine that stops script execution and erases a firmware code region.",
+      "intent": "how_to",
+      "failure_category": "description_to_obscure_c_function",
+      "relevant": {
+        "chunk-4ae8ea51c4da56e11e07608cf0e87fa019132537378a27c8a884891f57551ee8": 2
+      }
+    },
+    {
+      "id": "obscure-application-crc",
+      "text": "Where is the helper that calculates the checksum over the complete application image?",
+      "intent": "how_to",
+      "failure_category": "description_to_obscure_c_function",
+      "relevant": {
+        "chunk-093f4cf3e2c98acb970935c602ef2bcb14ca941e4fbe6bccced5eab3c234a0ad": 2
+      }
+    },
+    {
+      "id": "obscure-new-app-write",
+      "text": "Which low-level implementation copies a new application image into flash storage?",
+      "intent": "how_to",
+      "failure_category": "description_to_obscure_c_function",
+      "relevant": {
+        "chunk-53e58cac908470c511df7b34460a5bb0cf2e70af8ab8447108cc7fde31d77d78": 2,
+        "chunk-1343b629bd7ca2dfdb19180efc040e4b187a1dc75052ce684586e1809b867662": 1
+      }
+    },
+    {
+      "id": "tool-custom-data",
+      "text": "How does VESC Tool send a custom application-data message to the controller?",
+      "intent": "how_to",
+      "failure_category": "vesc_tool_to_firmware",
+      "relevant": {
+        "chunk-2eca338ea9e589fc190da03a5f1b1b12ebd453a07f7bfac9bdeaabf49c278aa8": 2,
+        "chunk-10a526f879f0dcf21210877b90dee288756334a6ef754694f17f2c25faf3386a": 1
+      }
+    },
+    {
+      "id": "tool-install-package",
+      "text": "Which VESC Tool implementation installs a packaged firmware extension?",
+      "intent": "how_to",
+      "failure_category": "vesc_tool_to_firmware",
+      "relevant": {
+        "chunk-1c089f432fb4fedceea07540175ae94eca75fb503eafd0c4e1b103c8bbd416b2": 2,
+        "chunk-4609470b50bba7d8898110155aa4ab887570de686268ec572953bfb1bdc75f80": 1
+      }
+    },
+    {
+      "id": "tool-write-flash-chunks",
+      "text": "Where does the desktop tool split a firmware payload into blocks before writing it?",
+      "intent": "how_to",
+      "failure_category": "vesc_tool_to_firmware",
+      "relevant": {
+        "chunk-414ade2fc42df2d669bedb1458ba704f81636530ef213b4cbf184902dacae0a6": 2,
+        "chunk-209d0aca798165a8e136f4d242af56d5991c863ecfed4e634a0ba42e829baa92": 1
+      }
+    },
+    {
+      "id": "tool-packet-decoder",
+      "text": "Which VESC Tool code decodes the command identifier returned by firmware?",
+      "intent": "how_to",
+      "failure_category": "vesc_tool_to_firmware",
+      "relevant": {
+        "chunk-2e4fb9e7cd9327c4c52e3c1153d1c37f9b0feb3d02975076633b7db66a293e78": 2,
+        "chunk-374d581ea24a412116b4bead71903813558490f90a6f252a10e9ac76154ce73d": 1
+      }
+    },
+    {
+      "id": "tool-build-flow",
+      "text": "What build flow does the tool use for the legacy package command?",
+      "intent": "how_to",
+      "failure_category": "vesc_tool_to_firmware",
+      "relevant": {
+        "chunk-12378980991bd0cd88e7c662b3fb7ca36f4537b92db15f331a75efa87fe1cad0": 2,
+        "chunk-4609470b50bba7d8898110155aa4ab887570de686268ec572953bfb1bdc75f80": 1
+      }
+    },
+    {
+      "id": "refloat-realtime-command",
+      "text": "Which Refloat command lets a client request selected live fields using a mask?",
+      "intent": "how_to",
+      "failure_category": "refloat_to_control_code",
+      "relevant": {
+        "chunk-50201782e63585aadc2df13e7f2fcd3c334b32d55a8c08238868306219a88e2c": 2
+      }
+    },
+    {
+      "id": "refloat-realtime-internal",
+      "text": "Where is the package's internal live-data identifier list documented?",
+      "intent": "how_to",
+      "failure_category": "refloat_to_control_code",
+      "relevant": {
+        "chunk-220a7221ad164fbf5f5264d2a72b24b395364728a005fbdb25a0949a067fde1b": 2,
+        "chunk-3aae23d1d7a0cea09dedeed545f91104034efe080189f8d458ef18fd4b3f2518": 1
+      }
+    },
+    {
+      "id": "refloat-command-hook",
+      "text": "Which C interface gives the Refloat package access to packet processing and application-data replies?",
+      "intent": "how_to",
+      "failure_category": "refloat_to_control_code",
+      "relevant": {
+        "chunk-0ee636f261296cb42dbbb2fdfb904d7fe7324a1d1846b5a587d5509ca6919e28": 2,
+        "chunk-4c38654f633d6e79b019235d68b85dfaf0a4b25210f1573b1c9831983b99359d": 1
+      }
+    },
+    {
+      "id": "refloat-alert-command",
+      "text": "Which package implementation maintains the alert buffer behind the alerts command?",
+      "intent": "how_to",
+      "failure_category": "refloat_to_control_code",
+      "relevant": {
+        "chunk-13b592963018bc9d67315a770a04e7b25d1eff113e511d709c53af11deab7f17": 2,
+        "chunk-30f5ba4a894b3119b88d2115192c2f45dd7f4526265abd37054a2953139e9e70": 1
+      }
+    },
+    {
+      "id": "refloat-internal-data",
+      "text": "Where is the implementation of the command that exposes package-only telemetry?",
+      "intent": "how_to",
+      "failure_category": "refloat_to_control_code",
+      "relevant": {
+        "chunk-3aae23d1d7a0cea09dedeed545f91104034efe080189f8d458ef18fd4b3f2518": 2,
+        "chunk-50201782e63585aadc2df13e7f2fcd3c334b32d55a8c08238868306219a88e2c": 1
+      }
+    }
+  ]
+}
