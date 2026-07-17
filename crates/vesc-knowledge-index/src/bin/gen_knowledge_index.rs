@@ -10,20 +10,21 @@ use std::path::{Path, PathBuf};
 
 #[cfg(feature = "semantic-fastembed-online")]
 use sha2::{Digest, Sha256};
-use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::{
-    SemanticBenchmarkMatrixReport, SemanticBenchmarkReport, benchmark_semantic,
+    BakeoffCandidateReport, BakeoffReport, SemanticBenchmarkMatrixReport, SemanticBenchmarkReport,
+    benchmark_semantic, benchmark_semantic_with_artifact,
 };
+use vesc_knowledge_index::benchmark::{BakeoffCandidateSpec, BenchmarkReport, benchmark_lexical};
 #[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
 use vesc_knowledge_index::build_git_artifacts_with_provider;
 use vesc_knowledge_index::evaluation::{
-    EvaluationMode, EvaluationQuery, EvaluationReport, QualityThresholds, evaluate_quality_gate,
-    evaluate_suite_with_mode,
+    EvaluationMode, EvaluationQuery, EvaluationReport, EvaluationSuite, QualityThresholds,
+    evaluate_quality_gate, evaluate_suite_with_mode,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{
-    Chunk, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig,
+    Chunk, ChunkId, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig,
     SemanticExecutionProvider, VectorArtifact, build_allowlisted_artifacts_with_provider,
     build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
     fuse_candidates, semantic_runtime_diagnostics,
@@ -54,6 +55,10 @@ fn main() {
     }
     if args.first().is_some_and(|arg| arg == "benchmark") {
         run_benchmark(&args[1..]);
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "bakeoff") {
+        run_bakeoff(&args[1..]);
         return;
     }
     if args.first().is_some_and(|arg| arg == "build") {
@@ -606,12 +611,7 @@ fn run_evaluation(args: &[String]) {
             )
         }
     };
-    let raw = fs::read_to_string(&suite_path).unwrap_or_else(|err| {
-        panic!("read evaluation suite {}: {err}", suite_path.display());
-    });
-    let queries: Vec<EvaluationQuery> = serde_json::from_str(&raw).unwrap_or_else(|err| {
-        panic!("parse evaluation suite {}: {err}", suite_path.display());
-    });
+    let queries = read_evaluation_queries(&suite_path);
     let reports: Vec<_> = modes
         .iter()
         .copied()
@@ -823,6 +823,348 @@ struct LexicalSourceArtifact {
     chunks: Vec<Chunk>,
 }
 
+#[cfg(feature = "semantic-fastembed")]
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BakeoffConfig {
+    schema: u16,
+    corpus_digest: String,
+    corpus_documents: usize,
+    corpus_chunks: usize,
+    candidates: Vec<BakeoffCandidateSpec>,
+}
+
+fn run_bakeoff(args: &[String]) {
+    #[cfg(feature = "semantic-fastembed")]
+    run_bakeoff_with_fastembed(args);
+    #[cfg(not(feature = "semantic-fastembed"))]
+    {
+        let _ = args;
+        panic!("bakeoff requires the semantic-fastembed feature");
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+#[allow(clippy::too_many_lines)]
+fn run_bakeoff_with_fastembed(args: &[String]) {
+    let artifact_root = argument_value(args, "--artifact")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("--artifact is required for a bake-off"));
+    assert!(
+        artifact_root.is_dir(),
+        "--artifact must name a full artifact directory"
+    );
+    let suite_path = argument_value(args, "--suite").map_or_else(
+        || PathBuf::from("tests/evaluation/v2/queries.json"),
+        PathBuf::from,
+    );
+    let config_path = argument_value(args, "--config").map_or_else(
+        || PathBuf::from("tests/benchmark/bakeoff-models.json"),
+        PathBuf::from,
+    );
+    let model_root = argument_value(args, "--model-root")
+        .map_or_else(|| PathBuf::from("target/models"), PathBuf::from);
+    let format = argument_value(args, "--format").unwrap_or_else(|| "json".into());
+    let warmup = argument_value(args, "--warmup")
+        .as_deref()
+        .unwrap_or("0")
+        .parse::<usize>()
+        .expect("--warmup must be an integer");
+    let repetitions = argument_value(args, "--repetitions")
+        .as_deref()
+        .unwrap_or("1")
+        .parse::<usize>()
+        .expect("--repetitions must be an integer");
+    assert!(repetitions > 0, "--repetitions must be positive");
+    let batch_size = argument_value(args, "--semantic-batch-size")
+        .as_deref()
+        .unwrap_or("8")
+        .parse::<usize>()
+        .expect("--semantic-batch-size must be an integer");
+    let intra_threads = argument_value(args, "--semantic-intra-threads").map(|value| {
+        let threads = value
+            .parse::<usize>()
+            .expect("--semantic-intra-threads must be a positive integer");
+        assert!(threads > 0, "--semantic-intra-threads must be positive");
+        threads
+    });
+    let length_bucketed = argument_value(args, "--semantic-length-bucketed")
+        .map_or(false, |value| {
+            matches!(value.as_str(), "1" | "true" | "yes")
+        });
+    let execution_provider = semantic_execution_provider(args);
+    let verbose_ort = args.iter().any(|arg| arg == "--semantic-verbose-ort");
+    configure_ort_verbose_logging(verbose_ort)
+        .unwrap_or_else(|error| panic!("configure verbose ONNX Runtime logging: {error}"));
+    let diagnostics = semantic_runtime_diagnostics(execution_provider)
+        .unwrap_or_else(|error| panic!("inspect semantic runtime: {error}"));
+    eprintln!(
+        "semantic-runtime: {}",
+        serde_json::to_string(&diagnostics).expect("serialize semantic runtime diagnostics")
+    );
+
+    let suite: EvaluationSuite =
+        serde_json::from_str(&fs::read_to_string(&suite_path).unwrap_or_else(|error| {
+            panic!("read bake-off suite {}: {error}", suite_path.display())
+        }))
+        .unwrap_or_else(|error| panic!("parse bake-off suite {}: {error}", suite_path.display()));
+    let config: BakeoffConfig =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap_or_else(|error| {
+            panic!("read bake-off config {}: {error}", config_path.display())
+        }))
+        .unwrap_or_else(|error| panic!("parse bake-off config {}: {error}", config_path.display()));
+    assert_eq!(config.schema, 1, "unsupported bake-off config schema");
+    assert_eq!(
+        config.candidates.len(),
+        4,
+        "bake-off must contain four candidates"
+    );
+    let (chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact_root));
+    let manifest = inspect_manifest(&active_manifest_path(&artifact_root))
+        .unwrap_or_else(|error| panic!("inspect bake-off artifact: {error}"));
+    let corpus_documents = manifest.corpus.documents.len();
+    let chunk_ids = chunks
+        .iter()
+        .map(|chunk| chunk.chunk_id.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    suite
+        .validate_for_corpus(
+            &corpus_digest.to_string(),
+            corpus_documents,
+            chunks.len(),
+            &chunk_ids,
+        )
+        .unwrap_or_else(|error| panic!("validate bake-off suite: {error}"));
+    assert_eq!(config.corpus_digest, corpus_digest.to_string());
+    assert_eq!(config.corpus_documents, corpus_documents);
+    assert_eq!(config.corpus_chunks, chunks.len());
+
+    let generation = artifact_root
+        .join("generations")
+        .join(corpus_digest.to_string());
+    let lexical = LexicalIndex::open_artifact(&generation.join("lexical.json"))
+        .unwrap_or_else(|error| panic!("open bake-off lexical artifact: {error}"));
+    let chunks_by_id = chunks
+        .iter()
+        .cloned()
+        .map(|chunk| (chunk.chunk_id.clone(), chunk))
+        .collect::<BTreeMap<_, _>>();
+    let lexical_report = evaluate_suite_with_mode(
+        &suite.queries,
+        EvaluationMode::Lexical,
+        Vec::new(),
+        |query| {
+            lexical
+                .search(query, &LexicalFilters::default(), 50)
+                .unwrap_or_else(|error| panic!("lexical bake-off search: {error}"))
+                .into_iter()
+                .flat_map(|hit| chunk_result_ids(&hit.chunk))
+                .collect()
+        },
+    );
+    let peak_rss = parse_peak_rss(args);
+    let mut warnings = Vec::new();
+    if peak_rss.is_empty() {
+        warnings.push(
+            "peak RSS is externally measured; pass --peak-rss-bytes name=bytes,... to attach it"
+                .into(),
+        );
+    }
+    let query_texts = suite
+        .queries
+        .iter()
+        .map(|query| query.text.clone())
+        .collect::<Vec<_>>();
+    let embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
+    let mut candidates = Vec::with_capacity(config.candidates.len());
+    for candidate in config.candidates {
+        let model_dir = model_root.join(&candidate.directory);
+        let model_path = model_dir.join("model.onnx");
+        let model_bytes = fs::metadata(&model_path)
+            .unwrap_or_else(|error| panic!("inspect {}: {error}", model_path.display()))
+            .len();
+        assert_eq!(
+            model_bytes, candidate.onnx_bytes,
+            "ONNX byte count mismatch for {}",
+            candidate.name
+        );
+        let actual_digest = ContentDigest::of(
+            &fs::read(&model_path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", model_path.display())),
+        )
+        .to_string();
+        assert_eq!(
+            actual_digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&actual_digest),
+            candidate.onnx_sha256,
+            "ONNX SHA-256 mismatch for {}",
+            candidate.name
+        );
+        let initialization_started = std::time::Instant::now();
+        let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
+            &model_dir,
+            Some(batch_size),
+            embedding_profile(&candidate.model_id),
+            intra_threads,
+            execution_provider,
+        )
+        .unwrap_or_else(|error| panic!("load bake-off candidate {}: {error}", candidate.name));
+        provider.set_length_bucketed(length_bucketed);
+        let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
+            u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        );
+        let (mut benchmark, vector) = benchmark_semantic_with_artifact(
+            &mut provider,
+            &chunks,
+            &query_texts,
+            &candidate.model_id,
+            &candidate.model_revision,
+            &corpus_digest,
+            &[5, 10, 20, 50],
+            warmup,
+            repetitions,
+        )
+        .unwrap_or_else(|error| panic!("benchmark bake-off candidate {}: {error}", candidate.name));
+        benchmark.cold_initialization = Some(initialization);
+        benchmark.intra_threads = intra_threads;
+        benchmark.length_bucketed = length_bucketed;
+        benchmark.token_statistics = Some(
+            provider
+                .token_statistics(&embedding_texts)
+                .unwrap_or_else(|error| {
+                    panic!("measure token statistics for {}: {error}", candidate.name)
+                }),
+        );
+        benchmark.peak_rss_bytes = peak_rss.get(&candidate.name).copied();
+        let encoded = vector
+            .encode()
+            .unwrap_or_else(|error| panic!("encode vectors for {}: {error}", candidate.name));
+        benchmark.vector_artifact_sha256 = Some(ContentDigest::of(&encoded).to_string());
+        let semantic = evaluate_provider(
+            &suite.queries,
+            EvaluationMode::Semantic,
+            &lexical,
+            &chunks_by_id,
+            &vector,
+            &mut provider,
+        );
+        let hybrid = evaluate_provider(
+            &suite.queries,
+            EvaluationMode::Hybrid,
+            &lexical,
+            &chunks_by_id,
+            &vector,
+            &mut provider,
+        );
+        candidates.push(BakeoffCandidateReport {
+            candidate,
+            benchmark,
+            semantic,
+            hybrid,
+        });
+    }
+    let machine = candidates
+        .first()
+        .map(|candidate| candidate.benchmark.machine.clone())
+        .expect("bake-off candidates are nonempty");
+    let report = BakeoffReport {
+        schema: 1,
+        suite_id: suite.suite_id,
+        corpus_digest,
+        corpus_documents,
+        corpus_chunks: chunks.len(),
+        lexical: lexical_report,
+        candidates,
+        machine,
+        warnings,
+    };
+    let json = serde_json::to_string_pretty(&report).expect("serialize bake-off report");
+    let markdown = report.to_markdown();
+    if let Some(path) = argument_value(args, "--json-out") {
+        fs::write(&path, &json)
+            .unwrap_or_else(|error| panic!("write bake-off JSON {path}: {error}"));
+    }
+    if let Some(path) = argument_value(args, "--markdown-out") {
+        fs::write(&path, &markdown)
+            .unwrap_or_else(|error| panic!("write bake-off Markdown {path}: {error}"));
+    }
+    match format.as_str() {
+        "json" => println!("{json}"),
+        "markdown" => print!("{markdown}"),
+        other => panic!("unsupported bake-off format {other:?}; use json or markdown"),
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn evaluate_provider(
+    queries: &[EvaluationQuery],
+    mode: EvaluationMode,
+    lexical: &LexicalIndex,
+    chunks: &BTreeMap<ChunkId, Chunk>,
+    vector: &VectorArtifact,
+    provider: &mut FastEmbedProvider,
+) -> EvaluationReport {
+    evaluate_suite_with_mode(queries, mode, Vec::new(), |query| {
+        let lexical_hits = if mode == EvaluationMode::Hybrid {
+            lexical
+                .search(query, &LexicalFilters::default(), 50)
+                .unwrap_or_else(|error| panic!("lexical provider search: {error}"))
+        } else {
+            Vec::new()
+        };
+        let query_vector = provider
+            .embed_query(&vesc_knowledge_index::semantic_query_text(query))
+            .unwrap_or_else(|error| panic!("embed evaluation query: {error}"));
+        let semantic_hits = vector
+            .search(&query_vector, 50)
+            .unwrap_or_else(|error| panic!("search evaluation vectors: {error}"));
+        if mode == EvaluationMode::Semantic {
+            semantic_hits
+                .into_iter()
+                .filter_map(|hit| chunks.get(&hit.chunk_id))
+                .flat_map(chunk_result_ids)
+                .collect()
+        } else {
+            fuse_candidates(
+                &lexical_hits,
+                &semantic_hits,
+                chunks,
+                FusionConfig {
+                    limit: 50,
+                    lexical_floor: true,
+                    ..FusionConfig::default()
+                },
+            )
+            .into_iter()
+            .flat_map(|hit| chunk_result_ids(&hit.chunk))
+            .collect()
+        }
+    })
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn parse_peak_rss(args: &[String]) -> BTreeMap<String, u64> {
+    argument_value(args, "--peak-rss-bytes")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|entry| {
+                    let (name, bytes) = entry
+                        .split_once('=')
+                        .unwrap_or_else(|| panic!("--peak-rss-bytes entries must be name=bytes"));
+                    (
+                        name.to_owned(),
+                        bytes.parse::<u64>().unwrap_or_else(|error| {
+                            panic!("invalid peak RSS bytes {bytes}: {error}")
+                        }),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn run_benchmark(args: &[String]) {
     let suite_path = argument_value(args, "--suite")
         .map(PathBuf::from)
@@ -853,12 +1195,7 @@ fn run_benchmark(args: &[String]) {
         );
         return;
     }
-    let raw = fs::read_to_string(&suite_path).unwrap_or_else(|error| {
-        panic!("read benchmark suite {}: {error}", suite_path.display());
-    });
-    let queries: Vec<EvaluationQuery> = serde_json::from_str(&raw).unwrap_or_else(|error| {
-        panic!("parse benchmark suite {}: {error}", suite_path.display());
-    });
+    let queries = read_evaluation_queries(&suite_path);
     let texts: Vec<_> = queries.into_iter().map(|query| query.text).collect();
     let report = benchmark_lexical(artifact.as_deref(), &texts, warmup, repetitions)
         .unwrap_or_else(|error| panic!("run lexical benchmark: {error}"));
@@ -957,12 +1294,7 @@ fn run_semantic_benchmark(
                 .expect("--limits must be comma-separated integers")
         })
         .collect::<Vec<_>>();
-    let raw = fs::read_to_string(suite_path).unwrap_or_else(|error| {
-        panic!("read benchmark suite {}: {error}", suite_path.display());
-    });
-    let queries: Vec<EvaluationQuery> = serde_json::from_str(&raw).unwrap_or_else(|error| {
-        panic!("parse benchmark suite {}: {error}", suite_path.display());
-    });
+    let queries = read_evaluation_queries(suite_path);
     let texts = queries
         .into_iter()
         .map(|query| query.text)
@@ -1205,6 +1537,19 @@ fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn read_evaluation_queries(path: &Path) -> Vec<EvaluationQuery> {
+    let raw = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read evaluation suite {}: {error}", path.display()));
+    if raw.trim_start().starts_with('{') {
+        serde_json::from_str::<EvaluationSuite>(&raw)
+            .unwrap_or_else(|error| panic!("parse evaluation suite {}: {error}", path.display()))
+            .queries
+    } else {
+        serde_json::from_str::<Vec<EvaluationQuery>>(&raw)
+            .unwrap_or_else(|error| panic!("parse evaluation suite {}: {error}", path.display()))
+    }
 }
 
 fn argument_value(args: &[String], name: &str) -> Option<String> {

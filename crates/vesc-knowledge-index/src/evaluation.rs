@@ -420,7 +420,9 @@ pub fn evaluate_query_with_hits(
             && ranked_ids
                 .first()
                 .is_some_and(|id| query.relevant.get(id).is_some_and(|value| *value == 2)),
-        returned: ranked_ids.iter().take(5).cloned().collect(),
+        // Keep enough of the ranking to independently recompute recall@10,
+        // MRR@10, and explain rank changes without rerunning the provider.
+        returned: ranked_ids.iter().take(50).cloned().collect(),
     }
 }
 

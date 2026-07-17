@@ -196,6 +196,8 @@ pub struct BakeoffCandidateSpec {
     /// Relative directory below the operator-provided model root.
     pub directory: String,
     pub quantization: String,
+    pub onnx_sha256: String,
+    pub onnx_bytes: u64,
 }
 
 /// Quality and runtime evidence for one bake-off candidate.
