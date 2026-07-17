@@ -402,9 +402,7 @@ impl SearchVescKnowledgeResponse {
 }
 
 fn response_exceeds_budget(response: &SearchVescKnowledgeResponse, budget: usize) -> bool {
-    serde_json::to_vec(response)
-        .map(|bytes| bytes.len() > budget)
-        .unwrap_or(true)
+    serde_json::to_vec(response).map_or(true, |bytes| bytes.len() > budget)
 }
 
 fn compact_result(result: &mut SearchVescKnowledgeResult) {
