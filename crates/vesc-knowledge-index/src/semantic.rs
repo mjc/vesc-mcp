@@ -21,18 +21,18 @@ pub const DEFAULT_SEMANTIC_BATCH_SIZE: usize = 8;
 ///
 /// Apple Silicon M1 machines expose eight logical CPUs. Other hosts use the
 /// process CPU allowance, which is twelve on the Ryzen 5 8600G test host.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[must_use]
 pub const fn default_semantic_intra_threads() -> usize {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        8
-    }
-    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    {
-        std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1)
-    }
+    8
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[must_use]
+pub fn default_semantic_intra_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
