@@ -208,6 +208,36 @@ was stopped before completion because its 8,192-token profile produced an
 unboundedly expensive working set on this CPU. It is not a valid throughput
 result and should not be compared with the BGE/Arctic sample results.
 
+### Jina long-sequence memory investigation
+
+The corrected 2,869-document / 13,720-chunk corpus was measured with the
+pinned Jina model's tokenizer before attempting another full inference run.
+The configured tokenizer reported 35,144,402 real tokens, 38,277,069
+untruncated tokens, 1,088 chunks truncated at the model's 8,192-token limit,
+and p95/max configured lengths of 8,192. Lowering Jina's sequence cap would
+therefore change the current truncation behavior and is not a quality-neutral
+fix.
+
+The first bounded inference probe used 256 representative chunks, batch 8,
+12 intra-op threads, explicit CPU, and stable length bucketing. It was stopped
+at 2:27 after GNU `time -v` observed 16,756,248 kB peak RSS. Disabling the CPU
+arena did not prevent this growth; disabling ORT memory-pattern caching in the
+vendored FastEmbed session builder also did not prevent it. Neither process
+was kernel-OOM-killed, and neither produced a valid report.
+
+The isolating probe selected one longest chunk at batch 1. That single input
+contained 8,192 configured tokens (9,563 untruncated), took 26.484 s of
+provider time, and reached 13,662,436 kB peak RSS. The ONNX graph has 12
+transformer layers, 12 attention heads, hidden size 768, and dynamic batch and
+sequence dimensions; its attention workspace is therefore intrinsically
+quadratic in the 8,192-token sequence. This is model/runtime working-set
+pressure, not a retained Rust vector or artifact allocation.
+
+Jina is consequently not a safe full-corpus candidate on Tali under the
+current FastEmbed/CPU runtime. Do not launch another unbounded Jina run until
+an alternate graph/runtime or an explicitly quality-approved long-chunk policy
+has been measured.
+
 ## Padding and length bucketing
 
 The sample contains 439,680 real tokens. Source-order batch 8 pads to 524,288
