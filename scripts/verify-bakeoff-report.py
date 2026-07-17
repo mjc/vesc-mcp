@@ -116,17 +116,26 @@ def verify_report(name: str, report: dict, suite_queries: list[dict]) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) not in (2, 3):
-        print(f"usage: {sys.argv[0]} REPORT.json [SUITE.json]", file=sys.stderr)
+    if len(sys.argv) not in (2, 3, 4):
+        print(
+            f"usage: {sys.argv[0]} REPORT.json [SUITE.json] [CANDIDATES.json]",
+            file=sys.stderr,
+        )
         return 2
     report_path = Path(sys.argv[1])
     suite_path = (
         Path(sys.argv[2])
-        if len(sys.argv) == 3
+        if len(sys.argv) >= 3
         else Path("tests/evaluation/v2/queries.json")
+    )
+    config_path = (
+        Path(sys.argv[3])
+        if len(sys.argv) == 4
+        else Path("tests/benchmark/bakeoff-models.json")
     )
     report = json.loads(report_path.read_text())
     suite = json.loads(suite_path.read_text())
+    config = json.loads(config_path.read_text())
     if report["schema"] != 1:
         raise AssertionError("unsupported bake-off report schema")
     if report["suite_id"] != suite["suite_id"]:
@@ -141,12 +150,44 @@ def main() -> int:
     verify_report("lexical", report["lexical"], suite_queries)
     if len(report["candidates"]) != 4:
         raise AssertionError("bake-off report must contain four candidates")
+    expected_candidates = {
+        candidate["name"]: candidate for candidate in config["candidates"]
+    }
+    if set(expected_candidates) != {
+        candidate["candidate"]["name"] for candidate in report["candidates"]
+    }:
+        raise AssertionError("report candidates differ from the pinned candidate config")
     names = set()
     for candidate in report["candidates"]:
-        name = candidate["candidate"]["name"]
+        identity = candidate["candidate"]
+        name = identity["name"]
         if name in names:
             raise AssertionError(f"duplicate candidate {name}")
         names.add(name)
+        expected = expected_candidates[name]
+        for field in (
+            "model_id",
+            "model_revision",
+            "directory",
+            "quantization",
+            "onnx_sha256",
+            "onnx_bytes",
+        ):
+            if identity[field] != expected[field]:
+                raise AssertionError(
+                    f"{name}: {field} differs from pinned candidate config"
+                )
+        benchmark = candidate["benchmark"]
+        if benchmark["model_id"] != identity["model_id"]:
+            raise AssertionError(f"{name}: benchmark model identity differs")
+        if benchmark["model_revision"] != identity["model_revision"]:
+            raise AssertionError(f"{name}: benchmark revision differs")
+        if benchmark["corpus_digest"] != report["corpus_digest"]:
+            raise AssertionError(f"{name}: benchmark corpus digest differs")
+        if benchmark["corpus_chunks"] != report["corpus_chunks"]:
+            raise AssertionError(f"{name}: benchmark chunk count differs")
+        if benchmark["vector_count"] != report["corpus_chunks"]:
+            raise AssertionError(f"{name}: vector count does not cover the corpus")
         verify_report(f"{name}.semantic", candidate["semantic"], suite_queries)
         verify_report(f"{name}.hybrid", candidate["hybrid"], suite_queries)
     print(f"verified {len(report['candidates'])} candidates and lexical control")
