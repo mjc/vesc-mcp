@@ -194,3 +194,8 @@ Remaining validation:
    and bucketed builds.
 3. Run one integrated before/after build with the new opt-in policy and report
    external peak RSS before making it the default.
+
+The full 13,689-vector semantic build was started with the pinned model and
+production policy, then stopped after 485 s because the M1 host was on battery.
+It produced no semantic artifact or quality result; resume it on AC power or on
+Tali after the pinned source checkouts are available there.
