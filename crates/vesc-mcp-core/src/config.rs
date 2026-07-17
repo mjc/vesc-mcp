@@ -248,6 +248,7 @@ fn read_env_overrides() -> EnvOverrides {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
     let paths = file.paths.as_ref();
     let features = file.features.as_ref();

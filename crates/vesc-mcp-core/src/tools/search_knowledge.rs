@@ -877,13 +877,13 @@ fn reap_idle_semantic_model() {
     let mut state = cache
         .state
         .lock()
-        .unwrap_or_else(|error| error.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
         let Some(entry) = state.entry.as_ref() else {
             state = cache
                 .wake
                 .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             continue;
         };
         let remaining = entry.idle_timeout.saturating_sub(entry.last_used.elapsed());
@@ -894,7 +894,7 @@ fn reap_idle_semantic_model() {
         let (next, _) = cache
             .wake
             .wait_timeout(state, remaining)
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state = next;
     }
 }

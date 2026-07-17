@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "semantic-fastembed-online")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "semantic-fastembed")]
+use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
+#[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::{
     BakeoffCandidateReport, BakeoffReport, SemanticBenchmarkMatrixReport, SemanticBenchmarkReport,
     benchmark_semantic, benchmark_semantic_with_artifact,
 };
-use vesc_knowledge_index::benchmark::{BakeoffCandidateSpec, BenchmarkReport, benchmark_lexical};
+use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
 #[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
 use vesc_knowledge_index::build_git_artifacts_with_provider;
 use vesc_knowledge_index::evaluation::{
@@ -121,14 +123,13 @@ fn run_build_default(args: &[String]) {
         #[cfg(feature = "semantic-fastembed")]
         {
             let batch_size = argument_value(args, "--semantic-batch-size")
-                .map(|value| {
+                .map_or(DEFAULT_SEMANTIC_BATCH_SIZE, |value| {
                     value
                         .parse::<usize>()
                         .expect("--semantic-batch-size must be an integer")
-                })
-                .unwrap_or(DEFAULT_SEMANTIC_BATCH_SIZE);
+                });
             let intra_threads = argument_value(args, "--semantic-intra-threads")
-                .map(|value| {
+                .map_or_else(default_semantic_intra_threads, |value| {
                     let threads = value
                         .parse::<usize>()
                         .expect("--semantic-intra-threads must be a positive integer");
@@ -137,10 +138,9 @@ fn run_build_default(args: &[String]) {
                         "--semantic-intra-threads must be a positive integer"
                     );
                     threads
-                })
-                .unwrap_or_else(default_semantic_intra_threads);
+                });
             let length_bucketed = argument_value(args, "--semantic-length-bucketed")
-                .map_or(true, |value| matches!(value.as_str(), "1" | "true" | "yes"));
+                .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
             let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
                 &PathBuf::from(model_dir),
                 Some(batch_size),
@@ -383,15 +383,17 @@ fn run_build(args: &[String]) {
     .expect("valid source revision");
     let specs = vesc_mcp_source_specs();
     let model_dir = argument_value(args, "--semantic-model-dir");
-    let semantic_batch_size = argument_value(args, "--semantic-batch-size")
-        .map(|value| {
+    let semantic_batch_size = argument_value(args, "--semantic-batch-size").map_or(
+        DEFAULT_SEMANTIC_BATCH_SIZE,
+        |value| {
             value
                 .parse::<usize>()
                 .expect("--semantic-batch-size must be an integer")
-        })
-        .unwrap_or(DEFAULT_SEMANTIC_BATCH_SIZE);
-    let semantic_intra_threads = argument_value(args, "--semantic-intra-threads")
-        .map(|value| {
+        },
+    );
+    let semantic_intra_threads = argument_value(args, "--semantic-intra-threads").map_or_else(
+        default_semantic_intra_threads,
+        |value| {
             let threads = value
                 .parse::<usize>()
                 .expect("--semantic-intra-threads must be a positive integer");
@@ -400,10 +402,10 @@ fn run_build(args: &[String]) {
                 "--semantic-intra-threads must be a positive integer"
             );
             threads
-        })
-        .unwrap_or_else(default_semantic_intra_threads);
+        },
+    );
     let semantic_length_bucketed = argument_value(args, "--semantic-length-bucketed")
-        .map_or(true, |value| matches!(value.as_str(), "1" | "true" | "yes"));
+        .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     let summary = if let Some(model_dir) = model_dir {
         let model_id = argument_value(args, "--semantic-model-id")
             .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
@@ -847,9 +849,10 @@ fn run_bakeoff(args: &[String]) {
 #[cfg(feature = "semantic-fastembed")]
 #[allow(clippy::too_many_lines)]
 fn run_bakeoff_with_fastembed(args: &[String]) {
-    let artifact_root = argument_value(args, "--artifact")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| panic!("--artifact is required for a bake-off"));
+    let artifact_root = argument_value(args, "--artifact").map_or_else(
+        || panic!("--artifact is required for a bake-off"),
+        PathBuf::from,
+    );
     assert!(
         artifact_root.is_dir(),
         "--artifact must name a full artifact directory"
@@ -889,9 +892,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         threads
     });
     let length_bucketed = argument_value(args, "--semantic-length-bucketed")
-        .map_or(false, |value| {
-            matches!(value.as_str(), "1" | "true" | "yes")
-        });
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     let execution_provider = semantic_execution_provider(args);
     let verbose_ort = args.iter().any(|arg| arg == "--semantic-verbose-ort");
     configure_ort_verbose_logging(verbose_ort)
@@ -947,7 +948,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         .collect::<std::collections::BTreeSet<_>>();
     suite
         .validate_for_corpus(
-            &corpus_digest.to_string(),
+            corpus_digest.as_ref(),
             corpus_documents,
             chunks.len(),
             &chunk_ids,
@@ -1591,23 +1592,19 @@ fn semantic_execution_provider(args: &[String]) -> SemanticExecutionProvider {
         "cpu" => SemanticExecutionProvider::Cpu,
         "coreml" => SemanticExecutionProvider::CoreMl,
         "migraphx" => {
-            let device_id = argument_value(args, "--semantic-device-id")
-                .map(|value| {
-                    value
-                        .parse::<i32>()
-                        .expect("--semantic-device-id must be a signed integer")
-                })
-                .unwrap_or(0);
+            let device_id = argument_value(args, "--semantic-device-id").map_or(0, |value| {
+                value
+                    .parse::<i32>()
+                    .expect("--semantic-device-id must be a signed integer")
+            });
             SemanticExecutionProvider::Migraphx { device_id }
         }
         "rocm" => {
-            let device_id = argument_value(args, "--semantic-device-id")
-                .map(|value| {
-                    value
-                        .parse::<i32>()
-                        .expect("--semantic-device-id must be a signed integer")
-                })
-                .unwrap_or(0);
+            let device_id = argument_value(args, "--semantic-device-id").map_or(0, |value| {
+                value
+                    .parse::<i32>()
+                    .expect("--semantic-device-id must be a signed integer")
+            });
             SemanticExecutionProvider::Rocm { device_id }
         }
         other => {

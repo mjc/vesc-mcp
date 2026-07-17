@@ -113,7 +113,7 @@ pub struct GitIngestionObservations {
 }
 
 impl GitIngestionObservations {
-    pub(crate) fn accumulate(&mut self, other: &Self) {
+    pub(crate) const fn accumulate(&mut self, other: &Self) {
         self.tree_walk_us = self.tree_walk_us.saturating_add(other.tree_walk_us);
         self.candidate_sort_us = self
             .candidate_sort_us

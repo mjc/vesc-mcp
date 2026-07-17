@@ -22,7 +22,7 @@ pub const DEFAULT_SEMANTIC_BATCH_SIZE: usize = 8;
 /// Apple Silicon M1 machines expose eight logical CPUs. Other hosts use the
 /// process CPU allowance, which is twelve on the Ryzen 5 8600G test host.
 #[must_use]
-pub fn default_semantic_intra_threads() -> usize {
+pub const fn default_semantic_intra_threads() -> usize {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         8
@@ -82,7 +82,7 @@ pub enum Pooling {
 
 /// Contract for whether a provider's output vectors are already normalized.
 ///
-/// `Guaranteed` is reserved for an explicitly normalized FastEmbed profile or
+/// `Guaranteed` is reserved for an explicitly normalized `FastEmbed` profile or
 /// a model implementation covered by a normalization test. The artifact
 /// builder still validates every vector before accepting that contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,6 +235,11 @@ pub trait EmbeddingProvider {
     ///
     /// Providers may use bounded tokenizer work to group similar-length
     /// inputs. The artifact builder still restores chunk-ID order afterward.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when provider-specific ordering cannot be
+    /// computed.
     fn inference_order(&mut self, _chunks: &[Chunk]) -> Result<Option<Vec<usize>>, EmbeddingError> {
         Ok(None)
     }
@@ -578,7 +583,7 @@ impl FastEmbedProvider {
     }
 
     /// Enables bounded token-length bucketing for subsequent document builds.
-    pub fn set_length_bucketed(&mut self, enabled: bool) {
+    pub const fn set_length_bucketed(&mut self, enabled: bool) {
         self.length_bucketed = enabled;
     }
 
@@ -689,8 +694,13 @@ impl FastEmbedProvider {
         Self::new(model, batch_size, profile)
     }
 
-    /// Measures the token counts and padding used by FastEmbed's configured
+    /// Measures the token counts and padding used by `FastEmbed`'s configured
     /// tokenizer, one outer provider batch at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError::EmptyInput`] for empty input or
+    /// [`EmbeddingError::Provider`] when tokenization fails.
     pub fn token_statistics(&self, texts: &[String]) -> Result<TokenStatistics, EmbeddingError> {
         if texts.is_empty() {
             return Err(EmbeddingError::EmptyInput);
@@ -771,6 +781,11 @@ impl FastEmbedProvider {
 
     /// Returns post-truncation token lengths in input order for benchmark
     /// length bucketing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError::EmptyInput`] for empty input or
+    /// [`EmbeddingError::Provider`] when tokenization fails.
     pub fn token_lengths(&self, texts: &[String]) -> Result<Vec<usize>, EmbeddingError> {
         if texts.is_empty() {
             return Err(EmbeddingError::EmptyInput);
@@ -820,7 +835,7 @@ impl FastEmbedProvider {
         (input_len > 0).then(|| self.batch_size.get().min(input_len))
     }
 
-    fn length_bucket_order(&mut self, chunks: &[Chunk]) -> Result<Vec<usize>, EmbeddingError> {
+    fn length_bucket_order(&self, chunks: &[Chunk]) -> Result<Vec<usize>, EmbeddingError> {
         let mut keyed = Vec::with_capacity(chunks.len());
         for (base, batch) in chunks.chunks(self.batch_size.get()).enumerate() {
             let texts = batch.iter().map(embedding_text).collect::<Vec<_>>();
@@ -1171,6 +1186,13 @@ impl VectorArtifact {
     ///
     /// The returned rows are always restored to ascending stable chunk ID,
     /// regardless of the order used for provider batches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the provider returns invalid ordering,
+    /// vector dimensions, non-finite or non-normalizable vectors, or when the
+    /// artifact cannot satisfy its size and schema constraints.
+    #[allow(clippy::too_many_lines)]
     pub fn from_provider_with_observations_and_order<P: EmbeddingProvider + ?Sized>(
         provider: &mut P,
         chunks: &[Chunk],
@@ -1277,7 +1299,7 @@ impl VectorArtifact {
         }
 
         let dimension = dimension.unwrap_or(0);
-        if row_offsets.iter().any(|&offset| offset == usize::MAX) {
+        if row_offsets.contains(&usize::MAX) {
             return Err(EmbeddingError::Provider(
                 "provider inference order did not cover the corpus".into(),
             ));
@@ -1961,6 +1983,7 @@ mod tests {
 
     #[test]
     #[ignore = "run explicitly when comparing finalization components"]
+    #[allow(clippy::cast_precision_loss)]
     fn vector_finalization_components_microbenchmark() {
         let mut vectors = (0..1024)
             .map(|row| vec![row as f32 + 1.0, 2.0, 3.0, 4.0])
