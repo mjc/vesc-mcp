@@ -515,6 +515,30 @@ pub struct FastEmbedProvider {
     length_bucketed: bool,
 }
 
+/// Runtime execution provider requested for a FastEmbed session.
+#[cfg(feature = "semantic-fastembed")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum SemanticExecutionProvider {
+    Auto,
+    Cpu,
+    CoreMl,
+    Rocm { device_id: i32 },
+}
+
+/// Observable ONNX Runtime/provider state used by provider benchmarks.
+#[cfg(feature = "semantic-fastembed")]
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticRuntimeDiagnostics {
+    pub ort_dylib_path: String,
+    pub ort_build_info: String,
+    pub requested_provider: String,
+    pub selected_provider: String,
+    pub selected_device: Option<i32>,
+    pub provider_availability: Vec<String>,
+    pub cpu_fallback_possible: bool,
+    pub graph_fallback_policy: String,
+}
+
 #[cfg(feature = "semantic-fastembed")]
 impl FastEmbedProvider {
     /// Wrap an initialized `FastEmbed` model.
@@ -598,6 +622,23 @@ impl FastEmbedProvider {
         profile: EmbeddingProfile,
         intra_threads: Option<usize>,
     ) -> Result<Self, EmbeddingError> {
+        Self::from_model_dir_with_profile_and_threads_and_provider(
+            root,
+            batch_size,
+            profile,
+            intra_threads,
+            SemanticExecutionProvider::Auto,
+        )
+    }
+
+    /// Load a local model with explicit ONNX Runtime provider selection.
+    pub fn from_model_dir_with_profile_and_threads_and_provider(
+        root: &std::path::Path,
+        batch_size: Option<usize>,
+        profile: EmbeddingProfile,
+        intra_threads: Option<usize>,
+        execution_provider: SemanticExecutionProvider,
+    ) -> Result<Self, EmbeddingError> {
         if profile.max_length == 0 || profile.dimension == 0 || !profile.normalize {
             return Err(EmbeddingError::Provider(
                 "FastEmbed requires a non-zero, normalized embedding profile".into(),
@@ -622,7 +663,7 @@ impl FastEmbedProvider {
         });
         let mut options = fastembed::InitOptionsUserDefined::new()
             .with_max_length(profile.max_length)
-            .with_execution_providers(semantic_execution_providers());
+            .with_execution_providers(semantic_execution_providers(execution_provider)?);
         if let Some(intra_threads) = intra_threads {
             if intra_threads == 0 {
                 return Err(EmbeddingError::Provider(
@@ -808,46 +849,150 @@ fn require_ort_runtime() -> Result<(), EmbeddingError> {
     Ok(())
 }
 
-#[cfg(all(
-    feature = "semantic-fastembed",
-    feature = "semantic-coreml",
-    target_os = "macos"
-))]
-fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
-    if std::env::var("VESC_RAG_SEMANTIC_EXECUTION_PROVIDER")
-        .ok()
-        .is_none_or(|provider| !provider.eq_ignore_ascii_case("coreml"))
-    {
-        return Vec::new();
+#[cfg(feature = "semantic-fastembed")]
+fn resolve_semantic_execution_provider(
+    requested: SemanticExecutionProvider,
+) -> SemanticExecutionProvider {
+    if !matches!(requested, SemanticExecutionProvider::Auto) {
+        return requested;
     }
-    vec![
-        ort::ep::CoreML::default()
-            .with_compute_units(ort::ep::coreml::ComputeUnits::All)
-            .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
-            .with_specialization_strategy(ort::ep::coreml::SpecializationStrategy::FastPrediction)
-            .with_low_precision_accumulation_on_gpu(true)
-            .build(),
-    ]
+
+    #[cfg(all(feature = "semantic-rocm", target_os = "linux"))]
+    {
+        return SemanticExecutionProvider::Rocm { device_id: 0 };
+    }
+    #[cfg(all(feature = "semantic-coreml", target_os = "macos"))]
+    {
+        if std::env::var("VESC_RAG_SEMANTIC_EXECUTION_PROVIDER")
+            .ok()
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("coreml"))
+        {
+            return SemanticExecutionProvider::CoreMl;
+        }
+    }
+    SemanticExecutionProvider::Cpu
 }
 
-#[cfg(all(
-    feature = "semantic-fastembed",
-    feature = "semantic-rocm",
-    target_os = "linux"
-))]
-fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
-    vec![ort::ep::ROCm::default().with_device_id(0).build()]
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_execution_providers(
+    requested: SemanticExecutionProvider,
+) -> Result<Vec<fastembed::ExecutionProviderDispatch>, EmbeddingError> {
+    let selected = resolve_semantic_execution_provider(requested);
+    match selected {
+        SemanticExecutionProvider::Auto | SemanticExecutionProvider::Cpu => Ok(Vec::new()),
+        SemanticExecutionProvider::Rocm { device_id } => {
+            #[cfg(all(feature = "semantic-rocm", target_os = "linux"))]
+            {
+                Ok(vec![
+                    ort::ep::ROCm::default()
+                        .with_device_id(device_id)
+                        .build()
+                        .error_on_failure(),
+                ])
+            }
+            #[cfg(not(all(feature = "semantic-rocm", target_os = "linux")))]
+            {
+                let _ = device_id;
+                Err(EmbeddingError::Provider(
+                    "ROCm provider requested, but this binary was not built with semantic-rocm on Linux".into(),
+                ))
+            }
+        }
+        SemanticExecutionProvider::CoreMl => {
+            #[cfg(all(feature = "semantic-coreml", target_os = "macos"))]
+            {
+                Ok(vec![
+                    ort::ep::CoreML::default()
+                        .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+                        .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+                        .with_specialization_strategy(
+                            ort::ep::coreml::SpecializationStrategy::FastPrediction,
+                        )
+                        .with_low_precision_accumulation_on_gpu(true)
+                        .build()
+                        .error_on_failure(),
+                ])
+            }
+            #[cfg(not(all(feature = "semantic-coreml", target_os = "macos")))]
+            {
+                Err(EmbeddingError::Provider(
+                    "CoreML provider requested, but this binary was not built with semantic-coreml on macOS".into(),
+                ))
+            }
+        }
+    }
 }
 
-#[cfg(all(
-    feature = "semantic-fastembed",
-    not(any(
-        all(feature = "semantic-coreml", target_os = "macos"),
-        all(feature = "semantic-rocm", target_os = "linux")
-    ))
-))]
-fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
-    Vec::new()
+#[cfg(feature = "semantic-fastembed")]
+fn provider_availability_entry<E: ort::ep::ExecutionProvider>(
+    provider: E,
+) -> Result<String, EmbeddingError> {
+    let name = provider.name();
+    let available = provider
+        .is_available()
+        .map_err(|error| EmbeddingError::Provider(format!("check {name} availability: {error}")))?;
+    Ok(format!("{name}={available}"))
+}
+
+/// Return the loaded ORT build and provider capabilities before model setup.
+#[cfg(feature = "semantic-fastembed")]
+pub fn semantic_runtime_diagnostics(
+    requested: SemanticExecutionProvider,
+) -> Result<SemanticRuntimeDiagnostics, EmbeddingError> {
+    require_ort_runtime()?;
+    let selected = resolve_semantic_execution_provider(requested);
+    let path = std::env::var_os("ORT_DYLIB_PATH")
+        .expect("ORT_DYLIB_PATH was checked above")
+        .to_string_lossy()
+        .into_owned();
+    #[allow(unused_mut)]
+    let mut provider_availability = vec![provider_availability_entry(ort::ep::CPU::default())?];
+    #[cfg(feature = "semantic-rocm")]
+    provider_availability.push(provider_availability_entry(ort::ep::ROCm::default())?);
+    #[cfg(feature = "semantic-coreml")]
+    provider_availability.push(provider_availability_entry(ort::ep::CoreML::default())?);
+
+    let (selected_provider, selected_device) = match selected {
+        SemanticExecutionProvider::Auto => ("Auto".to_string(), None),
+        SemanticExecutionProvider::Cpu => ("CPUExecutionProvider".to_string(), None),
+        SemanticExecutionProvider::CoreMl => ("CoreMLExecutionProvider".to_string(), None),
+        SemanticExecutionProvider::Rocm { device_id } => {
+            ("ROCMExecutionProvider".to_string(), Some(device_id))
+        }
+    };
+    Ok(SemanticRuntimeDiagnostics {
+        ort_dylib_path: path,
+        ort_build_info: ort::info().to_string(),
+        requested_provider: format!("{requested:?}"),
+        selected_provider,
+        selected_device,
+        provider_availability,
+        cpu_fallback_possible: !matches!(selected, SemanticExecutionProvider::Cpu),
+        graph_fallback_policy: "EP registration is fatal for explicit non-CPU requests; FastEmbed does not expose disable_cpu_fallback, so unsupported graph nodes may still fall back to CPU.".into(),
+    })
+}
+
+/// Enable verbose ORT graph/provider logging before the first session is built.
+#[cfg(feature = "semantic-fastembed")]
+pub fn configure_ort_verbose_logging(verbose: bool) -> Result<(), EmbeddingError> {
+    if !verbose {
+        return Ok(());
+    }
+    require_ort_runtime()?;
+    let logger = std::sync::Arc::new(
+        |level: ort::logging::LogLevel,
+         category: &str,
+         id: &str,
+         code_location: &str,
+         message: &str| {
+            eprintln!("ort[{level:?}] {category} {id} {code_location}: {message}");
+        },
+    );
+    ort::init().with_logger(logger).commit();
+    ort::environment::Environment::current()
+        .map_err(|error| EmbeddingError::Provider(format!("initialize ORT logging: {error}")))?
+        .set_log_level(ort::logging::LogLevel::Verbose);
+    Ok(())
 }
 
 #[cfg(feature = "semantic-fastembed")]

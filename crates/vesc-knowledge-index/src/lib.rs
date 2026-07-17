@@ -52,3 +52,8 @@ pub use semantic::{
     TokenStatistics, VectorArtifact, VectorBuildObservations, default_semantic_intra_threads,
     embedding_text, semantic_query_text,
 };
+#[cfg(feature = "semantic-fastembed")]
+pub use semantic::{
+    SemanticExecutionProvider, SemanticRuntimeDiagnostics, configure_ort_verbose_logging,
+    semantic_runtime_diagnostics,
+};

@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 git-corpus = ["dep:gix"]
-semantic-fastembed = ["dep:fastembed", "fastembed/ort-load-dynamic"]
+semantic-fastembed = ["dep:fastembed", "dep:ort", "fastembed/ort-load-dynamic", "ort/load-dynamic"]
 semantic-coreml = ["semantic-fastembed", "dep:ort", "ort/coreml"]
 semantic-rocm = ["semantic-fastembed", "dep:ort", "ort/rocm"]
 semantic-fastembed-online = ["semantic-fastembed", "fastembed/online"]

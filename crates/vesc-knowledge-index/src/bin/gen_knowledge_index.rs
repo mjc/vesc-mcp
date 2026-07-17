@@ -21,9 +21,10 @@ use vesc_knowledge_index::evaluation::{
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{
-    Chunk, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig, VectorArtifact,
-    build_allowlisted_artifacts_with_provider, build_embedded_artifacts_with_provider,
-    embedding_text, fuse_candidates,
+    Chunk, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig,
+    SemanticExecutionProvider, VectorArtifact, build_allowlisted_artifacts_with_provider,
+    build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
+    fuse_candidates, semantic_runtime_diagnostics,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
@@ -133,11 +134,12 @@ fn run_build_default(args: &[String]) {
                 .unwrap_or_else(default_semantic_intra_threads);
             let length_bucketed = argument_value(args, "--semantic-length-bucketed")
                 .map_or(true, |value| matches!(value.as_str(), "1" | "true" | "yes"));
-            let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
+            let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
                 &PathBuf::from(model_dir),
                 Some(batch_size),
                 embedding_profile(&model_id),
                 Some(intra_threads),
+                semantic_execution_provider(args),
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(length_bucketed);
@@ -402,11 +404,12 @@ fn run_build(args: &[String]) {
             });
         #[cfg(feature = "semantic-fastembed")]
         {
-            let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
+            let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
                 &PathBuf::from(model_dir),
                 Some(semantic_batch_size),
                 embedding_profile(&model_id),
                 Some(semantic_intra_threads),
+                semantic_execution_provider(args),
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(semantic_length_bucketed);
@@ -852,6 +855,16 @@ fn run_semantic_benchmark(
         .unwrap_or_else(|| panic!("--semantic-model-id is required for semantic benchmarks"));
     let model_revision = argument_value(args, "--semantic-model-revision")
         .unwrap_or_else(|| panic!("--semantic-model-revision is required for semantic benchmarks"));
+    let execution_provider = semantic_execution_provider(args);
+    let verbose_ort = args.iter().any(|arg| arg == "--semantic-verbose-ort");
+    configure_ort_verbose_logging(verbose_ort)
+        .unwrap_or_else(|error| panic!("configure verbose ONNX Runtime logging: {error}"));
+    let diagnostics = semantic_runtime_diagnostics(execution_provider)
+        .unwrap_or_else(|error| panic!("inspect semantic runtime: {error}"));
+    eprintln!(
+        "semantic-runtime: {}",
+        serde_json::to_string(&diagnostics).expect("serialize semantic runtime diagnostics")
+    );
     let batch_size = argument_value(args, "--semantic-batch-size").map(|value| {
         value
             .parse::<usize>()
@@ -927,11 +940,12 @@ fn run_semantic_benchmark(
     };
     let mut embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let initialization_started = std::time::Instant::now();
-    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
         &model_dir,
         Some(batch_sizes[0]),
         embedding_profile(&model_id),
         intra_threads,
+        execution_provider,
     )
     .unwrap_or_else(|error| panic!("load semantic model: {error}"));
     let chunks = if length_bucketed {
@@ -1162,6 +1176,31 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].clone())
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_execution_provider(args: &[String]) -> SemanticExecutionProvider {
+    let provider = argument_value(args, "--semantic-provider")
+        .unwrap_or_else(|| "auto".into())
+        .to_ascii_lowercase();
+    match provider.as_str() {
+        "auto" => SemanticExecutionProvider::Auto,
+        "cpu" => SemanticExecutionProvider::Cpu,
+        "coreml" => SemanticExecutionProvider::CoreMl,
+        "rocm" => {
+            let device_id = argument_value(args, "--semantic-device-id")
+                .map(|value| {
+                    value
+                        .parse::<i32>()
+                        .expect("--semantic-device-id must be a signed integer")
+                })
+                .unwrap_or(0);
+            SemanticExecutionProvider::Rocm { device_id }
+        }
+        other => {
+            panic!("unsupported --semantic-provider {other:?}; use auto, cpu, coreml, or rocm")
+        }
+    }
 }
 
 #[cfg(feature = "semantic-fastembed")]
