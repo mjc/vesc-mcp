@@ -216,7 +216,11 @@ The configured tokenizer reported 35,144,402 real tokens, 38,277,069
 untruncated tokens, 1,088 chunks truncated at the model's 8,192-token limit,
 and p95/max configured lengths of 8,192. Lowering Jina's sequence cap would
 therefore change the current truncation behavior and is not a quality-neutral
-fix.
+fix. The benchmark-only max-length override used during this investigation
+has been removed; perf runs select a smaller set of complete chunks instead
+of truncating their input. Full-corpus ingestion must either use the model's
+declared limit with a lossless token-aware windowing policy, or reject the
+candidate as unsafe. It must not silently discard input text.
 
 The first bounded inference probe used 256 representative chunks, batch 8,
 12 intra-op threads, explicit CPU, and stable length bucketing. It was stopped
@@ -235,8 +239,8 @@ pressure, not a retained Rust vector or artifact allocation.
 
 Jina is consequently not a safe full-corpus candidate on Tali under the
 current FastEmbed/CPU runtime. Do not launch another unbounded Jina run until
-an alternate graph/runtime or an explicitly quality-approved long-chunk policy
-has been measured.
+an alternate graph/runtime or a lossless, quality-approved long-chunk
+windowing policy has been measured.
 
 ## Padding and length bucketing
 
