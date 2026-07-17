@@ -229,6 +229,7 @@ pub struct BakeoffReport {
 impl BakeoffReport {
     /// Render the comparison table from the JSON report fields.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     pub fn to_markdown(&self) -> String {
         let mut markdown = String::new();
         writeln!(markdown, "# Embedding model bake-off").expect("write to String");
@@ -477,6 +478,11 @@ pub fn benchmark_semantic<P: EmbeddingProvider + ?Sized>(
 ///
 /// Returning the artifact prevents a bake-off from embedding the full corpus
 /// a second time solely to evaluate the candidate.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when embedding, vector construction, or search
+/// measurement fails.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
     provider: &mut P,

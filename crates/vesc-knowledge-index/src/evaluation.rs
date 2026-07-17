@@ -81,6 +81,11 @@ impl EvaluationSuite {
     /// Relevance IDs are intentionally checked against the artifact's actual
     /// chunk IDs at runtime. This prevents a plausible-looking quality report
     /// from silently evaluating a different corpus or stale judged IDs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first suite/artifact identity or judgment
+    /// mismatch.
     pub fn validate_for_corpus(
         &self,
         corpus_digest: &str,
@@ -126,8 +131,7 @@ impl EvaluationSuite {
         let categories = self.failure_categories();
         if categories != required_categories {
             return Err(format!(
-                "evaluation suite categories must be exactly {:?}, got {:?}",
-                required_categories, categories
+                "evaluation suite categories must be exactly {required_categories:?}, got {categories:?}"
             ));
         }
 
