@@ -67,7 +67,7 @@ handlers as a live server.
 
 ```bash
 cargo nextest run -p vesc-mcp-core -E 'test(tool_)'
-cargo nextest run -p vesc-domain -p vesc-mcp-core -E 'test(golden|build_native_lib)'
+cargo nextest run -p vesc-domain -p vesc-mcp-core -E 'test(golden) | test(build_native_lib)'
 cargo nextest run -p vesc-knowledge-index --features git-corpus -E 'binary(git_ingestion)'
 cargo check -p vesc-knowledge-index
 cargo check -p vesc-knowledge-index --features semantic-fastembed
