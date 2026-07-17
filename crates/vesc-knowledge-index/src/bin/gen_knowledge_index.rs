@@ -1312,6 +1312,16 @@ fn run_semantic_benchmark(
     let token_statistics_only = args
         .iter()
         .any(|arg| arg == "--semantic-token-statistics-only");
+    let longest_chunks = argument_value(args, "--semantic-longest-chunks").map(|value| {
+        let size = value
+            .parse::<usize>()
+            .expect("--semantic-longest-chunks must be a positive integer");
+        assert!(
+            size > 0,
+            "--semantic-longest-chunks must be a positive integer"
+        );
+        size
+    });
     let limits = argument_value(args, "--limits")
         .unwrap_or_else(|| "5,10,20,50".into())
         .split(',')
@@ -1356,6 +1366,28 @@ fn run_semantic_benchmark(
         });
         let chunks = indexed
             .into_iter()
+            .map(|(chunk, _)| chunk)
+            .collect::<Vec<_>>();
+        embedding_texts = chunks.iter().map(embedding_text).collect();
+        chunks
+    } else {
+        chunks
+    };
+    let chunks = if let Some(size) = longest_chunks {
+        let lengths = provider
+            .token_lengths(&embedding_texts)
+            .unwrap_or_else(|error| panic!("measure token lengths: {error}"));
+        let mut indexed = chunks.into_iter().zip(lengths).collect::<Vec<_>>();
+        indexed.sort_unstable_by(|(left_chunk, left_length), (right_chunk, right_length)| {
+            right_length
+                .cmp(left_length)
+                .then_with(|| left_chunk.path.cmp(&right_chunk.path))
+                .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
+                .then_with(|| left_chunk.chunk_id.cmp(&right_chunk.chunk_id))
+        });
+        let chunks = indexed
+            .into_iter()
+            .take(size)
             .map(|(chunk, _)| chunk)
             .collect::<Vec<_>>();
         embedding_texts = chunks.iter().map(embedding_text).collect();
