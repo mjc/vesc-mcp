@@ -909,7 +909,9 @@ fn semantic_execution_providers(
 ) -> Result<Vec<fastembed::ExecutionProviderDispatch>, EmbeddingError> {
     let selected = resolve_semantic_execution_provider(requested);
     match selected {
-        SemanticExecutionProvider::Auto | SemanticExecutionProvider::Cpu => Ok(Vec::new()),
+        SemanticExecutionProvider::Auto | SemanticExecutionProvider::Cpu => Ok(vec![
+            ort::ep::CPU::default().with_arena_allocator(false).build(),
+        ]),
         SemanticExecutionProvider::Rocm { device_id } => {
             #[cfg(all(feature = "semantic-rocm", target_os = "linux"))]
             {
