@@ -207,10 +207,12 @@
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
         };
+        # Current ONNX Runtime releases build MIGraphX for AMD. The legacy
+        # ROCm execution provider is no longer present in the upstream 1.26
+        # source, so keep this name for the shell output while using nixpkgs'
+        # supported AMD configuration.
         rocmOnnxruntime = if pkgs.stdenv.isLinux then
-          (pkgs.onnxruntime.override { rocmSupport = true; }).overrideAttrs (old: {
-            cmakeFlags = (old.cmakeFlags or [ ]) ++ [ "-Donnxruntime_USE_ROCM=ON" ];
-          })
+          pkgs.onnxruntime.override { rocmSupport = true; }
         else null;
       in {
         packages.default = packageFor system;
@@ -248,7 +250,7 @@
               export ORT_DYLIB_PATH="${rocmOnnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
               export ORT_MIGRAPHX_MODEL_CACHE_PATH="$PWD/target/provider-bench/migraphx-cache"
               mkdir -p "$ORT_MIGRAPHX_MODEL_CACHE_PATH"
-              echo "vesc-mcp ROCm shell; build with --features semantic-fastembed,semantic-rocm"
+              echo "vesc-mcp AMD shell; build with --features semantic-fastembed,semantic-migraphx"
             '';
           };
         };

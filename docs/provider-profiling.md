@@ -1,6 +1,6 @@
 # FastEmbed provider profiling
 
-Status: initial Tali CPU/ROCm study, 2026-07-16.
+Status: initial Tali CPU/AMD-backend study, 2026-07-16.
 
 The Rust indexing phases are not the current optimization target. The
 measurements below use a deterministic 1,024-chunk sample from the 13,720-chunk
@@ -11,7 +11,7 @@ reported by the benchmark.
 ## Test system
 
 - Host: `mjc@tali`, Ryzen 5 8600G, 12 logical CPUs, Radeon RX 5700 XT.
-- Shell: `nix develop` for CPU and `nix develop .#rocm` for ROCm.
+- Shell: `nix develop` for CPU and `nix develop .#rocm` for AMD backends.
 - Model revision: `ea104dacec62c0de699686887e3f920caeb4f3e3`.
 - CPU model for the primary sweep: `Xenova/bge-small-en-v1.5` using the pinned
   `model_quantized.onnx` file.
@@ -101,16 +101,40 @@ still requires building matching vector artifacts for each candidate.
 The INT8 result is promising but is not a production recommendation until a
 matching artifact and retrieval-quality comparison are complete.
 
-## ROCm smoke result
+## AMD provider result
 
-The ROCm shell and `semantic-rocm` build work on Tali. A 1,024-chunk,
-length-bucketed batch-8 run measured 34.392 s provider time and 1.28 GiB peak
-RSS. A batch-64 run measured 36.759 s and 5.07 GiB. The RX 5700 XT
-`gpu_busy_percent` counter averaged 1.1% and peaked at 12% during the batch-8
-run, so this configuration does not demonstrate useful discrete-GPU
-acceleration. CPU batch 8 / 12 threads remains faster or equal with lower
-uncertainty. Keep ROCm available for further EP diagnostics, but do not make
-it the default.
+The first `nix develop .#rocm` shell used nixpkgs ONNX Runtime 1.26 with
+`rocmSupport = true`. That output contained MIGraphX but not the ROCm EP:
+there was no `libonnxruntime_providers_rocm.so`, diagnostics reported
+`ROCMExecutionProvider=false`, and explicit ROCm registration failed before
+device selection. Device 0 (RX 5700 XT) and device 1 (Radeon 760M iGPU) both
+failed this way. The failure is fatal by design; neither run was allowed to
+silently fall back to CPU.
+
+The flake uses nixpkgs' supported AMD configuration and exposes the actual
+MIGraphX backend separately. The resulting ORT 1.26 output reports
+`MIGraphXExecutionProvider=true`; the shell also provides a writable
+`ORT_MIGRAPHX_MODEL_CACHE_PATH` for compiled graphs. The fixed matrix below
+uses the same 1,024-chunk sample, batch 8, 12 intra-op threads, and length
+bucketing. Provider time excludes model initialization; external elapsed time
+and peak RSS come from GNU `time -v`.
+
+| Runtime / device | Selected provider | Provider p50 | Provider chunks/s | External elapsed | Peak RSS |
+|---|---|---:|---:|---:|---:|
+| CPU / 8600G | `CPUExecutionProvider` | 39.510 s | 25.92 | 42.46 s | 1,338,976 kB |
+| ROCm / RX 5700 XT `gfx1010` | registration failed | — | — | 3.38 s | 837,552 kB |
+| ROCm / Radeon 760M `gfx1103` | registration failed | — | — | smoke failed | — |
+| MIGraphX / RX 5700 XT `gfx1010` | `MIGraphXExecutionProvider`, device 0 | 71.012 s | 14.42 | 152.82 s | 2,819,364 kB |
+| MIGraphX / Radeon 760M `gfx1103` | `MIGraphXExecutionProvider`, device 1 | 80.769 s | 12.68 | 163.80 s | 2,805,884 kB |
+
+The sysfs counters confirmed device routing during the MIGraphX runs: device 0
+made `card1` (`1002:731f`, RX 5700 XT) busy, while device 1 made `card0`
+(`1002:15bf`, Radeon 760M) busy. Both AMD backends are materially slower than
+the 8600G CPU baseline for this quantized BGE workload, and both retain roughly
+2.7 GiB peak RSS. Keep CPU as the production default. Treat ROCm as an
+explicit diagnostic failure until a ROCm-enabled ORT <= 7.0-compatible build
+is intentionally supplied; do not call the MIGraphX measurements ROCm
+measurements.
 
 ## Current recommendation
 
