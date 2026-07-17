@@ -15,10 +15,11 @@ which is offline, deterministic, and strongest for exact firmware symbols.
 - Keep CPU as the default execution provider. Tested accelerator paths did
   not improve this workload enough to justify their additional runtime and
   memory requirements.
-- Keep the semantic build batch size at 8 by passing
-  `--semantic-batch-size 8` to `gen-knowledge-index build`. This is a build-time
-  command option, not a server configuration key. Larger batches provided
-  small throughput gains at a steep memory cost.
+- Keep the semantic build batch size at 8 and enable stable length bucketing by
+  passing `--semantic-batch-size 8 --semantic-length-bucketed true` to
+  `gen-knowledge-index build`. These are build-time command options, not server
+  configuration keys. Larger batches provided small throughput gains at a
+  steep memory cost.
 - Use `auto` for graceful fallback to lexical results. Use explicit `hybrid`
   only when a capability error should stop the request.
 
@@ -36,6 +37,12 @@ artifact manifest.
 Full-corpus semantic ingestion must not silently truncate input. It must use
 the model's declared limit with lossless token-aware windowing or reject the
 candidate. Diagnostic probes may select fewer complete chunks instead.
+
+The registered model profile fixes the model's input length. The builder and
+benchmark do not provide an input-length override because changing it can
+invalidate the model contract. Use the token-statistics and longest-input
+diagnostics in [testing.md](testing.md#semantic-diagnostics) to investigate
+large inputs without changing that contract.
 
 ## What to record when comparing providers
 

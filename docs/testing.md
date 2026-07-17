@@ -122,7 +122,7 @@ cargo run --release -p vesc-mcp-server -- \
 This measures the search handler and JSON serialization, not MCP transport.
 Record the operating system, architecture, corpus digest, warmup and
 repetition counts, and memory measurement method with any performance claim.
-Never record user names, host names, or personal paths.
+Never record user names, hostnames, or personal paths.
 
 ## Semantic evaluation
 
@@ -142,6 +142,36 @@ Keep run-specific results in CI artifacts or the task tracker rather than
 committing workstation-specific reports. See
 [provider-profiling.md](provider-profiling.md) for the current provider
 recommendation.
+
+### Semantic diagnostics
+
+Before a costly semantic run, inspect the corpus's token lengths without
+performing inference:
+
+```bash
+cargo run --release -p vesc-knowledge-index \
+  --features semantic-fastembed --bin gen-knowledge-index -- \
+  benchmark --mode semantic --artifact target/knowledge-artifacts-semantic \
+  --semantic-model-dir /path/to/pinned-model \
+  --semantic-model-id Xenova/bge-small-en-v1.5 \
+  --semantic-model-revision <revision-from-manifest> \
+  --semantic-token-statistics-only --format json
+```
+
+To measure the worst inputs, replace `--semantic-token-statistics-only` with:
+
+```text
+--semantic-longest-chunks 1 --semantic-batch-size 1 \
+  --warmup 0 --repetitions 1
+```
+
+Increase the chunk count only after the single-input probe fits the available
+memory.
+
+The benchmark defaults to ONNX Runtime graph-optimization level 3. Use
+`--semantic-graph-optimization-level 0`, `1`, `2`, or `3` only when comparing
+runtime behavior. The model's registered input length is fixed and has no
+command-line override.
 
 ## Coverage
 
