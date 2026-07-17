@@ -15,6 +15,8 @@ use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
 use vesc_knowledge_index::benchmark::{
     SemanticBenchmarkMatrixReport, SemanticBenchmarkReport, benchmark_semantic,
 };
+#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
+use vesc_knowledge_index::build_git_artifacts_with_provider;
 use vesc_knowledge_index::evaluation::{
     EvaluationMode, EvaluationQuery, EvaluationReport, QualityThresholds, evaluate_quality_gate,
     evaluate_suite_with_mode,
@@ -36,7 +38,7 @@ use vesc_knowledge_index::{
 };
 #[cfg(feature = "git-corpus")]
 use vesc_knowledge_index::{
-    LicenseStatus, TrustTier, build_git_artifacts, build_git_artifacts_with_provider,
+    LicenseStatus, TrustTier, build_git_artifacts,
     corpus::git::{GitCorpusPolicy, GitCorpusSource},
 };
 
