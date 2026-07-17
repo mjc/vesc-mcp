@@ -776,7 +776,7 @@ fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
     target_os = "linux"
 ))]
 fn semantic_execution_providers() -> Vec<fastembed::ExecutionProviderDispatch> {
-    vec![ort::ep::ROCm::default().build()]
+    vec![ort::ep::ROCm::default().with_device_id(0).build()]
 }
 
 #[cfg(all(
