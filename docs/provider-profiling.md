@@ -2,6 +2,9 @@
 
 Status: initial Tali CPU/AMD-backend study, 2026-07-16.
 
+The later Tali runs below supersede the earlier source-order batch numbers
+where they use the corrected length-bucketed benchmark path.
+
 The Rust indexing phases are not the current optimization target. The
 measurements below use a deterministic 1,024-chunk sample from the 13,720-chunk
 corpus, with C, Rust, Markdown, QML, short, and long chunks. Each RSS value is
@@ -141,6 +144,36 @@ deterministic, but the full-corpus quality gate still requires investigation.
 
 ## Batch-size sweep
 
+### Corrected inference-order sweep
+
+The bake-off accepted `--semantic-length-bucketed true`, but its benchmark
+path did not pass the provider's length-bucketed inference order into vector
+construction. That made ORT see a long sequence of changing dynamic shapes and
+caused the isolated BGE batch-8 full run to grow to 28,780,316 kB RSS before it
+was killed. The lifecycle path already applied the order; the benchmark path
+now does too, with a regression test covering the call and stable artifact
+ordering.
+
+The fixed full BGE run used the clean, frame-pointer-enabled release binary on
+Tali with batch 8, 12 intra-op threads, CPU execution, and length bucketing:
+
+| Measurement | Fixed full run |
+|---|---:|
+| Documents / chunks | 2,869 / 13,720 |
+| Provider inference | 526.498 s |
+| Provider throughput | 26.06 chunks/s |
+| Total build | 526.737 s |
+| External elapsed | 9:19.33 |
+| External peak RSS | 3,441,648 kB (3.28 GiB) |
+| Retained RSS delta | 65,536 B |
+| Vector artifact | 22,061,917 B |
+
+The benchmark's retained RSS delta is not peak RSS; the latter remains an
+external `time -v` measurement. A symbolized heaptrack run on a 1,024-chunk
+sample stayed bounded and attributed allocations to tokenizer work, FastEmbed
+token-statistics cloning, and ORT session execution. It did not reproduce a
+large Rust-side retained allocation.
+
 Source-order batching, one fresh process per point, 1,024 chunks, default ORT
 threading, one measured repetition:
 
@@ -155,6 +188,25 @@ threading, one measured repetition:
 
 Batch 256 buys only 7.9% over batch 8 while consuming 15.25 GiB. It is not a
 production choice.
+
+The corrected length-bucketed batch sweep on the same host and sample was
+different: batch 1 took 25.522 s (40.12 chunks/s) and 0.84 GiB peak RSS; batch
+8 took 33.686 s (30.40 chunks/s) and 1.28 GiB; batch 16 took 34.946 s (29.30
+chunks/s) and 1.71 GiB; and batch 32 took 35.699 s (28.68 chunks/s) and 2.60
+GiB. Batch 64 did not complete under this sample's dynamic-shape working set.
+These results make batch 1 the safe Jina starting point, but a full-corpus
+production change still requires a full BGE quality/determinism run.
+
+## Model memory probes
+
+The pinned Arctic XS quantized model completed 1,024 chunks at batch 1 in
+13.985 s of provider time with 0.82 GiB peak RSS. Arctic S completed the same
+sample in 25.609 s with 0.85 GiB peak RSS. The pinned Jina code quantized model
+completed a 64-chunk batch-1 probe in 40.732 s with 1.83 GiB peak RSS; its
+token profile reached 1,767 tokens without truncation. A 1,024-chunk Jina probe
+was stopped before completion because its 8,192-token profile produced an
+unboundedly expensive working set on this CPU. It is not a valid throughput
+result and should not be compared with the BGE/Arctic sample results.
 
 ## Padding and length bucketing
 
