@@ -312,11 +312,9 @@ impl SemanticBenchmarkMatrixReport {
                 .exact_search
                 .get(&5)
                 .map_or(0, |timing| timing.p50_us);
-            let chunks_per_second = if report.provider_inference.p50_us == 0 {
-                0
-            } else {
-                (report.corpus_chunks as u64 * 1_000_000) / report.provider_inference.p50_us
-            };
+            let chunks_per_second = (report.corpus_chunks as u64 * 1_000_000)
+                .checked_div(report.provider_inference.p50_us)
+                .unwrap_or_default();
             let padding = report
                 .token_statistics
                 .as_ref()

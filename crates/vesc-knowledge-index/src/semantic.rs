@@ -30,9 +30,7 @@ pub const fn default_semantic_intra_threads() -> usize {
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 #[must_use]
 pub fn default_semantic_intra_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1)
+    std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -771,11 +769,10 @@ impl FastEmbedProvider {
             p95_tokens: percentile(95),
             maximum_tokens: real_tokens[real_tokens.len() - 1],
             truncated_chunks,
-            padding_ratio_ppm: if total_padded_tokens == 0 {
-                0
-            } else {
-                padding_waste.saturating_mul(1_000_000) / total_padded_tokens
-            },
+            padding_ratio_ppm: padding_waste
+                .saturating_mul(1_000_000)
+                .checked_div(total_padded_tokens)
+                .unwrap_or_default(),
         })
     }
 
@@ -877,6 +874,9 @@ fn require_ort_runtime() -> Result<(), EmbeddingError> {
 }
 
 #[cfg(feature = "semantic-fastembed")]
+// The Linux/default branch is const-capable, but the macOS CoreML branch
+// intentionally reads an environment override and therefore cannot be const.
+#[allow(clippy::missing_const_for_fn)]
 fn resolve_semantic_execution_provider(
     requested: SemanticExecutionProvider,
 ) -> SemanticExecutionProvider {
