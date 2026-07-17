@@ -38,6 +38,9 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[patch.crates-io]
+fastembed = { path = "vendor/fastembed" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
