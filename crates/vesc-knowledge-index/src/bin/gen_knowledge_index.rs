@@ -914,11 +914,29 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         }))
         .unwrap_or_else(|error| panic!("parse bake-off config {}: {error}", config_path.display()));
     assert_eq!(config.schema, 1, "unsupported bake-off config schema");
-    assert_eq!(
-        config.candidates.len(),
-        4,
-        "bake-off must contain four candidates"
-    );
+    let candidate_filter = argument_value(args, "--candidate");
+    let candidates_to_run = config
+        .candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate_filter
+                .as_deref()
+                .is_none_or(|name| name == candidate.name)
+        })
+        .collect::<Vec<_>>();
+    if candidate_filter.is_some() {
+        assert_eq!(
+            candidates_to_run.len(),
+            1,
+            "--candidate must select one candidate"
+        );
+    } else {
+        assert_eq!(
+            candidates_to_run.len(),
+            4,
+            "bake-off must contain four candidates"
+        );
+    }
     let (chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact_root));
     let manifest = inspect_manifest(&active_manifest_path(&artifact_root))
         .unwrap_or_else(|error| panic!("inspect bake-off artifact: {error}"));
@@ -976,8 +994,8 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         .map(|query| query.text.clone())
         .collect::<Vec<_>>();
     let embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
-    let mut candidates = Vec::with_capacity(config.candidates.len());
-    for candidate in config.candidates {
+    let mut candidates = Vec::with_capacity(candidates_to_run.len());
+    for candidate in candidates_to_run {
         let model_dir = model_root.join(&candidate.directory);
         let model_path = model_dir.join("model.onnx");
         let model_bytes = fs::metadata(&model_path)
