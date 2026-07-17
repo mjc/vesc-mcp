@@ -12,7 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+
+      - name: Sync and initialize submodules
+        run: git submodule sync --recursive && git submodule update --init --recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
@@ -28,7 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+
+      - name: Sync and initialize submodules
+        run: git submodule sync --recursive && git submodule update --init --recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
@@ -41,7 +47,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
+
+      - name: Sync and initialize submodules
+        run: git submodule sync --recursive && git submodule update --init --recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
