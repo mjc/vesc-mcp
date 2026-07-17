@@ -3,7 +3,7 @@
 #[cfg(feature = "hf-hub")]
 use crate::common::load_tokenizer_hf_hub;
 use crate::{
-    common::{init_session_builder, load_tokenizer},
+    common::{init_session_builder_with_optimization, load_tokenizer},
     models::{text_embedding::models_list, ModelTrait},
     pooling::Pooling,
     Embedding, EmbeddingModel, EmbeddingOutput, ModelInfo, OutputKey, QuantizationMode,
@@ -90,13 +90,18 @@ impl TextEmbedding {
             execution_providers,
             max_length,
             intra_threads,
+            graph_optimization_level,
         } = options;
 
         let session = {
             let builder_error = |err: ort::Error<ort::session::builder::SessionBuilder>| {
                 anyhow::Error::msg(err.to_string())
             };
-            let mut session_builder = init_session_builder(execution_providers, intra_threads)?;
+            let mut session_builder = init_session_builder_with_optimization(
+                execution_providers,
+                intra_threads,
+                graph_optimization_level,
+            )?;
 
             for external_initializer_file in model.external_initializers {
                 session_builder = session_builder

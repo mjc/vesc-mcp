@@ -7,7 +7,10 @@ use crate::{
     pooling::Pooling,
     EmbeddingModel, OutputKey, QuantizationMode,
 };
-use ort::{execution_providers::ExecutionProviderDispatch, session::Session};
+use ort::{
+    execution_providers::ExecutionProviderDispatch,
+    session::{Session, builder::GraphOptimizationLevel},
+};
 use tokenizers::Tokenizer;
 
 use super::DEFAULT_MAX_LENGTH;
@@ -31,6 +34,7 @@ pub struct InitOptionsUserDefined {
     /// every available CPU core via `std::thread::available_parallelism`.
     /// Set this to cap CPU usage (e.g. on laptops) at the cost of throughput.
     pub intra_threads: Option<usize>,
+    pub graph_optimization_level: GraphOptimizationLevel,
 }
 
 impl InitOptionsUserDefined {
@@ -60,6 +64,15 @@ impl InitOptionsUserDefined {
         self.intra_threads = Some(intra_threads);
         self
     }
+
+    /// Set the ONNX Runtime graph optimization level.
+    pub fn with_graph_optimization_level(
+        mut self,
+        graph_optimization_level: GraphOptimizationLevel,
+    ) -> Self {
+        self.graph_optimization_level = graph_optimization_level;
+        self
+    }
 }
 
 impl Default for InitOptionsUserDefined {
@@ -68,6 +81,7 @@ impl Default for InitOptionsUserDefined {
             execution_providers: Default::default(),
             max_length: DEFAULT_MAX_LENGTH,
             intra_threads: None,
+            graph_optimization_level: GraphOptimizationLevel::Level3,
         }
     }
 }
@@ -81,6 +95,7 @@ impl From<TextInitOptions> for InitOptionsUserDefined {
             execution_providers: options.execution_providers,
             max_length: options.max_length,
             intra_threads: options.intra_threads,
+            graph_optimization_level: GraphOptimizationLevel::Level3,
         }
     }
 }

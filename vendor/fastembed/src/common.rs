@@ -195,6 +195,18 @@ pub(crate) fn init_session_builder(
     execution_providers: Vec<ExecutionProviderDispatch>,
     intra_threads: Option<usize>,
 ) -> anyhow::Result<SessionBuilder> {
+    init_session_builder_with_optimization(
+        execution_providers,
+        intra_threads,
+        GraphOptimizationLevel::Level3,
+    )
+}
+
+pub(crate) fn init_session_builder_with_optimization(
+    execution_providers: Vec<ExecutionProviderDispatch>,
+    intra_threads: Option<usize>,
+    optimization_level: GraphOptimizationLevel,
+) -> anyhow::Result<SessionBuilder> {
     let threads = match intra_threads {
         Some(n) => n,
         None => std::thread::available_parallelism()?.get(),
@@ -212,7 +224,7 @@ pub(crate) fn init_session_builder(
     let mut builder = ort::session::Session::builder()?
         .with_execution_providers(execution_providers)
         .map_err(builder_error)?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .with_optimization_level(optimization_level)
         .map_err(builder_error)?
         .with_intra_threads(threads)
         .map_err(builder_error)?

@@ -654,6 +654,25 @@ impl FastEmbedProvider {
         intra_threads: Option<usize>,
         execution_provider: SemanticExecutionProvider,
     ) -> Result<Self, EmbeddingError> {
+        Self::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
+            root,
+            batch_size,
+            profile,
+            intra_threads,
+            execution_provider,
+            ort::session::builder::GraphOptimizationLevel::Level3,
+        )
+    }
+
+    /// Load a local model with explicit ONNX Runtime provider and graph settings.
+    pub fn from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
+        root: &std::path::Path,
+        batch_size: Option<usize>,
+        profile: EmbeddingProfile,
+        intra_threads: Option<usize>,
+        execution_provider: SemanticExecutionProvider,
+        graph_optimization_level: ort::session::builder::GraphOptimizationLevel,
+    ) -> Result<Self, EmbeddingError> {
         if profile.max_length == 0 || profile.dimension == 0 || !profile.normalize {
             return Err(EmbeddingError::Provider(
                 "FastEmbed requires a non-zero, normalized embedding profile".into(),
@@ -678,7 +697,8 @@ impl FastEmbedProvider {
         });
         let mut options = fastembed::InitOptionsUserDefined::new()
             .with_max_length(profile.max_length)
-            .with_execution_providers(semantic_execution_providers(execution_provider)?);
+            .with_execution_providers(semantic_execution_providers(execution_provider)?)
+            .with_graph_optimization_level(graph_optimization_level);
         if let Some(intra_threads) = intra_threads {
             if intra_threads == 0 {
                 return Err(EmbeddingError::Provider(

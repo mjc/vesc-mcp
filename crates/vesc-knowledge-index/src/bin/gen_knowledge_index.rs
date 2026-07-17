@@ -894,6 +894,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     let length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     let execution_provider = semantic_execution_provider(args);
+    let graph_optimization_level = semantic_graph_optimization_level(args);
     let verbose_ort = args.iter().any(|arg| arg == "--semantic-verbose-ort");
     configure_ort_verbose_logging(verbose_ort)
         .unwrap_or_else(|error| panic!("configure verbose ONNX Runtime logging: {error}"));
@@ -1021,12 +1022,13 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
             candidate.name
         );
         let initialization_started = std::time::Instant::now();
-        let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
+        let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
             &model_dir,
             Some(batch_size),
             embedding_profile(&candidate.model_id),
             intra_threads,
             execution_provider,
+            graph_optimization_level,
         )
         .unwrap_or_else(|error| panic!("load bake-off candidate {}: {error}", candidate.name));
         provider.set_length_bucketed(length_bucketed);
@@ -1252,6 +1254,7 @@ fn run_semantic_benchmark(
     let model_revision = argument_value(args, "--semantic-model-revision")
         .unwrap_or_else(|| panic!("--semantic-model-revision is required for semantic benchmarks"));
     let execution_provider = semantic_execution_provider(args);
+    let graph_optimization_level = semantic_graph_optimization_level(args);
     let verbose_ort = args.iter().any(|arg| arg == "--semantic-verbose-ort");
     configure_ort_verbose_logging(verbose_ort)
         .unwrap_or_else(|error| panic!("configure verbose ONNX Runtime logging: {error}"));
@@ -1344,12 +1347,13 @@ fn run_semantic_benchmark(
     };
     let mut embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let initialization_started = std::time::Instant::now();
-    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         &model_dir,
         Some(batch_sizes[0]),
         embedding_profile(&model_id),
         intra_threads,
         execution_provider,
+        graph_optimization_level,
     )
     .unwrap_or_else(|error| panic!("load semantic model: {error}"));
     let chunks = if length_bucketed {
@@ -1661,6 +1665,25 @@ fn semantic_execution_provider(args: &[String]) -> SemanticExecutionProvider {
             panic!(
                 "unsupported --semantic-provider {other:?}; use auto, cpu, coreml, migraphx, or rocm"
             )
+        }
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_graph_optimization_level(
+    args: &[String],
+) -> ort::session::builder::GraphOptimizationLevel {
+    let level = argument_value(args, "--semantic-graph-optimization-level")
+        .unwrap_or_else(|| "3".into())
+        .parse::<u8>()
+        .expect("--semantic-graph-optimization-level must be 0, 1, 2, or 3");
+    match level {
+        0 => ort::session::builder::GraphOptimizationLevel::Disable,
+        1 => ort::session::builder::GraphOptimizationLevel::Level1,
+        2 => ort::session::builder::GraphOptimizationLevel::Level2,
+        3 => ort::session::builder::GraphOptimizationLevel::Level3,
+        other => {
+            panic!("unsupported --semantic-graph-optimization-level {other}; use 0, 1, 2, or 3")
         }
     }
 }
