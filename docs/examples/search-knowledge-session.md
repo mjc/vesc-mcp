@@ -59,8 +59,9 @@ and active-generation selection remain separate lifecycle steps.
 Ask the connected assistant:
 
 > Search VESC knowledge for `lbm_add_extension`. Return at most three lexical
-> results, read the top result's chunk resource, and cite its repository,
-> path, and line when available.
+> results, and read the top result's chunk resource when `resource_uri` is
+> present. Otherwise, use its bounded returned passage or `document_uri`. Cite
+> its repository, path, and line when available.
 
 This keeps the search bounded and makes the provenance visible before the
 passage is used.

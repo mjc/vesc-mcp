@@ -18,7 +18,8 @@ cd tests/fixtures/native-lib-minimal/package
 cp native-lib-minimal.vescpkg ../../golden/native-lib-minimal.vescpkg
 shasum -a 256 ../../golden/native-lib-minimal.vescpkg \
   | awk '{print $1 "  native-lib-minimal.vescpkg"}' > ../../golden/native-lib-minimal.sha256
-cargo nextest run -p vesc-domain -p vesc-mcp-core -E 'test(golden|build_native_lib)'
+cd ../../../..
+cargo nextest run -p vesc-domain -p vesc-mcp-core -E 'test(golden)'
 ```
 
 Alternatively, call MCP `build_vescpkg` on `tests/fixtures/native-lib-minimal` and copy the artifact to `golden/native-lib-minimal.vescpkg`, then update the sidecar SHA-256.

@@ -7,13 +7,18 @@ which is offline, deterministic, and strongest for exact firmware symbols.
 
 - Use `lexical` unless conceptual queries materially benefit from a local
   semantic model.
-- Use the pinned quantized BGE Small model profile when enabling semantic
-  search.
+- Use `Xenova/bge-small-en-v1.5` at revision
+  `ea104dacec62c0de699686887e3f920caeb4f3e3`, with
+  `onnx/model_quantized.onnx` provisioned locally as `model.onnx`. This pinned
+  bakeoff identity is recorded in
+  [`tests/benchmark/bakeoff-models.json`](../tests/benchmark/bakeoff-models.json).
 - Keep CPU as the default execution provider. Tested accelerator paths did
   not improve this workload enough to justify their additional runtime and
   memory requirements.
-- Keep the semantic build batch size at 8. Larger batches provided small
-  throughput gains at a steep memory cost.
+- Keep the semantic build batch size at 8 by passing
+  `--semantic-batch-size 8` to `gen-knowledge-index build`. This is a build-time
+  command option, not a server configuration key. Larger batches provided
+  small throughput gains at a steep memory cost.
 - Use `auto` for graceful fallback to lexical results. Use explicit `hybrid`
   only when a capability error should stop the request.
 

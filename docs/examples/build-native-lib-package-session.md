@@ -94,6 +94,11 @@ On layout, missing `vesc_tool`, or I/O failure the tool returns `{ "ok": false, 
 
 Additional wire fields may appear as the inspector grows; the fields above are asserted in `tool_inspect_vescpkg_reads_name`.
 
+The committed golden artifact retains the historical package name
+`POC native-lib minimal fixture`. The current `pkgdesc.qml` uses
+`native-lib minimal fixture`, so the manifest below intentionally differs until
+the golden bytes are regenerated for an upstream packer or fixture change.
+
 ---
 
 ## Prompt 4 — compare manifest resource (optional)
