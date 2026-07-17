@@ -740,6 +740,7 @@ impl FastEmbedProvider {
         if texts.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
+        let original_chunks = texts.len();
         let prefixed;
         let texts = if self.profile.document_prefix.is_empty() {
             texts
@@ -749,6 +750,15 @@ impl FastEmbedProvider {
                 .map(|text| format!("{}{}", self.profile.document_prefix, text))
                 .collect::<Vec<_>>();
             &prefixed
+        };
+        let mut windowed_texts = Vec::new();
+        let texts = if self.lossless_windowing {
+            for text in texts {
+                windowed_texts.extend(self.document_windows(text)?);
+            }
+            &windowed_texts
+        } else {
+            texts
         };
         let mut untruncated_tokenizer = self.model.tokenizer.clone();
         untruncated_tokenizer.with_padding(None);
@@ -797,7 +807,7 @@ impl FastEmbedProvider {
         };
         let padding_waste = total_padded_tokens.saturating_sub(total_real_tokens);
         Ok(TokenStatistics {
-            chunks: texts.len(),
+            chunks: original_chunks,
             total_real_tokens,
             total_padded_tokens,
             total_untruncated_tokens,

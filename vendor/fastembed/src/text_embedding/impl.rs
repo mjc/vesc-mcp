@@ -3,12 +3,14 @@
 #[cfg(feature = "hf-hub")]
 use crate::common::load_tokenizer_hf_hub;
 use crate::{
-    common::{init_session_builder, init_session_builder_with_optimization, load_tokenizer},
+    common::{init_session_builder_with_optimization, load_tokenizer},
     models::{text_embedding::models_list, ModelTrait},
     pooling::Pooling,
     Embedding, EmbeddingModel, EmbeddingOutput, ModelInfo, OutputKey, QuantizationMode,
     SingleBatchOutput,
 };
+#[cfg(feature = "hf-hub")]
+use crate::common::init_session_builder;
 #[cfg(feature = "hf-hub")]
 use anyhow::Context;
 use anyhow::Result;
