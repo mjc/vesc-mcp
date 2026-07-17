@@ -815,6 +815,7 @@ fn host_target() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedding_text;
 
     #[test]
     fn percentile_summary_uses_nearest_rank() {
@@ -862,5 +863,64 @@ mod tests {
         let markdown = report.to_markdown();
         assert!(markdown.contains("Model: `fake`"));
         assert!(markdown.contains("Exact search K=5"));
+    }
+
+    #[test]
+    fn semantic_benchmark_applies_provider_inference_order() {
+        struct ReverseProvider {
+            inner: crate::FakeEmbeddingProvider,
+            first_batch: Option<String>,
+            order_calls: usize,
+        }
+
+        impl crate::EmbeddingProvider for ReverseProvider {
+            fn inference_order(
+                &mut self,
+                chunks: &[Chunk],
+            ) -> Result<Option<Vec<usize>>, crate::EmbeddingError> {
+                self.order_calls += 1;
+                Ok(Some((0..chunks.len()).rev().collect()))
+            }
+
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, crate::EmbeddingError> {
+                self.first_batch = self.first_batch.clone().or_else(|| texts.first().cloned());
+                self.inner.embed_documents(texts)
+            }
+
+            fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, crate::EmbeddingError> {
+                self.inner.embed_query(text)
+            }
+        }
+
+        let chunks = embedded_chunks();
+        assert!(chunks.len() > 1);
+        let expected_first = embedding_text(chunks.last().expect("multiple chunks"));
+        let mut provider = ReverseProvider {
+            inner: crate::FakeEmbeddingProvider::new(4),
+            first_batch: None,
+            order_calls: 0,
+        };
+
+        benchmark_semantic_with_artifact(
+            &mut provider,
+            &chunks,
+            &["extension".into()],
+            "fake",
+            "test",
+            &ContentDigest::of(b"benchmark-order"),
+            &[5],
+            0,
+            1,
+        )
+        .expect("semantic benchmark");
+
+        assert_eq!(provider.order_calls, 1);
+        assert_eq!(
+            provider.first_batch.as_deref(),
+            Some(expected_first.as_str())
+        );
     }
 }
