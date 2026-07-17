@@ -516,6 +516,7 @@ pub struct FastEmbedProvider {
     batch_size: EmbeddingBatchSize,
     profile: EmbeddingProfile,
     length_bucketed: bool,
+    lossless_windowing: bool,
 }
 
 /// Runtime execution provider requested for a `FastEmbed` session.
@@ -564,6 +565,7 @@ impl FastEmbedProvider {
             batch_size,
             profile,
             length_bucketed: false,
+            lossless_windowing: false,
         })
     }
 
@@ -583,6 +585,15 @@ impl FastEmbedProvider {
     /// Enables bounded token-length bucketing for subsequent document builds.
     pub const fn set_length_bucketed(&mut self, enabled: bool) {
         self.length_bucketed = enabled;
+    }
+
+    /// Enables lossless token windows for documents longer than the model limit.
+    ///
+    /// Each document still produces exactly one vector. Window vectors are
+    /// averaged and normalized, preserving deterministic chunk ordering while
+    /// preventing the tokenizer or ONNX graph from discarding document text.
+    pub const fn set_lossless_windowing(&mut self, enabled: bool) {
+        self.lossless_windowing = enabled;
     }
 
     /// Load a user-provisioned `FastEmbed` model without contacting a registry.
@@ -846,6 +857,51 @@ impl FastEmbedProvider {
             }
         }
         Ok(())
+    }
+
+    fn document_windows(&self, text: &str) -> Result<Vec<String>, EmbeddingError> {
+        let mut tokenizer = self.model.tokenizer.clone();
+        tokenizer.with_padding(None);
+        tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        let encoding = tokenizer
+            .encode(text, true)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        let offsets = encoding
+            .get_offsets()
+            .iter()
+            .copied()
+            .filter(|&(start, end)| end > start)
+            .collect::<Vec<_>>();
+        let special_tokens = encoding.get_ids().len().saturating_sub(offsets.len());
+        let content_limit = self.profile.max_length.saturating_sub(special_tokens);
+        if content_limit == 0 {
+            return Err(EmbeddingError::Provider(
+                "model limit is smaller than its special-token overhead".into(),
+            ));
+        }
+        if offsets.len() <= content_limit {
+            return Ok(vec![text.to_owned()]);
+        }
+
+        let mut windows = Vec::with_capacity(offsets.len().div_ceil(content_limit));
+        let mut start = 0;
+        for group in offsets.chunks(content_limit) {
+            let end = group.last().map_or(start, |&(_, end)| end.min(text.len()));
+            if end > start {
+                windows.push(text[start..end].to_owned());
+                start = end;
+            }
+        }
+        if start < text.len() {
+            if let Some(last) = windows.last_mut() {
+                last.push_str(&text[start..]);
+            } else {
+                windows.push(text.to_owned());
+            }
+        }
+        Ok(windows)
     }
 
     fn ensure_document_lengths(&self, texts: &[&str]) -> Result<(), EmbeddingError> {
@@ -1137,6 +1193,30 @@ impl EmbeddingProvider for FastEmbedProvider {
                 .collect::<Vec<_>>();
             &prefixed
         };
+        if self.lossless_windowing {
+            let mut aggregated = Vec::with_capacity(texts.len());
+            for text in texts {
+                let windows = self.document_windows(text)?;
+                let vectors = self
+                    .model
+                    .embed(&windows, self.effective_batch_size(windows.len()))
+                    .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+                self.validate_vectors(&vectors)?;
+                let mut vector = vec![0.0_f32; self.profile.dimension];
+                for window in &vectors {
+                    for (sum, value) in vector.iter_mut().zip(window) {
+                        *sum += *value;
+                    }
+                }
+                let divisor = vectors.len() as f32;
+                for value in &mut vector {
+                    *value /= divisor;
+                }
+                normalize(&mut vector)?;
+                aggregated.push(vector);
+            }
+            return Ok(aggregated);
+        }
         let inputs = texts.iter().map(String::as_str).collect::<Vec<_>>();
         self.ensure_document_lengths(&inputs)?;
         let vectors = self

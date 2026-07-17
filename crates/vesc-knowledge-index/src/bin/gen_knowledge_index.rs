@@ -141,6 +141,7 @@ fn run_build_default(args: &[String]) {
                 });
             let length_bucketed = argument_value(args, "--semantic-length-bucketed")
                 .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+            let lossless_windowing = args.iter().any(|arg| arg == "--semantic-lossless-windows");
             let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
                 &PathBuf::from(model_dir),
                 Some(batch_size),
@@ -150,6 +151,7 @@ fn run_build_default(args: &[String]) {
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(length_bucketed);
+            provider.set_lossless_windowing(lossless_windowing);
             build_git_artifacts_with_provider(
                 &staging,
                 &sources,
@@ -406,6 +408,7 @@ fn run_build(args: &[String]) {
     );
     let semantic_length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    let semantic_lossless_windowing = args.iter().any(|arg| arg == "--semantic-lossless-windows");
     let summary = if let Some(model_dir) = model_dir {
         let model_id = argument_value(args, "--semantic-model-id")
             .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
@@ -424,6 +427,7 @@ fn run_build(args: &[String]) {
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(semantic_length_bucketed);
+            provider.set_lossless_windowing(semantic_lossless_windowing);
             match source_root.as_deref() {
                 Some(source_root) => build_allowlisted_artifacts_with_provider(
                     &out,
@@ -893,6 +897,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     });
     let length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    let lossless_windowing = args.iter().any(|arg| arg == "--semantic-lossless-windows");
     let execution_provider = semantic_execution_provider(args);
     let graph_optimization_level = semantic_graph_optimization_level(args);
     let verbose_ort = args.iter().any(|arg| arg == "--semantic-verbose-ort");
@@ -1032,6 +1037,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         )
         .unwrap_or_else(|error| panic!("load bake-off candidate {}: {error}", candidate.name));
         provider.set_length_bucketed(length_bucketed);
+        provider.set_lossless_windowing(lossless_windowing);
         let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
             u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
         );
@@ -1302,6 +1308,7 @@ fn run_semantic_benchmark(
     );
     let length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    let lossless_windowing = args.iter().any(|arg| arg == "--semantic-lossless-windows");
     let sample_size = argument_value(args, "--semantic-sample-chunks").map(|value| {
         let size = value
             .parse::<usize>()
@@ -1356,6 +1363,7 @@ fn run_semantic_benchmark(
         graph_optimization_level,
     )
     .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+    provider.set_lossless_windowing(lossless_windowing);
     let chunks = if length_bucketed {
         let lengths = provider
             .token_lengths(&embedding_texts)
