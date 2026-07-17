@@ -958,7 +958,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
                 .search(query, &LexicalFilters::default(), 50)
                 .unwrap_or_else(|error| panic!("lexical bake-off search: {error}"))
                 .into_iter()
-                .flat_map(|hit| chunk_result_ids(&hit.chunk))
+                .flat_map(|hit| stable_chunk_result_ids(&hit.chunk))
                 .collect()
         },
     );
@@ -1123,7 +1123,7 @@ fn evaluate_provider(
             semantic_hits
                 .into_iter()
                 .filter_map(|hit| chunks.get(&hit.chunk_id))
-                .flat_map(chunk_result_ids)
+                .flat_map(stable_chunk_result_ids)
                 .collect()
         } else {
             fuse_candidates(
@@ -1137,10 +1137,15 @@ fn evaluate_provider(
                 },
             )
             .into_iter()
-            .flat_map(|hit| chunk_result_ids(&hit.chunk))
+            .flat_map(|hit| stable_chunk_result_ids(&hit.chunk))
             .collect()
         }
     })
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn stable_chunk_result_ids(chunk: &Chunk) -> Vec<String> {
+    vec![chunk.chunk_id.to_string()]
 }
 
 #[cfg(feature = "semantic-fastembed")]
