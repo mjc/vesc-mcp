@@ -1025,7 +1025,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
             &model_dir,
             Some(batch_size),
-            embedding_profile(&candidate.model_id),
+            semantic_profile(args, &candidate.model_id),
             intra_threads,
             execution_provider,
             graph_optimization_level,
@@ -1350,7 +1350,7 @@ fn run_semantic_benchmark(
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         &model_dir,
         Some(batch_sizes[0]),
-        embedding_profile(&model_id),
+        semantic_profile(args, &model_id),
         intra_threads,
         execution_provider,
         graph_optimization_level,
@@ -1692,6 +1692,19 @@ fn semantic_graph_optimization_level(
 fn embedding_profile(model_id: &str) -> EmbeddingProfile {
     EmbeddingProfile::for_model_id(model_id)
         .unwrap_or_else(|| panic!("no embedding profile is registered for {model_id}"))
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_profile(args: &[String], model_id: &str) -> EmbeddingProfile {
+    let mut profile = embedding_profile(model_id);
+    if let Some(max_length) = argument_value(args, "--semantic-max-length") {
+        let max_length = max_length
+            .parse::<usize>()
+            .expect("--semantic-max-length must be a positive integer");
+        assert!(max_length > 0, "--semantic-max-length must be positive");
+        profile.max_length = profile.max_length.min(max_length);
+    }
+    profile
 }
 
 fn print_text_report(report: &EvaluationReport) {
