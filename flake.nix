@@ -233,6 +233,7 @@
           shellHook = ''
             export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
             export CARGO_TARGET_DIR="$PWD/target"
+            export VESC_TIME_BIN="${pkgs.time}/bin/time"
             export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
             echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)"
           '';
@@ -247,6 +248,7 @@
             shellHook = ''
               export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
               export CARGO_TARGET_DIR="$PWD/target"
+              export VESC_TIME_BIN="${pkgs.time}/bin/time"
               export ORT_DYLIB_PATH="${rocmOnnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
               export ORT_MIGRAPHX_MODEL_CACHE_PATH="$PWD/target/provider-bench/migraphx-cache"
               mkdir -p "$ORT_MIGRAPHX_MODEL_CACHE_PATH"

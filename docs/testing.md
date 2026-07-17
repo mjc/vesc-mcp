@@ -143,8 +143,8 @@ Nix shell, the adapter fails fast with an actionable runtime error rather than
 allowing the loader to stall.
 
 Run the command in release mode for production numbers. Capture peak RSS
-separately with the host tool (`/usr/bin/time -lp` on macOS,
-`/usr/bin/time -v` on Linux), `getrusage`, or a sampling harness; do not put
+separately with the Nix-provided `$VESC_TIME_BIN -v`, `getrusage`, or a
+sampling harness; do not put
 that external peak result in the retained-RSS comparison fields or table. The
 benchmark does not claim to measure MCP transport overhead.
 The vector artifact format is versioned; rebuild artifacts generated before
