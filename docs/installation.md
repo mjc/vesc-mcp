@@ -12,6 +12,14 @@ published checksum, then extract the complete archive. The archive contains
 the server executable and the data it needs at runtime; keep those files
 together.
 
+| System | Archive suffix |
+|--------|----------------|
+| Ubuntu on Intel or AMD | `ubuntu-x86_64.tar.gz` |
+| Ubuntu on 64-bit Arm | `ubuntu-aarch64.tar.gz` |
+| macOS on Intel | `macos-x86_64.tar.gz` |
+| macOS on Apple Silicon | `macos-aarch64.tar.gz` |
+| Windows on Intel or AMD | `windows-x86_64.zip` |
+
 VESC Tool is optional. You only need its command-line executable if you want
 the `build_vescpkg` tool. Knowledge search and package inspection work without
 it.
@@ -31,9 +39,8 @@ it.
    and configure the same executable as a local stdio server.
 
 You may move the extracted directory to a stable location. If your client
-starts only the executable rather than the included launcher, set
-`VESC_MCP_WORKSPACE_ROOT` to that directory so the bundled catalog can be
-found.
+starts the executable, set `VESC_MCP_WORKSPACE_ROOT` to that directory so the
+bundled catalog can be found.
 
 ## macOS
 
@@ -105,7 +112,9 @@ clients.
 
 Use stdio when the assistant needs package files or builds. Configure the
 absolute path to the release executable and allow only the directories the
-assistant should access:
+assistant should access. In the MCP client's environment, set
+`VESC_MCP_WORKSPACE_ROOT` to the extracted release directory so the executable
+can find its bundled catalog.
 
 ```toml
 [paths]

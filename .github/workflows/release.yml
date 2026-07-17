@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.archive }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            archive: ubuntu-x86_64
+            executable: vesc-mcp-server
+          - runner: ubuntu-22.04-arm
+            archive: ubuntu-aarch64
+            executable: vesc-mcp-server
+          - runner: macos-15-intel
+            archive: macos-x86_64
+            executable: vesc-mcp-server
+          - runner: macos-14
+            archive: macos-aarch64
+            executable: vesc-mcp-server
+          - runner: windows-2025
+            archive: windows-x86_64
+            executable: vesc-mcp-server.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build server
+        run: cargo build --locked --release -p vesc-mcp-server
+
+      - name: Assemble release directory
+        shell: bash
+        run: |
+          package="vesc-mcp-${GITHUB_REF_NAME}-${{ matrix.archive }}"
+          mkdir -p "dist/$package/tests"
+          cp "target/release/${{ matrix.executable }}" "dist/$package/"
+          cp -R catalog "dist/$package/catalog"
+          cp -R tests/fixtures "dist/$package/tests/fixtures"
+          cp config.example.toml "dist/$package/"
+
+      - name: Create Unix archive and checksum
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          package="vesc-mcp-${GITHUB_REF_NAME}-${{ matrix.archive }}"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          if command -v sha256sum >/dev/null; then
+            (cd dist && sha256sum "$package.tar.gz" > "$package.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "$package.tar.gz" > "$package.tar.gz.sha256")
+          fi
+
+      - name: Create Windows archive and checksum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = "vesc-mcp-$env:GITHUB_REF_NAME-${{ matrix.archive }}"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+          $hash = (Get-FileHash "dist/$package.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $package.zip" | Set-Content "dist/$package.zip.sha256" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*

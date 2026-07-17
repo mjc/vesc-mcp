@@ -45,6 +45,7 @@ documentation if it uses different field names.
 Ubuntu and macOS:
 
 ```bash
+VESC_MCP_WORKSPACE_ROOT="$PWD" \
 VESC_MCP_HTTP_BIND=127.0.0.1:9090 \
 VESC_MCP_HTTP_PATH=/vesc-mcp \
 ./vesc-mcp-server --http
@@ -53,6 +54,7 @@ VESC_MCP_HTTP_PATH=/vesc-mcp \
 Windows PowerShell:
 
 ```powershell
+$env:VESC_MCP_WORKSPACE_ROOT = (Get-Location).Path
 $env:VESC_MCP_HTTP_BIND = "127.0.0.1:9090"
 $env:VESC_MCP_HTTP_PATH = "/vesc-mcp"
 .\vesc-mcp-server.exe --http
@@ -69,6 +71,7 @@ configuration or documentation.
 Ubuntu and macOS:
 
 ```bash
+export VESC_MCP_WORKSPACE_ROOT="$PWD"
 export VESC_MCP_HTTP_AUTH_TOKEN="replace-with-a-random-secret"
 ./vesc-mcp-server --http
 ```
@@ -76,6 +79,7 @@ export VESC_MCP_HTTP_AUTH_TOKEN="replace-with-a-random-secret"
 Windows PowerShell:
 
 ```powershell
+$env:VESC_MCP_WORKSPACE_ROOT = (Get-Location).Path
 $env:VESC_MCP_HTTP_AUTH_TOKEN = "replace-with-a-random-secret"
 .\vesc-mcp-server.exe --http
 ```
@@ -95,6 +99,7 @@ Browser-based clients send an `Origin` header. Allow only the exact origins
 you use:
 
 ```bash
+VESC_MCP_WORKSPACE_ROOT="$PWD" \
 VESC_MCP_HTTP_ALLOWED_ORIGINS=https://assistant.example \
 ./vesc-mcp-server --http
 ```
@@ -116,6 +121,7 @@ connect, all of the following are required:
 Example server environment behind a TLS proxy:
 
 ```bash
+export VESC_MCP_WORKSPACE_ROOT="$PWD"
 export VESC_MCP_HTTP_BIND="0.0.0.0:8080"
 export VESC_MCP_HTTP_ALLOWED_HOSTS="vesc-mcp.example"
 export VESC_MCP_HTTP_ALLOWED_ORIGINS="https://assistant.example"

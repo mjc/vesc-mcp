@@ -107,10 +107,9 @@ enable builds.
 
 ## Knowledge search reports no artifact
 
-Release archives may include a generated knowledge directory. Keep it with
-the release and use the included launcher. If you manage the artifact
-separately, set `[knowledge] artifact_path` or `VESC_RAG_ARTIFACT` to its root
-and restart the server.
+If you manage a generated knowledge artifact separately, set
+`[knowledge] artifact_path` or `VESC_RAG_ARTIFACT` to its root and restart the
+server.
 
 If no generated artifact is configured, the embedded compatibility index is
 still available. `lexical` is the safest default mode.

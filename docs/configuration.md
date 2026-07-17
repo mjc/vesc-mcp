@@ -85,8 +85,8 @@ archive contents together. If you start the executable directly, set
 |----------|---------|
 | `VESC_MCP_WORKSPACE_ROOT` | Directory containing the bundled `catalog` |
 
-The included launcher may set this automatically. Source checkouts are
-discovered automatically when the server is run from the project.
+Source checkouts are discovered automatically when the server is run from the
+project.
 
 ## Streamable HTTP
 
