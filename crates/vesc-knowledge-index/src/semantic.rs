@@ -1214,10 +1214,6 @@ impl EmbeddingProvider for FastEmbedProvider {
                         *sum += *value;
                     }
                 }
-                let divisor = vectors.len() as f32;
-                for value in &mut vector {
-                    *value /= divisor;
-                }
                 normalize(&mut vector)?;
                 aggregated.push(vector);
             }
