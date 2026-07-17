@@ -58,6 +58,38 @@ manifest `2,706,783` B, lexical artifact `135,840,360` B, and combined
 generation-plus-active provenance `5,413,566` B (3.985% of the lexical
 artifact). No inventory or diagnostic fields were removed.
 
+### Instrumented Git-ingestion attribution
+
+The full lexical build was repeated on Tali after adding aggregate Git-stage
+observations. These are warm object-cache runs and are not a replacement for
+the cold/uncached lifecycle comparison above. They isolate the actual Git
+scans and object-processing stages without adding per-file timers or a worker
+pool.
+
+| Measurement | First run | Repeat |
+|---|---:|---:|
+| Total build | 3.339 s | 3.347 s |
+| Git ingestion | 160.271 ms | 160.131 ms |
+| Git tree walk | 4.831 ms | 4.398 ms |
+| Candidate ordering/accounting | 12 µs | 12 µs |
+| Blob object load | 27.766 ms | 27.774 ms |
+| Binary scan | 247 µs | 253 µs |
+| UTF-8 normalization | 10.352 ms | 10.390 ms |
+| Document metadata/identifier work | 111.317 ms | 111.546 ms |
+| External peak RSS | 1,903,472 kB | 1,900,236 kB |
+
+Both runs examined 4,113 tree entries, retained 2,760 candidates, loaded
+14,646,390 blob bytes, and produced 1,353 bounded diagnostics. The lexical
+artifact was byte-identical in both runs with SHA-256
+`8a98d234a06de40ac7aa46aa5b0fcfad193ca8625f9ae3404d74bebd212a1459`.
+
+Valgrind Massif on a separate full build recorded a 1.476 GiB peak useful heap.
+The optimized binary's symbols are insufficient for reliable per-call
+allocation attribution, so this is corpus-wide allocator evidence; the
+stage counters above are the authoritative Git attribution. Git ingestion is
+about 4.8% of this warm build and is no longer a material target. No scan
+rewrite, allocation rewrite, or Rayon/background pool is justified.
+
 ## Full semantic artifact and quality result
 
 After the battery-limited Mac run, the same pinned corpus was built on Tali.
