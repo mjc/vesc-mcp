@@ -1001,7 +1001,6 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         .iter()
         .map(|query| query.text.clone())
         .collect::<Vec<_>>();
-    let embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let mut candidates = Vec::with_capacity(candidates_to_run.len());
     for candidate in candidates_to_run {
         let model_dir = model_root.join(&candidate.directory);
@@ -1059,7 +1058,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         benchmark.length_bucketed = length_bucketed;
         benchmark.token_statistics = Some(
             provider
-                .token_statistics(&embedding_texts)
+                .token_statistics_iter(chunks.iter().map(embedding_text))
                 .unwrap_or_else(|error| {
                     panic!("measure token statistics for {}: {error}", candidate.name)
                 }),

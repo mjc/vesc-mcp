@@ -737,42 +737,42 @@ impl FastEmbedProvider {
     /// Returns [`EmbeddingError::EmptyInput`] for empty input or
     /// [`EmbeddingError::Provider`] when tokenization fails.
     pub fn token_statistics(&self, texts: &[String]) -> Result<TokenStatistics, EmbeddingError> {
-        if texts.is_empty() {
-            return Err(EmbeddingError::EmptyInput);
-        }
-        let original_chunks = texts.len();
-        let prefixed;
-        let texts = if self.profile.document_prefix.is_empty() {
-            texts
-        } else {
-            prefixed = texts
-                .iter()
-                .map(|text| format!("{}{}", self.profile.document_prefix, text))
-                .collect::<Vec<_>>();
-            &prefixed
-        };
-        let mut windowed_texts = Vec::new();
-        let texts = if self.lossless_windowing {
-            for text in texts {
-                windowed_texts.extend(self.document_windows(text)?);
-            }
-            &windowed_texts
-        } else {
-            texts
-        };
+        self.token_statistics_iter(texts.iter().map(String::as_str))
+    }
+
+    /// Measure token statistics from a stream of owned or borrowed texts.
+    ///
+    /// Only one provider batch, plus lossless windows for the current source
+    /// text, is retained at a time. This keeps full-corpus diagnostics from
+    /// rebuilding a second corpus-wide text vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError::EmptyInput`] for empty input or
+    /// [`EmbeddingError::Provider`] when tokenization fails.
+    pub fn token_statistics_iter<I, S>(&self, texts: I) -> Result<TokenStatistics, EmbeddingError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let mut untruncated_tokenizer = self.model.tokenizer.clone();
         untruncated_tokenizer.with_padding(None);
         untruncated_tokenizer
             .with_truncation(None)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
 
-        let mut real_tokens = Vec::with_capacity(texts.len());
+        let mut real_tokens = Vec::new();
         let mut total_real_tokens = 0_u64;
         let mut total_padded_tokens = 0_u64;
         let mut total_untruncated_tokens = 0_u64;
         let mut truncated_chunks = 0_usize;
+        let mut original_chunks = 0_usize;
+        let mut batch_texts = Vec::with_capacity(self.batch_size.get());
 
-        for batch in texts.chunks(self.batch_size.get()) {
+        let mut measure_batch = |batch: &mut Vec<String>| -> Result<(), EmbeddingError> {
+            if batch.is_empty() {
+                return Ok(());
+            }
             let inputs = batch.iter().map(String::as_str).collect::<Vec<_>>();
             let configured = self
                 .model
@@ -796,6 +796,37 @@ impl FastEmbedProvider {
                 total_untruncated_tokens = total_untruncated_tokens.saturating_add(raw as u64);
                 truncated_chunks += usize::from(raw > self.profile.max_length);
             }
+            batch.clear();
+            Ok(())
+        };
+
+        for source in texts {
+            original_chunks += 1;
+            let source = source.as_ref();
+            let prefixed;
+            let source = if self.profile.document_prefix.is_empty() {
+                source
+            } else {
+                prefixed = format!("{}{}", self.profile.document_prefix, source);
+                &prefixed
+            };
+            if self.lossless_windowing {
+                for window in self.document_windows(source)? {
+                    batch_texts.push(window);
+                    if batch_texts.len() == self.batch_size.get() {
+                        measure_batch(&mut batch_texts)?;
+                    }
+                }
+            } else {
+                batch_texts.push(source.to_owned());
+                if batch_texts.len() == self.batch_size.get() {
+                    measure_batch(&mut batch_texts)?;
+                }
+            }
+        }
+        measure_batch(&mut batch_texts)?;
+        if original_chunks == 0 {
+            return Err(EmbeddingError::EmptyInput);
         }
 
         real_tokens.sort_unstable();
