@@ -676,6 +676,12 @@ impl FastEmbedProvider {
     }
 
     /// Load a local model with explicit ONNX Runtime provider and graph settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the model files or ORT runtime cannot
+    /// be loaded, when the profile/thread settings are invalid, or when an
+    /// explicitly requested execution provider cannot be registered.
     pub fn from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         root: &std::path::Path,
         batch_size: Option<usize>,

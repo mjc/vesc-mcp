@@ -1,7 +1,7 @@
 //! The definition of the main struct for text embeddings - [`TextEmbedding`].
 
 #[cfg(feature = "hf-hub")]
-use crate::common::load_tokenizer_hf_hub;
+use crate::common::{init_session_builder, load_tokenizer_hf_hub};
 use crate::{
     common::{init_session_builder_with_optimization, load_tokenizer},
     models::{text_embedding::models_list, ModelTrait},
