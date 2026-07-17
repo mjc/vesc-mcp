@@ -1309,6 +1309,9 @@ fn run_semantic_benchmark(
         );
         size
     });
+    let token_statistics_only = args
+        .iter()
+        .any(|arg| arg == "--semantic-token-statistics-only");
     let limits = argument_value(args, "--limits")
         .unwrap_or_else(|| "5,10,20,50".into())
         .split(',')
@@ -1360,6 +1363,21 @@ fn run_semantic_benchmark(
     } else {
         chunks
     };
+    if token_statistics_only {
+        let statistics = provider
+            .token_statistics(&embedding_texts)
+            .unwrap_or_else(|error| panic!("measure semantic token statistics: {error}"));
+        match format {
+            "json" => println!(
+                "{}",
+                serde_json::to_string_pretty(&statistics)
+                    .expect("serialize semantic token statistics")
+            ),
+            "text" => println!("{statistics:#?}"),
+            other => panic!("unsupported format {other:?} for token statistics; use json or text"),
+        }
+        return;
+    }
     let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
         u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
     );
