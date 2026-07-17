@@ -225,6 +225,7 @@
             python3Packages.onnx python3Packages.onnxruntime
           ]
           ++ lib.optionals stdenv.isLinux [
+            heaptrack
             perf
             rocmPackages.rocm-runtime
             rocmPackages.rocminfo
@@ -242,6 +243,7 @@
           rocm = pkgs.mkShell {
             packages = with pkgs; [
               rustToolchain pkg-config openssl cargo-nextest clippy rustfmt jq hyperfine time
+              heaptrack
               python3Packages.onnx python3Packages.onnxruntime rocmOnnxruntime
               rocmPackages.rocm-runtime rocmPackages.rocminfo
             ];
