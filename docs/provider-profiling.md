@@ -36,7 +36,9 @@ artifact manifest.
 
 Full-corpus semantic ingestion must not silently truncate input. It must use
 the model's declared limit with lossless token-aware windowing or reject the
-candidate. Diagnostic probes may select fewer complete chunks instead.
+candidate. Pass `--semantic-lossless-windows` to `gen-knowledge-index build`
+to preserve oversized documents by combining their window vectors. Diagnostic
+probes may select fewer complete chunks instead.
 
 The registered model profile fixes the model's input length. The builder and
 benchmark do not provide an input-length override because changing it can
