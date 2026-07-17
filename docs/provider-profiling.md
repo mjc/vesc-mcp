@@ -114,10 +114,13 @@ it the default.
 
 ## Current recommendation
 
-For the next controlled production experiment: use length-bucketed inference,
-outer batch 8, and 12 ORT intra-op threads on Tali-class CPUs. Keep the CPU
-quantized model as the baseline until INT8 quality is measured. Do not select
-batch sizes above 32 without a machine-specific memory budget.
+For the next controlled production experiment: invoke the build with
+`--semantic-length-bucketed true --semantic-batch-size 8
+--semantic-intra-threads 12` on Tali-class CPUs. The build path now performs
+bounded tokenizer passes to choose inference order and restores stable
+chunk-ID order in the artifact. Keep the CPU quantized model as the baseline
+until INT8 quality is measured. Do not select batch sizes above 32 without a
+machine-specific memory budget.
 
 Remaining before changing the production default:
 
@@ -125,5 +128,5 @@ Remaining before changing the production default:
    existing retrieval evaluation suite.
 2. Verify the same stable vector ordering and exact top-K IDs for source-order
    and bucketed builds.
-3. Add the chosen batching/thread policy to the production build path, then
-   run one integrated before/after build and report external peak RSS.
+3. Run one integrated before/after build with the new opt-in policy and report
+   external peak RSS before making it the default.
