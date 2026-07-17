@@ -38,6 +38,8 @@ def metrics(queries: list[dict], results: list[dict]) -> dict[str, float]:
         relevant = query["relevant"]
         positive = {key for key, grade in relevant.items() if grade > 0}
         returned = result["returned"]
+        if any(not item.startswith("chunk-") for item in returned):
+            raise AssertionError(f"{query['id']}: ranking contains a non-corpus ID")
         found5 = sum(item in positive for item in returned[:5])
         found10 = sum(item in positive for item in returned[:10])
         denominator = len(positive)
