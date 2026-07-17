@@ -208,7 +208,9 @@
           extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
         };
         rocmOnnxruntime = if pkgs.stdenv.isLinux then
-          pkgs.onnxruntime.override { rocmSupport = true; }
+          (pkgs.onnxruntime.override { rocmSupport = true; }).overrideAttrs (old: {
+            cmakeFlags = (old.cmakeFlags or [ ]) ++ [ "-Donnxruntime_USE_ROCM=ON" ];
+          })
         else null;
       in {
         packages.default = packageFor system;
