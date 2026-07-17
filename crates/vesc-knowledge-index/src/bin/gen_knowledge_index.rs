@@ -358,6 +358,18 @@ fn run_build(args: &[String]) {
             .parse::<usize>()
             .expect("--semantic-batch-size must be an integer")
     });
+    let semantic_intra_threads = argument_value(args, "--semantic-intra-threads").map(|value| {
+        let threads = value
+            .parse::<usize>()
+            .expect("--semantic-intra-threads must be a positive integer");
+        assert!(
+            threads > 0,
+            "--semantic-intra-threads must be a positive integer"
+        );
+        threads
+    });
+    let semantic_length_bucketed = argument_value(args, "--semantic-length-bucketed")
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     let summary = if let Some(model_dir) = model_dir {
         let model_id = argument_value(args, "--semantic-model-id")
             .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
@@ -367,12 +379,14 @@ fn run_build(args: &[String]) {
             });
         #[cfg(feature = "semantic-fastembed")]
         {
-            let mut provider = FastEmbedProvider::from_model_dir_with_profile(
+            let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
                 &PathBuf::from(model_dir),
                 semantic_batch_size,
                 embedding_profile(&model_id),
+                semantic_intra_threads,
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+            provider.set_length_bucketed(semantic_length_bucketed);
             match source_root.as_deref() {
                 Some(source_root) => build_allowlisted_artifacts_with_provider(
                     &out,
@@ -392,7 +406,14 @@ fn run_build(args: &[String]) {
         }
         #[cfg(not(feature = "semantic-fastembed"))]
         {
-            let _ = (model_dir, model_id, model_revision, semantic_batch_size);
+            let _ = (
+                model_dir,
+                model_id,
+                model_revision,
+                semantic_batch_size,
+                semantic_intra_threads,
+                semantic_length_bucketed,
+            );
             panic!(
                 "semantic model builds require the semantic-fastembed feature; rerun with --features semantic-fastembed"
             );

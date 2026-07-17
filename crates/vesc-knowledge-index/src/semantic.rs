@@ -210,6 +210,14 @@ pub trait EmbeddingProvider {
         OutputNormalization::Unknown
     }
 
+    /// Returns an optional stable inference order for the supplied chunks.
+    ///
+    /// Providers may use bounded tokenizer work to group similar-length
+    /// inputs. The artifact builder still restores chunk-ID order afterward.
+    fn inference_order(&mut self, _chunks: &[Chunk]) -> Result<Option<Vec<usize>>, EmbeddingError> {
+        Ok(None)
+    }
+
     /// Embeds documents in input order.
     ///
     /// # Errors
@@ -483,6 +491,7 @@ pub struct FastEmbedProvider {
     model: fastembed::TextEmbedding,
     batch_size: EmbeddingBatchSize,
     profile: EmbeddingProfile,
+    length_bucketed: bool,
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -505,6 +514,7 @@ impl FastEmbedProvider {
             model,
             batch_size,
             profile,
+            length_bucketed: false,
         })
     }
 
@@ -519,6 +529,11 @@ impl FastEmbedProvider {
     pub fn set_batch_size(&mut self, batch_size: usize) -> Result<(), EmbeddingError> {
         self.batch_size = EmbeddingBatchSize::new(batch_size)?;
         Ok(())
+    }
+
+    /// Enables bounded token-length bucketing for subsequent document builds.
+    pub fn set_length_bucketed(&mut self, enabled: bool) {
+        self.length_bucketed = enabled;
     }
 
     /// Load a user-provisioned `FastEmbed` model without contacting a registry.
@@ -730,6 +745,30 @@ impl FastEmbedProvider {
     fn effective_batch_size(&self, input_len: usize) -> Option<usize> {
         (input_len > 0).then(|| self.batch_size.get().min(input_len))
     }
+
+    fn length_bucket_order(&mut self, chunks: &[Chunk]) -> Result<Vec<usize>, EmbeddingError> {
+        let mut keyed = Vec::with_capacity(chunks.len());
+        for (base, batch) in chunks.chunks(self.batch_size.get()).enumerate() {
+            let texts = batch.iter().map(embedding_text).collect::<Vec<_>>();
+            let lengths = self.token_lengths(&texts)?;
+            keyed.extend(
+                lengths
+                    .into_iter()
+                    .enumerate()
+                    .map(|(offset, length)| (length, base * self.batch_size.get() + offset)),
+            );
+        }
+        keyed.sort_unstable_by(|(left_length, left), (right_length, right)| {
+            left_length.cmp(right_length).then_with(|| {
+                chunks[*left]
+                    .path
+                    .cmp(&chunks[*right].path)
+                    .then_with(|| chunks[*left].ordinal.cmp(&chunks[*right].ordinal))
+                    .then_with(|| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id))
+            })
+        });
+        Ok(keyed.into_iter().map(|(_, index)| index).collect())
+    }
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -801,6 +840,14 @@ impl EmbeddingProvider for FastEmbedProvider {
             OutputNormalization::Guaranteed
         } else {
             OutputNormalization::Unknown
+        }
+    }
+
+    fn inference_order(&mut self, chunks: &[Chunk]) -> Result<Option<Vec<usize>>, EmbeddingError> {
+        if self.length_bucketed && chunks.len() > 1 {
+            Ok(Some(self.length_bucket_order(chunks)?))
+        } else {
+            Ok(None)
         }
     }
 
@@ -894,15 +941,64 @@ impl VectorArtifact {
         model_revision: impl Into<String>,
         corpus_digest: ContentDigest,
     ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
+        Self::from_provider_with_observations_and_order(
+            provider,
+            chunks,
+            model_id,
+            model_revision,
+            corpus_digest,
+            None,
+        )
+    }
+
+    /// Builds an artifact using an optional provider-selected inference order.
+    ///
+    /// The returned rows are always restored to ascending stable chunk ID,
+    /// regardless of the order used for provider batches.
+    pub fn from_provider_with_observations_and_order<P: EmbeddingProvider + ?Sized>(
+        provider: &mut P,
+        chunks: &[Chunk],
+        model_id: impl Into<String>,
+        model_revision: impl Into<String>,
+        corpus_digest: ContentDigest,
+        inference_order: Option<&[usize]>,
+    ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
         let batch_size = provider.embedding_batch_size().get();
         let output_normalization = provider.output_normalization();
         let mut observations = VectorBuildObservations::default();
 
+        let natural_order;
+        let inference_order = if let Some(inference_order) = inference_order {
+            if inference_order.len() != chunks.len()
+                || inference_order.iter().any(|&index| index >= chunks.len())
+            {
+                return Err(EmbeddingError::Provider(
+                    "provider returned an invalid inference order".into(),
+                ));
+            }
+            let mut seen = vec![false; chunks.len()];
+            for &index in inference_order {
+                if std::mem::replace(&mut seen[index], true) {
+                    return Err(EmbeddingError::Provider(
+                        "provider returned a duplicate inference index".into(),
+                    ));
+                }
+            }
+            inference_order
+        } else {
+            natural_order = (0..chunks.len()).collect::<Vec<_>>();
+            &natural_order
+        };
+
         let mut dimension = None;
         let mut values = Vec::with_capacity(chunks.len());
-        for chunk_batch in chunks.chunks(batch_size) {
+        let mut row_offsets = vec![usize::MAX; chunks.len()];
+        for batch_indices in inference_order.chunks(batch_size) {
             let input_started = Instant::now();
-            let texts = chunk_batch.iter().map(embedding_text).collect::<Vec<_>>();
+            let texts = batch_indices
+                .iter()
+                .map(|&index| embedding_text(&chunks[index]))
+                .collect::<Vec<_>>();
             observations.embedding_input_us = observations
                 .embedding_input_us
                 .saturating_add(elapsed_us(input_started));
@@ -924,15 +1020,16 @@ impl VectorArtifact {
                 .provider_us
                 .saturating_add(elapsed_us(provider_started));
 
-            if batch_vectors.len() != chunk_batch.len() {
+            if batch_vectors.len() != batch_indices.len() {
                 return Err(EmbeddingError::DimensionMismatch {
-                    expected: chunk_batch.len(),
+                    expected: batch_indices.len(),
                     actual: batch_vectors.len(),
                 });
             }
 
             let finalization_started = Instant::now();
-            for mut vector in batch_vectors {
+            for (source_index, mut vector) in batch_indices.iter().copied().zip(batch_vectors) {
+                row_offsets[source_index] = values.len();
                 match dimension {
                     None => {
                         let vector_dimension = vector.len();
@@ -964,6 +1061,11 @@ impl VectorArtifact {
         }
 
         let dimension = dimension.unwrap_or(0);
+        if row_offsets.iter().any(|&offset| offset == usize::MAX) {
+            return Err(EmbeddingError::Provider(
+                "provider inference order did not cover the corpus".into(),
+            ));
+        }
         let sort_started = Instant::now();
         let mut order = (0..chunks.len()).collect::<Vec<_>>();
         order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
@@ -971,9 +1073,7 @@ impl VectorArtifact {
         let mut sorted_values = Vec::with_capacity(values.len());
         for input_index in order {
             ids.push(chunks[input_index].chunk_id.clone());
-            let start = input_index
-                .checked_mul(dimension)
-                .ok_or(EmbeddingError::TooLarge)?;
+            let start = row_offsets[input_index];
             let end = start
                 .checked_add(dimension)
                 .ok_or(EmbeddingError::TooLarge)?;
@@ -1502,8 +1602,7 @@ mod tests {
     #[test]
     fn vector_artifact_is_stable_when_inference_order_changes() {
         let original = chunks();
-        let mut reordered = original.clone();
-        reordered.reverse();
+        let reversed_order = (0..original.len()).rev().collect::<Vec<_>>();
 
         let mut first_provider = FakeEmbeddingProvider::new(4);
         let first = VectorArtifact::from_provider(
@@ -1516,12 +1615,13 @@ mod tests {
         .expect("original artifact");
 
         let mut second_provider = FakeEmbeddingProvider::new(4);
-        let second = VectorArtifact::from_provider(
+        let (second, _) = VectorArtifact::from_provider_with_observations_and_order(
             &mut second_provider,
-            &reordered,
+            &original,
             "fake",
             "test",
             ContentDigest::of(b"corpus"),
+            Some(&reversed_order),
         )
         .expect("reordered artifact");
 

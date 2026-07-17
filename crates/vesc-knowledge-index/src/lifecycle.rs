@@ -451,12 +451,14 @@ fn stage_chunks(
     let (lexical_checksum, lexical_bytes) = lexical.write_artifact_with_digest(&lexical_path)?;
     observations.record(BuildPhase::Encoding, encoding_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
-        let (vector, vector_build) = VectorArtifact::from_provider_with_observations(
+        let inference_order = semantic.provider.inference_order(chunks)?;
+        let (vector, vector_build) = VectorArtifact::from_provider_with_observations_and_order(
             semantic.provider,
             chunks,
             semantic.model_id,
             semantic.model_revision,
             corpus.content_digest.clone(),
+            inference_order.as_deref(),
         )?;
         observations.embedding_input_bytes = vector_build.input_bytes;
         observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
