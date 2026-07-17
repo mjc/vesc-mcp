@@ -39,7 +39,7 @@ use vesc_knowledge_index::{
 #[cfg(feature = "git-corpus")]
 use vesc_knowledge_index::{
     LicenseStatus, TrustTier, build_git_artifacts,
-    corpus::git::{GitCorpusPolicy, GitCorpusSource},
+    corpus::git::{GitCorpusPolicy, GitCorpusSource, GitIngestionObservations},
 };
 
 fn main() {
@@ -197,6 +197,8 @@ fn run_build_default(args: &[String]) {
         summary.observations.embedding_input_bytes
     );
     println!("visited-files: {}", summary.observations.visited_files);
+    #[cfg(feature = "git-corpus")]
+    print_git_observations(summary.observations.git_ingestion.as_ref());
     println!(
         "provenance-bytes: {}",
         summary.observations.provenance_bytes()
@@ -471,6 +473,8 @@ fn run_build(args: &[String]) {
         summary.observations.embedding_input_bytes
     );
     println!("visited-files: {}", summary.observations.visited_files);
+    #[cfg(feature = "git-corpus")]
+    print_git_observations(summary.observations.git_ingestion.as_ref());
     println!(
         "provenance-bytes: {}",
         summary.observations.provenance_bytes()
@@ -493,6 +497,35 @@ fn run_build(args: &[String]) {
     }
     println!("diagnostics: {}", summary.manifest.diagnostics.len());
     println!("active-manifest: {}", active_manifest_path(&out).display());
+}
+
+#[cfg(feature = "git-corpus")]
+fn print_git_observations(observations: Option<&GitIngestionObservations>) {
+    let Some(observations) = observations else {
+        return;
+    };
+    println!("git-tree-walk-us: {}", observations.tree_walk_us);
+    println!("git-candidate-sort-us: {}", observations.candidate_sort_us);
+    println!("git-blob-load-us: {}", observations.blob_load_us);
+    println!("git-binary-scan-us: {}", observations.binary_scan_us);
+    println!(
+        "git-utf8-normalization-us: {}",
+        observations.utf8_normalization_us
+    );
+    println!(
+        "git-document-metadata-us: {}",
+        observations.document_metadata_us
+    );
+    println!("git-candidate-count: {}", observations.candidate_count);
+    println!("git-blob-bytes-loaded: {}", observations.blob_bytes_loaded);
+    println!(
+        "git-binary-rejections: {}",
+        observations.binary_rejection_count
+    );
+    println!(
+        "git-encoding-rejections: {}",
+        observations.encoding_rejection_count
+    );
 }
 
 fn run_inspect(args: &[String]) {

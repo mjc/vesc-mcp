@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
 #[cfg(feature = "git-corpus")]
-use crate::corpus::git::{GitCorpusSource, GitIngestionError, ingest_git_commit};
+use crate::corpus::git::{
+    GitCorpusSource, GitIngestionError, GitIngestionObservations, ingest_git_commit,
+};
 use crate::corpus::ingest::{SourceInventory, SourceRejection, SourceSpec, ingest_allowlisted};
 use crate::corpus::{
     ArtifactManifest, ContentDigest, CorpusManifest, CorpusVersion, NormalizedDocument,
@@ -87,6 +89,8 @@ pub struct BuildObservations {
     pub rejection_count: usize,
     pub resolved_batch_size: Option<usize>,
     pub vector_build: Option<VectorBuildObservations>,
+    #[cfg(feature = "git-corpus")]
+    pub git_ingestion: Option<GitIngestionObservations>,
 }
 
 impl BuildObservations {
@@ -253,6 +257,7 @@ pub fn build_allowlisted_artifacts_with_provider(
         rejected,
         sources,
         visited_files,
+        ..
     } = report;
     let chunking_started = Instant::now();
     let mut chunks = legacy_chunks()?;
@@ -329,6 +334,7 @@ pub fn build_git_artifacts_with_provider(
     let mut rejected = Vec::new();
     let mut inventory = Vec::new();
     let mut visited_files = 0_u64;
+    let mut git_ingestion = GitIngestionObservations::default();
     let mut ordered_sources = sources.iter().collect::<Vec<_>>();
     ordered_sources.sort_by(|left, right| {
         left.repository_id
@@ -348,6 +354,9 @@ pub fn build_git_artifacts_with_provider(
         ingestion_us = ingestion_us.saturating_add(elapsed_us(ingest_started));
         visited_files =
             visited_files.saturating_add(u64::try_from(report.visited_files).unwrap_or(u64::MAX));
+        if let Some(report_observations) = report.git_observations.as_ref() {
+            git_ingestion.accumulate(report_observations);
+        }
         let chunking_started = Instant::now();
         for document in report.documents {
             chunks.extend(
@@ -376,6 +385,7 @@ pub fn build_git_artifacts_with_provider(
         .filter(|source| source.rejection.is_none())
         .filter_map(|source| source.byte_count)
         .sum();
+    observations.git_ingestion = Some(git_ingestion);
     let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
         provider,
         model_id,

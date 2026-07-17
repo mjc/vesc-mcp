@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use gix::bstr::ByteSlice;
 
@@ -95,6 +96,49 @@ struct Candidate {
     size: u64,
 }
 
+/// Aggregate Git-ingestion work, retained for profiling rather than artifact identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitIngestionObservations {
+    pub tree_walk_us: u64,
+    pub candidate_sort_us: u64,
+    pub blob_load_us: u64,
+    pub binary_scan_us: u64,
+    pub utf8_normalization_us: u64,
+    pub document_metadata_us: u64,
+    pub candidate_count: u64,
+    pub blob_bytes_loaded: u64,
+    pub binary_rejection_count: u64,
+    pub encoding_rejection_count: u64,
+}
+
+impl GitIngestionObservations {
+    pub(crate) fn accumulate(&mut self, other: &Self) {
+        self.tree_walk_us = self.tree_walk_us.saturating_add(other.tree_walk_us);
+        self.candidate_sort_us = self
+            .candidate_sort_us
+            .saturating_add(other.candidate_sort_us);
+        self.blob_load_us = self.blob_load_us.saturating_add(other.blob_load_us);
+        self.binary_scan_us = self.binary_scan_us.saturating_add(other.binary_scan_us);
+        self.utf8_normalization_us = self
+            .utf8_normalization_us
+            .saturating_add(other.utf8_normalization_us);
+        self.document_metadata_us = self
+            .document_metadata_us
+            .saturating_add(other.document_metadata_us);
+        self.candidate_count = self.candidate_count.saturating_add(other.candidate_count);
+        self.blob_bytes_loaded = self
+            .blob_bytes_loaded
+            .saturating_add(other.blob_bytes_loaded);
+        self.binary_rejection_count = self
+            .binary_rejection_count
+            .saturating_add(other.binary_rejection_count);
+        self.encoding_rejection_count = self
+            .encoding_rejection_count
+            .saturating_add(other.encoding_rejection_count);
+    }
+}
+
 /// Ingest approved text/code blobs reachable from one exact commit.
 ///
 /// The repository may be bare. Branch and tag resolution belongs to the managed
@@ -128,6 +172,7 @@ pub fn ingest_git_commit(
     let mut candidates = Vec::new();
     let mut rejected = Vec::new();
     let mut visited_files = 0_usize;
+    let tree_walk_started = Instant::now();
     collect_tree(
         &tree,
         "",
@@ -136,6 +181,12 @@ pub fn ingest_git_commit(
         &mut candidates,
         &mut rejected,
     )?;
+    let mut observations = GitIngestionObservations {
+        tree_walk_us: elapsed_us(tree_walk_started),
+        candidate_count: u64::try_from(candidates.len()).unwrap_or(u64::MAX),
+        ..GitIngestionObservations::default()
+    };
+    let candidate_sort_started = Instant::now();
     candidates.sort_by(|left, right| left.path.cmp(&right.path));
     let total_bytes = candidates.iter().try_fold(0_u64, |total, candidate| {
         total
@@ -144,6 +195,7 @@ pub fn ingest_git_commit(
                 limit: policy.max_total_bytes,
             })
     })?;
+    observations.candidate_sort_us = elapsed_us(candidate_sort_started);
     if total_bytes > policy.max_total_bytes {
         return Err(GitIngestionError::ByteLimit {
             limit: policy.max_total_bytes,
@@ -155,12 +207,28 @@ pub fn ingest_git_commit(
         rejected,
         sources: Vec::with_capacity(candidates.len()),
         visited_files,
+        #[cfg(feature = "git-corpus")]
+        git_observations: None,
     };
     for candidate in candidates {
+        let blob_load_started = Instant::now();
         let object = repo
             .find_object(candidate.id)
             .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
-        if object.data.contains(&0) {
+        observations.blob_load_us = observations
+            .blob_load_us
+            .saturating_add(elapsed_us(blob_load_started));
+        observations.blob_bytes_loaded = observations
+            .blob_bytes_loaded
+            .saturating_add(u64::try_from(object.data.len()).unwrap_or(u64::MAX));
+        let binary_scan_started = Instant::now();
+        let is_binary = object.data.contains(&0);
+        observations.binary_scan_us = observations
+            .binary_scan_us
+            .saturating_add(elapsed_us(binary_scan_started));
+        if is_binary {
+            observations.binary_rejection_count =
+                observations.binary_rejection_count.saturating_add(1);
             report.rejected.push(source_rejection(
                 &candidate.path,
                 "binary",
@@ -168,7 +236,14 @@ pub fn ingest_git_commit(
             ));
             continue;
         }
-        let Ok(content) = normalize_text_ref(&object.data) else {
+        let utf8_started = Instant::now();
+        let content = normalize_text_ref(&object.data);
+        observations.utf8_normalization_us = observations
+            .utf8_normalization_us
+            .saturating_add(elapsed_us(utf8_started));
+        let Ok(content) = content else {
+            observations.encoding_rejection_count =
+                observations.encoding_rejection_count.saturating_add(1);
             report.rejected.push(source_rejection(
                 &candidate.path,
                 "encoding",
@@ -176,6 +251,7 @@ pub fn ingest_git_commit(
             ));
             continue;
         };
+        let metadata_started = Instant::now();
         let digest = ContentDigest::of(content.as_bytes());
         let mut document = NormalizedDocument::new(
             candidate.path.clone(),
@@ -214,7 +290,11 @@ pub fn ingest_git_commit(
             rejection: None,
         });
         report.documents.push(document);
+        observations.document_metadata_us = observations
+            .document_metadata_us
+            .saturating_add(elapsed_us(metadata_started));
     }
+    report.git_observations = Some(observations);
     Ok(report)
 }
 
@@ -403,4 +483,8 @@ fn source_rejection(path: &str, code: &str, message: &str) -> SourceRejection {
         message: message.to_owned(),
         required: false,
     }
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }

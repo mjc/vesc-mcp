@@ -173,6 +173,11 @@ fn bare_commit_ingestion_yields_bounded_code_with_exact_provenance() {
     );
     assert!(report.rejected.iter().any(|item| item.code == "encoding"));
     assert!(report.rejected.iter().any(|item| item.code == "binary"));
+    let observations = report.git_observations.as_ref().expect("Git observations");
+    assert_eq!(observations.candidate_count, 6);
+    assert!(observations.blob_bytes_loaded > 0);
+    assert_eq!(observations.binary_rejection_count, 1);
+    assert_eq!(observations.encoding_rejection_count, 1);
     assert!(
         report
             .rejected
