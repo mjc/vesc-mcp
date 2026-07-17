@@ -846,10 +846,14 @@ fn initialize_semantic_model(
     if state.entry.as_ref().is_none_or(|entry| entry.key != key) {
         let profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(model_id)
             .ok_or_else(|| format!("no embedding profile is registered for {model_id}"))?;
-        let provider = vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile(
-            model_dir, None, profile,
-        )
-        .map_err(|error| format!("semantic provider unavailable: {error}"))?;
+        let provider =
+            vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile_and_threads(
+                model_dir,
+                None,
+                profile,
+                Some(vesc_knowledge_index::default_semantic_intra_threads()),
+            )
+            .map_err(|error| format!("semantic provider unavailable: {error}"))?;
         state.entry = Some(CachedSemanticProvider {
             key,
             provider,

@@ -14,6 +14,27 @@ const MAGIC: &[u8] = b"VESCRAG1";
 const CHECKSUM_LEN: usize = 32;
 const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
 
+/// Conservative outer batch size for the production embedding build.
+pub const DEFAULT_SEMANTIC_BATCH_SIZE: usize = 8;
+
+/// Selects the measured CPU thread default for the supported developer hosts.
+///
+/// Apple Silicon M1 machines expose eight logical CPUs. Other hosts use the
+/// process CPU allowance, which is twelve on the Ryzen 5 8600G test host.
+#[must_use]
+pub fn default_semantic_intra_threads() -> usize {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        8
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EmbeddingError {

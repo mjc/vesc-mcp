@@ -27,6 +27,7 @@ use vesc_knowledge_index::{
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
+use vesc_knowledge_index::{DEFAULT_SEMANTIC_BATCH_SIZE, default_semantic_intra_threads};
 use vesc_knowledge_index::{
     IndexBuilder, LexicalFilters, LexicalIndex, RepositoryId, Revision, active_manifest_path,
     build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest, search_knowledge,
@@ -111,17 +112,35 @@ fn run_build_default(args: &[String]) {
             });
         #[cfg(feature = "semantic-fastembed")]
         {
-            let batch_size = argument_value(args, "--semantic-batch-size").map(|value| {
-                value
-                    .parse::<usize>()
-                    .expect("--semantic-batch-size must be an integer")
-            });
-            let mut provider = FastEmbedProvider::from_model_dir_with_profile(
+            let batch_size = argument_value(args, "--semantic-batch-size")
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .expect("--semantic-batch-size must be an integer")
+                })
+                .unwrap_or(DEFAULT_SEMANTIC_BATCH_SIZE);
+            let intra_threads = argument_value(args, "--semantic-intra-threads")
+                .map(|value| {
+                    let threads = value
+                        .parse::<usize>()
+                        .expect("--semantic-intra-threads must be a positive integer");
+                    assert!(
+                        threads > 0,
+                        "--semantic-intra-threads must be a positive integer"
+                    );
+                    threads
+                })
+                .unwrap_or_else(default_semantic_intra_threads);
+            let length_bucketed = argument_value(args, "--semantic-length-bucketed")
+                .map_or(true, |value| matches!(value.as_str(), "1" | "true" | "yes"));
+            let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
                 &PathBuf::from(model_dir),
-                batch_size,
+                Some(batch_size),
                 embedding_profile(&model_id),
+                Some(intra_threads),
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+            provider.set_length_bucketed(length_bucketed);
             build_git_artifacts_with_provider(
                 &staging,
                 &sources,
@@ -353,23 +372,27 @@ fn run_build(args: &[String]) {
     .expect("valid source revision");
     let specs = vesc_mcp_source_specs();
     let model_dir = argument_value(args, "--semantic-model-dir");
-    let semantic_batch_size = argument_value(args, "--semantic-batch-size").map(|value| {
-        value
-            .parse::<usize>()
-            .expect("--semantic-batch-size must be an integer")
-    });
-    let semantic_intra_threads = argument_value(args, "--semantic-intra-threads").map(|value| {
-        let threads = value
-            .parse::<usize>()
-            .expect("--semantic-intra-threads must be a positive integer");
-        assert!(
-            threads > 0,
-            "--semantic-intra-threads must be a positive integer"
-        );
-        threads
-    });
+    let semantic_batch_size = argument_value(args, "--semantic-batch-size")
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("--semantic-batch-size must be an integer")
+        })
+        .unwrap_or(DEFAULT_SEMANTIC_BATCH_SIZE);
+    let semantic_intra_threads = argument_value(args, "--semantic-intra-threads")
+        .map(|value| {
+            let threads = value
+                .parse::<usize>()
+                .expect("--semantic-intra-threads must be a positive integer");
+            assert!(
+                threads > 0,
+                "--semantic-intra-threads must be a positive integer"
+            );
+            threads
+        })
+        .unwrap_or_else(default_semantic_intra_threads);
     let semantic_length_bucketed = argument_value(args, "--semantic-length-bucketed")
-        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+        .map_or(true, |value| matches!(value.as_str(), "1" | "true" | "yes"));
     let summary = if let Some(model_dir) = model_dir {
         let model_id = argument_value(args, "--semantic-model-id")
             .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
@@ -381,9 +404,9 @@ fn run_build(args: &[String]) {
         {
             let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads(
                 &PathBuf::from(model_dir),
-                semantic_batch_size,
+                Some(semantic_batch_size),
                 embedding_profile(&model_id),
-                semantic_intra_threads,
+                Some(semantic_intra_threads),
             )
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(semantic_length_bucketed);

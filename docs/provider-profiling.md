@@ -114,15 +114,16 @@ it the default.
 
 ## Current recommendation
 
-For the next controlled production experiment: invoke the build with
-`--semantic-length-bucketed true --semantic-batch-size 8
---semantic-intra-threads 12` on Tali-class CPUs. The build path now performs
-bounded tokenizer passes to choose inference order and restores stable
-chunk-ID order in the artifact. Keep the CPU quantized model as the baseline
-until INT8 quality is measured. Do not select batch sizes above 32 without a
-machine-specific memory budget.
+The production build now defaults to
+`--semantic-length-bucketed true --semantic-batch-size 8`. It uses eight
+intra-op threads on Apple Silicon M1 and the process CPU allowance elsewhere
+(twelve on Tali under its current CPU allowance); explicit flags still override
+these defaults. The build path performs bounded tokenizer passes to choose
+inference order and restores stable chunk-ID order in the artifact. Keep the
+CPU quantized model as the baseline until INT8 quality is measured. Do not
+select batch sizes above 32 without a machine-specific memory budget.
 
-Remaining before changing the production default:
+Remaining validation:
 
 1. Build matching quantized and INT8 sample/full artifacts and compare the
    existing retrieval evaluation suite.
