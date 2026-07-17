@@ -54,15 +54,13 @@ and active-generation selection remain separate lifecycle steps.
 3. Cite the returned `source.repo`, `source.path`, `source.line`, and optional
    `source.revision`.
 
-## Rebuild and inspect
+## Complete example request
 
-```bash
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- \
-  build --source-root "$PWD" --out target/knowledge-artifacts
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- \
-  inspect --path target/knowledge-artifacts
-```
+Ask the connected assistant:
 
-The active generation is staged and checksum-validated before activation. The
-MCP lexical cache is keyed by that generation, so the next request observes the
-new corpus automatically.
+> Search VESC knowledge for `lbm_add_extension`. Return at most three lexical
+> results, read the top result's chunk resource, and cite its repository,
+> path, and line when available.
+
+This keeps the search bounded and makes the provenance visible before the
+passage is used.

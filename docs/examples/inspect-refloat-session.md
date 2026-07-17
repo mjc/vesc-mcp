@@ -1,10 +1,10 @@
-# Example agent session: inspect refloat-minimal
+# Inspect a sample Refloat package
 
 Copy-paste prompts for an MCP client connected to `vesc-mcp-server`. All paths use the in-repo fixture `tests/fixtures/refloat-minimal/` — no live refloat checkout required.
 
-**Prerequisites:** `VESC_PACKAGE_ROOTS` includes the vesc-mcp repo `tests/fixtures/` directory (automatic in CI via `test-fixtures`; for a local MCP session set `VESC_PACKAGE_ROOTS` to your clone's `tests/fixtures` path).
-
-See [AGENTS.md](../../AGENTS.md) for the full tool cheat sheet.
+**Prerequisite:** `VESC_PACKAGE_ROOTS` or `[paths] package_roots` includes the
+source checkout's `tests/fixtures/` directory. This example uses the committed
+sample data and does not require a live Refloat checkout.
 
 ---
 
@@ -20,7 +20,7 @@ See [AGENTS.md](../../AGENTS.md) for the full tool cheat sheet.
 }
 ```
 
-**Expected response** (paths vary by machine; shape is stable):
+**Expected response** (the absolute prefix depends on the installation):
 
 ```json
 {
