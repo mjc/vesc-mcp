@@ -18,7 +18,7 @@ def load(path: Path) -> dict:
     return value
 
 
-def combine(reports: list[dict]) -> dict:
+def combine(reports: list[dict], peak_rss: dict[str, int] | None = None) -> dict:
     if not reports:
         raise ValueError("at least one report is required")
     first = reports[0]
@@ -36,6 +36,8 @@ def combine(reports: list[dict]) -> dict:
         if name in names:
             raise ValueError(f"duplicate candidate {name}")
         names.add(name)
+        if peak_rss is not None and name in peak_rss:
+            candidate["benchmark"]["peak_rss_bytes"] = peak_rss[name]
         candidates.append(candidate)
         warnings.extend(report.get("warnings", []))
     return {
@@ -95,8 +97,23 @@ def main() -> int:
     parser.add_argument("reports", nargs="+", type=Path)
     parser.add_argument("--json-out", required=True, type=Path)
     parser.add_argument("--markdown-out", required=True, type=Path)
+    parser.add_argument(
+        "--peak-rss",
+        action="append",
+        default=[],
+        metavar="NAME=BYTES",
+        help="attach externally measured peak RSS to a candidate (repeatable)",
+    )
     args = parser.parse_args()
-    report = combine([load(path) for path in args.reports])
+    peak_rss: dict[str, int] = {}
+    for entry in args.peak_rss:
+        name, separator, value = entry.partition("=")
+        if not separator or not name or not value:
+            raise ValueError("--peak-rss entries must be NAME=BYTES")
+        if name in peak_rss:
+            raise ValueError(f"duplicate peak RSS entry for {name}")
+        peak_rss[name] = int(value)
+    report = combine([load(path) for path in args.reports], peak_rss)
     args.json_out.write_text(json.dumps(report, indent=2) + "\n")
     args.markdown_out.write_text(markdown(report))
     return 0
