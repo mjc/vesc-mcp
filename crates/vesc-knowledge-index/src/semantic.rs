@@ -1000,6 +1000,38 @@ impl FastEmbedProvider {
         });
         Ok(keyed.into_iter().map(|(_, index)| index).collect())
     }
+
+    fn embed_window_batch(
+        &mut self,
+        windows: &mut Vec<String>,
+        owners: &mut Vec<usize>,
+        sums: &mut [Vec<f32>],
+        counts: &mut [usize],
+    ) -> Result<(), EmbeddingError> {
+        if windows.is_empty() {
+            return Ok(());
+        }
+        let batch_size = self.effective_batch_size(windows.len());
+        let vectors = self
+            .model
+            .embed(&mut *windows, batch_size)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        self.validate_vectors(&vectors)?;
+        for (vector, &owner) in vectors.iter().zip(owners.iter()) {
+            let Some(sum) = sums.get_mut(owner) else {
+                return Err(EmbeddingError::Provider(
+                    "lossless window owner is out of range".into(),
+                ));
+            };
+            for (sum, value) in sum.iter_mut().zip(vector) {
+                *sum += *value;
+            }
+            counts[owner] = counts[owner].saturating_add(1);
+        }
+        windows.clear();
+        owners.clear();
+        Ok(())
+    }
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -1241,24 +1273,32 @@ impl EmbeddingProvider for FastEmbedProvider {
             &prefixed
         };
         if self.lossless_windowing {
-            let mut aggregated = Vec::with_capacity(texts.len());
-            for text in texts {
-                let windows = self.document_windows(text)?;
-                let vectors = self
-                    .model
-                    .embed(&windows, self.effective_batch_size(windows.len()))
-                    .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-                self.validate_vectors(&vectors)?;
-                if vectors.is_empty() {
-                    return Err(EmbeddingError::EmptyInput);
-                }
-                let mut vector = vec![0.0_f32; self.profile.dimension];
-                for window in &vectors {
-                    for (sum, value) in vector.iter_mut().zip(window) {
-                        *sum += *value;
+            let mut sums = vec![vec![0.0_f32; self.profile.dimension]; texts.len()];
+            let mut counts = vec![0_usize; texts.len()];
+            let mut window_batch = Vec::with_capacity(self.batch_size.get());
+            let mut owners = Vec::with_capacity(self.batch_size.get());
+            for (owner, text) in texts.iter().enumerate() {
+                let source_windows = self.document_windows(text)?;
+                for window in source_windows {
+                    window_batch.push(window);
+                    owners.push(owner);
+                    if window_batch.len() == self.batch_size.get() {
+                        self.embed_window_batch(
+                            &mut window_batch,
+                            &mut owners,
+                            &mut sums,
+                            &mut counts,
+                        )?;
                     }
                 }
-                let divisor = vectors.iter().fold(0.0_f32, |count, _| count + 1.0);
+            }
+            self.embed_window_batch(&mut window_batch, &mut owners, &mut sums, &mut counts)?;
+            let mut aggregated = Vec::with_capacity(texts.len());
+            for (mut vector, count) in sums.into_iter().zip(counts) {
+                if count == 0 {
+                    return Err(EmbeddingError::EmptyInput);
+                }
+                let divisor = (0..count).fold(0.0_f32, |count, _| count + 1.0);
                 for value in &mut vector {
                     *value /= divisor;
                 }
