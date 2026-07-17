@@ -408,6 +408,7 @@ fn run_build(args: &[String]) {
     );
     let semantic_length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    #[cfg(feature = "semantic-fastembed")]
     let semantic_lossless_windowing = args.iter().any(|arg| arg == "--semantic-lossless-windows");
     let summary = if let Some(model_dir) = model_dir {
         let model_id = argument_value(args, "--semantic-model-id")

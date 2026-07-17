@@ -676,6 +676,12 @@ impl FastEmbedProvider {
     }
 
     /// Load a local model with explicit ONNX Runtime provider and graph settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the model files or ORT runtime cannot
+    /// be loaded, when the profile/thread settings are invalid, or when an
+    /// explicitly requested execution provider cannot be registered.
     pub fn from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         root: &std::path::Path,
         batch_size: Option<usize>,
@@ -1202,13 +1208,16 @@ impl EmbeddingProvider for FastEmbedProvider {
                     .embed(&windows, self.effective_batch_size(windows.len()))
                     .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
                 self.validate_vectors(&vectors)?;
+                if vectors.is_empty() {
+                    return Err(EmbeddingError::EmptyInput);
+                }
                 let mut vector = vec![0.0_f32; self.profile.dimension];
                 for window in &vectors {
                     for (sum, value) in vector.iter_mut().zip(window) {
                         *sum += *value;
                     }
                 }
-                let divisor = vectors.len() as f32;
+                let divisor = vectors.iter().fold(0.0_f32, |count, _| count + 1.0);
                 for value in &mut vector {
                     *value /= divisor;
                 }
