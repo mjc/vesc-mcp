@@ -19,6 +19,45 @@ reported by the benchmark.
   were discarded because ORT retained allocator state between provider
   instances and inflated RSS.
 
+## Full immutable Git corpus profile
+
+The full-corpus run used the pinned local checkouts at revisions
+`c835e9f10989f217269efb4ec943dfea7d280dfd` (`bldc`),
+`005a08a0189f6df83bb47fbe2f93a3320c15c11a` (`vesc_tool`), and
+`0ef6e99d8701886feeb7fe6c07cc4ec53fb3d97a` (`refloat`). The CLI retains
+`vesc` as the logical repository ID for the `bldc` checkout; it is not a
+second firmware repository.
+
+The baseline was the pre-`e32630c` lifecycle path, which reread and reopened a
+freshly written lexical artifact during validation. The final path trusts the
+writer's streaming digest and exact byte count, validates the manifest, and
+checks fresh-file sizes; full checksum/decode validation remains for an
+already-existing generation. Two independent final runs produced the same
+corpus digest `sha256:ee5aca5157a7cab911d8d70643cbb69de0421f7760582c88402e8d407f6e6b1e`
+and byte-identical artifacts.
+
+| Measurement | Before | After |
+|---|---:|---:|
+| Documents / chunks | 2,854 / 13,689 | 2,854 / 13,689 |
+| Visited / accepted / rejected files | 4,113 / 2,760 / 1,353 | 4,113 / 2,760 / 1,353 |
+| Total build | 166.167 s | 60.160 s |
+| Ingestion | 2.119 s | 2.202 s |
+| Chunking | 8.912 s | 8.860 s |
+| Corpus construction | 0.026 s | 0.023 s |
+| Lexical index construction | 40.711 s | 39.083 s |
+| Artifact encoding | 9.946 s | 9.840 s |
+| Manifest serialization + writes | 0.002 s | 0.003 s |
+| Fresh-generation validation | 104.308 s | 0.000835 s |
+| External elapsed | 168.37 s | 63.74 s |
+| External peak RSS | 2,170,830,848 B | 1,465,139,200 B |
+
+The fresh-generation change reduced total build time by 63.8% and removed the
+130 MiB lexical write-read-hash/reopen cycle. The serialized sizes reconcile as
+follows: corpus `1,202,110` B, generation manifest `2,706,783` B, active
+manifest `2,706,783` B, lexical artifact `135,840,360` B, and combined
+generation-plus-active provenance `5,413,566` B (3.985% of the lexical
+artifact). No inventory or diagnostic fields were removed.
+
 ## Batch-size sweep
 
 Source-order batching, one fresh process per point, 1,024 chunks, default ORT
