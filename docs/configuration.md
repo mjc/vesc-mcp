@@ -1,207 +1,170 @@
 # Configuration
 
-vesc-mcp loads settings once per process. Precedence: **environment variables → `~/.config/vesc-mcp/config.toml` → defaults**.
+vesc-mcp reads its configuration when the process starts. Environment
+variables override the configuration file, and the configuration file
+overrides built-in defaults. Restart the server after a change.
 
-Copy [`config.example.toml`](../config.example.toml) to `~/.config/vesc-mcp/config.toml` and adjust paths for your machine.
+Most users need only a package root for stdio, or no configuration at all for
+local Streamable HTTP knowledge search.
 
-## Environment variables
+## Configuration file
 
-### Package sandbox
+The default file on Ubuntu and macOS is:
 
-| Variable | Config key | Default | Description |
-|----------|------------|---------|-------------|
-| `VESC_PACKAGE_ROOTS` | `[paths] package_roots` | *(empty)* | Comma- or colon-separated directories the server may scan, inspect, build, and run checks in. Required for live package paths outside tests. |
-
-Example:
-
-```bash
-export VESC_PACKAGE_ROOTS="$HOME/projects/refloat:$HOME/projects/vesc-rust-poc"
+```text
+~/.config/vesc-mcp/config.toml
 ```
 
-Tools reject paths outside these roots with `outside configured VESC_PACKAGE_ROOTS`.
+On Windows, choose a location and set `VESC_MCP_CONFIG` to its full path in
+the environment used to start the server. This avoids relying on a Unix-style
+home-directory convention.
 
-### Upstream repository roots
-
-Used for catalog path validation, knowledge indexing, and source attribution. Resolution order per repo: **env override → initialized `vendor/` submodule → sibling default**.
-
-| Variable | Config key | Sibling default |
-|----------|------------|-----------------|
-| `VESC_REFLOAT_ROOT` | `refloat_root` | `~/projects/refloat` |
-| `VESC_BLDC_ROOT` | `bldc_root` | `~/projects/bldc` |
-| `VESC_POC_ROOT` | `poc_root` | `~/projects/vesc-rust-poc` |
-| `VESC_VESC_TOOL_ROOT` | `vesc_tool_root` | `~/projects/vesc_tool` |
-
-Relative paths in config (e.g. `vendor/refloat`) resolve against the vesc-mcp workspace root.
-
-### Build tooling
-
-| Variable | Config key | Default | Description |
-|----------|------------|---------|-------------|
-| `VESC_TOOL_PATH` | `vesc_tool` | `vesc_tool` | Path to the `vesc_tool` binary for `build_vescpkg`. |
-
-### Server features
-
-| Variable | Config key | Default | Description |
-|----------|------------|---------|-------------|
-| `VESC_MCP_ENABLE_FLASH` | `[features] enable_flash` | `false` | Reserved gate for future flash/upload tools. It does not register any tools today. Accepts `1`, `true`, `yes`, `on` (case-insensitive). |
-
-### Config file location
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VESC_MCP_CONFIG` | `~/.config/vesc-mcp/config.toml` | Override path to the TOML config file. |
-
-### Streamable HTTP
-
-Run `vesc-mcp-server --http` to serve one shared, long-lived MCP endpoint. The
-default is local-only at `http://127.0.0.1:8080/mcp`; stdio remains the default
-when `--http` is absent.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VESC_MCP_HTTP_BIND` | `127.0.0.1:8080` | Listen address. |
-| `VESC_MCP_HTTP_PATH` | `/mcp` | Streamable HTTP endpoint path. |
-| `VESC_MCP_HTTP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Comma-separated rmcp Host allowlist. |
-| `VESC_MCP_HTTP_ALLOWED_ORIGINS` | *(empty)* | Comma-separated browser Origin allowlist. |
-| `VESC_MCP_HTTP_AUTH_TOKEN` | *(unset)* | Optional bearer token; clients must send `Authorization: Bearer …`. |
-
-HTTP intentionally exposes only `ping` and knowledge search plus the catalog
-and knowledge resources. Package-tree tools stay on stdio until an
-authenticated per-client package-root policy replaces process-global
-`VESC_PACKAGE_ROOTS` assumptions. Remote HTTP exposure requires an explicit
-bind address, Host/Origin policy, and authentication boundary.
-
-### Knowledge retrieval rollout
-
-| Variable | Config key | Default | Description |
-|----------|------------|---------|-------------|
-| `VESC_RAG_MODE` | `[knowledge] mode` | `lexical` | `lexical`, `legacy`, `auto`, or `hybrid`; `auto` degrades to lexical when semantic capability is unavailable, while explicit `hybrid` reports a structured capability error. |
-| `VESC_RAG_ARTIFACT` | `[knowledge] artifact_path` | *(none)* | Optional generated artifact path; it is never downloaded or inferred from a private home path. |
-| `VESC_RAG_SEMANTIC_MODEL_DIR` | `[knowledge.semantic] model_dir` | *(none)* | Explicit local FastEmbed model directory; no download is attempted. |
-| `VESC_RAG_SEMANTIC_MODEL_ID` | `[knowledge.semantic] model_id` | *(none)* | Must match the vector artifact manifest. |
-| `VESC_RAG_SEMANTIC_MODEL_REVISION` | `[knowledge.semantic] model_revision` | *(none)* | Must match the vector artifact manifest. |
-| `VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS` | `[knowledge.semantic] idle_timeout_secs` | `300` | Unload the lazily initialized ONNX model after this many idle seconds; `0` unloads immediately after a semantic query. |
-
-The knowledge tool bounds queries to 4 KiB, results to 50, each passage to 8 KiB,
-and the serialized response to 64 KiB. The default is offline `lexical`; use
-explicit `legacy` for compatibility or `auto`/`hybrid` only with a provisioned
-semantic capability.
-The semantic model is initialized only when an `auto` or `hybrid` request needs
-it. A single background reaper drops the ONNX session after the configured idle
-timeout. Initialization and inference failures remain non-fatal in `auto`, which
-returns lexical results with a warning.
-Darwin release builds include ONNX Runtime's CoreML provider. Set
-`VESC_RAG_SEMANTIC_EXECUTION_PROVIDER=coreml` to request it; the packaged
-quantized BGE profile defaults to CPU because measured CoreML performance is
-worse for that graph.
-When a request omits `mode`, the resolved `[knowledge]`/environment mode is
-used; an explicit request mode takes precedence. Search passages are untrusted
-evidence and are available for bounded follow-up reads at
-`vesc://knowledge/chunk/{id}`. Use the additive
-`vesc://knowledge/document/{id}` URI when a complete normalized source document
-is needed for citation context. The response `index` object reports bounded
-corpus/artifact diagnostics, including source and optional-rejection counts and
-component versions; it never includes the expanded config path.
-
-The lexical artifact cache is keyed by the active immutable generation path.
-After `build`, the new corpus digest selects a new generation and the next
-request loads that generation automatically.
-
-The Nix package wrapper sets `VESC_RAG_ARTIFACT` to its bundled expanded
-corpus unless the caller already supplied an override. Source checkouts and
-submodules are not part of the installed runtime package.
-
-### Workspace discovery
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VESC_MCP_WORKSPACE_ROOT` | Auto-detect | Force vesc-mcp repo root (directory containing `catalog/` or `flake.nix`). Used to resolve `vendor/…` relative paths. |
-
-### Logging
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | *(none)* | Tracing filter for `vesc-mcp-server` stderr (e.g. `vesc_mcp_core=debug`, `info`). |
-
-### Implicit
-
-| Variable | Used for |
-|----------|----------|
-| `HOME` | Expanding `~/…` in paths; default config directory |
-
-## Example `config.toml`
+A practical starting file is:
 
 ```toml
 [paths]
-package_roots = [
-  "~/projects/refloat",
-  "~/projects/vesc-rust-poc",
-]
-refloat_root = "vendor/refloat"
-bldc_root = "vendor/bldc"
-poc_root = "~/projects/vesc-rust-poc"
-vesc_tool_root = "vendor/vesc_tool"
-vesc_tool = "vesc_tool"
+package_roots = ["/path/to/vesc-packages"]
+vesc_tool = "/path/to/vesc_tool"
 
 [features]
 enable_flash = false
 
 [knowledge]
 mode = "lexical"
+```
+
+Windows paths may use forward slashes:
+
+```toml
+[paths]
+package_roots = ["C:/VESC/packages"]
+vesc_tool = "C:/VESC/Tool/vesc_tool.exe"
+```
+
+The repository also includes [`config.example.toml`](../config.example.toml).
+
+## Package access
+
+`package_roots` lists the directories the stdio server may scan, inspect,
+check, and build. Paths outside these directories are rejected.
+
+| Setting | Environment variable | Default |
+|---------|----------------------|---------|
+| `[paths] package_roots` | `VESC_PACKAGE_ROOTS` | no allowed package directories |
+
+On Ubuntu and macOS, multiple environment roots may be separated by commas or
+colons:
+
+```bash
+export VESC_PACKAGE_ROOTS="/path/to/packages,/another/package-root"
+```
+
+On Windows, use `package_roots` in `config.toml`; a drive-letter colon is
+ambiguous in `VESC_PACKAGE_ROOTS`.
+
+HTTP clients cannot use package tools even when package roots are configured.
+
+## Building packages
+
+`build_vescpkg` calls the official VESC Tool command-line executable.
+
+| Setting | Environment variable | Default |
+|---------|----------------------|---------|
+| `[paths] vesc_tool` | `VESC_TOOL_PATH` | `vesc_tool` from `PATH` |
+
+Set this only if the executable is not already on `PATH`. This setting does
+not grant device access; vesc-mcp uses it only to build a local package.
+
+## Release support files
+
+Release archives contain a `catalog` directory alongside the server. Keep the
+archive contents together. If you start the executable directly, set
+`VESC_MCP_WORKSPACE_ROOT` to the extracted release directory.
+
+| Variable | Purpose |
+|----------|---------|
+| `VESC_MCP_WORKSPACE_ROOT` | Directory containing the bundled `catalog` |
+
+The included launcher may set this automatically. Source checkouts are
+discovered automatically when the server is run from the project.
+
+## Streamable HTTP
+
+Run `vesc-mcp-server --http` to start a shared endpoint. The default is local
+only at `http://127.0.0.1:8080/mcp`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VESC_MCP_HTTP_BIND` | `127.0.0.1:8080` | Listen address and port |
+| `VESC_MCP_HTTP_PATH` | `/mcp` | Endpoint path |
+| `VESC_MCP_HTTP_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Accepted Host values |
+| `VESC_MCP_HTTP_ALLOWED_ORIGINS` | empty | Accepted browser origins |
+| `VESC_MCP_HTTP_AUTH_TOKEN` | unset | Required bearer token when set |
+
+See [http.md](http.md) for complete local and remote examples. Remote access
+requires a TLS boundary, authentication, explicit host/origin policy, and a
+firewall rule.
+
+## Knowledge search
+
+The default `lexical` mode is local and does not download a model.
+
+| Setting | Environment variable | Default | Purpose |
+|---------|----------------------|---------|---------|
+| `[knowledge] mode` | `VESC_RAG_MODE` | `lexical` | Retrieval mode |
+| `[knowledge] artifact_path` | `VESC_RAG_ARTIFACT` | bundled or embedded corpus | Generated artifact directory |
+| `[knowledge.semantic] model_dir` | `VESC_RAG_SEMANTIC_MODEL_DIR` | unset | Pinned local model directory |
+| `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
+| `[knowledge.semantic] model_revision` | `VESC_RAG_SEMANTIC_MODEL_REVISION` | unset | Pinned model revision |
+| `[knowledge.semantic] idle_timeout_secs` | `VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS` | `300` | Seconds before unloading an idle model |
+
+Supported modes:
+
+| Mode | Behavior |
+|------|----------|
+| `lexical` | Offline keyword and identifier search; recommended default |
+| `legacy` | Compatibility search for older results |
+| `auto` | Uses hybrid search when configured; otherwise returns lexical results with a warning |
+| `hybrid` | Requires a compatible local vector artifact and model; reports an error if unavailable |
+
+The server never downloads a semantic model at startup. Model directory,
+identity, and revision must match the vector artifact manifest.
+
+Search is bounded to a 4 KiB query, 50 results, 8 KiB per passage, and a 64
+KiB serialized response by default. These file-only limits can be adjusted:
+
+```toml
+[knowledge]
 max_limit = 50
 max_query_bytes = 4096
 max_response_bytes = 65536
 max_passage_bytes = 8192
 ```
 
-## MCP client wiring
+## Optional source checkouts
 
-Prefer passing repo roots through the MCP server `env` block so assistants inherit your machine layout:
+Most users do not need upstream source repositories. They are used only for
+catalog validation, knowledge artifact generation, and detailed source
+attribution.
 
-```json
-{
-  "mcpServers": {
-    "vesc-mcp": {
-      "command": "nix",
-      "args": ["develop", "-c", "vesc-mcp-server"],
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "VESC_PACKAGE_ROOTS": "${env:VESC_PACKAGE_ROOTS}",
-        "VESC_REFLOAT_ROOT": "${env:VESC_REFLOAT_ROOT}",
-        "VESC_BLDC_ROOT": "${env:VESC_BLDC_ROOT}",
-        "VESC_POC_ROOT": "${env:VESC_POC_ROOT}",
-        "VESC_VESC_TOOL_ROOT": "${env:VESC_VESC_TOOL_ROOT}"
-      }
-    }
-  }
-}
-```
+| Config key | Environment variable | Purpose |
+|------------|----------------------|---------|
+| `[paths] refloat_root` | `VESC_REFLOAT_ROOT` | Refloat source checkout |
+| `[paths] bldc_root` | `VESC_BLDC_ROOT` | VESC firmware source checkout |
+| `[paths] poc_root` | `VESC_POC_ROOT` | Rust proof-of-concept checkout |
+| `[paths] vesc_tool_root` | `VESC_VESC_TOOL_ROOT` | VESC Tool source checkout |
 
-Without Nix, set `command` to the absolute path of a release-built `vesc-mcp-server` binary and ensure the same env vars are exported in your shell profile.
+Use paths in `config.toml` or environment variables. Do not put personal
+absolute paths in shared client configurations or documentation.
 
-### NixOS deployment
+## Logging
 
-The flake exports `packages.default`, `overlays.default`, and
-`nixosModules.default`. Enable the service declaratively:
+Set `RUST_LOG=info` for normal diagnostics or a narrower filter such as
+`vesc_mcp_core=debug` for detailed troubleshooting. Logs go to stderr so they
+do not corrupt stdio MCP messages.
 
-```nix
-services.vesc-mcp = {
-  enable = true;
-  # bind = "127.0.0.1";
-  # port = 8080;
-  allowedHosts = [ "localhost" "127.0.0.1" ];
-  packageRoots = [ "/srv/vesc-packages" ];
-  retrievalMode = "lexical";
-};
-```
+## Reserved flash setting
 
-Set `authTokenFile` to a root-readable EnvironmentFile containing
-`VESC_MCP_HTTP_AUTH_TOKEN=...` before enabling remote access. The module uses a
-dynamic user, explicit state/cache directories, restart-on-failure, and systemd
-filesystem/network hardening.
-
-## Test / CI defaults
-
-When `VESC_PACKAGE_ROOTS` is unset and the `test-fixtures` feature is enabled (Makefile / CI), the server automatically allows `tests/fixtures/` as the sandbox root. Production MCP sessions should always set explicit roots.
-
-Optional live-repo tests (`cargo nextest run --run-ignored all`) require sibling checkouts via the env vars above — see [testing.md](testing.md).
+`VESC_MCP_ENABLE_FLASH` and `[features] enable_flash` are reserved for a
+possible future feature. They default to false, and setting them currently
+adds no upload or flash tools. See [safety.md](safety.md).

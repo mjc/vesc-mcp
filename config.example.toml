@@ -1,24 +1,24 @@
 # vesc-mcp configuration
 #
-# Copy to ~/.config/vesc-mcp/config.toml and adjust paths for your machine.
-# Environment variables override these values.
+# Ubuntu/macOS: copy to ~/.config/vesc-mcp/config.toml.
+# Windows: choose a location and set VESC_MCP_CONFIG to its full path.
+# Environment variables override this file.
 
 [paths]
 # Directories the MCP server may scan, build, and inspect (also VESC_PACKAGE_ROOTS).
 package_roots = [
-  "~/projects/refloat",
-  "~/projects/vesc-rust-poc",
+  "/path/to/vesc-packages",
 ]
 
 # Upstream repo checkouts used for catalog path validation.
 # Relative paths resolve against the vesc-mcp workspace root (e.g. vendor/ submodules).
-refloat_root = "vendor/refloat"
-bldc_root = "vendor/bldc"
-poc_root = "~/projects/vesc-rust-poc"
-vesc_tool_root = "vendor/vesc_tool"
+# refloat_root = "/path/to/refloat"
+# bldc_root = "/path/to/bldc"
+# poc_root = "/path/to/vesc-rust-poc"
+# vesc_tool_root = "/path/to/vesc_tool/source"
 
 # vesc_tool binary for subprocess builds (also VESC_TOOL_PATH).
-vesc_tool = "vesc_tool"
+# vesc_tool = "/path/to/vesc_tool"
 
 [features]
 # Reserved default-off gate; no flash/upload tools currently ship.
