@@ -221,6 +221,35 @@ still requires building matching vector artifacts for each candidate.
 The INT8 result is promising but is not a production recommendation until a
 matching artifact and retrieval-quality comparison are complete.
 
+### Full-corpus INT8 quality comparison
+
+The full pinned corpus was then built with `model_int8.onnx` on Tali under the
+same explicit CPU, batch 8, length-bucketed, 12-thread configuration. This is
+the first model-file candidate with both full-corpus throughput and quality
+evidence.
+
+| Measurement | Quantized baseline | INT8 |
+|---|---:|---:|
+| Provider inference | 533.488 s | 499.959 s |
+| Provider throughput | 25.659 chunks/s | 27.380 chunks/s |
+| External elapsed | 9:04.06 | 8:30.58 |
+| Peak RSS | 2,469,500 kB | 2,700,224 kB |
+| Vector artifact | 22,012,069 B | 22,012,069 B |
+| Vector SHA-256 | `08f02a0b…5ddcfb8f` | `b7d7714e…63051bb5` |
+
+INT8 is 6.3% faster but retains 9.3% more peak RSS. Corpus and lexical
+artifacts remained identical. Full quality remained below the locked gates:
+
+| Mode | Recall@5 | Recall@10 | MRR | nDCG | Identifier top-1 |
+|---|---:|---:|---:|---:|---:|
+| Semantic | 0.8083 | 0.8500 | 0.7933 | 0.7546 | 0.7500 |
+| Hybrid | 0.7528 | 0.8583 | 0.5950 | 0.6448 | 1.0000 |
+
+The INT8 model is therefore rejected as the production replacement: its
+throughput gain is modest, its memory cost is higher, and identifier quality
+is worse than the quantized baseline. The complete reports remain benchmark
+evidence; no release artifact was changed.
+
 ## AMD provider result
 
 The first `nix develop .#rocm` shell used nixpkgs ONNX Runtime 1.26 with
