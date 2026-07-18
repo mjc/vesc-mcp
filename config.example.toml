@@ -32,6 +32,12 @@ max_query_bytes = 4096
 max_response_bytes = 65536
 max_passage_bytes = 8192
 
+[feedback]
+# Optional durable directory. The server stores a bounded feedback.json here.
+# path = ".vesc-mcp-feedback"
+# Write tools stay hidden unless this is explicitly enabled.
+writes_enabled = false
+
 [knowledge.semantic]
 # Optional: explicitly provisioned local FastEmbed model metadata.
 # model_dir = "/path/to/your-pinned-model"

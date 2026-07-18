@@ -31,9 +31,15 @@ use crate::tools::inspect::{
 };
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
 use crate::tools::search_knowledge::{
-    SearchVescKnowledgeParams, search_vesc_knowledge_json_with_config,
+    SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
 };
 use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
+
+use crate::resources::FeedbackResourceHandler;
+use crate::tools::knowledge_feedback::{
+    CorrectVescKnowledgeParams, FeedbackStore, SubmitKnowledgeFeedbackParams,
+    correct_vesc_knowledge_tool_with_store, submit_vesc_knowledge_feedback_with_store,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PingParams {
@@ -60,17 +66,32 @@ struct SharedMcpState {
     resource_subscriptions: Arc<ResourceSubscriptions>,
     catalog_watcher: Arc<CatalogSourceWatcher>,
     catalog_root: PathBuf,
+    feedback: Option<FeedbackStore>,
+    feedback_writes_enabled: bool,
 }
 
 impl SharedMcpState {
     fn new() -> Self {
+        let feedback = McpConfig::load().feedback.clone();
+        Self::with_feedback(
+            feedback.path.as_deref().map(FeedbackStore::new),
+            feedback.writes_enabled,
+        )
+    }
+
+    fn with_feedback(feedback: Option<FeedbackStore>, writes_enabled: bool) -> Self {
+        let mut resources =
+            ResourceRegistry::with_defaults().expect("default MCP resource registry");
+        if let Some(store) = feedback.clone() {
+            resources.register_handler(FeedbackResourceHandler::new(store));
+        }
         Self {
-            resources: Arc::new(
-                ResourceRegistry::with_defaults().expect("default MCP resource registry"),
-            ),
+            resources: Arc::new(resources),
             resource_subscriptions: Arc::new(ResourceSubscriptions::new()),
             catalog_watcher: Arc::new(CatalogSourceWatcher::new()),
             catalog_root: crate::workspace::catalog_root(),
+            feedback_writes_enabled: writes_enabled && feedback.is_some(),
+            feedback,
         }
     }
 }
@@ -83,6 +104,7 @@ impl SharedMcpState {
 pub struct HttpMcpService {
     tool_router: ToolRouter<Self>,
     state: Arc<SharedMcpState>,
+    feedback_writes_enabled: bool,
 }
 
 impl Default for VescMcpService {
@@ -100,18 +122,49 @@ impl VescMcpService {
     /// Panics if built-in resource registration fails.
     #[must_use]
     pub fn new() -> Self {
+        Self::from_state(SharedMcpState::new())
+    }
+
+    /// Create a service with an explicit durable feedback store.
+    #[must_use]
+    pub fn with_feedback_store(path: &std::path::Path, writes_enabled: bool) -> Self {
+        Self::from_state(SharedMcpState::with_feedback(
+            Some(FeedbackStore::new(path)),
+            writes_enabled,
+        ))
+    }
+
+    fn from_state(state: SharedMcpState) -> Self {
+        let mut tool_router = Self::tool_router();
+        if !state.feedback_writes_enabled {
+            tool_router.disable_route("submit_vesc_knowledge_feedback");
+            tool_router.disable_route("correct_vesc_knowledge");
+        }
         Self {
-            tool_router: Self::tool_router(),
-            state: Arc::new(SharedMcpState::new()),
+            tool_router,
+            state: Arc::new(state),
         }
     }
 
-    /// Create the restricted service used by Streamable HTTP clients.
+    /// Create the restricted, read-only service used by Streamable HTTP clients.
     #[must_use]
     pub fn http_service(&self) -> HttpMcpService {
+        self.http_service_with_authenticated_writes(false)
+    }
+
+    /// Create the HTTP service, exposing feedback writes only for authenticated clients.
+    #[must_use]
+    pub fn http_service_with_authenticated_writes(&self, authenticated: bool) -> HttpMcpService {
+        let feedback_writes_enabled = authenticated && self.state.feedback_writes_enabled;
+        let mut tool_router = HttpMcpService::tool_router();
+        if !feedback_writes_enabled {
+            tool_router.disable_route("submit_vesc_knowledge_feedback");
+            tool_router.disable_route("correct_vesc_knowledge");
+        }
         HttpMcpService {
-            tool_router: HttpMcpService::tool_router(),
+            tool_router,
             state: Arc::clone(&self.state),
+            feedback_writes_enabled,
         }
     }
 
@@ -201,13 +254,41 @@ impl VescMcpService {
         run_package_checks_json(&params)
     }
 
-    #[tool(description = "Search the embedded VESC firmware and package knowledge index")]
-    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
         Parameters(params): Parameters<SearchVescKnowledgeParams>,
     ) -> String {
-        search_vesc_knowledge_json_with_config(&params, &McpConfig::load().knowledge)
+        search_vesc_knowledge_json_with_feedback(
+            &params,
+            &McpConfig::load().knowledge,
+            self.state.feedback.as_ref(),
+            &self.state.resources,
+        )
+    }
+
+    #[tool(
+        description = "Persist a low-trust reusable lesson after a user correction or newly discovered gap. Use for helpful notes that are not yet backed by registered VESC resources; the note remains visibly unverified in later search."
+    )]
+    fn submit_vesc_knowledge_feedback(
+        &self,
+        Parameters(params): Parameters<SubmitKnowledgeFeedbackParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            submit_vesc_knowledge_feedback_with_store(&params, store)
+        })
+    }
+
+    #[tool(
+        description = "Persist an evidence-backed VESC correction only when the user explicitly requests it or confirms after being asked. Set authorization accordingly and include exact registered vesc:// evidence_resources."
+    )]
+    fn correct_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<CorrectVescKnowledgeParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            correct_vesc_knowledge_tool_with_store(&params, store, &self.state.resources)
+        })
     }
 }
 
@@ -328,9 +409,7 @@ impl ServerHandler for VescMcpService {
                 .build(),
         )
         .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
-        .with_instructions(
-            "MCP server for VESC firmware and vescpkg development. Start with ping, then list/inspect tools as they land.",
-        )
+        .with_instructions(server_instructions(self.state.feedback_writes_enabled))
     }
 }
 
@@ -352,13 +431,41 @@ impl HttpMcpService {
         ping_json(message)
     }
 
-    #[tool(description = "Search the embedded VESC firmware and package knowledge index")]
-    #[allow(clippy::unused_self)]
+    #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
         Parameters(params): Parameters<SearchVescKnowledgeParams>,
     ) -> String {
-        search_vesc_knowledge_json_with_config(&params, &McpConfig::load().knowledge)
+        search_vesc_knowledge_json_with_feedback(
+            &params,
+            &McpConfig::load().knowledge,
+            self.state.feedback.as_ref(),
+            &self.state.resources,
+        )
+    }
+
+    #[tool(
+        description = "Persist a low-trust reusable lesson after a user correction or newly discovered gap. Use for helpful notes that are not yet backed by registered VESC resources; the note remains visibly unverified in later search."
+    )]
+    fn submit_vesc_knowledge_feedback(
+        &self,
+        Parameters(params): Parameters<SubmitKnowledgeFeedbackParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            submit_vesc_knowledge_feedback_with_store(&params, store)
+        })
+    }
+
+    #[tool(
+        description = "Persist an evidence-backed VESC correction only when the user explicitly requests it or confirms after being asked. Set authorization accordingly and include exact registered vesc:// evidence_resources."
+    )]
+    fn correct_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<CorrectVescKnowledgeParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            correct_vesc_knowledge_tool_with_store(&params, store, &self.state.resources)
+        })
     }
 }
 
@@ -474,7 +581,7 @@ impl ServerHandler for HttpMcpService {
     }
 
     fn get_info(&self) -> ServerInfo {
-        http_server_info()
+        http_server_info(self.feedback_writes_enabled)
     }
 }
 
@@ -489,7 +596,28 @@ fn ping_json(message: Option<String>) -> String {
     })
 }
 
-fn http_server_info() -> ServerInfo {
+fn feedback_json(
+    store: Option<&FeedbackStore>,
+    write: impl FnOnce(&FeedbackStore) -> crate::tools::knowledge_feedback::FeedbackWriteResponse,
+) -> String {
+    let response = store.map_or_else(
+        || crate::tools::knowledge_feedback::FeedbackWriteResponse {
+            ok: false,
+            id: None,
+            duplicate: false,
+            state: None,
+            evidence: Vec::new(),
+            next_actions: Vec::new(),
+            error: Some("knowledge feedback is not configured".into()),
+        },
+        write,
+    );
+    serde_json::to_string(&response).unwrap_or_else(|error| {
+        format!(r#"{{"ok":false,"error":"feedback serialization failed: {error}"}}"#)
+    })
+}
+
+fn http_server_info(feedback_writes_enabled: bool) -> ServerInfo {
     ServerInfo::new(
         ServerCapabilities::builder()
             .enable_tools()
@@ -498,9 +626,15 @@ fn http_server_info() -> ServerInfo {
             .build(),
     )
     .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
-    .with_instructions(
-        "Shared HTTP MCP service for VESC knowledge search. Package-tree tools remain on stdio until an authenticated root policy is configured.",
-    )
+    .with_instructions(server_instructions(feedback_writes_enabled))
+}
+
+const fn server_instructions(feedback_writes_enabled: bool) -> &'static str {
+    if feedback_writes_enabled {
+        "VESC firmware/package knowledge service with durable feedback. Search before answering and read returned vesc:// resources for exact evidence. If a user pushes back, do not immediately persist their claim: ask focused follow-up questions, search related terms/identifiers, and read the relevant resources. When those resources support a corrected fact, explain what was learned. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate it, or after you ask permission and the user confirms; set authorization to explicit_user_request or confirmed_after_prompt accordingly. After a significant resolved disagreement or when reusable VESC knowledge has accumulated, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt in the same conversation. Use submit_vesc_knowledge_feedback only for a reusable lesson that lacks authoritative registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
+    } else {
+        "VESC firmware/package knowledge service. Search before answering and read returned vesc:// resources for exact evidence. Corrections are returned before ordinary search results; learned notes are marked unverified. Feedback writes are disabled on this connection."
+    }
 }
 
 async fn notify_resource_updated_if_subscribed(
@@ -614,5 +748,63 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "search_vesc_knowledge"));
+    }
+
+    #[test]
+    fn feedback_write_tools_are_disabled_by_default() {
+        let names = VescMcpService::new().list_tool_names();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == "submit_vesc_knowledge_feedback")
+        );
+        assert!(!names.iter().any(|name| name == "correct_vesc_knowledge"));
+    }
+
+    #[test]
+    fn configured_feedback_exposes_write_tools_and_resource_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = VescMcpService::with_feedback_store(temp.path(), true);
+        let names = service.list_tool_names();
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "submit_vesc_knowledge_feedback")
+        );
+        assert!(names.iter().any(|name| name == "correct_vesc_knowledge"));
+        assert!(
+            service
+                .resource_registry()
+                .list_mcp_templates()
+                .iter()
+                .any(|template| { template.uri_template == "vesc://knowledge/feedback/{id}" })
+        );
+        let instructions = service
+            .get_info()
+            .instructions
+            .expect("feedback instructions");
+        assert!(instructions.contains("correct_vesc_knowledge"));
+        assert!(instructions.contains("user explicitly asks"));
+        assert!(instructions.contains("remind the user once"));
+    }
+
+    #[test]
+    fn http_feedback_writes_require_authenticated_mode() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = VescMcpService::with_feedback_store(temp.path(), true);
+        let read_only = service.http_service();
+        assert!(
+            !read_only
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "correct_vesc_knowledge")
+        );
+        let authenticated = service.http_service_with_authenticated_writes(true);
+        assert!(
+            authenticated
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "correct_vesc_knowledge")
+        );
     }
 }

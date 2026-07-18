@@ -63,7 +63,14 @@ async fn smoke_compact_search_rows_cross_stdio_boundary() -> anyhow::Result<()> 
     let body: serde_json::Value = serde_json::from_str(text)?;
     assert_eq!(
         body["fields"],
-        serde_json::json!(["name", "category", "excerpt", "source_index", "chunk_id"])
+        serde_json::json!([
+            "name",
+            "category",
+            "excerpt",
+            "source_index",
+            "chunk_id",
+            "correction_ids"
+        ])
     );
     assert!(
         body["results"]

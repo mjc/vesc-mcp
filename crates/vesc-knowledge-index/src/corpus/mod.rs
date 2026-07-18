@@ -288,6 +288,7 @@ pub enum SourceKind {
     Fixture,
     VendorFile,
     GitBlob,
+    ModelFeedback,
 }
 
 /// Trust classification retained with every document and chunk.
@@ -298,6 +299,7 @@ pub enum TrustTier {
     FirstParty,
     CuratedUpstream,
     Fixture,
+    UnverifiedModelFeedback,
 }
 
 /// License/attribution decision for source content.

@@ -84,11 +84,9 @@ pub fn router(
 /// transport stops with a serving error.
 pub async fn run(config: HttpServerConfig) -> anyhow::Result<()> {
     let cancellation_token = CancellationToken::new();
-    let router = router(
-        &config,
-        VescMcpService::new().http_service(),
-        &cancellation_token,
-    );
+    let service =
+        VescMcpService::new().http_service_with_authenticated_writes(config.auth_token.is_some());
+    let router = router(&config, service, &cancellation_token);
     let listener = TcpListener::bind(config.bind).await?;
     tracing::info!(bind = %config.bind, path = %config.path, "serving Streamable HTTP MCP");
     axum::serve(listener, router)

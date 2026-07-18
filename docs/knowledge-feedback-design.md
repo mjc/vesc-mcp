@@ -1,7 +1,6 @@
 # Knowledge feedback and correction design
 
-Status: proposed in VESCM-183 and VESCM-PLAN-5. The tools described here do
-not ship yet.
+Status: implemented by VESCM-183 and its child implementation issues.
 
 ## Goal
 
@@ -16,9 +15,10 @@ The intended correction loop is:
 3. The model searches again with narrower questions and reads the returned
    VESC resources.
 4. Those resources support a corrected or more qualified conclusion Y.
-5. The model calls `correct_vesc_knowledge` with X, Y, affected result IDs,
-   and the supporting resource URIs.
-6. Later related searches show the correction before ordinary results while
+5. The user explicitly asks to record Y, or the model asks and the user confirms.
+6. The model calls `correct_vesc_knowledge` with the authorization path, X, Y,
+   affected result IDs, and the supporting resource URIs.
+7. Later related searches show the correction before ordinary results while
    retaining the authoritative source passages.
 
 The correction is a durable annotation. It does not rewrite upstream files or
@@ -42,6 +42,12 @@ Initialization instructions should teach this decision:
 - Call `correct_vesc_knowledge` only when follow-up VESC searches or resource
   reads support the changed conclusion. Include affected IDs and exact
   supporting VESC resource URIs.
+- A correction write also requires user authorization: either an explicit user
+  request, or confirmation after the model asks. Record the matching
+  `authorization` value.
+- After resolving a significant disagreement or accumulating reusable VESC
+  knowledge, remind the user once that an evidence-backed correction can be
+  recorded. Do not repeatedly prompt in the same conversation.
 - Never store a raw conversation, secret, personal preference, or arbitrary
   instruction.
 
@@ -58,8 +64,10 @@ Suggested enabled wording:
 > `submit_vesc_knowledge_feedback`. If a user challenges an MCP-derived answer,
 > investigate with follow-up searches and resource reads; call
 > `correct_vesc_knowledge` only after registered VESC resources support the
-> correction. Do not store conversations, secrets, preferences, or
-> instructions.
+> correction and the user explicitly requests it or confirms after being asked.
+> After significant reusable knowledge is resolved, mention the correction
+> option once without nagging. Do not store conversations, secrets, preferences,
+> or instructions.
 
 ## Tool selection
 
@@ -68,7 +76,8 @@ Suggested enabled wording:
 | Search already answers the question | Answer from the cited evidence; write nothing |
 | The model learned a reusable detail, but cannot cite authoritative VESC resources | `submit_vesc_knowledge_feedback` |
 | The user disagrees, but follow-up evidence is not conclusive | Keep investigating; write nothing yet |
-| Follow-up VESC resources show the original conclusion was wrong or incomplete | `correct_vesc_knowledge` |
+| Follow-up VESC resources show the original conclusion was wrong or incomplete, but the user has not authorized a write | Explain the finding and ask whether to record it |
+| The evidence supports the correction and the user explicitly requests it or confirms | `correct_vesc_knowledge` |
 | The user states a preference or general instruction | Do not store it in VESC knowledge |
 | Submitted evidence is an arbitrary URL or filesystem path | Reject it |
 
@@ -95,15 +104,14 @@ evidence before creating a correction.
 
 Its tool description should say:
 
-> Correct a misleading or incomplete MCP-derived VESC conclusion after
-> follow-up searches or resource reads support the correction. Include what
-> was wrong, the corrected fact and qualifiers, affected result/resource IDs,
-> and exact registered VESC evidence URIs. Do not use user disagreement alone
-> as evidence, and do not use this for preferences or instructions.
+> Persist an evidence-backed VESC correction only when the user explicitly
+> requests it or confirms after being asked. Set `authorization` accordingly and
+> include exact registered `vesc://` evidence resources.
 
 Inputs are:
 
 - the original question or bounded context;
+- `authorization`: `explicit_user_request` or `confirmed_after_prompt`;
 - the mistaken or incomplete conclusion;
 - the corrected fact and important qualifiers;
 - affected result, chunk, document, or resource IDs;
@@ -131,8 +139,8 @@ existing normalized document, chunk, and `LexicalIndex` types.
   affected IDs, supporting resource URIs and digests, and supersession state.
 - When an affected curated hit is returned, it carries the correction ID so a
   client cannot easily miss the annotation.
-- Missing or changed evidence makes the correction stale. Stale, superseded,
-  or retracted corrections are not active.
+- Missing or changed evidence makes the correction stale. Stale or superseded
+  corrections are not active.
 - Hybrid retrieval uses the overlay only in its lexical channel initially.
 
 Resource grounding proves provenance, not semantic entailment. A response may
@@ -155,8 +163,10 @@ If an initial answer collapses those steps, follow-up evidence can include:
 - relevant `vesc://knowledge/chunk/{id}` or document resources
 - the native package ABI reference
 
-The model should then call `correct_vesc_knowledge` with the incomplete
-conclusion, the qualified sequence, affected IDs, and those resource URIs.
+The model should explain the finding and mention once that it can be recorded.
+Only after the user requests or confirms the write should the model call
+`correct_vesc_knowledge` with the authorization path, incomplete conclusion,
+qualified sequence, affected IDs, and those resource URIs.
 Future loader-related searches should show the correction first and retain the
 source passages beside it.
 
@@ -172,9 +182,9 @@ source passages beside it.
   per-write curated-artifact rebuild, or feedback embeddings are required for
   the first version.
 
-## Delivery
+## Delivery tracking
 
-The durable implementation plan is VESCM-PLAN-5:
+The implementation work is tracked by VESCM-183 and these child issues:
 
 - VESCM-184 — contracts and threat model
 - VESCM-185 — bounded durable store

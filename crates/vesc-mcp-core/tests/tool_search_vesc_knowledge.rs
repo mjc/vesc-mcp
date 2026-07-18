@@ -15,10 +15,17 @@ fn compact_search_default_uses_bounded_field_rows() {
     assert_eq!(body["ok"], true, "response: {body}");
     assert_eq!(
         body["fields"],
-        serde_json::json!(["name", "category", "excerpt", "source_index", "chunk_id"])
+        serde_json::json!([
+            "name",
+            "category",
+            "excerpt",
+            "source_index",
+            "chunk_id",
+            "correction_ids"
+        ])
     );
     let row = &body["results"][0];
-    assert_eq!(row.as_array().map(Vec::len), Some(5));
+    assert_eq!(row.as_array().map(Vec::len), Some(6));
     assert_eq!(row[0], "lbm_add_extension");
     assert!(row[2].as_str().is_some_and(|excerpt| excerpt.len() <= 96));
     let source_index = row[3].as_u64().expect("compact result has a source index");
@@ -32,6 +39,7 @@ fn compact_search_default_uses_bounded_field_rows() {
         .as_str()
         .filter(|id| id.starts_with("chunk-"))
         .expect("compact result has a chunk ID");
+    assert_eq!(row[5], serde_json::json!([]));
     let chunk_uri = format!("vesc://knowledge/chunk/{chunk_id}");
     let chunk = VescMcpService::new()
         .resource_registry()

@@ -573,6 +573,7 @@ const fn trust_label(trust: TrustTier) -> &'static str {
         TrustTier::FirstParty => "first_party",
         TrustTier::CuratedUpstream => "curated_upstream",
         TrustTier::Fixture => "fixture",
+        TrustTier::UnverifiedModelFeedback => "unverified_model_feedback",
     }
 }
 

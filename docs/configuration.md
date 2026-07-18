@@ -31,6 +31,10 @@ enable_flash = false
 
 [knowledge]
 mode = "lexical"
+
+[feedback]
+path = ".vesc-mcp-feedback"
+writes_enabled = false
 ```
 
 Windows paths may use forward slashes:
@@ -117,6 +121,12 @@ The default `lexical` mode is local and does not download a model.
 | `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
 | `[knowledge.semantic] model_revision` | `VESC_RAG_SEMANTIC_MODEL_REVISION` | unset | Pinned model revision |
 | `[knowledge.semantic] idle_timeout_secs` | `VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS` | `300` | Seconds before unloading an idle model |
+| `[feedback] path` | `VESC_RAG_FEEDBACK_PATH` | unset | Durable directory containing the bounded `feedback.json` store |
+| `[feedback] writes_enabled` | `VESC_RAG_FEEDBACK_WRITES` | `false` | Expose model feedback write tools when a store is configured |
+
+Feedback reads are available whenever `path` is configured. Write tools require
+both `path` and `writes_enabled = true`. Streamable HTTP writes also require the
+existing `VESC_MCP_AUTH_TOKEN` boundary; otherwise HTTP remains read-only.
 
 Supported modes:
 
