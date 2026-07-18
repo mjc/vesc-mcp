@@ -220,6 +220,35 @@ pub struct SearchVescKnowledgeTiming {
     pub result_count: usize,
 }
 
+/// Input for replaying a serious correction against base knowledge only.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ReplayVescKnowledgeCorrectionParams {
+    /// Stable correction ID returned by `correct_vesc_knowledge`.
+    pub correction_id: String,
+    /// Persist covered state only after a successful base-only replay.
+    #[serde(default)]
+    pub mark_covered: bool,
+    /// Required when `mark_covered` is true.
+    #[serde(default)]
+    pub authorization: Option<crate::tools::knowledge_feedback::CorrectionAuthorization>,
+}
+
+/// Result of replaying the preserved failed query without learned advisories.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct CorrectionReplayReport {
+    pub ok: bool,
+    pub correction_id: String,
+    pub query: String,
+    pub covered_by_base_knowledge: bool,
+    pub marked_covered: bool,
+    pub matched_decisive_evidence: Vec<String>,
+    pub missing_decisive_evidence: Vec<String>,
+    pub ordered_result_ids: Vec<String>,
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub struct SearchVescKnowledgeResponse {
     pub ok: bool,
@@ -542,12 +571,21 @@ fn compact_result(result: &mut SearchVescKnowledgeResult) {
 
 fn compact_correction(correction: &mut KnowledgeCorrectionResult) {
     truncate_utf8(&mut correction.question, 128);
+    truncate_utf8(&mut correction.what_we_know, 512);
+    truncate_utf8(&mut correction.common_mistake, 256);
+    truncate_utf8(&mut correction.reasoning_failure, 384);
     truncate_utf8(&mut correction.mistaken_conclusion, 256);
     truncate_utf8(&mut correction.correction, 512);
     for qualifier in &mut correction.qualifiers {
         truncate_utf8(qualifier, 128);
     }
     correction.qualifiers.truncate(4);
+    for next in &mut correction.check_next {
+        truncate_utf8(next, 256);
+    }
+    correction.check_next.truncate(6);
+    correction.gap_diagnoses.truncate(4);
+    correction.recommended_data_actions.truncate(4);
     correction.affected_resources.truncate(8);
     for evidence in &mut correction.evidence {
         evidence.excerpt.clear();
@@ -1387,6 +1425,147 @@ pub fn search_vesc_knowledge_json_with_feedback(
         }
     }
     serialize_search_response(&response, params.detail)
+}
+
+fn replay_search_params(
+    correction: &crate::tools::knowledge_feedback::KnowledgeCorrection,
+    warnings: &mut Vec<String>,
+) -> SearchVescKnowledgeParams {
+    let mode = correction
+        .retrieval_trace
+        .mode
+        .as_ref()
+        .and_then(|mode| serde_json::from_value(serde_json::Value::String(mode.clone())).ok());
+    let mut filters = SearchVescKnowledgeFilters::default();
+    for filter in &correction.retrieval_trace.filters {
+        let Some((key, value)) = filter.split_once('=') else {
+            warnings.push(format!("ignored malformed replay filter: {filter}"));
+            continue;
+        };
+        match key {
+            "category" => filters.category = Some(value.into()),
+            "repository" => filters.repository = Some(value.into()),
+            "revision" => filters.revision = Some(value.into()),
+            "trust_tier" => filters.trust_tier = Some(value.into()),
+            "source_kind" => filters.source_kind = Some(value.into()),
+            "tag" | "tags" => filters.tags.push(value.into()),
+            _ => warnings.push(format!("ignored unsupported replay filter: {key}")),
+        }
+    }
+    SearchVescKnowledgeParams {
+        query: correction.retrieval_trace.query.clone(),
+        category: None,
+        limit: correction.retrieval_trace.limit,
+        mode,
+        filters,
+        max_response_bytes: correction.retrieval_trace.max_response_bytes,
+        max_context_bytes: correction.retrieval_trace.max_context_bytes,
+        detail: SearchResponseDetail::Full,
+    }
+}
+
+#[must_use]
+pub fn replay_vesc_knowledge_correction(
+    params: &ReplayVescKnowledgeCorrectionParams,
+    config: &KnowledgeConfig,
+    store: &FeedbackStore,
+) -> CorrectionReplayReport {
+    let failure = |query: String, error: String| CorrectionReplayReport {
+        ok: false,
+        correction_id: params.correction_id.clone(),
+        query,
+        covered_by_base_knowledge: false,
+        marked_covered: false,
+        matched_decisive_evidence: Vec::new(),
+        missing_decisive_evidence: Vec::new(),
+        ordered_result_ids: Vec::new(),
+        warnings: Vec::new(),
+        error: Some(error),
+    };
+    if params.mark_covered && params.authorization.is_none() {
+        return failure(
+            String::new(),
+            "authorization is required when mark_covered is true".into(),
+        );
+    }
+    let record = match store.get(&params.correction_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => return failure(String::new(), "correction not found".into()),
+        Err(error) => return failure(String::new(), error.to_string()),
+    };
+    let crate::tools::knowledge_feedback::KnowledgeRecord::Correction(correction) = record else {
+        return failure(String::new(), "record is not a correction".into());
+    };
+
+    let mut warnings = Vec::new();
+    let replay = replay_search_params(&correction, &mut warnings);
+    let response = search_vesc_knowledge_tool_with_config(&replay, config);
+    warnings.extend(response.warnings);
+    if !response.ok {
+        return CorrectionReplayReport {
+            ok: false,
+            correction_id: correction.id,
+            query: replay.query,
+            covered_by_base_knowledge: false,
+            marked_covered: false,
+            matched_decisive_evidence: Vec::new(),
+            missing_decisive_evidence: correction.retrieval_trace.decisive_evidence,
+            ordered_result_ids: Vec::new(),
+            warnings,
+            error: response.error,
+        };
+    }
+
+    let ordered_result_ids = response
+        .results
+        .iter()
+        .map(|result| result.id.clone())
+        .collect::<Vec<_>>();
+    let mut matched_decisive_evidence = Vec::new();
+    let mut missing_decisive_evidence = Vec::new();
+    for decisive in &correction.retrieval_trace.decisive_evidence {
+        let matched = response.results.iter().any(|result| {
+            result.id == *decisive
+                || result.chunk_id.as_deref() == Some(decisive)
+                || result.document_id.as_deref() == Some(decisive)
+                || result.resource_uri.as_deref() == Some(decisive)
+                || result.document_uri.as_deref() == Some(decisive)
+        });
+        if matched {
+            matched_decisive_evidence.push(decisive.clone());
+        } else {
+            missing_decisive_evidence.push(decisive.clone());
+        }
+    }
+    let covered_by_base_knowledge = !correction.retrieval_trace.decisive_evidence.is_empty()
+        && missing_decisive_evidence.is_empty();
+    let mut marked_covered = false;
+    if covered_by_base_knowledge && params.mark_covered {
+        if let Err(error) =
+            store.mark_correction_covered(&correction.id, &matched_decisive_evidence)
+        {
+            return failure(replay.query, error.to_string());
+        }
+        marked_covered = true;
+    } else if !covered_by_base_knowledge {
+        warnings.push(
+            "base knowledge replay still misses decisive evidence; keep the advisory active and apply its recommended data actions"
+                .into(),
+        );
+    }
+
+    CorrectionReplayReport {
+        ok: true,
+        correction_id: correction.id,
+        query: replay.query,
+        covered_by_base_knowledge,
+        marked_covered,
+        matched_decisive_evidence,
+        missing_decisive_evidence,
+        ordered_result_ids,
+        warnings,
+        error: None,
+    }
 }
 
 fn feedback_note_result(

@@ -27,6 +27,44 @@ fn learned_note() -> SubmitKnowledgeFeedbackParams {
     }
 }
 
+fn loader_correction(authorization: CorrectionAuthorization) -> CorrectVescKnowledgeParams {
+    CorrectVescKnowledgeParams {
+        question: "What does load-native-lib receive?".into(),
+        authorization,
+        mistaken_conclusion: "It receives a source path.".into(),
+        correction: "It receives an import tag resolving to embedded bytes.".into(),
+        reasoning_failure:
+            "A generic file-loading analogy was treated as authoritative before checking the package import contract."
+                .into(),
+        gap_diagnoses: vec![
+            vesc_mcp_core::tools::knowledge_feedback::GapDiagnosis::RetrievedButNotSalient,
+        ],
+        retrieval_trace: vesc_mcp_core::tools::knowledge_feedback::RetrievalTrace {
+            query: "lisp imports load-native-lib".into(),
+            mode: Some("lexical".into()),
+            limit: 10,
+            max_response_bytes: Some(32_768),
+            max_context_bytes: Some(8_192),
+            filters: Vec::new(),
+            results: Vec::new(),
+            decisive_evidence: vec!["vesc://catalog/doc/topic/lisp_imports".into()],
+            distractors: vec!["generic native loader examples".into()],
+            insufficient_evidence_next: vec![
+                "Read vesc://catalog/doc/topic/lisp_imports before inferring loader arguments."
+                    .into(),
+            ],
+        },
+        qualifiers: Vec::new(),
+        affected_resources: Vec::new(),
+        evidence_resources: vec!["vesc://catalog/doc/topic/lisp_imports".into()],
+        project_references: Vec::new(),
+        related_queries: vec!["native loader path versus tag".into()],
+        identifiers: vec!["load-native-lib".into(), "lispData".into()],
+        tags: vec!["loader".into()],
+        supersedes: None,
+    }
+}
+
 #[test]
 fn correction_requires_user_authorization() {
     let params = serde_json::json!({
@@ -37,6 +75,22 @@ fn correction_requires_user_authorization() {
     });
 
     assert!(serde_json::from_value::<CorrectVescKnowledgeParams>(params).is_err());
+}
+
+#[test]
+fn correction_requires_gap_diagnosis_and_retrieval_trace() {
+    let error = serde_json::from_value::<CorrectVescKnowledgeParams>(serde_json::json!({
+        "question": "What does load-native-lib receive?",
+        "authorization": "explicit_user_request",
+        "mistaken_conclusion": "It receives a source path.",
+        "correction": "It receives an import tag.",
+        "reasoning_failure": "The decisive evidence was not surfaced.",
+        "gap_diagnoses": ["retrieved_but_not_salient"],
+        "evidence_resources": ["vesc://catalog/doc/topic/lisp_imports"]
+    }))
+    .expect_err("retrieval trace is required");
+
+    assert!(error.to_string().contains("retrieval_trace"), "{error}");
 }
 
 #[test]
@@ -80,23 +134,109 @@ fn persisted_feedback_is_readable_by_resource_uri() {
 }
 
 #[test]
+fn correction_gap_trace_survives_restart() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let response = correct_vesc_knowledge_tool_with_store(
+        &loader_correction(CorrectionAuthorization::ExplicitUserRequest),
+        &store,
+        &resources,
+    );
+    let id = response.id.expect("correction id");
+
+    let reopened = FeedbackStore::new(temp.path());
+    let record = reopened.get(&id).expect("read store").expect("correction");
+    let body = serde_json::to_value(record).expect("correction JSON");
+
+    assert_eq!(body["gap_diagnoses"][0], "retrieved_but_not_salient");
+    assert_eq!(body["recommended_data_actions"][0], "emphasize_qualifier");
+    assert_eq!(
+        body["retrieval_trace"]["query"],
+        "lisp imports load-native-lib"
+    );
+}
+
+#[test]
+fn correction_replay_measures_base_knowledge_without_advisory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let mut correction = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    let baseline = vesc_mcp_core::tools::search_knowledge::search_vesc_knowledge_tool_with_config(
+        &SearchVescKnowledgeParams {
+            query: correction.retrieval_trace.query.clone(),
+            category: None,
+            limit: correction.retrieval_trace.limit,
+            mode: None,
+            filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
+            max_response_bytes: None,
+            max_context_bytes: None,
+            detail: vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Full,
+        },
+        &KnowledgeConfig::default(),
+    );
+    let decisive_id = baseline.results[0].id.clone();
+    correction.retrieval_trace.decisive_evidence = vec![decisive_id.clone()];
+    let write = correct_vesc_knowledge_tool_with_store(&correction, &store, &resources);
+
+    let report = vesc_mcp_core::tools::search_knowledge::replay_vesc_knowledge_correction(
+        &vesc_mcp_core::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams {
+            correction_id: write.id.expect("correction id"),
+            mark_covered: true,
+            authorization: Some(CorrectionAuthorization::ExplicitUserRequest),
+        },
+        &KnowledgeConfig::default(),
+        &store,
+    );
+
+    assert!(report.ok, "{report:?}");
+    assert!(report.covered_by_base_knowledge, "{report:?}");
+    assert!(report.marked_covered, "{report:?}");
+    assert_eq!(report.matched_decisive_evidence, vec![decisive_id]);
+    assert!(report.missing_decisive_evidence.is_empty());
+    assert!(store.active_records().expect("active records").is_empty());
+}
+
+#[test]
+fn marking_base_coverage_requires_user_authorization() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let write = correct_vesc_knowledge_tool_with_store(
+        &loader_correction(CorrectionAuthorization::ExplicitUserRequest),
+        &store,
+        &resources,
+    );
+
+    let report = vesc_mcp_core::tools::search_knowledge::replay_vesc_knowledge_correction(
+        &vesc_mcp_core::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams {
+            correction_id: write.id.expect("correction id"),
+            mark_covered: true,
+            authorization: None,
+        },
+        &KnowledgeConfig::default(),
+        &store,
+    );
+
+    assert!(!report.ok);
+    assert!(
+        report
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("authorization"))
+    );
+}
+
+#[test]
 fn correction_requires_and_digests_registered_vesc_resources() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = FeedbackStore::new(temp.path());
     let resources = ResourceRegistry::with_defaults().expect("resource registry");
-    let params = CorrectVescKnowledgeParams {
-        question: "Does load-native-lib read a source path?".into(),
-        authorization: CorrectionAuthorization::ExplicitUserRequest,
-        mistaken_conclusion: "It receives the source .bin path directly.".into(),
-        correction: "The package import table binds a tag to embedded bytes; load-native-lib receives that tag.".into(),
-        qualifiers: vec!["The source path is used while the package is built.".into()],
-        affected_resources: vec!["vesc://catalog/doc/topic/vescpackage_reference".into()],
-        evidence_resources: vec!["vesc://catalog/doc/topic/lisp_imports".into()],
-        related_queries: vec!["native loader path versus tag".into()],
-        identifiers: vec!["load-native-lib".into(), "lispData".into()],
-        tags: vec!["loader".into()],
-        supersedes: None,
-    };
+    let mut params = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    params.question = "Does load-native-lib read a source path?".into();
+    params.qualifiers = vec!["The source path is used while the package is built.".into()];
+    params.affected_resources = vec!["vesc://catalog/doc/topic/vescpackage_reference".into()];
 
     let response = correct_vesc_knowledge_tool_with_store(&params, &store, &resources);
 
@@ -111,20 +251,7 @@ fn related_search_returns_correction_before_results() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = FeedbackStore::new(temp.path());
     let resources = ResourceRegistry::with_defaults().expect("resource registry");
-    let correction = CorrectVescKnowledgeParams {
-        question: "Does load-native-lib read a source path?".into(),
-        authorization: CorrectionAuthorization::ConfirmedAfterPrompt,
-        mistaken_conclusion: "It receives the source .bin path directly.".into(),
-        correction: "load-native-lib receives an import tag that resolves to embedded bytes."
-            .into(),
-        qualifiers: Vec::new(),
-        affected_resources: Vec::new(),
-        evidence_resources: vec!["vesc://catalog/doc/topic/lisp_imports".into()],
-        related_queries: vec!["how native loader tags work".into()],
-        identifiers: vec!["load-native-lib".into()],
-        tags: vec!["loader".into()],
-        supersedes: None,
-    };
+    let correction = loader_correction(CorrectionAuthorization::ConfirmedAfterPrompt);
     assert!(correct_vesc_knowledge_tool_with_store(&correction, &store, &resources).ok);
 
     let json = search_vesc_knowledge_json_with_feedback(
@@ -145,11 +272,52 @@ fn related_search_returns_correction_before_results() {
     let body: Value = serde_json::from_str(&json).expect("search response JSON");
 
     assert_eq!(body["ok"], true);
-    assert_eq!(body["corrections"][0]["state"], "resource_backed");
+    assert_eq!(body["corrections"][0]["state"], "resource_backed_gap");
     assert!(
-        body["corrections"][0]["correction"]
+        body["corrections"][0]["what_we_know"]
             .as_str()
             .is_some_and(|text| text.contains("import tag"))
+    );
+    assert_eq!(
+        body["corrections"][0]["gap_diagnoses"][0],
+        "retrieved_but_not_salient"
+    );
+    assert!(
+        body["corrections"][0]["check_next"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+    );
+}
+
+#[test]
+fn unrelated_search_does_not_surface_loader_advisory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = FeedbackStore::new(temp.path());
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let correction = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    assert!(correct_vesc_knowledge_tool_with_store(&correction, &store, &resources).ok);
+
+    let json = search_vesc_knowledge_json_with_feedback(
+        &SearchVescKnowledgeParams {
+            query: "realtime data field identifiers".into(),
+            category: None,
+            limit: 10,
+            mode: None,
+            filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
+            max_response_bytes: None,
+            max_context_bytes: None,
+            detail: vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::default(),
+        },
+        &KnowledgeConfig::default(),
+        Some(&store),
+        &resources,
+    );
+    let body: Value = serde_json::from_str(&json).expect("search response JSON");
+
+    assert!(
+        body.get("corrections")
+            .is_none_or(|corrections| corrections.as_array().is_some_and(Vec::is_empty)),
+        "{body}"
     );
 }
 
@@ -179,19 +347,9 @@ fn affected_search_hit_references_the_correction() {
         .as_str()
         .expect("search result resource URI")
         .to_owned();
-    let correction = CorrectVescKnowledgeParams {
-        question: "What does load-native-lib receive?".into(),
-        authorization: CorrectionAuthorization::ExplicitUserRequest,
-        mistaken_conclusion: "It receives a source path.".into(),
-        correction: "It receives an import tag resolving to embedded bytes.".into(),
-        qualifiers: Vec::new(),
-        affected_resources: vec![affected.clone()],
-        evidence_resources: vec!["vesc://catalog/doc/topic/lisp_imports".into()],
-        related_queries: vec![params.query.clone()],
-        identifiers: vec!["load-native-lib".into()],
-        tags: vec!["loader".into()],
-        supersedes: None,
-    };
+    let mut correction = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    correction.affected_resources = vec![affected.clone()];
+    correction.related_queries = vec![params.query.clone()];
     let write = correct_vesc_knowledge_tool_with_store(&correction, &store, &resources);
     let correction_id = write.id.expect("correction id");
 

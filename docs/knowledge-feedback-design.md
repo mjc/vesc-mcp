@@ -17,12 +17,20 @@ The intended correction loop is:
 4. Those resources support a corrected or more qualified conclusion Y.
 5. The user explicitly asks to record Y, or the model asks and the user confirms.
 6. The model calls `correct_vesc_knowledge` with the authorization path, X, Y,
-   affected result IDs, and the supporting resource URIs.
-7. Later related searches show the correction before ordinary results while
-   retaining the authoritative source passages.
+   the original bounded retrieval trace, a structured gap diagnosis, affected
+   result IDs, and the supporting resource URIs.
+7. Related searches immediately show a learned advisory before ordinary
+   results while retaining the authoritative source passages.
+8. The diagnosis becomes a curation and retrieval-evaluation input. The corpus,
+   chunking, metadata, ranking, context selection, or instructions are changed.
+9. The original query is replayed without the advisory. The correction is only
+   covered when decisive evidence now appears in bounded top context.
 
-The correction is a durable annotation. It does not rewrite upstream files or
-the immutable curated knowledge artifact.
+The correction is both a durable advisory and a reproducible knowledge-gap
+record. Model-authored text never rewrites curated data automatically, but the
+feature is incomplete until maintainers absorb the supported fact into the
+underlying knowledge system and prove base retrieval no longer steers the model
+toward the same mistake.
 
 ## Model discovery contract
 
@@ -39,9 +47,16 @@ Initialization instructions should teach this decision:
   `submit_vesc_knowledge_feedback`. It remains unverified.
 - If a user challenges an MCP-derived conclusion, investigate first. Do not
   persist the pushback by itself.
+- Replay the failed query with the same mode, filters, limits, and byte budgets.
+  Preserve the ordered result IDs, scores, bounded excerpts, decisive evidence,
+  and distractors that explain why the answer went wrong.
 - Call `correct_vesc_knowledge` only when follow-up VESC searches or resource
   reads support the changed conclusion. Include affected IDs and exact
-  supporting VESC resource URIs.
+  supporting VESC resource URIs. Classify the data/retrieval gap and explain why
+  the earlier reasoning failed.
+- Treat a returned advisory as temporary steering. Follow `check_next` instead
+  of guessing when evidence is insufficient, then improve and evaluate the base
+  knowledge response so the advisory is no longer required.
 - A correction write also requires user authorization: either an explicit user
   request, or confirmation after the model asks. Record the matching
   `authorization` value.
@@ -113,9 +128,15 @@ Inputs are:
 - the original question or bounded context;
 - `authorization`: `explicit_user_request` or `confirmed_after_prompt`;
 - the mistaken or incomplete conclusion;
+- why the earlier inference failed;
 - the corrected fact and important qualifiers;
+- one or more bounded gap diagnoses;
+- the original query settings and ordered bounded retrieval trace, including
+  decisive evidence, distractors, and the next read/search when evidence was
+  insufficient;
 - affected result, chunk, document, or resource IDs;
 - supporting registered VESC resource URIs;
+- bounded project decision, regression-test, or commit references for curation;
 - related queries, identifiers, and tags;
 - an optional note or correction being superseded.
 
@@ -133,15 +154,33 @@ existing normalized document, chunk, and `LexicalIndex` types.
 
 - Ordinary notes join search results with an explicit unverified origin and
   do not displace curated evidence.
-- Current resource-backed corrections appear in a separate bounded
-  `corrections` collection before ordinary `results`.
-- A correction includes the misconception, corrected fact, qualifiers,
-  affected IDs, supporting resource URIs and digests, and supersession state.
+- Current resource-backed corrections appear as learned advisories in a
+  separate bounded `corrections` collection before ordinary `results`.
+- An advisory includes `what_we_know`, `common_mistake`, qualifiers,
+  `check_next`, gap diagnoses, recommended data actions, affected IDs,
+  supporting resource URIs and digests, and supersession state.
 - When an affected curated hit is returned, it carries the correction ID so a
   client cannot easily miss the annotation.
 - Missing or changed evidence makes the correction stale. Stale or superseded
   corrections are not active.
 - Hybrid retrieval uses the overlay only in its lexical channel initially.
+
+The overlay is the immediate safety net, not the final repair. Each serious
+correction must drive a judged regression case using its original trace. The
+recommended action maps the diagnosis to the smallest durable repair: ingest a
+missing authoritative source, improve query expansion, promote decisive
+evidence, reduce dilution, preserve a truncated excerpt, repair chunk
+boundaries, improve retrieval text, emphasize a qualifier, link related
+evidence, add a project decision, resolve stale/conflicting data, or add a
+regression evaluation. After rebuilding the index, replay must show the
+decisive source in top context with fewer distractors and an explicit
+insufficiency warning when the corpus still cannot answer.
+
+`replay_vesc_knowledge_correction` always searches base knowledge with the
+preserved settings and excludes learned feedback. By default it is read-only.
+After a passing replay, `mark_covered: true` plus a user-authorization value can
+persist the proof and remove the advisory from active retrieval while preserving
+the full audit record. Missing decisive evidence leaves the advisory active.
 
 Resource grounding proves provenance, not semantic entailment. A response may
 call the record a “resource-backed correction,” but never a “verified fact.”
@@ -168,7 +207,11 @@ Only after the user requests or confirms the write should the model call
 `correct_vesc_knowledge` with the authorization path, incomplete conclusion,
 qualified sequence, affected IDs, and those resource URIs.
 Future loader-related searches should show the correction first and retain the
-source passages beside it.
+source passages beside it. The captured failed trace must also become a loader
+retrieval regression: the base search should surface the exact import-table and
+loader-contract evidence strongly enough that a model does not need to invent a
+generic file-loader rule. Only that base-retrieval proof closes the knowledge
+gap.
 
 ## Safety and non-goals
 
@@ -179,8 +222,8 @@ source passages beside it.
 - Arbitrary URLs and paths cannot ground a correction.
 - Feedback cannot acquire first-party or curated trust.
 - No database, admin CLI, user-identity subsystem, semantic judge, URL crawler,
-  per-write curated-artifact rebuild, or feedback embeddings are required for
-  the first version.
+  per-write curated-artifact rebuild, feedback embeddings, or automatic
+  promotion of model-authored prose into curated truth is required.
 
 ## Delivery tracking
 

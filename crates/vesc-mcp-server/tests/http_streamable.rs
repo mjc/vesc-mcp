@@ -50,7 +50,11 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             .iter()
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
-        vec!["ping", "search_vesc_knowledge"]
+        vec![
+            "ping",
+            "replay_vesc_knowledge_correction",
+            "search_vesc_knowledge",
+        ]
     );
     let resources = first.list_all_resources().await?;
     assert!(

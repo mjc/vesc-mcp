@@ -173,3 +173,49 @@ fn documented_search_examples_are_behaviorally_supported() {
         );
     }
 }
+
+#[test]
+fn loader_corrections_are_top_context_in_base_knowledge() {
+    let harness = McpTestHarness::new();
+    let cases = [
+        (
+            "Can I free the runtime admission header after package stop when a late LispBM callback still uses lib_get_arg?",
+            "native_lib_stop_arg_lifetime",
+            "STOPPED tombstone",
+        ),
+        (
+            "What does false returned from native INIT_FUN mean when optional registrations fail?",
+            "native_lib_init_result",
+            "Library init failed",
+        ),
+        (
+            "Should a generic Rust panic handler convention override an accepted VESC SDK project decision?",
+            "native_lib_review_authority",
+            "accepted project decisions",
+        ),
+    ];
+
+    for (query, expected_name, decisive_excerpt) in cases {
+        let response = harness.call_tool(
+            "search_vesc_knowledge",
+            serde_json::json!({ "query": query, "limit": 5 }),
+        );
+        let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+        let results = body["results"].as_array().expect("compact results");
+        let position = results
+            .iter()
+            .position(|row| row[0] == expected_name)
+            .unwrap_or_else(|| panic!("{expected_name} missing from top context: {body}"));
+
+        assert!(
+            position < 3,
+            "{expected_name} was buried at {position}: {body}"
+        );
+        assert!(
+            results[position][2]
+                .as_str()
+                .is_some_and(|excerpt| excerpt.contains(decisive_excerpt)),
+            "decisive loader evidence missing from excerpt: {body}"
+        );
+    }
+}

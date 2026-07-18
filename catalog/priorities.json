@@ -37,6 +37,27 @@
       "summary": "12-symbol minimal Rust package ABI"
     },
     {
+      "id": "native-lib-stop-arg-lifetime",
+      "priority": "P0",
+      "category": "native_lib_abi",
+      "catalog_ref": "docs/vesc-pkg-lib-abi.md#arg-and-base_addr-can-outlive-stop_fun",
+      "summary": "STOPPED tombstone can protect late callbacks: lib_get_arg still resolves arg by base_addr after stop_fun is cleared"
+    },
+    {
+      "id": "native-lib-init-result",
+      "priority": "P0",
+      "category": "native_lib_abi",
+      "catalog_ref": "docs/vesc-pkg-lib-abi.md#false-from-init-is-a-loader-failure-not-a-warning",
+      "summary": "false from native INIT_FUN means Library init failed; optional package setup may require best-effort true after attempted registrations"
+    },
+    {
+      "id": "native-lib-review-authority",
+      "priority": "P1",
+      "category": "native_lib_abi",
+      "catalog_ref": "docs/vesc-pkg-lib-abi.md#panic-ownership-is-a-project-contract",
+      "summary": "Check accepted project decisions and hardware-known-good history before generic Rust conventions, including SDK-owned panic policy"
+    },
+    {
       "id": "refloat-commands-transport",
       "priority": "P1",
       "category": "refloat_command",

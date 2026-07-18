@@ -18,8 +18,9 @@ See [docs/testing.md](docs/testing.md) for the red → green → refactor workfl
 All tools return JSON text payloads.
 
 The default stdio transport exposes the full tool set below. Streamable HTTP
-intentionally exposes only `ping` and `search_vesc_knowledge`; both transports
-expose the resource registry.
+exposes `ping`, `search_vesc_knowledge`, and base-knowledge correction replay
+(read-only unless authenticated writes authorize `mark_covered`); both
+transports expose the resource registry.
 
 | Tool | Purpose | Key params |
 |------|---------|------------|
@@ -32,7 +33,8 @@ expose the resource registry.
 | `run_package_checks` | Run fmt/clippy/test in package sandbox | `root` |
 | `search_vesc_knowledge` | Search legacy/lexical/hybrid knowledge evidence | `query`, `category`, `filters`, `mode`, `limit`, bounded context/response budgets |
 | `submit_vesc_knowledge_feedback` | Persist a reusable low-trust lesson when registered evidence is not available | `question`, `lesson`, related queries/identifiers/tags, optional `supersedes` |
-| `correct_vesc_knowledge` | Elevate a user-authorized correction after follow-up VESC evidence supports it | `question`, `authorization`, mistaken/corrected conclusions, qualifiers, affected resources, exact registered `evidence_resources` |
+| `correct_vesc_knowledge` | Elevate a user-authorized correction and diagnose why MCP retrieval steered the model wrong | `question`, `authorization`, mistaken/corrected conclusions, `reasoning_failure`, `gap_diagnoses`, bounded `retrieval_trace`, qualifiers, affected resources, exact registered `evidence_resources` |
+| `replay_vesc_knowledge_correction` | Re-run a correction's preserved query against base knowledge without advisories | `correction_id` |
 
 Feedback write tools are only advertised when `[feedback] path` is configured
 and writes are explicitly enabled. HTTP writes additionally require configured
@@ -44,6 +46,18 @@ to match that interaction; disagreement alone is not evidence or authorization.
 After a significant resolved disagreement, mention once that the correction can
 be recorded, without repeatedly prompting. Use `submit_vesc_knowledge_feedback`
 for a reusable uncited lesson, which remains visibly unverified.
+
+Treat a serious correction as both an immediate learned advisory and a base
+knowledge defect. Preserve the original query settings and ordered bounded
+results, classify why decisive evidence was missing or buried, and follow the
+returned recommended data action. Improve the corpus, chunking, metadata,
+ranking, context selection, or instructions, then replay the original query
+without relying on the advisory. Do not consider the gap repaired until the
+decisive evidence is present in bounded top context; if the corpus still cannot
+answer, return an insufficiency warning and targeted next read/search instead of
+guessing. `replay_vesc_knowledge_correction` is read-only unless `mark_covered`
+is explicitly requested with authorization; a passing marked replay retires the
+advisory but preserves its audit record.
 
 ### Path sandbox
 
@@ -80,6 +94,7 @@ Clients may subscribe to readable resource URIs via `resources/subscribe`; the s
 | `vesc://catalog/doc/topic/vesc_c_if` | LBM `vesc_c_if` extension surface |
 | `vesc://catalog/doc/topic/lisp_imports` | `lispData` native import wire format |
 | `vesc://catalog/doc/topic/vescpackage_reference` | Package lifecycle index (wire + ABI) |
+| `vesc://catalog/doc/topic/vesc_pkg_lib_abi` | Native loader lifetimes, init semantics, and review authority gates |
 
 **ABI inventory** (`application/json`):
 

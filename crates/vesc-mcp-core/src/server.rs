@@ -280,7 +280,7 @@ impl VescMcpService {
     }
 
     #[tool(
-        description = "Persist an evidence-backed VESC correction only when the user explicitly requests it or confirms after being asked. Set authorization accordingly and include exact registered vesc:// evidence_resources."
+        description = "Persist an evidence-backed VESC correction only after user authorization. Include exact registered evidence, why reasoning failed, structured gap diagnoses, and the bounded original retrieval trace so the base knowledge defect can be repaired and replayed."
     )]
     fn correct_vesc_knowledge(
         &self,
@@ -288,6 +288,32 @@ impl VescMcpService {
     ) -> String {
         feedback_json(self.state.feedback.as_ref(), |store| {
             correct_vesc_knowledge_tool_with_store(&params, store, &self.state.resources)
+        })
+    }
+
+    #[tool(
+        description = "Replay a stored correction's original bounded query against base VESC knowledge only. Use the report to prove whether corpus/retrieval changes now surface every decisive evidence ID without the learned advisory."
+    )]
+    fn replay_vesc_knowledge_correction(
+        &self,
+        Parameters(params): Parameters<
+            crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams,
+        >,
+    ) -> String {
+        if params.mark_covered && !self.state.feedback_writes_enabled {
+            return r#"{"ok":false,"error":"mark_covered requires enabled feedback writes"}"#
+                .into();
+        }
+        let Some(store) = self.state.feedback.as_ref() else {
+            return r#"{"ok":false,"error":"knowledge feedback is not configured"}"#.into();
+        };
+        let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
+            &params,
+            &McpConfig::load().knowledge,
+            store,
+        );
+        serde_json::to_string(&report).unwrap_or_else(|error| {
+            format!(r#"{{"ok":false,"error":"replay serialization failed: {error}"}}"#)
         })
     }
 }
@@ -457,7 +483,7 @@ impl HttpMcpService {
     }
 
     #[tool(
-        description = "Persist an evidence-backed VESC correction only when the user explicitly requests it or confirms after being asked. Set authorization accordingly and include exact registered vesc:// evidence_resources."
+        description = "Persist an evidence-backed VESC correction only after user authorization. Include exact registered evidence, why reasoning failed, structured gap diagnoses, and the bounded original retrieval trace so the base knowledge defect can be repaired and replayed."
     )]
     fn correct_vesc_knowledge(
         &self,
@@ -465,6 +491,32 @@ impl HttpMcpService {
     ) -> String {
         feedback_json(self.state.feedback.as_ref(), |store| {
             correct_vesc_knowledge_tool_with_store(&params, store, &self.state.resources)
+        })
+    }
+
+    #[tool(
+        description = "Replay a stored correction's original bounded query against base VESC knowledge only. Use the report to prove whether corpus/retrieval changes now surface every decisive evidence ID without the learned advisory."
+    )]
+    fn replay_vesc_knowledge_correction(
+        &self,
+        Parameters(params): Parameters<
+            crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams,
+        >,
+    ) -> String {
+        if params.mark_covered && !self.feedback_writes_enabled {
+            return r#"{"ok":false,"error":"mark_covered requires authenticated feedback writes"}"#
+                .into();
+        }
+        let Some(store) = self.state.feedback.as_ref() else {
+            return r#"{"ok":false,"error":"knowledge feedback is not configured"}"#.into();
+        };
+        let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
+            &params,
+            &McpConfig::load().knowledge,
+            store,
+        );
+        serde_json::to_string(&report).unwrap_or_else(|error| {
+            format!(r#"{{"ok":false,"error":"replay serialization failed: {error}"}}"#)
         })
     }
 }
@@ -631,9 +683,9 @@ fn http_server_info(feedback_writes_enabled: bool) -> ServerInfo {
 
 const fn server_instructions(feedback_writes_enabled: bool) -> &'static str {
     if feedback_writes_enabled {
-        "VESC firmware/package knowledge service with durable feedback. Search before answering and read returned vesc:// resources for exact evidence. If a user pushes back, do not immediately persist their claim: ask focused follow-up questions, search related terms/identifiers, and read the relevant resources. When those resources support a corrected fact, explain what was learned. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate it, or after you ask permission and the user confirms; set authorization to explicit_user_request or confirmed_after_prompt accordingly. After a significant resolved disagreement or when reusable VESC knowledge has accumulated, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt in the same conversation. Use submit_vesc_knowledge_feedback only for a reusable lesson that lacks authoritative registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
+        "VESC firmware/package knowledge service with durable feedback. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
     } else {
-        "VESC firmware/package knowledge service. Search before answering and read returned vesc:// resources for exact evidence. Corrections are returned before ordinary search results; learned notes are marked unverified. Feedback writes are disabled on this connection."
+        "VESC firmware/package knowledge service. Search before answering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
     }
 }
 
@@ -773,6 +825,11 @@ mod tests {
         );
         assert!(names.iter().any(|name| name == "correct_vesc_knowledge"));
         assert!(
+            names
+                .iter()
+                .any(|name| name == "replay_vesc_knowledge_correction")
+        );
+        assert!(
             service
                 .resource_registry()
                 .list_mcp_templates()
@@ -786,6 +843,9 @@ mod tests {
         assert!(instructions.contains("correct_vesc_knowledge"));
         assert!(instructions.contains("user explicitly asks"));
         assert!(instructions.contains("remind the user once"));
+        assert!(instructions.contains("replay the original query"));
+        assert!(instructions.contains("without the advisory"));
+        assert!(instructions.contains("instead of guessing"));
     }
 
     #[test]

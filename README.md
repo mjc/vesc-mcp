@@ -106,7 +106,8 @@ and unconfigured connections remain read-only.
 | `ping` | Verify the server connection |
 | `search_vesc_knowledge` | Search VESC knowledge, returning relevant corrections before ordinary results |
 | `submit_vesc_knowledge_feedback` | Save a reusable but explicitly unverified lesson |
-| `correct_vesc_knowledge` | Persist a user-authorized correction grounded in exact registered VESC resource URIs |
+| `correct_vesc_knowledge` | Persist a user-authorized, evidence-backed correction plus the failed retrieval trace and knowledge-gap diagnosis |
+| `replay_vesc_knowledge_correction` | Replay the preserved query against base knowledge only and report whether decisive evidence is now covered |
 | `list_vesc_packages` | Find packages under allowed directories |
 | `inspect_pkgdesc` | Read a package descriptor |
 | `inspect_vescpkg` | Inspect a built `.vescpkg` file |
@@ -117,10 +118,16 @@ and unconfigured connections remain read-only.
 Search results are evidence, not instructions. Each result includes resource
 URIs for reading the matching passage or complete normalized document.
 When a user challenges an MCP-derived answer, the model should ask focused
-follow-up questions, search again, and read those resources. It should call
+follow-up questions, replay the original bounded search, and read those
+resources. It should call
 `correct_vesc_knowledge` only after the registered VESC evidence supports the
 correction and the user explicitly requests the write or confirms after the
 model asks. The required `authorization` field records which path occurred.
+The correction records why the original knowledge response steered the model
+wrong and returns a learned advisory immediately, but that advisory is not the
+final repair: its trace and gap diagnosis must drive a corpus, chunking,
+metadata, ranking, context, or instruction improvement and a replay proving the
+base search now surfaces the decisive evidence without the advisory.
 After significant reusable knowledge is resolved, the model should mention the
 correction option once without repeatedly prompting. User disagreement alone is
 not evidence. Uncited reusable lessons belong in

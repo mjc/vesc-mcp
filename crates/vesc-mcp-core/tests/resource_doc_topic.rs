@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use vesc_mcp_core::resources::{
-    LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, ResourceRegistry, VESC_C_IF_URI,
+    LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, ResourceRegistry, VESC_C_IF_URI, VESC_PKG_LIB_ABI_URI,
     VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
 };
 
@@ -84,10 +84,23 @@ fn resource_doc_topic_vescpackage_reference_covers_lifecycle() {
 }
 
 #[test]
-fn resource_doc_topic_registers_four_static_resources() {
+fn resource_doc_topic_loader_invariants_prevent_generic_rule_guessing() {
+    let registry = ResourceRegistry::with_defaults().expect("resource registry");
+    let text = registry
+        .read("vesc://catalog/doc/topic/vesc_pkg_lib_abi")
+        .expect("read loader ABI topic");
+
+    assert!(text.contains("lib_get_arg"));
+    assert!(text.contains("STOPPED"));
+    assert!(text.contains("Library init failed"));
+    assert!(text.contains("accepted project decisions"));
+}
+
+#[test]
+fn resource_doc_topic_registers_five_static_resources() {
     let mut registry = ResourceRegistry::new();
     register_doc_topic_resources(&mut registry).expect("register doc topic resources");
-    assert_eq!(registry.list_static().len(), 4);
+    assert_eq!(registry.list_static().len(), 5);
 
     let uris: Vec<_> = registry
         .list_static()
@@ -98,6 +111,7 @@ fn resource_doc_topic_registers_four_static_resources() {
     assert!(uris.contains(&VESC_C_IF_URI));
     assert!(uris.contains(&LISP_IMPORTS_URI));
     assert!(uris.contains(&VESCPACKAGE_REFERENCE_URI));
+    assert!(uris.contains(&VESC_PKG_LIB_ABI_URI));
 
     for meta in registry.list_static() {
         assert_eq!(meta.mime_type, "text/markdown");

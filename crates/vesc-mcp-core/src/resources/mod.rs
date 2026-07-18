@@ -39,7 +39,7 @@ pub use refloat_command::{
 };
 pub use r#static::{
     DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI,
-    VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
+    VESC_PKG_LIB_ABI_URI, VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
 };
 pub use subscriptions::ResourceSubscriptions;
 pub use uri::{

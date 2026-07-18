@@ -6,5 +6,12 @@ fn http_service_exposes_only_safe_shared_tools() {
     let mut names = service.list_tool_names();
     names.sort();
 
-    assert_eq!(names, ["ping", "search_vesc_knowledge"]);
+    assert_eq!(
+        names,
+        [
+            "ping",
+            "replay_vesc_knowledge_correction",
+            "search_vesc_knowledge"
+        ]
+    );
 }
