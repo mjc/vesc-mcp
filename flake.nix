@@ -46,7 +46,8 @@
             filter = path: type:
               craneLib.filterCargoSources path type
               || pkgs.lib.hasInfix "/crates/vesc-knowledge-index/generated" path
-              || pkgs.lib.hasInfix "/crates/vesc-mcp-core/src/resources/snippets" path;
+              || pkgs.lib.hasInfix "/crates/vesc-mcp-core/src/resources/snippets" path
+              || pkgs.lib.hasInfix "/vendor/fastembed/src/sparse_text_embedding/weights" path;
           };
           commonArgs = {
             pname = "vesc-mcp";
