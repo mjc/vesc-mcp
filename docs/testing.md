@@ -1,181 +1,190 @@
-# Testing and TDD Workflow
+# Contributor testing
 
-vesc-mcp follows **red → green → refactor** for every feature. Commit a failing test before implementation, make it pass with the smallest change, then refactor with tests still green.
+This guide is for people changing vesc-mcp source code. Users should install a
+release archive instead; see [installation.md](installation.md).
 
-## Quick commands
+The project follows red → green → refactor: add a failing test that describes
+the behavior, make the smallest change that passes, then clean up without
+changing behavior.
+
+## Development requirements
+
+- Rust 1.85 or newer
+- `cargo-nextest`
+- `make`
+- optional `cargo-llvm-cov` for coverage
+
+Clone the repository with its submodules before running catalog validation:
 
 ```bash
-nix develop -c make check          # fmt + clippy + nextest + doc
-nix develop -c cargo nextest run --workspace
-nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
-nix develop -c cargo nextest run -p vesc-knowledge-index --features git-corpus -E 'binary(git_ingestion)'
-nix build
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- build
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- inspect
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode legacy --format text
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode lexical --format json
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode lexical --artifact target/knowledge-artifacts --gate --format json
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode all --artifact target/knowledge-artifacts --format text
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- benchmark --artifact target/knowledge-artifacts --format json
-nix develop -c cargo run -p vesc-mcp-server -- --benchmark-search --artifact target/knowledge-artifacts --warmup 3 --repetitions 10 --format json
+git clone --recurse-submodules <repository-url>
+cd vesc-mcp
 ```
 
-`evaluate --gate` applies the locked v1 targets (Recall@5 >= 0.90, MRR@10 >=
-0.80, nDCG@10 >= 0.80, and identifier top-1 = 1.0). A failed gate exits
-nonzero and includes failed metrics plus the affected query IDs and returned
-top-five IDs. `benchmark` records warmup/repetition counts, corpus/artifact
-size, build/load/query/fusion percentiles, response-size percentiles, and
-retained-RSS measurements. Evaluation reports also include duplicate rate
-and diversity at five, plus deterministic category/source-family breakdowns
-derived from the judged relevant IDs. Reports contain no timestamps or network
-data.
+## Main checks
 
-`vesc-mcp-server -- --benchmark-search` measures the in-process search handler
-plus JSON serialization across the locked suite. It deliberately does not
-claim to measure stdio JSON-RPC transport; record that limitation with any
-latency result. The benchmark uses the active artifact generation, so rebuilding
-the corpus changes both the corpus digest and the cache key.
+```bash
+make check
+cargo nextest run --workspace
+cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
+cargo doc --workspace --no-deps
+```
 
-Configuration lives in [`.config/nextest.toml`](../.config/nextest.toml). The `ci` profile enables fail-fast and one retry.
+`make check` runs formatting, Clippy with warnings denied, the workspace test
+suite, and documentation generation. The default fixture suite is offline and
+does not require sibling source checkouts.
 
-The `git-corpus` fixture suite creates local bare repositories and reads exact
-commit trees through `gix`; it requires no checkout or network. It covers the
-reviewed VESC, VESC Tool, and Refloat source families plus deterministic
-artifacts, provenance, resource bounds, and unsafe/non-text entry rejection.
+Nextest configuration lives in [`.config/nextest.toml`](../.config/nextest.toml).
 
 ## Test tiers
 
-| Tier | Location | Examples |
-|------|----------|----------|
-| Unit | `crates/*/src/**/*.rs` (`#[cfg(test)]`) | `parse_pkgdesc_qml`, `decide_ping_echo` |
-| Integration | `crates/*/tests/*.rs` | `fixtures_refloat_minimal_validates` |
-| MCP service | `crates/vesc-mcp-core/tests/*.rs` | tool/resource routing through `McpTestHarness` |
-| Transport smoke | `crates/vesc-mcp-server/tests/*.rs` | stdio and Streamable HTTP behavior |
+| Tier | Location | Purpose |
+|------|----------|---------|
+| Unit | `crates/*/src/**/*.rs` | Parsing and decision logic |
+| Integration | `crates/*/tests/*.rs` | Crate boundaries and fixtures |
+| MCP service | `crates/vesc-mcp-core/tests/*.rs` | Tool and resource routing |
+| Transport | `crates/vesc-mcp-server/tests/*.rs` | stdio and Streamable HTTP behavior |
 
-## Fixtures
+Synthetic packages live in [`tests/fixtures/`](../tests/fixtures/README.md).
+Valid fixtures cover supported layouts; `broken-*` fixtures cover expected
+error paths.
 
-Synthetic workspaces live under [`tests/fixtures/`](../tests/fixtures/). See [`tests/fixtures/README.md`](../tests/fixtures/README.md) for the catalog of valid and broken layouts.
+## TDD checklist
 
-Use helpers from `vesc_mcp_core::test_support`:
+1. Add a failing test that names the behavior.
+2. Run the narrowest relevant test and confirm the expected failure.
+3. Implement the minimum change.
+4. Run the narrow test, then `cargo nextest run --workspace`.
+5. Refactor while tests remain green.
+6. Use a `test(...)`, `feat(...)`, or `docs(...)` commit prefix and reference
+   the relevant `VESCM-*` issue when one exists.
 
-```rust
-use vesc_mcp_core::test_support::{TempWorkspace, fixture_path, read_fixture_file};
+Integration tests should call tools through
+`McpTestHarness::call_tool(name, json!({...}))` so they exercise the same
+handlers as a live server.
 
-let root = fixture_path("refloat-minimal");
-let pkgdesc = read_fixture_file("refloat-minimal", "pkgdesc.qml");
-```
-
-`TempWorkspace` creates an isolated temp directory (ported from vesc-rust-poc `test_support.rs`).
-
-## TDD checklist for agents
-
-1. **RED** — Add a failing test that names the behavior (e.g. `inspect_pkgdesc_returns_json_for_refloat_fixture`).
-2. **GREEN** — Implement the minimum code to pass; run `cargo nextest run --workspace`.
-3. **REFACTOR** — Extract shared logic into domain or `test_support`; keep tests green.
-4. Commit with `test(...)` or `feat(...)` prefix and reference the Lific `VESCM-*` issue when applicable.
-
-## Optional live-repo tests
-
-Some catalog tests require sibling checkouts. Set env vars and run ignored tests explicitly:
+## Focused checks
 
 ```bash
-export VESC_REFLOAT_ROOT=~/projects/refloat
-export VESC_BLDC_ROOT=~/projects/bldc
-export VESC_POC_ROOT=~/projects/vesc-rust-poc
-nix develop -c cargo nextest run -p vesc-mcp-core --run-ignored all
+cargo nextest run -p vesc-mcp-core -E 'test(tool_)'
+cargo nextest run -p vesc-domain -p vesc-mcp-core -E 'test(golden) | test(build_native_lib)'
+cargo nextest run -p vesc-knowledge-index --features git-corpus -E 'binary(git_ingestion)'
+cargo check -p vesc-knowledge-index
+cargo check -p vesc-knowledge-index --features semantic-fastembed
 ```
 
-The clean-start retrieval check is intentionally offline:
+The `git-corpus` tests create local repositories and require no network. The
+semantic feature check compiles the local adapter but does not download a
+model.
+
+## Optional live-source tests
+
+Ignored tests validate source attribution against local upstream checkouts.
+Set only the roots you have, then run:
 
 ```bash
-nix develop -c cargo check -p vesc-knowledge-index
-nix develop -c cargo check -p vesc-knowledge-index --features semantic-fastembed
+export VESC_REFLOAT_ROOT=/path/to/refloat
+export VESC_BLDC_ROOT=/path/to/bldc
+export VESC_POC_ROOT=/path/to/vesc-rust-poc
+cargo nextest run -p vesc-mcp-core --run-ignored all
 ```
 
-The first command proves the default path does not compile the optional
-embedding adapter; the second checks the runnable ONNX-backed adapter and does
-not provision or download a model. Provisioning is a separate, explicit
-`semantic-fastembed-online` command. A real hybrid evaluation is:
+Do not commit local paths or generated test output.
+
+## Knowledge evaluation
+
+Build and inspect a local artifact:
 
 ```bash
-nix develop -c cargo run -p vesc-knowledge-index --features semantic-fastembed --bin gen-knowledge-index -- \
+cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- build
+cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- inspect
+```
+
+Run the locked evaluation gate:
+
+```bash
+cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- \
+  evaluate --mode lexical --artifact target/knowledge-artifacts --gate --format json
+```
+
+The v1 thresholds are Recall@5 ≥ 0.90, MRR@10 ≥ 0.80, nDCG@10 ≥ 0.80, and
+identifier top-1 = 1.0. A failed gate exits nonzero and reports affected query
+IDs.
+
+The in-process handler benchmark is:
+
+```bash
+cargo run --release -p vesc-mcp-server -- \
+  --benchmark-search --artifact target/knowledge-artifacts \
+  --warmup 3 --repetitions 10 --format json
+```
+
+This measures the search handler and JSON serialization, not MCP transport.
+Record the operating system, architecture, corpus digest, warmup and
+repetition counts, and memory measurement method with any performance claim.
+Never record user names, hostnames, or personal paths.
+
+## Semantic evaluation
+
+Semantic tests require a separately provisioned, pinned local model. The
+normal server and builder never download one automatically.
+
+```bash
+cargo run --release -p vesc-knowledge-index \
+  --features semantic-fastembed --bin gen-knowledge-index -- \
   evaluate --mode hybrid --artifact target/knowledge-artifacts-semantic \
-  --semantic-model-dir target/models/bge-small-en-v1.5 \
+  --semantic-model-dir /path/to/pinned-model \
   --semantic-model-id Xenova/bge-small-en-v1.5 \
   --semantic-model-revision <revision-from-manifest>
 ```
 
-The hybrid path uses a shallow lexical floor: RRF records overlapping semantic
-evidence, semantic-only chunks can fill gaps, and top lexical evidence cannot
-be displaced by an uncalibrated model. Keep run-specific metrics in Lific or CI
-artifacts rather than this guide. The default server path remains
-lexical/offline; hybrid is available only when a pinned local semantic
-capability is explicitly configured.
+Keep run-specific results in CI artifacts or the task tracker rather than
+committing workstation-specific reports. See
+[provider-profiling.md](provider-profiling.md) for the current provider
+recommendation.
 
-## Semantic benchmark reports
+### Semantic diagnostics
 
-Semantic measurements keep model inference separate from exact vector search and
-record the model ID/revision, corpus digest, build identity, batch size, vector
-artifact size, warmup/repetition counts, cold initialization and first-query-
-after-build timings, timing percentiles, and retained-RSS measurements. The
-RSS fields are `rss_before_queries_bytes`, `rss_after_queries_bytes`, and
-`rss_retained_delta_bytes`; they are not peak RSS. Use `--semantic-batch-sizes
-4,8,16,32,64` to emit one JSON/Markdown batch-sweep report while reusing the
-same initialized model.
-Use a pinned local model and select JSON for machine-readable storage or
-Markdown for review:
+Before a costly semantic run, inspect the corpus's token lengths without
+performing inference:
 
 ```bash
-nix develop -c cargo run -p vesc-knowledge-index --release \
+cargo run --release -p vesc-knowledge-index \
   --features semantic-fastembed --bin gen-knowledge-index -- \
-  benchmark --mode semantic \
-  --artifact target/knowledge-artifacts-semantic-v2 \
-  --semantic-model-dir target/models/bge-small-en-v1.5 \
+  benchmark --mode semantic --artifact target/knowledge-artifacts-semantic \
+  --semantic-model-dir /path/to/pinned-model \
   --semantic-model-id Xenova/bge-small-en-v1.5 \
   --semantic-model-revision <revision-from-manifest> \
-  --semantic-batch-size 8 --limits 5,10,20,50 \
-  --warmup 3 --repetitions 10 --format json
+  --semantic-token-statistics-only --format json
 ```
 
-Run the semantic command through `nix develop`; the dev shell supplies the
-matching ONNX Runtime shared library. If the command is launched outside the
-Nix shell, the adapter fails fast with an actionable runtime error rather than
-allowing the loader to stall.
+To measure the worst inputs, replace `--semantic-token-statistics-only` with:
 
-Run the command in release mode for production numbers. Capture peak RSS
-separately with the Nix-provided `$VESC_TIME_BIN -v`, `getrusage`, or a
-sampling harness; do not put
-that external peak result in the retained-RSS comparison fields or table. The
-benchmark does not claim to measure MCP transport overhead.
-The vector artifact format is versioned; rebuild artifacts generated before
-the current dense-cosine-v2 format before benchmarking them.
+```text
+--semantic-longest-chunks 1 --semantic-batch-size 1 \
+  --warmup 0 --repetitions 1
+```
 
-## Negative fixtures
+Increase the chunk count only after the single-input probe fits the available
+memory.
 
-Broken fixtures under `tests/fixtures/broken-*` drive validation tests. A test asserting missing assets or bad wire bytes should **pass** when the fixture is broken; the tool under test should return errors when pointed at those paths.
-
-## CI
-
-GitHub Actions runs `nix develop -c make check`, which invokes `cargo nextest run --workspace`. No external repos are required for the default fixture suite.
-
-A separate **coverage** job (report-only) runs `cargo llvm-cov` and uploads `lcov.info` as an artifact.
+The benchmark defaults to ONNX Runtime graph-optimization level 3. Use
+`--semantic-graph-optimization-level 0`, `1`, `2`, or `3` only when comparing
+runtime behavior. The model's registered input length is fixed and has no
+command-line override.
 
 ## Coverage
 
-Per-crate **line coverage floor: 80%** for `vesc-domain`, `vesc-knowledge-index`, `vesc-mcp-adapters`, and `vesc-mcp-core`. Policy and excludes are in [`.config/coverage.toml`](../.config/coverage.toml).
-
-Excluded from reports: `vendor/` and std. See [`.config/coverage-exclude.regex`](../.config/coverage-exclude.regex).
-
-```bash
-nix develop -c make coverage          # workspace run
-nix develop -c make coverage-summary  # per-crate lib src % vs 80% floor
-nix develop -c make coverage-html     # HTML report (same exclusions)
-```
-
-After `make coverage`, open the HTML report or inspect a single crate:
+The line-coverage floor is 80% for library source in `vesc-domain`,
+`vesc-knowledge-index`, `vesc-mcp-adapters`, and `vesc-mcp-core`. Policy and
+exclusions live in [`.config/coverage.toml`](../.config/coverage.toml) and
+[`.config/coverage-exclude.regex`](../.config/coverage-exclude.regex).
 
 ```bash
-cargo llvm-cov report -p vesc-mcp-core --summary-only
+make coverage
+make coverage-summary
+make coverage-html
 ```
 
-Excluded from the floor: `vesc-mcp-server` bootstrap, `build.rs`, `src/bin/*`, and `vendor/`.
+Coverage is report-only in CI. The server bootstrap, build scripts, binaries,
+and vendored code are excluded from the per-crate floor.

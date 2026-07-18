@@ -1326,10 +1326,6 @@ impl EmbeddingProvider for FastEmbedProvider {
                 if count == 0 {
                     return Err(EmbeddingError::EmptyInput);
                 }
-                let divisor = (0..count).fold(0.0_f32, |count, _| count + 1.0);
-                for value in &mut vector {
-                    *value /= divisor;
-                }
                 normalize(&mut vector)?;
                 aggregated.push(vector);
             }

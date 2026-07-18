@@ -20,12 +20,13 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 - `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput`
 - `isCompatible(fwRxParams)` JavaScript guard
 
-**POC (incorrect, pending fix)** (`fixtures/native-lib-baseline/package/pkgdesc.qml`):
+**Historical POC schema** (`fixtures/native-lib-baseline/package/pkgdesc.qml`):
 
 - Uses invented `packageName`, `packageVersion`, `nativeLibraryPath`, `loaderScriptPath`
 - These fields are **not** read by `vesc_tool` (`codeloader.cpp` only reads `pkgName`, `pkgDescriptionMd`, `pkgLisp`, `pkgQml`, `pkgQmlIsFullscreen`, `pkgOutput`)
 
-**Gap:** POC pkgdesc used a non-authoritative property naming scheme. Canonical schema is vesc_tool/refloat only.
+**Gap:** Early POC descriptors used a non-authoritative property naming
+scheme. Current vesc-mcp fixtures use the canonical vesc_tool schema.
 
 **Mitigation:** `vesc-domain` rejects legacy POC-only fields with `DomainError::LegacyPocDialect`. The vesc-mcp fixture `native-lib-minimal/` already uses the vesc_tool schema.
 
@@ -45,7 +46,8 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 - ARM GCC via `vesc_pkg_lib/rules.mk`
 - Vendored `vesc_c_if.h` snapshot
-- `conv.py` produces `.lisp` wrapper from `.bin`
+- Direct `.bin` import in the default package flow; `conv.py` remains an
+  optional byte-array conversion path
 
 **POC:**
 
@@ -55,7 +57,8 @@ Cross-reference matrix for production refloat patterns, authoritative bldc firmw
 
 **Gap:** Rust packages need `symbol_audit` and different link flags; refloat uses pure C examples.
 
-**Mitigation:** POC `docs/abi-inventory.md` lists minimal 12-symbol surface; expand only as features require.
+**Mitigation:** `catalog/abi/minimal-test-package-abi.yaml` lists the minimal
+12-symbol surface; expand it only as features require.
 
 ## Loader script {#loader}
 
@@ -122,6 +125,6 @@ embedding issue IDs here.
 - `catalog/refloat/build-flow.yaml`
 - `catalog/refloat/lisp-loader.yaml`
 - `catalog/bldc/vesc_c_if.yaml`
+- `catalog/abi/minimal-test-package-abi.yaml`
 - `vesc-rust-poc/docs/package-flow.md`
-- `vesc-rust-poc/docs/abi-inventory.md`
 - `catalog/priorities.json`

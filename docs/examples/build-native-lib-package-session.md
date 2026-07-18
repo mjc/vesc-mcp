@@ -1,4 +1,4 @@
-# Example agent session: build native-lib-minimal fixture via vesc_tool
+# Build a sample native-library package
 
 Walkthrough for `build_vescpkg` on `tests/fixtures/native-lib-minimal/` using the official `vesc_tool` packer. Production refloat packages follow the same `--buildPkgFromDesc` path (see [inspect-refloat-session.md](inspect-refloat-session.md) and `vesc://catalog/build-recipe/refloat-vesc-tool`).
 
@@ -8,7 +8,6 @@ Walkthrough for `build_vescpkg` on `tests/fixtures/native-lib-minimal/` using th
 |-------------|-------|
 | `VESC_PACKAGE_ROOTS` | Must include `tests/fixtures/` (or the fixture parent path). |
 | `VESC_TOOL_PATH` | Path to a `vesc_tool` binary with `--buildPkgFromDesc` support (or `vesc_tool` on PATH). |
-| Build toolchain | `nix develop -c make check` in vesc-mcp. No sibling repos required. |
 
 The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). `build_vescpkg` resolves the descriptor via `locate_pkgdesc` and runs `vesc_tool` with the package directory as cwd.
 
@@ -55,12 +54,14 @@ The fixture uses nested layout `package/pkgdesc.qml` (vesc_tool dialect). `build
 {
   "ok": true,
   "artifact_path": "/…/tests/fixtures/native-lib-minimal/package/native-lib-minimal.vescpkg",
-  "sha256": "5148d649a6da7abb8deb5a4bdca38f9fe7bd1b9d918f9e06001e0f20e2cedba9",
+  "sha256": "<64-character SHA-256>",
   "size_bytes": 406
 }
 ```
 
-The SHA-256 must match the committed golden vector in `tests/fixtures/golden/native-lib-minimal.sha256`.
+The byte count shown is from the committed golden example. A source change can
+change the digest or size; compare against the sidecar checksum only when
+verifying or intentionally regenerating that golden vector.
 
 On layout, missing `vesc_tool`, or I/O failure the tool returns `{ "ok": false, "error": { "code": "…", "message": "…", "hint": "…" } }`.
 
@@ -93,6 +94,11 @@ On layout, missing `vesc_tool`, or I/O failure the tool returns `{ "ok": false, 
 
 Additional wire fields may appear as the inspector grows; the fields above are asserted in `tool_inspect_vescpkg_reads_name`.
 
+The committed golden artifact retains the historical package name
+`POC native-lib minimal fixture`. The current `pkgdesc.qml` uses
+`native-lib minimal fixture`, so the manifest below intentionally differs until
+the golden bytes are regenerated for an upstream packer or fixture change.
+
 ---
 
 ## Prompt 4 — compare manifest resource (optional)
@@ -109,7 +115,7 @@ vescpkg://fixture/native-lib-minimal/manifest
 
 ```json
 {
-  "pkg_name": "POC native-lib minimal fixture",
+  "pkg_name": "native-lib minimal fixture",
   "output_name": "native-lib-minimal.vescpkg",
   "description_md_path": "README.md",
   "lisp_path": "code.lisp",

@@ -1,6 +1,8 @@
 # VESC package reference
 
-Textbook-depth reference for VESC custom packages: from `pkgdesc.qml` on disk through packer, `.vescpkg` wire bytes, VESC Tool upload, on-device Lisp loader, and native library ABI. Target audience: AI assistants and package/firmware developers who must implement or debug packages without spelunking four repos.
+Reference for creating and diagnosing VESC custom packages, from
+`pkgdesc.qml` through a built `.vescpkg`, the on-device Lisp loader, and the
+optional native-library ABI.
 
 ## Document map
 
@@ -54,7 +56,7 @@ flowchart TB
 
 ### Pipeline steps
 
-1. **Authoring** — Developer edits `pkgdesc.qml`, loader `.lisp`, optional UI `.qml`, README markdown, and native sources under a package root.
+1. **Authoring** — Create `pkgdesc.qml`, loader `.lisp`, optional UI `.qml`, README markdown, and optional native sources under a package root.
 2. **Validation** — `validate_package_layout` checks that descriptor-relative paths (`pkgDescriptionMd`, `pkgLisp`, `pkgQml`) resolve to existing files under the root.
 3. **Packing** — `vesc_tool --buildPkgFromDesc pkgdesc.qml` (refloat Makefile default). This is the authoritative path documented by VESC Tool / `codeloader.cpp`.
 4. **Artifact** — On-disk `.vescpkg`: Qt `qCompress` wrapper (4-byte BE length + zlib) around a `"VESC Packet"` field spine.
@@ -94,8 +96,9 @@ Optional refloat-only: `isCompatible(fwRxParams)` JavaScript guard — evaluated
 ```
 refloat-minimal/
   pkgdesc.qml
-  README.md          ← referenced as package_README-gen.md in production refloat
-  code.lisp          ← fixture uses simplified paths vs production lisp/package.lisp
+  package_README-gen.md
+  lisp/
+    package.lisp
   ui.qml
 ```
 
@@ -156,7 +159,7 @@ In-repo reader: `crates/vesc-domain/src/wire/mod.rs`.
 | `tests/fixtures/broken-*` | Wire error taxonomy |
 | `catalog/*.yaml` | Structured citations with env vars |
 
-## MCP / assistant integration
+## Use through MCP
 
 Use this reference alongside live MCP tools (offline fixtures first):
 
@@ -177,7 +180,7 @@ Use this reference alongside live MCP tools (offline fixtures first):
 Env vars: see [configuration.md](configuration.md). No device upload or flash
 tools currently ship; see [safety.md](safety.md).
 
-## Part 9 — annotated source walkthroughs
+## Source walkthroughs
 
 Each table uses paths and code anchors instead of line numbers so it remains
 valid across upstream revisions. Roots resolve through `$VESC_REFLOAT_ROOT`,

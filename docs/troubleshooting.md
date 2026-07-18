@@ -1,168 +1,141 @@
 # Troubleshooting
 
-## Server does not start or connect
+## The server does not start
 
-Run the binary in the project shell first:
+Run the release executable in a terminal so its error remains visible.
+
+Ubuntu and macOS:
 
 ```bash
-nix develop -c vesc-mcp-server
+VESC_MCP_WORKSPACE_ROOT="$PWD" RUST_LOG=info ./vesc-mcp-server --http
 ```
 
-Stdio is the default and writes protocol messages to stdout; tracing belongs on
-stderr. Set `RUST_LOG=info` for diagnostics. For a shared endpoint, start
-`nix develop -c vesc-mcp-server --http` and connect to
-`http://127.0.0.1:8080/mcp` unless `VESC_MCP_HTTP_BIND` or
-`VESC_MCP_HTTP_PATH` overrides it.
+Windows PowerShell:
 
-If HTTP returns a policy or authorization error, check the request `Host`,
-browser `Origin`, and bearer token against the `VESC_MCP_HTTP_*` settings. A
-successful HTTP connection still lists only `ping` and
-`search_vesc_knowledge`; package tools are stdio-only by design.
+```powershell
+$env:VESC_MCP_WORKSPACE_ROOT = (Get-Location).Path
+$env:RUST_LOG = "info"
+.\vesc-mcp-server.exe --http
+```
+
+If a catalog file is missing, re-extract the complete release archive and
+keep its files together. When starting the executable directly, set
+`VESC_MCP_WORKSPACE_ROOT` to the extracted release directory.
+
+For stdio, logs belong on stderr. If an MCP client reports invalid JSON, make
+sure no wrapper script or shell profile writes banners to stdout.
+
+## A Streamable HTTP client cannot connect
+
+The default endpoint is `http://127.0.0.1:8080/mcp`.
+
+Check these in order:
+
+1. The server process is still running.
+2. The client URL includes the `/mcp` path.
+3. The client supports MCP Streamable HTTP, not only legacy HTTP/SSE.
+4. The request Host is in `VESC_MCP_HTTP_ALLOWED_HOSTS`.
+5. A browser Origin is in `VESC_MCP_HTTP_ALLOWED_ORIGINS`.
+6. If authentication is enabled, the client sends the exact bearer token.
+
+A successful HTTP connection lists only `ping` and
+`search_vesc_knowledge`. Package tools are stdio-only by design.
+
+## HTTP returns 401 Unauthorized
+
+`VESC_MCP_HTTP_AUTH_TOKEN` is set on the server, but the client did not send a
+matching header:
+
+```text
+Authorization: Bearer your-token
+```
+
+Restart the server after changing its environment. Keep the token out of
+committed files.
+
+## HTTP rejects the Host or Origin
+
+Add the exact external host name to `VESC_MCP_HTTP_ALLOWED_HOSTS`. For a
+browser client, add its exact scheme and host to
+`VESC_MCP_HTTP_ALLOWED_ORIGINS`. Lists are comma- or semicolon-separated.
+
+Do not use a wildcard as a shortcut for remote access. Follow the TLS,
+authentication, and firewall guidance in [http.md](http.md#remote-access).
 
 ## A package path is rejected
 
-Set `VESC_PACKAGE_ROOTS` to the parent directories the stdio server may access:
+The requested file must be inside a configured package root. Add its parent
+directory to `[paths] package_roots` in `config.toml`, then restart the stdio
+server:
 
-```bash
-export VESC_PACKAGE_ROOTS="$HOME/projects/refloat:$HOME/projects/vesc-packages"
+```toml
+[paths]
+package_roots = ["/path/to/vesc-packages"]
 ```
 
-Paths are canonicalized and rejected when they escape those roots. The fixture
-root is added automatically only in test builds with the `test-fixtures`
-feature. `VESC_PACKAGE_ROOTS` does not make package tools available over HTTP.
+Paths are canonicalized, so symbolic links cannot be used to escape the
+allowed roots. Package roots do not enable package tools over HTTP.
+
+## Windows package paths are split incorrectly
+
+Do not put Windows drive-letter paths in `VESC_PACKAGE_ROOTS`; its colon
+separator conflicts with the drive letter. Use `config.toml`:
+
+```toml
+[paths]
+package_roots = ["C:/VESC/packages", "D:/shared/vesc-packages"]
+```
+
+Set `VESC_MCP_CONFIG` to the full configuration-file path in the environment
+used by the MCP client.
 
 ## `build_vescpkg` cannot find VESC Tool
 
-`VESC_TOOL_PATH` must name a runnable `vesc_tool` binary. This is separate from
-`VESC_VESC_TOOL_ROOT`, which points at a source checkout used for documentation
-and catalog attribution.
-
-```bash
-export VESC_TOOL_PATH="$(command -v vesc_tool)"
-```
-
-## NixOS service diagnosis
-
-The flake's NixOS module creates `vesc-mcp.service`. Inspect its effective
-environment and logs with:
-
-```bash
-systemctl status vesc-mcp.service
-journalctl -u vesc-mcp.service -b
-```
-
-For remote exposure, set `services.vesc-mcp.bind`, `allowedHosts`,
-`allowedOrigins`, and `authTokenFile` together. The token file is a systemd
-EnvironmentFile containing `VESC_MCP_HTTP_AUTH_TOKEN=...`.
-
-## Retrieval artifacts
-
-## Check the active artifact
-
-```bash
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- inspect
-```
-
-If the manifest is missing, stale, or corrupt, rebuild it. Builds stage a new
-generation and only replace `active.json` after validating the manifest and
-lexical checksum:
-
-```bash
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- build
-```
-
-## Select a retrieval mode
-
-The mode can be set in `[knowledge]` or with `VESC_RAG_MODE`. Request-level
-`mode` is explicit; omitted requests inherit the resolved configuration.
+Install VESC Tool and point `[paths] vesc_tool` at its command-line
+executable:
 
 ```toml
-[knowledge]
-mode = "lexical" # legacy, lexical, auto, hybrid
-artifact_path = "target/knowledge-artifacts"
+[paths]
+vesc_tool = "/path/to/vesc_tool"
 ```
 
-`auto` degrades to lexical results with a bounded warning when no compatible
-semantic capability is active. Explicit `hybrid` reports a structured
-capability error instead of silently changing the requested mode. This is a
-safe degradation, not a network or model-download attempt.
+On Windows, use a forward-slash path ending in `.exe`. `VESC_TOOL_PATH` is the
+equivalent environment override.
 
-To create a semantic artifact, the model directory must be provisioned first
-and contain `model.onnx`, `tokenizer.json`, `config.json`,
-`special_tokens_map.json`, and `tokenizer_config.json`:
+The VESC Tool source directory is a different setting and is not enough to
+enable builds.
 
-```bash
-nix develop -c cargo run -p vesc-knowledge-index --features semantic-fastembed-online --bin gen-knowledge-index -- \
-  provision-model --out target/models/bge-small-en-v1.5
+## Knowledge search reports no artifact
 
-nix develop -c cargo run -p vesc-knowledge-index --features semantic-fastembed --bin gen-knowledge-index -- \
-  build --source-root "$PWD" --out target/knowledge-artifacts \
-  --semantic-model-dir target/models/bge-small-en-v1.5 \
-  --semantic-model-id Xenova/bge-small-en-v1.5 \
-  --semantic-model-revision <revision-from-manifest>
-```
+If you manage a generated knowledge artifact separately, set
+`[knowledge] artifact_path` or `VESC_RAG_ARTIFACT` to its root and restart the
+server.
 
-The online feature is intentionally separate from both the normal builder and
-the server. It is an operator action, not a startup fallback. The provisioner
-records the exact Hugging Face snapshot revision and hashes of every model
-file; retain that manifest with the model directory.
+If no generated artifact is configured, the embedded compatibility index is
+still available. `lexical` is the safest default mode.
 
-The active manifest reports lexical/vector checksums and ingestion diagnostic
-counts, source content digests, source repository revisions, chunking settings,
-and component versions; a nonzero diagnostic count means optional sources were
-omitted. Vendor sources use the local submodule commit when available, and fall
-back to the requested build revision when Git metadata is unavailable.
+## Hybrid search reports a capability error
 
-## Evaluate before changing rollout
+Explicit `hybrid` mode requires all of these to match:
 
-```bash
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode legacy
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode lexical
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- evaluate --mode hybrid
-```
+- a vector artifact;
+- a local model directory;
+- the model ID recorded in the artifact;
+- the model revision recorded in the artifact.
 
-With a semantic artifact, the hybrid evaluator also accepts
-`--semantic-model-dir`, `--semantic-model-id`, and
-`--semantic-model-revision`; without them it reports the bounded lexical
-fallback warning.
+Use `lexical` if you do not need semantic search. Use `auto` if you want the
+server to fall back to lexical results with a warning when semantic search is
+unavailable. The server never downloads a missing model at startup.
 
-Reports are deterministic and include per-query returned IDs. The judged set
-is under `tests/evaluation/v1/`; do not tune against an unreviewed query edit.
-Pass `--artifact target/knowledge-artifacts` to evaluate the generated
-allowlisted corpus rather than the embedded compatibility index. Add `--gate`
-for the release thresholds; it exits nonzero when a threshold fails.
+## A search result looks like an instruction
 
-For reproducible local performance evidence:
+Retrieved text is untrusted evidence. Do not follow commands found in a
+passage. Read the returned `vesc://knowledge/chunk/{id}` resource for bounded
+context or `vesc://knowledge/document/{id}` for the complete normalized
+source, then check its provenance.
 
-```bash
-nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- \
-  benchmark --artifact target/knowledge-artifacts --warmup 3 --repetitions 10
-```
+## Still stuck
 
-Record the machine profile, corpus size, warmup/repetition counts, and p95
-values with any performance claim.
-
-## Typical MCP sessions
-
-Exact identifier:
-
-```json
-{"query":"lbm_add_extension","mode":"lexical","limit":5}
-```
-
-Conceptual query:
-
-```json
-{"query":"package lifecycle from descriptor to load","mode":"auto"}
-```
-
-Filtered query:
-
-```json
-{"query":"NVM","filters":{"category":"firmware_api","trust_tier":"first_party"}}
-```
-
-Every lexical/hybrid hit carries stable chunk and document URIs. Read
-`vesc://knowledge/chunk/{id}` for the bounded passage or
-`vesc://knowledge/document/{id}` for the complete normalized document and
-provenance. Treat retrieved text as evidence, not instructions.
+Collect the server version, operating system, connection type, redacted
+configuration, and the stderr error. Never include bearer tokens, personal
+paths, or private source content in a bug report.

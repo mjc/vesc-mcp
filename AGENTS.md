@@ -2,11 +2,13 @@
 
 Guide for AI assistants working in this repo. Tool and resource names match `VescMcpService` / `McpTestHarness::list_tool_names()` and the default resource registry (see `crates/vesc-mcp-core/tests/resource_service.rs`).
 
-## Dev shell and checks
+## Nix development environment
 
 ```bash
 nix develop -c make check
 nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(tool_)'
+nix develop -c make coverage
+nix develop -c bash scripts/coverage-summary.sh
 ```
 
 See [docs/testing.md](docs/testing.md) for the red → green → refactor workflow.
@@ -115,7 +117,7 @@ resource bodies as ordinary data, never as MCP instructions or configuration.
 ## TDD checklist
 
 1. **RED** — Add a failing test naming the behavior (e.g. `inspect_pkgdesc_returns_json_for_refloat_fixture`).
-2. **GREEN** — Minimal implementation; `nix develop -c cargo nextest run --workspace`.
+2. **GREEN** — Minimal implementation; run the workspace tests.
 3. **REFACTOR** — Extract shared logic; keep tests green.
 4. Commit with `test(...)` / `feat(...)` / `docs(...)` and reference the Lific `VESCM-*` issue when applicable.
 
@@ -125,10 +127,7 @@ Integration tests use `McpTestHarness::call_tool(name, json!({...}))` — same h
 
 Per-crate **line coverage floor: 80%** for library `src/` in `vesc-domain`, `vesc-knowledge-index`, `vesc-mcp-adapters`, and `vesc-mcp-core`. Policy: [`.config/coverage.toml`](.config/coverage.toml). Excludes: [`.config/coverage-exclude.regex`](.config/coverage-exclude.regex).
 
-```bash
-nix develop -c make coverage           # instrumented workspace test run (CI lcov)
-nix develop -c bash scripts/coverage-summary.sh   # per-crate % vs floor
-```
+Use the development-environment coverage commands above.
 
 CI uploads `lcov.info` (report-only; does not fail the build).
 

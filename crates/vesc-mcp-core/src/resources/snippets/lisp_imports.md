@@ -1,19 +1,19 @@
 # lispData import table
 
-The `lispData` field in a `.vescpkg` wire payload embeds the package Lisp loader source plus a binary import table for native payloads (`.bin` libraries, assets, etc.). `vesc-domain::parse_lisp_imports` decodes the layout shared with `vesc_tool` and the Rust POC packer.
+The `lispData` field in a `.vescpkg` wire payload embeds the package Lisp loader source plus a binary import table for native payloads (`.bin` libraries, assets, etc.). `vesc-domain::parse_lisp_imports` decodes the layout produced by `vesc_tool`.
 
 ## Wire layout
 
 After decompression, `lispData` is a binary blob:
 
 1. **Header** — big-endian `i16` `0`
-2. **Code** — length-prefixed UTF-8 Lisp source (the loader script)
+2. **Code** — NUL-terminated UTF-8 Lisp source (the loader script)
 3. **Import count** — big-endian `i16` ≥ 0
 4. **Import entries** — repeated `import_count` times:
-   - **Tag** — length-prefixed UTF-8 symbol (e.g. `package-lib`)
-   - **Offset** — big-endian `i32` byte offset from the start of `lispData` (must be 4-byte aligned in POC builds)
+   - **Tag** — NUL-terminated UTF-8 symbol (e.g. `package-lib`)
+   - **Offset** — big-endian `i32` byte offset measured after the two-byte header; the absolute payload position is `2 + offset`
    - **Size** — big-endian `i32` payload byte length
-5. **Embedded payloads** — raw bytes at each `(offset, size)` range inside `lispData`
+5. **Embedded payloads** — raw bytes at each `(2 + offset, size)` range inside `lispData`
 
 Typical loader code imports a native library and registers it:
 

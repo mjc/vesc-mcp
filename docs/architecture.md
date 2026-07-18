@@ -1,4 +1,4 @@
-# Architecture
+# Architecture reference
 
 vesc-mcp is an MCP server for VESC firmware and vescpkg domain knowledge. The
 binary serves one stdio client by default or a shared Streamable HTTP endpoint
@@ -141,7 +141,9 @@ so a rebuilt generation naturally invalidates the cache. Search responses expose
 bounded index diagnostics (corpus digest, counts, source count, component
 versions, and diagnostic count) without raw queries or private filesystem paths.
 
-Build-recipe and doc-topic bodies include **source attribution** footers pointing at resolved repo paths (`VESC_*_ROOT`).
+Build-recipe and doc-topic bodies include repository-relative source
+attribution. Search responses and resources do not expose private filesystem
+paths.
 
 ## Boundaries and non-goals
 
@@ -154,13 +156,11 @@ Build-recipe and doc-topic bodies include **source attribution** footers pointin
 | Read-only wire parsing in `vesc-domain` | In-repo `.vescpkg` packers |
 | Shared HTTP knowledge search/resources | Package-tree tools over shared HTTP |
 
-## Deployment
+## Running the service
 
-`flake.nix` exports the server package, an overlay, and
-`nixosModules.default`. The NixOS module runs `vesc-mcp-server --http` under a
-dynamic systemd user with state/cache directories and hardening. See
-[configuration.md](configuration.md#nixos-deployment) for the declarative
-service options.
+The release server runs as one local stdio process or as a shared Streamable
+HTTP process. See [installation.md](installation.md) and [http.md](http.md) for
+user setup.
 
 ## Testing architecture
 
