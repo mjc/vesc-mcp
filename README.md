@@ -124,6 +124,7 @@ Technical references:
 Contributor documentation:
 
 - [Build and test from source](docs/testing.md)
+- [Proposed knowledge feedback and correction design](docs/knowledge-feedback-design.md)
 
 ## Nix
 
