@@ -928,7 +928,7 @@ impl FastEmbedProvider {
                 "model limit is smaller than its special-token overhead".into(),
             ));
         }
-        if offsets.len() <= content_limit {
+        if encoding.get_ids().len() <= self.profile.max_length {
             return Ok(vec![text.to_owned()]);
         }
 
@@ -948,7 +948,35 @@ impl FastEmbedProvider {
                 windows.push(text.to_owned());
             }
         }
-        Ok(windows)
+
+        let mut bounded = Vec::with_capacity(windows.len());
+        let mut pending = windows;
+        while let Some(window) = pending.pop() {
+            let length = tokenizer
+                .encode(window.as_str(), true)
+                .map_err(|error| EmbeddingError::Provider(error.to_string()))?
+                .get_ids()
+                .len();
+            if length <= self.profile.max_length {
+                bounded.push(window);
+                continue;
+            }
+
+            let mut midpoint = window.len() / 2;
+            while midpoint > 0 && !window.is_char_boundary(midpoint) {
+                midpoint -= 1;
+            }
+            if midpoint == 0 {
+                return Err(EmbeddingError::Provider(format!(
+                    "model input cannot fit within the model limit of {} tokens",
+                    self.profile.max_length
+                )));
+            }
+            pending.push(window[midpoint..].to_owned());
+            pending.push(window[..midpoint].to_owned());
+        }
+        bounded.reverse();
+        Ok(bounded)
     }
 
     fn ensure_document_lengths(&self, texts: &[&str]) -> Result<(), EmbeddingError> {
