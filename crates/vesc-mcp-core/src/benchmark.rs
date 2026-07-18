@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::KnowledgeConfig;
 use crate::tools::search_knowledge::{
-    SearchMode, SearchVescKnowledgeFilters, SearchVescKnowledgeParams,
-    search_vesc_knowledge_tool_with_config,
+    SearchMode, SearchResponseDetail, SearchVescKnowledgeFilters, SearchVescKnowledgeParams,
+    search_vesc_knowledge_json_with_config,
 };
 
 /// Percentiles over elapsed MCP handler/serialization samples.
@@ -103,11 +103,11 @@ pub fn benchmark_search(
         filters: SearchVescKnowledgeFilters::default(),
         max_response_bytes: None,
         max_context_bytes: None,
+        detail: SearchResponseDetail::Compact,
     };
     for _ in 0..warmup_iterations {
         for query in queries {
-            let response = search_vesc_knowledge_tool_with_config(&params(query), config);
-            let _ = serde_json::to_vec(&response)?;
+            let _ = search_vesc_knowledge_json_with_config(&params(query), config);
         }
     }
 
@@ -117,10 +117,10 @@ pub fn benchmark_search(
     for _ in 0..repetitions {
         for query in queries {
             let started = Instant::now();
-            let response = search_vesc_knowledge_tool_with_config(&params(query), config);
-            let bytes = serde_json::to_vec(&response)?;
+            let response = search_vesc_knowledge_json_with_config(&params(query), config);
+            let bytes = response.len();
             timings.push(elapsed_us(started));
-            response_sizes.push(bytes.len() as u64);
+            response_sizes.push(bytes as u64);
         }
     }
     let rss_after_queries_bytes = process_rss_bytes();

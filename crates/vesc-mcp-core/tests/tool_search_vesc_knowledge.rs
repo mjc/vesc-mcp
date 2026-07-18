@@ -4,11 +4,49 @@ use serde_json::Value;
 use vesc_mcp_core::{VescMcpService, test_support::McpTestHarness};
 
 #[test]
-fn tool_search_lbm_add_extension() {
+fn compact_search_default_uses_bounded_field_rows() {
     let harness = McpTestHarness::new();
     let response = harness.call_tool(
         "search_vesc_knowledge",
         serde_json::json!({ "query": "lbm_add_extension" }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], true, "response: {body}");
+    assert_eq!(
+        body["fields"],
+        serde_json::json!(["name", "category", "excerpt", "source_index", "chunk_id"])
+    );
+    let row = &body["results"][0];
+    assert_eq!(row.as_array().map(Vec::len), Some(5));
+    assert_eq!(row[0], "lbm_add_extension");
+    assert!(row[2].as_str().is_some_and(|excerpt| excerpt.len() <= 96));
+    let source_index = row[3].as_u64().expect("compact result has a source index");
+    let source_index = usize::try_from(source_index).expect("source index fits usize");
+    assert!(
+        body["sources"][source_index]
+            .as_str()
+            .is_some_and(|source| source.contains(':'))
+    );
+    let chunk_id = row[4]
+        .as_str()
+        .filter(|id| id.starts_with("chunk-"))
+        .expect("compact result has a chunk ID");
+    let chunk_uri = format!("vesc://knowledge/chunk/{chunk_id}");
+    let chunk = VescMcpService::new()
+        .resource_registry()
+        .read(&chunk_uri)
+        .expect("compact chunk ID resolves through the resource template");
+    let chunk: Value = serde_json::from_str(&chunk).expect("chunk resource is JSON");
+    assert_eq!(chunk["chunk_id"], chunk_id);
+}
+
+#[test]
+fn full_search_detail_preserves_current_result_fields() {
+    let harness = McpTestHarness::new();
+    let response = harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({ "query": "lbm_add_extension", "detail": "full" }),
     );
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
@@ -36,11 +74,39 @@ fn tool_search_lbm_add_extension() {
 }
 
 #[test]
+fn compact_response_budget_is_applied_to_compact_shape() {
+    let harness = McpTestHarness::new();
+    let response = harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({
+            "query": "lbm",
+            "mode": "lexical",
+            "limit": 10,
+            "max_response_bytes": 1_024,
+            "max_context_bytes": 64
+        }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], true, "response: {body}");
+    assert!(!body["results"].as_array().is_some_and(Vec::is_empty));
+    assert!(
+        response.len() <= 1_024,
+        "response was {} bytes",
+        response.len()
+    );
+}
+
+#[test]
 fn lexical_mode_returns_readable_provenance_resource() {
     let harness = McpTestHarness::new();
     let response = harness.call_tool(
         "search_vesc_knowledge",
-        serde_json::json!({ "query": "lbm_add_extension", "mode": "lexical" }),
+        serde_json::json!({
+            "query": "lbm_add_extension",
+            "mode": "lexical",
+            "detail": "full"
+        }),
     );
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
     assert_eq!(body["ok"], true, "response: {body}");

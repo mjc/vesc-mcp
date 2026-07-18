@@ -34,6 +34,19 @@ pub enum SearchMode {
     Auto,
 }
 
+/// Amount of detail returned by the search serialization boundary.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchResponseDetail {
+    /// Return bounded ranked rows; read the linked resource for full evidence.
+    #[default]
+    Compact,
+    /// Return the compatibility response with provenance and diagnostics.
+    Full,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchVescKnowledgeParams {
     /// Free-text query matched against entry names, keywords, and summaries.
@@ -57,6 +70,10 @@ pub struct SearchVescKnowledgeParams {
     /// Maximum bytes retained in each returned evidence passage.
     #[serde(default)]
     pub max_context_bytes: Option<usize>,
+    /// Response detail; defaults to compact progressive disclosure.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub detail: SearchResponseDetail,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
@@ -80,6 +97,9 @@ pub struct SearchVescKnowledgeFilters {
 const fn default_search_limit() -> usize {
     10
 }
+
+const COMPACT_EXCERPT_BYTES: usize = 96;
+const COMPACT_FIELDS: [&str; 5] = ["name", "category", "excerpt", "source_index", "chunk_id"];
 
 /// One neighboring passage is enough to complete a bounded evidence context.
 const MAX_EXPANDED_NEIGHBORS: usize = 1;
@@ -202,6 +222,58 @@ pub struct SearchVescKnowledgeResponse {
     pub timing: Option<SearchVescKnowledgeTiming>,
 }
 
+/// Compact search wire shape. The field table keeps rows cheap without making
+/// the positional payload ambiguous to clients.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct CompactSearchResponse {
+    ok: bool,
+    mode: SearchMode,
+    fields: [&'static str; 5],
+    sources: Vec<String>,
+    results: Vec<(String, String, String, usize, Option<String>)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+}
+
+#[must_use]
+fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResponse {
+    let mut sources = Vec::new();
+    let mut results = Vec::with_capacity(response.results.len());
+    for result in &response.results {
+        let source = format!(
+            "{}:{}:{}",
+            result.source.repo, result.source.path, result.source.line
+        );
+        let source_index = sources
+            .iter()
+            .position(|known| known == &source)
+            .unwrap_or_else(|| {
+                sources.push(source);
+                sources.len() - 1
+            });
+        let mut excerpt = result.summary.clone();
+        truncate_utf8(&mut excerpt, COMPACT_EXCERPT_BYTES);
+        results.push((
+            result.name.clone(),
+            result.category.clone(),
+            excerpt,
+            source_index,
+            result.chunk_id.clone(),
+        ));
+    }
+    CompactSearchResponse {
+        ok: response.ok,
+        mode: response.mode,
+        fields: COMPACT_FIELDS,
+        sources,
+        results,
+        error: response.error.clone(),
+        warnings: response.warnings.clone(),
+    }
+}
+
 fn parse_category(raw: Option<&str>) -> Result<Option<Category>, String> {
     raw.map(|name| {
         let value = serde_json::Value::String(name.to_string());
@@ -282,7 +354,7 @@ pub fn search_vesc_knowledge_tool_with_config(
                         total_us: elapsed_us(started),
                         result_count: response.results.len(),
                     });
-                    response = response.bounded(params, config);
+                    response = response.bounded(params, config, params.detail);
                     if let Some(timing) = &mut response.timing {
                         timing.result_count = response.results.len();
                     }
@@ -362,7 +434,12 @@ const fn error_response(mode: SearchMode, error: String) -> SearchVescKnowledgeR
 }
 
 impl SearchVescKnowledgeResponse {
-    fn bounded(mut self, params: &SearchVescKnowledgeParams, config: &KnowledgeConfig) -> Self {
+    fn bounded(
+        mut self,
+        params: &SearchVescKnowledgeParams,
+        config: &KnowledgeConfig,
+        detail: SearchResponseDetail,
+    ) -> Self {
         let passage_limit = params
             .max_context_bytes
             .unwrap_or(config.max_passage_bytes)
@@ -378,22 +455,22 @@ impl SearchVescKnowledgeResponse {
             .max_response_bytes
             .unwrap_or(config.max_response_bytes)
             .min(config.max_response_bytes);
-        while response_exceeds_budget(&self, budget) && self.results.len() > 1 {
+        while response_exceeds_budget(&self, budget, detail) && self.results.len() > 1 {
             self.results.pop();
         }
-        if response_exceeds_budget(&self, budget) {
+        if response_exceeds_budget(&self, budget, detail) {
             for result in &mut self.results {
                 compact_result(result);
             }
         }
-        while response_exceeds_budget(&self, budget) && self.results.len() > 1 {
+        while response_exceeds_budget(&self, budget, detail) && self.results.len() > 1 {
             self.results.pop();
         }
-        if response_exceeds_budget(&self, budget) {
+        if response_exceeds_budget(&self, budget, detail) {
             self.results.clear();
             self.index = None;
         }
-        if response_exceeds_budget(&self, budget) {
+        if response_exceeds_budget(&self, budget, detail) {
             self.warnings
                 .push("response budget is smaller than the fixed response envelope".into());
         }
@@ -401,8 +478,18 @@ impl SearchVescKnowledgeResponse {
     }
 }
 
-fn response_exceeds_budget(response: &SearchVescKnowledgeResponse, budget: usize) -> bool {
-    serde_json::to_vec(response).map_or(true, |bytes| bytes.len() > budget)
+fn response_exceeds_budget(
+    response: &SearchVescKnowledgeResponse,
+    budget: usize,
+    detail: SearchResponseDetail,
+) -> bool {
+    match detail {
+        SearchResponseDetail::Compact => serde_json::to_vec(&compact_response(response))
+            .map_or(true, |bytes| bytes.len() > budget),
+        SearchResponseDetail::Full => {
+            serde_json::to_vec(response).map_or(true, |bytes| bytes.len() > budget)
+        }
+    }
 }
 
 fn compact_result(result: &mut SearchVescKnowledgeResult) {
@@ -1196,8 +1283,7 @@ const fn category_label(category: Category) -> &'static str {
 #[must_use]
 pub fn search_vesc_knowledge_json(params: &SearchVescKnowledgeParams) -> String {
     let response = search_vesc_knowledge_tool(params);
-    serde_json::to_string(&response)
-        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+    serialize_search_response(&response, params.detail)
 }
 
 /// Serialize a search response using the resolved server configuration.
@@ -1207,8 +1293,18 @@ pub fn search_vesc_knowledge_json_with_config(
     config: &KnowledgeConfig,
 ) -> String {
     let response = search_vesc_knowledge_tool_with_config(params, config);
-    serde_json::to_string(&response)
-        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+    serialize_search_response(&response, params.detail)
+}
+
+fn serialize_search_response(
+    response: &SearchVescKnowledgeResponse,
+    detail: SearchResponseDetail,
+) -> String {
+    match detail {
+        SearchResponseDetail::Compact => serde_json::to_string(&compact_response(response)),
+        SearchResponseDetail::Full => serde_json::to_string(response),
+    }
+    .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }
 
 #[cfg(test)]
@@ -1225,6 +1321,7 @@ mod tests {
             filters: SearchVescKnowledgeFilters::default(),
             max_response_bytes: None,
             max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
         });
         assert!(!resp.ok);
         assert!(resp.error.is_some());
@@ -1241,6 +1338,7 @@ mod tests {
             filters: SearchVescKnowledgeFilters::default(),
             max_response_bytes: None,
             max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
         });
         assert!(resp.ok);
         assert!(!resp.results.is_empty());
@@ -1277,6 +1375,7 @@ mod tests {
                 filters: SearchVescKnowledgeFilters::default(),
                 max_response_bytes: None,
                 max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
             },
             &config,
         );
@@ -1296,6 +1395,7 @@ mod tests {
             filters: SearchVescKnowledgeFilters::default(),
             max_response_bytes: None,
             max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
         });
 
         assert!(!response.ok);
@@ -1318,6 +1418,7 @@ mod tests {
             filters: SearchVescKnowledgeFilters::default(),
             max_response_bytes: None,
             max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
         });
 
         assert!(response.ok);
@@ -1343,6 +1444,7 @@ mod tests {
                 filters: SearchVescKnowledgeFilters::default(),
                 max_response_bytes: None,
                 max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
             },
             &KnowledgeConfig {
                 mode: RetrievalMode::Lexical,
@@ -1393,6 +1495,7 @@ mod tests {
             filters: SearchVescKnowledgeFilters::default(),
             max_response_bytes: None,
             max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
         };
         let mut query_provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
         let filters = vesc_knowledge_index::LexicalFilters::default();
@@ -1426,6 +1529,7 @@ mod tests {
                 },
                 max_response_bytes: None,
                 max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
             },
             &KnowledgeConfig {
                 mode: RetrievalMode::Lexical,
@@ -1458,6 +1562,7 @@ mod tests {
                 filters: SearchVescKnowledgeFilters::default(),
                 max_response_bytes: Some(1_024),
                 max_context_bytes: Some(64),
+                detail: SearchResponseDetail::Full,
             },
             &KnowledgeConfig {
                 mode: RetrievalMode::Lexical,
