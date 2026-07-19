@@ -96,7 +96,7 @@ export VESC_RAG_FEEDBACK_PATH="$PWD/.vesc-mcp-feedback"
 export VESC_RAG_FEEDBACK_WRITES=true
 ```
 
-HTTP feedback writes additionally require `VESC_MCP_AUTH_TOKEN`; unauthenticated
+HTTP feedback writes additionally require `VESC_MCP_HTTP_AUTH_TOKEN`; unauthenticated
 and unconfigured connections remain read-only.
 
 ## What it provides
