@@ -5,6 +5,8 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
+#[cfg(feature = "semantic-fastembed")]
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -517,7 +519,7 @@ pub fn embedding_text(chunk: &Chunk) -> String {
     text
 }
 
-fn embedding_identifiers(chunk: &Chunk) -> Vec<&str> {
+pub(crate) fn embedding_identifiers(chunk: &Chunk) -> Vec<&str> {
     const MAX_IDENTIFIERS: usize = 32;
     if chunk.identifiers.len() <= MAX_IDENTIFIERS {
         return chunk.identifiers.iter().map(String::as_str).collect();
@@ -1162,7 +1164,7 @@ impl FastEmbedProvider {
                 &prefixed
             };
             if self.lossless_windowing {
-                for window in self.document_windows(source)? {
+                for (window, _) in self.document_windows(source)? {
                     batch_texts.push(window);
                     if batch_texts.len() == self.batch_size.get() {
                         measure_batch(&mut batch_texts)?;
@@ -1257,14 +1259,28 @@ impl FastEmbedProvider {
         Ok(())
     }
 
-    fn document_windows(&self, text: &str) -> Result<Vec<String>, EmbeddingError> {
+    fn document_windows(&self, text: &str) -> Result<Vec<(String, usize)>, EmbeddingError> {
         let mut tokenizer = self.model.tokenizer.clone();
         tokenizer.with_padding(None);
         tokenizer
             .with_truncation(None)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         bounded_document_windows(&tokenizer, text, self.profile.max_length)
-            .map(|windows| windows.into_iter().map(|(window, _)| window).collect())
+    }
+
+    fn document_window_batches(
+        &self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<(String, usize)>>, EmbeddingError> {
+        let mut tokenizer = self.model.tokenizer.clone();
+        tokenizer.with_padding(None);
+        tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        texts
+            .par_iter()
+            .map(|text| bounded_document_windows(&tokenizer, text, self.profile.max_length))
+            .collect()
     }
 
     fn ensure_document_lengths(&self, texts: &[&str]) -> Result<(), EmbeddingError> {
@@ -1321,26 +1337,13 @@ impl FastEmbedProvider {
         &mut self,
         windows: &mut Vec<String>,
         owners: &mut Vec<usize>,
+        token_counts: &mut Vec<usize>,
         sums: &mut [Vec<f32>],
         counts: &mut [usize],
     ) -> Result<(), EmbeddingError> {
         if windows.is_empty() {
             return Ok(());
         }
-        let token_counts = match self.window_aggregation {
-            WindowAggregation::Mean => vec![1; owners.len()],
-            WindowAggregation::TokenWeightedMean => windows
-                .iter()
-                .take(owners.len())
-                .map(|window| {
-                    self.model
-                        .tokenizer
-                        .encode(window.as_str(), true)
-                        .map(|encoding| encoding.get_ids().len())
-                        .map_err(|error| EmbeddingError::Provider(error.to_string()))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        };
         if self.fixed_batch_size {
             pad_window_batch(windows, self.batch_size.get());
         }
@@ -1350,15 +1353,22 @@ impl FastEmbedProvider {
             .embed(&mut *windows, batch_size)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         self.validate_vectors(&vectors)?;
-        for ((vector, &owner), token_count) in vectors.iter().zip(owners.iter()).zip(token_counts) {
+        for ((vector, &owner), &token_count) in
+            vectors.iter().zip(owners.iter()).zip(token_counts.iter())
+        {
             let Some(sum) = sums.get_mut(owner) else {
                 return Err(EmbeddingError::Provider(
                     "lossless window owner is out of range".into(),
                 ));
             };
-            let weight = u16::try_from(token_count)
-                .map(f32::from)
-                .map_err(|_| EmbeddingError::Provider("window token count exceeds u16".into()))?;
+            let weight = match self.window_aggregation {
+                WindowAggregation::Mean => 1.0,
+                WindowAggregation::TokenWeightedMean => {
+                    u16::try_from(token_count).map(f32::from).map_err(|_| {
+                        EmbeddingError::Provider("window token count exceeds u16".into())
+                    })?
+                }
+            };
             for (sum, value) in sum.iter_mut().zip(vector) {
                 *sum = weight.mul_add(*value, *sum);
             }
@@ -1366,6 +1376,7 @@ impl FastEmbedProvider {
         }
         windows.clear();
         owners.clear();
+        token_counts.clear();
         Ok(())
     }
 }
@@ -1717,22 +1728,32 @@ impl EmbeddingProvider for FastEmbedProvider {
             let mut counts = vec![0_usize; texts.len()];
             let mut window_batch = Vec::with_capacity(self.batch_size.get());
             let mut owners = Vec::with_capacity(self.batch_size.get());
-            for (owner, text) in texts.iter().enumerate() {
-                let source_windows = self.document_windows(text)?;
-                for window in source_windows {
+            let mut token_counts = Vec::with_capacity(self.batch_size.get());
+            for (owner, source_windows) in
+                self.document_window_batches(texts)?.into_iter().enumerate()
+            {
+                for (window, token_count) in source_windows {
                     window_batch.push(window);
                     owners.push(owner);
+                    token_counts.push(token_count);
                     if window_batch.len() == self.batch_size.get() {
                         self.embed_window_batch(
                             &mut window_batch,
                             &mut owners,
+                            &mut token_counts,
                             &mut sums,
                             &mut counts,
                         )?;
                     }
                 }
             }
-            self.embed_window_batch(&mut window_batch, &mut owners, &mut sums, &mut counts)?;
+            self.embed_window_batch(
+                &mut window_batch,
+                &mut owners,
+                &mut token_counts,
+                &mut sums,
+                &mut counts,
+            )?;
             let mut aggregated = Vec::with_capacity(texts.len());
             for (mut vector, count) in sums.into_iter().zip(counts) {
                 if count == 0 {

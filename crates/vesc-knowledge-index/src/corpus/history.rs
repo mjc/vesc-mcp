@@ -19,7 +19,8 @@ use super::{
 };
 use crate::hardware::{JINA_CODE_FP16_SHA256, JINA_CODE_INT8_SHA256};
 use crate::semantic::{
-    EmbeddingError, EmbeddingProfile, EmbeddingProvider, OutputNormalization, embedding_text,
+    EmbeddingError, EmbeddingProfile, EmbeddingProvider, OutputNormalization,
+    embedding_identifiers, embedding_text,
 };
 
 /// A repository whose complete tagged history should be indexed.
@@ -322,9 +323,16 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
     releases = topological_releases(releases);
 
     let mut snapshots = BTreeMap::<Revision, BTreeMap<String, SnapshotDocument>>::new();
+    let mut remaining_children = BTreeMap::<Revision, usize>::new();
+    for release in &releases {
+        for parent in &release.release_parents {
+            *remaining_children.entry(parent.clone()).or_default() += 1;
+        }
+    }
     let mut snapshot_content = BTreeMap::<ContentDigest, Arc<str>>::new();
     let mut contents = BTreeMap::<ContentDigest, HistoryContent>::new();
     let mut occurrences = Vec::new();
+    let mut changes = Vec::new();
     let mut git_cache = GitIngestionCache::default();
     let mut git_observations = GitIngestionObservations::default();
     for release in &releases {
@@ -350,7 +358,10 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
                     .or_insert_with(|| HistoryContent {
                         vector_key: vector_key.clone(),
                         embedding_text: input,
-                        identifiers: chunk.identifiers.clone(),
+                        identifiers: embedding_identifiers(&chunk)
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect(),
                     });
                 for tag in &release.tags {
                     occurrences.push(HistoryOccurrence {
@@ -370,16 +381,10 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
                 SnapshotDocument::from_document(document, &mut snapshot_content),
             );
         }
-        snapshots.insert(release.revision.clone(), snapshot);
-    }
-
-    let public_releases = releases.iter().map(public_release).collect::<Vec<_>>();
-    let mut changes = Vec::new();
-    for release in &releases {
-        let after = &snapshots[&release.revision];
         if release.release_parents.is_empty() {
-            changes.extend(root_changes(source, release, after));
+            changes.extend(root_changes(source, release, &snapshot));
         } else {
+            let mut consumed_parents = Vec::new();
             for parent in &release.release_parents {
                 let parent_release = releases
                     .iter()
@@ -392,11 +397,31 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
                     parent_release,
                     release,
                     &snapshots[parent],
-                    after,
+                    &snapshot,
                 ));
+                let Some(remaining) = remaining_children.get_mut(parent) else {
+                    return Err(HistoryError::Git(format!(
+                        "release parent {parent} has no child count"
+                    )));
+                };
+                *remaining -= 1;
+                if *remaining == 0 {
+                    consumed_parents.push(parent.clone());
+                }
+            }
+            for parent in consumed_parents {
+                snapshots.remove(&parent);
             }
         }
+        if remaining_children
+            .get(&release.revision)
+            .is_some_and(|&children| children > 0)
+        {
+            snapshots.insert(release.revision.clone(), snapshot);
+        }
     }
+
+    let public_releases = releases.iter().map(public_release).collect::<Vec<_>>();
     occurrences.sort_by(|left, right| {
         left.revision
             .cmp(&right.revision)

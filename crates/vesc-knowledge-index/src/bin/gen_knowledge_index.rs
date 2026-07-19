@@ -254,7 +254,7 @@ fn run_window_quality(_args: &[String]) {
 }
 
 #[cfg(feature = "git-corpus")]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, unused_mut)]
 fn run_history_build(args: &[String]) {
     let history_only = args.iter().any(|arg| arg == "--history-only");
     let detected_args = (!history_only)
@@ -281,7 +281,7 @@ fn run_history_build(args: &[String]) {
         chunking: ChunkingConfig::default(),
     };
     let started = std::time::Instant::now();
-    let history = ingest_tagged_history(&source)
+    let mut history = ingest_tagged_history(&source)
         .unwrap_or_else(|error| panic!("ingest tagged history: {error}"));
     fs::create_dir_all(&out).expect("create tagged-history output directory");
     let history_path = out.join("history.json");
@@ -314,7 +314,7 @@ fn run_history_build(args: &[String]) {
     build_history_vectors(
         args,
         &out,
-        &history,
+        &mut history,
         &PathBuf::from(model_dir.expect("checked above")),
     );
     #[cfg(not(feature = "semantic-fastembed"))]
@@ -335,7 +335,7 @@ fn run_history_build(_args: &[String]) {
 fn build_history_vectors(
     args: &[String],
     out: &Path,
-    history: &vesc_knowledge_index::TaggedHistory,
+    history: &mut vesc_knowledge_index::TaggedHistory,
     model_dir: &Path,
 ) {
     let model_id = argument_value(args, "--semantic-model-id")
@@ -379,7 +379,7 @@ fn build_history_vectors(
         tokenizer_digest: digest_file(&tokenizer_path),
         profile,
         windowing: format!(
-            "lossless={lossless};length-bucketed={length_bucketed};aggregation={:?}",
+            "v2;lossless={lossless};length-bucketed={length_bucketed};aggregation={:?}",
             semantic_window_aggregation(args)
         ),
         embedding_text_version: 2,
@@ -403,6 +403,9 @@ fn build_history_vectors(
         println!("vector-build-ms: {}", started.elapsed().as_millis());
         return;
     }
+    let occurrences = std::mem::take(&mut history.occurrences);
+    history.releases = Vec::new();
+    history.changes = Vec::new();
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
         model_dir,
         Some(batch_size),
@@ -414,13 +417,14 @@ fn build_history_vectors(
     provider.set_length_bucketed(length_bucketed);
     provider.set_lossless_windowing(lossless);
     provider.set_window_aggregation(semantic_window_aggregation(args));
-    let (vectors, observations) = vesc_knowledge_index::HistoryVectorIndex::build_with_cache(
+    let (mut vectors, observations) = vesc_knowledge_index::HistoryVectorIndex::build_with_cache(
         &mut provider,
         history,
         contract,
         &cache,
     )
     .unwrap_or_else(|error| panic!("build history vectors: {error}"));
+    vectors.occurrences = occurrences;
     vectors
         .write_artifact(&vector_path)
         .unwrap_or_else(|error| panic!("write {}: {error}", vector_path.display()));
