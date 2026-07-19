@@ -63,7 +63,15 @@ async fn smoke_compact_search_rows_cross_stdio_boundary() -> anyhow::Result<()> 
     let body: serde_json::Value = serde_json::from_str(text)?;
     assert_eq!(
         body["fields"],
-        serde_json::json!(["name", "category", "excerpt", "source_index", "chunk_id"])
+        serde_json::json!([
+            "name",
+            "category",
+            "excerpt",
+            "source_index",
+            "chunk_id",
+            "correction_ids",
+            "origin"
+        ])
     );
     assert!(
         body["results"]
@@ -139,7 +147,7 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
     let tools_list_bytes = tools_list_bytes.expect("tools/list response");
     let search_bytes = search_bytes.expect("search response");
     assert!(
-        tools_list_bytes <= 5_010,
+        tools_list_bytes <= 6_500,
         "tools/list was {tools_list_bytes} bytes"
     );
     assert!(

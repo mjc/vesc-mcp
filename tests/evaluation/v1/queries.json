@@ -58,5 +58,8 @@
   {"id":"safety-native-abi","text":"native package ABI loader contract","intent":"safety","relevant":{"priority.native-lib-minimal-abi":2,"priority.bldc-native-lib-macros":1}},
   {"id":"safety-source-attribution","text":"source attribution for indexed firmware knowledge","intent":"safety","relevant":{"priority.bldc-vesc-c-if-lbm":1}},
   {"id":"safety-command-boundaries","text":"safe boundaries for package command transport","intent":"safety","relevant":{"priority.refloat-commands-transport":2}},
-  {"id":"safety-descriptor-fields","text":"authoritative pkgdesc fields read by vesc_tool","intent":"safety","relevant":{"priority.gap-descriptor-dialect":2}}
+  {"id":"safety-descriptor-fields","text":"authoritative pkgdesc fields read by vesc_tool","intent":"safety","relevant":{"priority.gap-descriptor-dialect":2}},
+  {"id":"correction-loader-stop-tombstone","text":"can I free runtime admission memory after package stop when late LispBM callbacks use lib_get_arg","intent":"safety","relevant":{"priority.native-lib-stop-arg-lifetime":2}},
+  {"id":"correction-loader-best-effort-init","text":"what happens when native INIT_FUN returns false after an optional registration fails","intent":"concept","relevant":{"priority.native-lib-init-result":2}},
+  {"id":"correction-loader-review-authority","text":"should a generic Rust panic handler convention override accepted VESC SDK project decisions and hardware history","intent":"comparison","relevant":{"priority.native-lib-review-authority":2}}
 ]

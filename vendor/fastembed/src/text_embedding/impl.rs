@@ -10,8 +10,6 @@ use crate::{
     SingleBatchOutput,
 };
 #[cfg(feature = "hf-hub")]
-use crate::common::init_session_builder;
-#[cfg(feature = "hf-hub")]
 use anyhow::Context;
 use anyhow::Result;
 #[cfg(feature = "hf-hub")]

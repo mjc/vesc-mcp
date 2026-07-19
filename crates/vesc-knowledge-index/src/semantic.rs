@@ -596,6 +596,12 @@ impl FastEmbedProvider {
         self.lossless_windowing = enabled;
     }
 
+    /// Returns the maximum number of tokens accepted in one model window.
+    #[must_use]
+    pub const fn max_length(&self) -> usize {
+        self.profile.max_length
+    }
+
     /// Load a user-provisioned `FastEmbed` model without contacting a registry.
     ///
     /// The directory must contain `model.onnx`, `tokenizer.json`,
@@ -779,10 +785,14 @@ impl FastEmbedProvider {
                 .tokenizer
                 .encode_batch(inputs.clone(), true)
                 .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-            let untruncated = untruncated_tokenizer
-                .encode_batch(inputs, true)
-                .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-            for (configured, untruncated) in configured.iter().zip(untruncated.iter()) {
+            // Encode untruncated inputs one at a time.  A long-context model
+            // can otherwise allocate one large padded tensor for the whole
+            // outer batch merely to collect diagnostics, defeating bounded
+            // windowing before inference starts.
+            for (configured, input) in configured.iter().zip(batch.iter()) {
+                let untruncated = untruncated_tokenizer
+                    .encode(input.as_str(), true)
+                    .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
                 let real = configured
                     .get_attention_mask()
                     .iter()

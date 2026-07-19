@@ -15,10 +15,18 @@ fn compact_search_default_uses_bounded_field_rows() {
     assert_eq!(body["ok"], true, "response: {body}");
     assert_eq!(
         body["fields"],
-        serde_json::json!(["name", "category", "excerpt", "source_index", "chunk_id"])
+        serde_json::json!([
+            "name",
+            "category",
+            "excerpt",
+            "source_index",
+            "chunk_id",
+            "correction_ids",
+            "origin"
+        ])
     );
     let row = &body["results"][0];
-    assert_eq!(row.as_array().map(Vec::len), Some(5));
+    assert_eq!(row.as_array().map(Vec::len), Some(7));
     assert_eq!(row[0], "lbm_add_extension");
     assert!(row[2].as_str().is_some_and(|excerpt| excerpt.len() <= 96));
     let source_index = row[3].as_u64().expect("compact result has a source index");
@@ -32,6 +40,8 @@ fn compact_search_default_uses_bounded_field_rows() {
         .as_str()
         .filter(|id| id.starts_with("chunk-"))
         .expect("compact result has a chunk ID");
+    assert_eq!(row[5], serde_json::json!([]));
+    assert!(row[6].is_null(), "curated result has no feedback origin");
     let chunk_uri = format!("vesc://knowledge/chunk/{chunk_id}");
     let chunk = VescMcpService::new()
         .resource_registry()
@@ -162,6 +172,52 @@ fn documented_search_examples_are_behaviorally_supported() {
             body["results"]
                 .as_array()
                 .is_some_and(|results| !results.is_empty())
+        );
+    }
+}
+
+#[test]
+fn loader_corrections_are_top_context_in_base_knowledge() {
+    let harness = McpTestHarness::new();
+    let cases = [
+        (
+            "Can I free the runtime admission header after package stop when a late LispBM callback still uses lib_get_arg?",
+            "native_lib_stop_arg_lifetime",
+            "STOPPED tombstone",
+        ),
+        (
+            "What does false returned from native INIT_FUN mean when optional registrations fail?",
+            "native_lib_init_result",
+            "Library init failed",
+        ),
+        (
+            "Should a generic Rust panic handler convention override an accepted VESC SDK project decision?",
+            "native_lib_review_authority",
+            "accepted project decisions",
+        ),
+    ];
+
+    for (query, expected_name, decisive_excerpt) in cases {
+        let response = harness.call_tool(
+            "search_vesc_knowledge",
+            serde_json::json!({ "query": query, "limit": 5 }),
+        );
+        let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+        let results = body["results"].as_array().expect("compact results");
+        let position = results
+            .iter()
+            .position(|row| row[0] == expected_name)
+            .unwrap_or_else(|| panic!("{expected_name} missing from top context: {body}"));
+
+        assert!(
+            position < 3,
+            "{expected_name} was buried at {position}: {body}"
+        );
+        assert!(
+            results[position][2]
+                .as_str()
+                .is_some_and(|excerpt| excerpt.contains(decisive_excerpt)),
+            "decisive loader evidence missing from excerpt: {body}"
         );
     }
 }

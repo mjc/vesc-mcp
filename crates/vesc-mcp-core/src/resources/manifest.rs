@@ -81,6 +81,7 @@ pub fn read_manifest(uri: &str, allowed_roots: &[PathBuf]) -> Result<String, Res
         ParsedResourceUri::Catalog(_)
         | ParsedResourceUri::KnowledgeChunk(_)
         | ParsedResourceUri::KnowledgeDocument(_)
+        | ParsedResourceUri::KnowledgeFeedback(_)
         | ParsedResourceUri::RefloatCommand(_) => {
             return Err(ResourceReadError::NotFound { uri: uri.into() });
         }

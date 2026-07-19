@@ -17,6 +17,10 @@ use vesc_knowledge_index::{
 #[cfg(any(feature = "semantic-fastembed", test))]
 use vesc_knowledge_index::{EmbeddingProvider, semantic_query_text};
 
+use crate::{
+    resources::ResourceRegistry,
+    tools::knowledge_feedback::{FeedbackStore, KnowledgeCorrectionResult, search_feedback},
+};
 /// Retrieval backend selected for a knowledge search.
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq,
@@ -99,7 +103,15 @@ const fn default_search_limit() -> usize {
 }
 
 const COMPACT_EXCERPT_BYTES: usize = 96;
-const COMPACT_FIELDS: [&str; 5] = ["name", "category", "excerpt", "source_index", "chunk_id"];
+const COMPACT_FIELDS: [&str; 7] = [
+    "name",
+    "category",
+    "excerpt",
+    "source_index",
+    "chunk_id",
+    "correction_ids",
+    "origin",
+];
 
 /// One neighboring passage is enough to complete a bounded evidence context.
 const MAX_EXPANDED_NEIGHBORS: usize = 1;
@@ -142,6 +154,12 @@ pub struct SearchVescKnowledgeResult {
     /// Normalized retrieval score when the selected backend exposes one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retrieval_score: Option<f64>,
+    /// Origin for non-curated runtime feedback results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Relevant correction annotations for this exact result/resource identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub correction_ids: Vec<String>,
     /// Stable passage and source identity for citation/follow-up reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<SearchVescKnowledgeProvenance>,
@@ -203,6 +221,53 @@ pub struct SearchVescKnowledgeTiming {
     pub result_count: usize,
 }
 
+/// Input for replaying a serious correction against base knowledge only.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct ReplayVescKnowledgeCorrectionParams {
+    /// Stable correction ID returned by `correct_vesc_knowledge`.
+    pub correction_id: String,
+    /// Persist covered state only after a successful base-only replay.
+    #[serde(default)]
+    pub mark_covered: bool,
+    /// Required when `mark_covered` is true.
+    #[serde(default)]
+    pub authorization: Option<crate::tools::knowledge_feedback::CorrectionAuthorization>,
+}
+
+/// Result of replaying the preserved failed query without learned advisories.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct CorrectionReplayReport {
+    pub ok: bool,
+    pub correction_id: String,
+    pub query: String,
+    pub covered_by_base_knowledge: bool,
+    pub marked_covered: bool,
+    pub matched_decisive_evidence: Vec<String>,
+    pub missing_decisive_evidence: Vec<String>,
+    pub ordered_result_ids: Vec<String>,
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl CorrectionReplayReport {
+    #[must_use]
+    pub(crate) fn failure(correction_id: &str, query: String, error: String) -> Self {
+        Self {
+            ok: false,
+            correction_id: correction_id.into(),
+            query,
+            covered_by_base_knowledge: false,
+            marked_covered: false,
+            matched_decisive_evidence: Vec::new(),
+            missing_decisive_evidence: Vec::new(),
+            ordered_result_ids: Vec::new(),
+            warnings: Vec::new(),
+            error: Some(error),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub struct SearchVescKnowledgeResponse {
     pub ok: bool,
@@ -210,6 +275,9 @@ pub struct SearchVescKnowledgeResponse {
     /// Retrieval capabilities available for the selected mode.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Current resource-backed corrections relevant to this query.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corrections: Vec<KnowledgeCorrectionResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub results: Vec<SearchVescKnowledgeResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,15 +290,27 @@ pub struct SearchVescKnowledgeResponse {
     pub timing: Option<SearchVescKnowledgeTiming>,
 }
 
+type CompactResultRow = (
+    String,
+    String,
+    String,
+    usize,
+    Option<String>,
+    Vec<String>,
+    Option<String>,
+);
+
 /// Compact search wire shape. The field table keeps rows cheap without making
 /// the positional payload ambiguous to clients.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 struct CompactSearchResponse {
     ok: bool,
     mode: SearchMode,
-    fields: [&'static str; 5],
+    fields: [&'static str; 7],
     sources: Vec<String>,
-    results: Vec<(String, String, String, usize, Option<String>)>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    corrections: Vec<KnowledgeCorrectionResult>,
+    results: Vec<CompactResultRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -261,6 +341,8 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
             excerpt,
             source_index,
             result.chunk_id.clone(),
+            result.correction_ids.clone(),
+            result.origin.clone(),
         ));
     }
     CompactSearchResponse {
@@ -268,6 +350,7 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
         mode: response.mode,
         fields: COMPACT_FIELDS,
         sources,
+        corrections: response.corrections.clone(),
         results,
         error: response.error.clone(),
         warnings: response.warnings.clone(),
@@ -344,6 +427,7 @@ pub fn search_vesc_knowledge_tool_with_config(
                         ok: true,
                         mode,
                         capabilities: capabilities_for_result(mode, &warnings),
+                        corrections: Vec::new(),
                         results,
                         error: None,
                         warnings,
@@ -364,6 +448,7 @@ pub fn search_vesc_knowledge_tool_with_config(
                     ok: false,
                     mode,
                     capabilities: Vec::new(),
+                    corrections: Vec::new(),
                     results: Vec::new(),
                     error: Some(error),
                     warnings: Vec::new(),
@@ -425,6 +510,7 @@ const fn error_response(mode: SearchMode, error: String) -> SearchVescKnowledgeR
         ok: false,
         mode,
         capabilities: Vec::new(),
+        corrections: Vec::new(),
         results: Vec::new(),
         error: Some(error),
         warnings: Vec::new(),
@@ -440,6 +526,12 @@ impl SearchVescKnowledgeResponse {
         config: &KnowledgeConfig,
         detail: SearchResponseDetail,
     ) -> Self {
+        let limit = if params.limit == 0 {
+            default_search_limit()
+        } else {
+            params.limit
+        };
+        self.results.truncate(limit);
         let passage_limit = params
             .max_context_bytes
             .unwrap_or(config.max_passage_bytes)
@@ -455,6 +547,12 @@ impl SearchVescKnowledgeResponse {
             .max_response_bytes
             .unwrap_or(config.max_response_bytes)
             .min(config.max_response_bytes);
+        if detail == SearchResponseDetail::Compact || response_exceeds_budget(&self, budget, detail)
+        {
+            for correction in &mut self.corrections {
+                compact_correction(correction);
+            }
+        }
         while response_exceeds_budget(&self, budget, detail) && self.results.len() > 1 {
             self.results.pop();
         }
@@ -470,9 +568,18 @@ impl SearchVescKnowledgeResponse {
             self.results.clear();
             self.index = None;
         }
+        while response_exceeds_budget(&self, budget, detail) && self.corrections.len() > 1 {
+            self.corrections.pop();
+        }
+        if response_exceeds_budget(&self, budget, detail) {
+            self.corrections.clear();
+        }
         if response_exceeds_budget(&self, budget, detail) {
             self.warnings
                 .push("response budget is smaller than the fixed response envelope".into());
+        }
+        if let Some(timing) = &mut self.timing {
+            timing.result_count = self.results.len();
         }
         self
     }
@@ -500,6 +607,30 @@ fn compact_result(result: &mut SearchVescKnowledgeResult) {
     result.provenance = None;
     truncate_utf8(&mut result.name, 128);
     truncate_utf8(&mut result.summary, 256);
+}
+
+fn compact_correction(correction: &mut KnowledgeCorrectionResult) {
+    truncate_utf8(&mut correction.question, 128);
+    truncate_utf8(&mut correction.what_we_know, 512);
+    truncate_utf8(&mut correction.common_mistake, 256);
+    truncate_utf8(&mut correction.reasoning_failure, 384);
+    truncate_utf8(&mut correction.mistaken_conclusion, 256);
+    truncate_utf8(&mut correction.correction, 512);
+    for qualifier in &mut correction.qualifiers {
+        truncate_utf8(qualifier, 128);
+    }
+    correction.qualifiers.truncate(4);
+    for next in &mut correction.check_next {
+        truncate_utf8(next, 256);
+    }
+    correction.check_next.truncate(6);
+    correction.gap_diagnoses.truncate(4);
+    correction.recommended_data_actions.truncate(4);
+    correction.affected_resources.truncate(8);
+    for evidence in &mut correction.evidence {
+        evidence.excerpt.clear();
+    }
+    correction.evidence.truncate(4);
 }
 
 fn truncate_utf8(text: &mut String, max_bytes: usize) {
@@ -1091,6 +1222,8 @@ fn fused_result(
         resource_uri: resource_uri.clone(),
         document_uri,
         retrieval_score: Some(hit.score),
+        origin: None,
+        correction_ids: Vec::new(),
         provenance: Some(SearchVescKnowledgeProvenance {
             document_id,
             chunk_id,
@@ -1171,6 +1304,8 @@ fn legacy_result(hit: vesc_knowledge_index::KnowledgeSearchHit) -> SearchVescKno
         resource_uri: None,
         document_uri: None,
         retrieval_score: None,
+        origin: None,
+        correction_ids: Vec::new(),
         provenance: None,
         explanation: None,
     }
@@ -1221,6 +1356,8 @@ fn lexical_result(
         resource_uri: resource_uri.clone(),
         document_uri,
         retrieval_score: Some(f64::from(hit.score)),
+        origin: None,
+        correction_ids: Vec::new(),
         provenance: Some(SearchVescKnowledgeProvenance {
             document_id,
             chunk_id,
@@ -1294,6 +1431,261 @@ pub fn search_vesc_knowledge_json_with_config(
 ) -> String {
     let response = search_vesc_knowledge_tool_with_config(params, config);
     serialize_search_response(&response, params.detail)
+}
+
+/// Serialize a search response augmented with durable learned notes and corrections.
+#[must_use]
+pub fn search_vesc_knowledge_json_with_feedback(
+    params: &SearchVescKnowledgeParams,
+    config: &KnowledgeConfig,
+    feedback: Option<&FeedbackStore>,
+    resources: &ResourceRegistry,
+) -> String {
+    let mut response = search_vesc_knowledge_tool_with_config(params, config);
+    if response.ok {
+        if let Some(store) = feedback {
+            let limit = if params.limit == 0 {
+                default_search_limit()
+            } else {
+                params.limit
+            };
+            let feedback = parse_filters(params)
+                .map_err(|error| format!("feedback filters unavailable: {error}"))
+                .and_then(|(_, filters)| {
+                    search_feedback(&params.query, store, resources, &filters, limit)
+                        .map_err(|error| error.to_string())
+                });
+            match feedback {
+                Ok(matches) => {
+                    response.corrections = matches.corrections;
+                    annotate_affected_results(&mut response.results, &response.corrections);
+                    let notes = matches
+                        .notes
+                        .into_iter()
+                        .take(limit)
+                        .map(feedback_note_result)
+                        .collect::<Vec<_>>();
+                    response.results.truncate(limit.saturating_sub(notes.len()));
+                    response.results.extend(notes);
+                }
+                Err(error) => response
+                    .warnings
+                    .push(format!("feedback retrieval unavailable: {error}")),
+            }
+            response = response.bounded(params, config, params.detail);
+        }
+    }
+    serialize_search_response(&response, params.detail)
+}
+
+fn replay_search_params(
+    correction: &crate::tools::knowledge_feedback::KnowledgeCorrection,
+) -> Result<SearchVescKnowledgeParams, String> {
+    let mode = correction
+        .retrieval_trace
+        .mode
+        .as_ref()
+        .map(|mode| {
+            serde_json::from_value(serde_json::Value::String(mode.clone()))
+                .map_err(|_| format!("unsupported replay mode {mode:?}"))
+        })
+        .transpose()?;
+    let mut filters = SearchVescKnowledgeFilters::default();
+    for filter in &correction.retrieval_trace.filters {
+        let Some((key, value)) = filter.split_once('=') else {
+            return Err(format!("malformed replay filter {filter:?}"));
+        };
+        if value.is_empty() {
+            return Err(format!("empty replay filter value for {key:?}"));
+        }
+        match key {
+            "category" if filters.category.is_none() => filters.category = Some(value.into()),
+            "repository" if filters.repository.is_none() => {
+                filters.repository = Some(value.into());
+            }
+            "revision" if filters.revision.is_none() => filters.revision = Some(value.into()),
+            "trust_tier" if filters.trust_tier.is_none() => {
+                filters.trust_tier = Some(value.into());
+            }
+            "source_kind" if filters.source_kind.is_none() => {
+                filters.source_kind = Some(value.into());
+            }
+            "tag" | "tags" => filters.tags.push(value.into()),
+            "category" | "repository" | "revision" | "trust_tier" | "source_kind" => {
+                return Err(format!("duplicate replay filter {key:?}"));
+            }
+            _ => return Err(format!("unsupported replay filter {key:?}")),
+        }
+    }
+    Ok(SearchVescKnowledgeParams {
+        query: correction.retrieval_trace.query.clone(),
+        category: None,
+        limit: correction.retrieval_trace.limit,
+        mode,
+        filters,
+        max_response_bytes: correction.retrieval_trace.max_response_bytes,
+        max_context_bytes: correction.retrieval_trace.max_context_bytes,
+        detail: SearchResponseDetail::Full,
+    })
+}
+
+#[must_use]
+pub fn replay_vesc_knowledge_correction(
+    params: &ReplayVescKnowledgeCorrectionParams,
+    config: &KnowledgeConfig,
+    store: &FeedbackStore,
+) -> CorrectionReplayReport {
+    let failure = |query: String, error: String| {
+        CorrectionReplayReport::failure(&params.correction_id, query, error)
+    };
+    if params.mark_covered && params.authorization.is_none() {
+        return failure(
+            String::new(),
+            "authorization is required when mark_covered is true".into(),
+        );
+    }
+    let record = match store.get(&params.correction_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => return failure(String::new(), "correction not found".into()),
+        Err(error) => return failure(String::new(), error.to_string()),
+    };
+    let crate::tools::knowledge_feedback::KnowledgeRecord::Correction(correction) = record else {
+        return failure(String::new(), "record is not a correction".into());
+    };
+
+    let mut warnings = Vec::new();
+    let replay = match replay_search_params(&correction) {
+        Ok(replay) => replay,
+        Err(error) => return failure(correction.retrieval_trace.query.clone(), error),
+    };
+    let response = search_vesc_knowledge_tool_with_config(&replay, config);
+    warnings.extend(response.warnings);
+    if !response.ok {
+        return CorrectionReplayReport {
+            ok: false,
+            correction_id: correction.id,
+            query: replay.query,
+            covered_by_base_knowledge: false,
+            marked_covered: false,
+            matched_decisive_evidence: Vec::new(),
+            missing_decisive_evidence: correction.retrieval_trace.decisive_evidence,
+            ordered_result_ids: Vec::new(),
+            warnings,
+            error: response.error,
+        };
+    }
+
+    let ordered_result_ids = response
+        .results
+        .iter()
+        .map(|result| result.id.clone())
+        .collect::<Vec<_>>();
+    let mut matched_decisive_evidence = Vec::new();
+    let mut missing_decisive_evidence = Vec::new();
+    for decisive in &correction.retrieval_trace.decisive_evidence {
+        let matched = response.results.iter().any(|result| {
+            result.id == *decisive
+                || result.chunk_id.as_deref() == Some(decisive)
+                || result.document_id.as_deref() == Some(decisive)
+                || result.resource_uri.as_deref() == Some(decisive)
+                || result.document_uri.as_deref() == Some(decisive)
+        });
+        if matched {
+            matched_decisive_evidence.push(decisive.clone());
+        } else {
+            missing_decisive_evidence.push(decisive.clone());
+        }
+    }
+    let covered_by_base_knowledge = !correction.retrieval_trace.decisive_evidence.is_empty()
+        && missing_decisive_evidence.is_empty();
+    let mut marked_covered = false;
+    if covered_by_base_knowledge && params.mark_covered {
+        if let Err(error) =
+            store.mark_correction_covered(&correction.id, &matched_decisive_evidence)
+        {
+            return failure(replay.query, error.to_string());
+        }
+        marked_covered = true;
+    } else if !covered_by_base_knowledge {
+        warnings.push(
+            "base knowledge replay still misses decisive evidence; keep the advisory active and apply its recommended data actions"
+                .into(),
+        );
+    }
+
+    CorrectionReplayReport {
+        ok: true,
+        correction_id: correction.id,
+        query: replay.query,
+        covered_by_base_knowledge,
+        marked_covered,
+        matched_decisive_evidence,
+        missing_decisive_evidence,
+        ordered_result_ids,
+        warnings,
+        error: None,
+    }
+}
+
+fn feedback_note_result(
+    matched: crate::tools::knowledge_feedback::FeedbackNoteMatch,
+) -> SearchVescKnowledgeResult {
+    let id = matched.note.id;
+    let summary = matched.note.lesson;
+    SearchVescKnowledgeResult {
+        name: format!("Learned note: {}", matched.note.question),
+        category: "model_feedback".into(),
+        source: SearchVescKnowledgeSource {
+            repo: "vesc-mcp-feedback".into(),
+            path: format!("feedback/{id}.json"),
+            line: 0,
+            end_line: None,
+            start_byte: None,
+            end_byte: None,
+            revision: Some("runtime-feedback-v1".into()),
+        },
+        score: 1,
+        chunk_id: None,
+        document_id: None,
+        passage: Some(summary.clone()),
+        heading_path: None,
+        resource_uri: Some(format!("vesc://knowledge/feedback/{id}")),
+        document_uri: None,
+        retrieval_score: Some(f64::from(matched.score)),
+        origin: Some("unverified_model_feedback".into()),
+        correction_ids: Vec::new(),
+        provenance: None,
+        explanation: None,
+        id,
+        summary,
+    }
+}
+
+fn annotate_affected_results(
+    results: &mut [SearchVescKnowledgeResult],
+    corrections: &[KnowledgeCorrectionResult],
+) {
+    for result in results {
+        let correction_ids = corrections
+            .iter()
+            .filter(|correction| correction_affects_result(correction, result))
+            .map(|correction| correction.id.clone())
+            .collect::<Vec<_>>();
+        result.correction_ids.extend(correction_ids);
+    }
+}
+
+fn correction_affects_result(
+    correction: &KnowledgeCorrectionResult,
+    result: &SearchVescKnowledgeResult,
+) -> bool {
+    correction.affected_resources.iter().any(|affected| {
+        affected == &result.id
+            || result.chunk_id.as_ref() == Some(affected)
+            || result.document_id.as_ref() == Some(affected)
+            || result.resource_uri.as_ref() == Some(affected)
+            || result.document_uri.as_ref() == Some(affected)
+    })
 }
 
 fn serialize_search_response(

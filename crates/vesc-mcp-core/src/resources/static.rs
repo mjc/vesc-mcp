@@ -23,11 +23,15 @@ pub const LISP_IMPORTS_URI: &str = "vesc://catalog/doc/topic/lisp_imports";
 /// `vesc://catalog/doc/topic/vescpackage_reference`
 pub const VESCPACKAGE_REFERENCE_URI: &str = "vesc://catalog/doc/topic/vescpackage_reference";
 
+/// `vesc://catalog/doc/topic/vesc_pkg_lib_abi`
+pub const VESC_PKG_LIB_ABI_URI: &str = "vesc://catalog/doc/topic/vesc_pkg_lib_abi";
+
 const VESC_C_IF_CATALOG_REL: &str = "bldc/vesc_c_if.yaml";
 
 const PKGDESC_DIALECTS_BODY: &str = include_str!("snippets/pkgdesc_dialects.md");
 const LISP_IMPORTS_BODY: &str = include_str!("snippets/lisp_imports.md");
 const VESCPACKAGE_REFERENCE_BODY: &str = include_str!("snippets/vescpackage_reference.md");
+const VESC_PKG_LIB_ABI_BODY: &str = include_str!("../../../../docs/vesc-pkg-lib-abi.md");
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct VescCIfCatalog {
@@ -93,6 +97,14 @@ pub fn register_doc_topic_resources(
                 .into(),
         ),
         mime_type: "text/markdown".into(),
+    })?;
+    registry.register(ResourceMeta {
+        uri: VESC_PKG_LIB_ABI_URI.into(),
+        name: "VESC native package loader and ABI invariants".into(),
+        description: Some(
+            "Exact loader lifetimes, init result semantics, and review reasoning gates".into(),
+        ),
+        mime_type: "text/markdown".into(),
     })
 }
 
@@ -112,6 +124,7 @@ pub fn read_doc_topic(uri: &str, catalog_root: &Path) -> Result<String, Resource
         }
         LISP_IMPORTS_URI => Ok(render_lisp_imports()),
         VESCPACKAGE_REFERENCE_URI => Ok(render_vescpackage_reference()),
+        VESC_PKG_LIB_ABI_URI => Ok(VESC_PKG_LIB_ABI_BODY.into()),
         other => Err(ResourceReadError::NotFound { uri: other.into() }),
     }
 }

@@ -23,8 +23,8 @@ vesc-mcp supports two MCP connections:
 
 | Connection | Best for | Available tools |
 |------------|----------|-----------------|
-| stdio | One local assistant that needs package files | All tools |
-| Streamable HTTP | Multiple clients sharing knowledge search | `ping`, `search_vesc_knowledge`, and resources |
+| stdio | One local assistant that needs package files | All configured tools |
+| Streamable HTTP | Multiple clients sharing knowledge search | `ping`, `search_vesc_knowledge`, `replay_vesc_knowledge_correction`, resources, and authenticated feedback writes when configured |
 
 Package inspection, validation, checks, and builds are stdio-only because they
 access local files. Streamable HTTP intentionally does not expose them.
@@ -88,12 +88,26 @@ roots so drive-letter colons are not interpreted as path separators.
 After connecting, call `ping`, then try `search_vesc_knowledge`. For package
 work, start with `list_vesc_packages` and `inspect_pkgdesc`.
 
+To let the model retain reusable lessons and evidence-backed corrections, set a
+durable feedback directory and explicitly enable writes:
+
+```bash
+export VESC_RAG_FEEDBACK_PATH="$PWD/.vesc-mcp-feedback"
+export VESC_RAG_FEEDBACK_WRITES=true
+```
+
+HTTP feedback writes additionally require `VESC_MCP_HTTP_AUTH_TOKEN`; unauthenticated
+and unconfigured connections remain read-only.
+
 ## What it provides
 
 | Tool | Purpose |
 |------|---------|
 | `ping` | Verify the server connection |
-| `search_vesc_knowledge` | Search VESC firmware and package documentation |
+| `search_vesc_knowledge` | Search VESC knowledge, returning relevant corrections before ordinary results |
+| `submit_vesc_knowledge_feedback` | Save a reusable but explicitly unverified lesson |
+| `correct_vesc_knowledge` | Persist a user-authorized, evidence-backed correction plus the failed retrieval trace and knowledge-gap diagnosis |
+| `replay_vesc_knowledge_correction` | Replay the preserved query against base knowledge only and report whether decisive evidence is now covered |
 | `list_vesc_packages` | Find packages under allowed directories |
 | `inspect_pkgdesc` | Read a package descriptor |
 | `inspect_vescpkg` | Inspect a built `.vescpkg` file |
@@ -103,6 +117,21 @@ work, start with `list_vesc_packages` and `inspect_pkgdesc`.
 
 Search results are evidence, not instructions. Each result includes resource
 URIs for reading the matching passage or complete normalized document.
+When a user challenges an MCP-derived answer, the model should ask focused
+follow-up questions, replay the original bounded search, and read those
+resources. It should call
+`correct_vesc_knowledge` only after the registered VESC evidence supports the
+correction and the user explicitly requests the write or confirms after the
+model asks. The required `authorization` field records which path occurred.
+The correction records why the original knowledge response steered the model
+wrong and returns a learned advisory immediately, but that advisory is not the
+final repair: its trace and gap diagnosis must drive a corpus, chunking,
+metadata, ranking, context, or instruction improvement and a replay proving the
+base search now surfaces the decisive evidence without the advisory.
+After significant reusable knowledge is resolved, the model should mention the
+correction option once without repeatedly prompting. User disagreement alone is
+not evidence. Uncited reusable lessons belong in
+`submit_vesc_knowledge_feedback` and remain visibly unverified.
 
 ## Guides
 
@@ -124,6 +153,7 @@ Technical references:
 Contributor documentation:
 
 - [Build and test from source](docs/testing.md)
+- [Knowledge feedback and correction mechanism](docs/knowledge-feedback-design.md)
 
 ## Nix
 

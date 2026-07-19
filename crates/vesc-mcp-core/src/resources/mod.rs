@@ -39,7 +39,7 @@ pub use refloat_command::{
 };
 pub use r#static::{
     DocTopicResourceHandler, LISP_IMPORTS_URI, PKGDESC_DIALECTS_URI, VESC_C_IF_URI,
-    VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
+    VESC_PKG_LIB_ABI_URI, VESCPACKAGE_REFERENCE_URI, read_doc_topic, register_doc_topic_resources,
 };
 pub use subscriptions::ResourceSubscriptions;
 pub use uri::{
@@ -51,6 +51,9 @@ pub use uri::{
 use std::collections::BTreeMap;
 
 use rmcp::model::{Resource as McpResource, ResourceTemplate as McpResourceTemplate};
+
+mod feedback;
+pub use feedback::FeedbackResourceHandler;
 
 /// Metadata for a statically registered MCP resource.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +260,16 @@ impl ResourceRegistry {
             templates.push(Self::knowledge_document_template());
         }
 
+        let feedback_probe =
+            ParsedResourceUri::KnowledgeFeedback(uri::KnowledgeFeedbackUri { id: "_".into() });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&feedback_probe))
+        {
+            templates.push(Self::knowledge_feedback_template());
+        }
+
         templates
     }
 
@@ -317,6 +330,14 @@ impl ResourceRegistry {
     pub fn knowledge_document_template() -> McpResourceTemplate {
         McpResourceTemplate::new("vesc://knowledge/document/{id}", "knowledge document")
             .with_description("Full normalized document assembled from a stable knowledge corpus")
+            .with_mime_type("application/json")
+    }
+
+    /// MCP resource template for persisted model notes and corrections.
+    #[must_use]
+    pub fn knowledge_feedback_template() -> McpResourceTemplate {
+        McpResourceTemplate::new("vesc://knowledge/feedback/{id}", "knowledge feedback")
+            .with_description("Persisted model note or evidence-backed VESC correction")
             .with_mime_type("application/json")
     }
 }

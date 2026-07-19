@@ -18,6 +18,10 @@ pub const VESC_TOOL_PATH_ENV: &str = "VESC_TOOL_PATH";
 pub const VESC_MCP_ENABLE_FLASH_ENV: &str = "VESC_MCP_ENABLE_FLASH";
 /// Environment variable overriding the config TOML file path.
 pub const VESC_MCP_CONFIG_ENV: &str = "VESC_MCP_CONFIG";
+/// Environment variable selecting the durable model-feedback directory.
+pub const VESC_RAG_FEEDBACK_PATH_ENV: &str = "VESC_RAG_FEEDBACK_PATH";
+/// Environment variable enabling model-feedback write tools.
+pub const VESC_RAG_FEEDBACK_WRITES_ENV: &str = "VESC_RAG_FEEDBACK_WRITES";
 /// Environment variable selecting the staged knowledge retrieval mode.
 pub const VESC_RAG_MODE_ENV: &str = "VESC_RAG_MODE";
 /// Environment variable selecting the generated knowledge artifact path.
@@ -54,6 +58,13 @@ impl FromStr for RetrievalMode {
             other => Err(format!("unsupported retrieval mode {other:?}")),
         }
     }
+}
+
+/// Durable model-feedback configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeedbackConfig {
+    pub path: Option<PathBuf>,
+    pub writes_enabled: bool,
 }
 
 /// Bounded knowledge retrieval configuration.
@@ -101,6 +112,7 @@ pub struct McpConfig {
     pub vesc_tool_path: PathBuf,
     pub enable_flash: bool,
     pub knowledge: KnowledgeConfig,
+    pub feedback: FeedbackConfig,
 }
 
 impl McpConfig {
@@ -131,6 +143,7 @@ struct ConfigFile {
     paths: Option<PathsSection>,
     features: Option<FeaturesSection>,
     knowledge: Option<KnowledgeSection>,
+    feedback: Option<FeedbackSection>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -168,6 +181,12 @@ struct SemanticSection {
     idle_timeout_secs: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct FeedbackSection {
+    path: Option<String>,
+    writes_enabled: Option<bool>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct EnvOverrides {
     package_roots: Option<Vec<PathBuf>>,
@@ -183,6 +202,8 @@ struct EnvOverrides {
     semantic_model_id: Option<String>,
     semantic_model_revision: Option<String>,
     semantic_idle_timeout_secs: Option<u64>,
+    feedback_path: Option<PathBuf>,
+    feedback_writes_enabled: Option<bool>,
 }
 
 /// Default config file location: `~/.config/vesc-mcp/config.toml`.
@@ -230,7 +251,7 @@ fn read_env_overrides() -> EnvOverrides {
         enable_flash: env::var(VESC_MCP_ENABLE_FLASH_ENV)
             .ok()
             .as_deref()
-            .map(parse_enable_flash_env),
+            .map(parse_bool_env),
         knowledge_mode: env::var(VESC_RAG_MODE_ENV)
             .ok()
             .and_then(|value| RetrievalMode::from_str(&value).ok()),
@@ -245,6 +266,13 @@ fn read_env_overrides() -> EnvOverrides {
         semantic_idle_timeout_secs: env::var(VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV)
             .ok()
             .and_then(|value| value.parse().ok()),
+        feedback_path: env::var(VESC_RAG_FEEDBACK_PATH_ENV)
+            .ok()
+            .map(|value| workspace::expand_path(&value)),
+        feedback_writes_enabled: env::var(VESC_RAG_FEEDBACK_WRITES_ENV)
+            .ok()
+            .as_deref()
+            .map(parse_bool_env),
     }
 }
 
@@ -253,6 +281,7 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
     let paths = file.paths.as_ref();
     let features = file.features.as_ref();
     let knowledge = file.knowledge.as_ref();
+    let feedback = file.feedback.as_ref();
 
     let package_roots = env
         .package_roots
@@ -354,6 +383,17 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
                 .and_then(|section| section.max_passage_bytes)
                 .unwrap_or(defaults.max_passage_bytes),
         },
+        feedback: FeedbackConfig {
+            path: env.feedback_path.clone().or_else(|| {
+                feedback
+                    .and_then(|section| section.path.as_deref())
+                    .map(workspace::expand_path)
+            }),
+            writes_enabled: env
+                .feedback_writes_enabled
+                .or_else(|| feedback.and_then(|section| section.writes_enabled))
+                .unwrap_or(false),
+        },
     }
 }
 
@@ -382,7 +422,7 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     workspace::expand_path(path)
 }
 
-fn parse_enable_flash_env(value: &str) -> bool {
+fn parse_bool_env(value: &str) -> bool {
     matches!(
         value.trim(),
         "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
@@ -636,6 +676,35 @@ idle_timeout_secs = 60
             Some("sha256:model")
         );
         assert_eq!(merged.knowledge.semantic_idle_timeout_secs, 60);
+    }
+
+    #[test]
+    fn feedback_config_defaults_off() {
+        let merged = merge_config(&ConfigFile::default(), &EnvOverrides::default());
+        assert_eq!(merged.feedback.path, None);
+        assert!(!merged.feedback.writes_enabled);
+    }
+
+    #[test]
+    fn feedback_config_reads_toml_and_env_precedence() {
+        let file: ConfigFile = toml::from_str(
+            r#"
+[feedback]
+path = "state/feedback"
+writes_enabled = false
+"#,
+        )
+        .expect("parse feedback config");
+        let merged = merge_config(
+            &file,
+            &EnvOverrides {
+                feedback_path: Some(PathBuf::from("/tmp/feedback")),
+                feedback_writes_enabled: Some(true),
+                ..EnvOverrides::default()
+            },
+        );
+        assert_eq!(merged.feedback.path, Some(PathBuf::from("/tmp/feedback")));
+        assert!(merged.feedback.writes_enabled);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use vesc_mcp_core::VescMcpService;
 use vesc_mcp_core::resources::{
     LISP_IMPORTS_URI, MINIMAL_TEST_PACKAGE_ABI_URI, PKGDESC_DIALECTS_URI,
     REALTIME_DATA_COMMAND_URI, REFLOAT_MINIMAL_MANIFEST_URI, REFLOAT_VESC_TOOL_URI, VESC_C_IF_URI,
-    VESCPACKAGE_REFERENCE_URI,
+    VESC_PKG_LIB_ABI_URI, VESCPACKAGE_REFERENCE_URI,
 };
 
 #[test]
@@ -16,10 +16,11 @@ fn service_registry_lists_default_static_resources() {
         .iter()
         .map(|meta| meta.uri.as_str())
         .collect();
-    assert_eq!(uris.len(), 17);
+    assert_eq!(uris.len(), 18);
     assert!(uris.contains(&REFLOAT_VESC_TOOL_URI));
     assert!(uris.contains(&PKGDESC_DIALECTS_URI));
     assert!(uris.contains(&VESC_C_IF_URI));
+    assert!(uris.contains(&VESC_PKG_LIB_ABI_URI));
     assert!(uris.contains(&LISP_IMPORTS_URI));
     assert!(uris.contains(&VESCPACKAGE_REFERENCE_URI));
     assert!(uris.contains(&MINIMAL_TEST_PACKAGE_ABI_URI));

@@ -4233,6 +4233,7 @@ name = "vesc-mcp-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs4",
  "insta",
  "rmcp",
  "schemars",

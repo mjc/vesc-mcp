@@ -18,6 +18,7 @@ semantic-rocm = ["semantic-fastembed", "vesc-knowledge-index/semantic-rocm"]
 
 [dependencies]
 anyhow.workspace = true
+fs4 = "0.13"
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

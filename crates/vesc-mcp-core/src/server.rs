@@ -31,9 +31,15 @@ use crate::tools::inspect::{
 };
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
 use crate::tools::search_knowledge::{
-    SearchVescKnowledgeParams, search_vesc_knowledge_json_with_config,
+    SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
 };
 use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
+
+use crate::resources::FeedbackResourceHandler;
+use crate::tools::knowledge_feedback::{
+    CorrectVescKnowledgeParams, FeedbackStore, SubmitKnowledgeFeedbackParams,
+    correct_vesc_knowledge_tool_with_store, submit_vesc_knowledge_feedback_with_store,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PingParams {
@@ -60,17 +66,32 @@ struct SharedMcpState {
     resource_subscriptions: Arc<ResourceSubscriptions>,
     catalog_watcher: Arc<CatalogSourceWatcher>,
     catalog_root: PathBuf,
+    feedback: Option<FeedbackStore>,
+    feedback_writes_enabled: bool,
 }
 
 impl SharedMcpState {
     fn new() -> Self {
+        let feedback = McpConfig::load().feedback.clone();
+        Self::with_feedback(
+            feedback.path.as_deref().map(FeedbackStore::new),
+            feedback.writes_enabled,
+        )
+    }
+
+    fn with_feedback(feedback: Option<FeedbackStore>, writes_enabled: bool) -> Self {
+        let mut resources =
+            ResourceRegistry::with_defaults().expect("default MCP resource registry");
+        if let Some(store) = feedback.clone() {
+            resources.register_handler(FeedbackResourceHandler::new(store));
+        }
         Self {
-            resources: Arc::new(
-                ResourceRegistry::with_defaults().expect("default MCP resource registry"),
-            ),
+            resources: Arc::new(resources),
             resource_subscriptions: Arc::new(ResourceSubscriptions::new()),
             catalog_watcher: Arc::new(CatalogSourceWatcher::new()),
             catalog_root: crate::workspace::catalog_root(),
+            feedback_writes_enabled: writes_enabled && feedback.is_some(),
+            feedback,
         }
     }
 }
@@ -83,6 +104,7 @@ impl SharedMcpState {
 pub struct HttpMcpService {
     tool_router: ToolRouter<Self>,
     state: Arc<SharedMcpState>,
+    feedback_writes_enabled: bool,
 }
 
 impl Default for VescMcpService {
@@ -100,18 +122,49 @@ impl VescMcpService {
     /// Panics if built-in resource registration fails.
     #[must_use]
     pub fn new() -> Self {
+        Self::from_state(SharedMcpState::new())
+    }
+
+    /// Create a service with an explicit durable feedback store.
+    #[must_use]
+    pub fn with_feedback_store(path: &std::path::Path, writes_enabled: bool) -> Self {
+        Self::from_state(SharedMcpState::with_feedback(
+            Some(FeedbackStore::new(path)),
+            writes_enabled,
+        ))
+    }
+
+    fn from_state(state: SharedMcpState) -> Self {
+        let mut tool_router = Self::tool_router();
+        if !state.feedback_writes_enabled {
+            tool_router.disable_route("submit_vesc_knowledge_feedback");
+            tool_router.disable_route("correct_vesc_knowledge");
+        }
         Self {
-            tool_router: Self::tool_router(),
-            state: Arc::new(SharedMcpState::new()),
+            tool_router,
+            state: Arc::new(state),
         }
     }
 
-    /// Create the restricted service used by Streamable HTTP clients.
+    /// Create the restricted, read-only service used by Streamable HTTP clients.
     #[must_use]
     pub fn http_service(&self) -> HttpMcpService {
+        self.http_service_with_authenticated_writes(false)
+    }
+
+    /// Create the HTTP service, exposing feedback writes only for authenticated clients.
+    #[must_use]
+    pub fn http_service_with_authenticated_writes(&self, authenticated: bool) -> HttpMcpService {
+        let feedback_writes_enabled = authenticated && self.state.feedback_writes_enabled;
+        let mut tool_router = HttpMcpService::tool_router();
+        if !feedback_writes_enabled {
+            tool_router.disable_route("submit_vesc_knowledge_feedback");
+            tool_router.disable_route("correct_vesc_knowledge");
+        }
         HttpMcpService {
-            tool_router: HttpMcpService::tool_router(),
+            tool_router,
             state: Arc::clone(&self.state),
+            feedback_writes_enabled,
         }
     }
 
@@ -201,13 +254,64 @@ impl VescMcpService {
         run_package_checks_json(&params)
     }
 
-    #[tool(description = "Search the embedded VESC firmware and package knowledge index")]
-    #[allow(clippy::unused_self)] // rmcp tool router requires &self
+    #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
         Parameters(params): Parameters<SearchVescKnowledgeParams>,
     ) -> String {
-        search_vesc_knowledge_json_with_config(&params, &McpConfig::load().knowledge)
+        search_vesc_knowledge_json_with_feedback(
+            &params,
+            &McpConfig::load().knowledge,
+            self.state.feedback.as_ref(),
+            &self.state.resources,
+        )
+    }
+
+    #[tool(
+        description = "Persist a low-trust reusable lesson after a user correction or newly discovered gap. Use for helpful notes that are not yet backed by registered VESC resources; the note remains visibly unverified in later search."
+    )]
+    fn submit_vesc_knowledge_feedback(
+        &self,
+        Parameters(params): Parameters<SubmitKnowledgeFeedbackParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            submit_vesc_knowledge_feedback_with_store(&params, store)
+        })
+    }
+
+    #[tool(
+        description = "Persist an evidence-backed VESC correction only after user authorization. Include exact registered evidence, why reasoning failed, structured gap diagnoses, and the bounded original retrieval trace so the base knowledge defect can be repaired and replayed."
+    )]
+    fn correct_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<CorrectVescKnowledgeParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            correct_vesc_knowledge_tool_with_store(&params, store, &self.state.resources)
+        })
+    }
+
+    #[tool(
+        description = "Replay a stored correction's original bounded query against base VESC knowledge only. Use the report to prove whether corpus/retrieval changes now surface every decisive evidence ID without the learned advisory."
+    )]
+    fn replay_vesc_knowledge_correction(
+        &self,
+        Parameters(params): Parameters<
+            crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams,
+        >,
+    ) -> String {
+        if params.mark_covered && !self.state.feedback_writes_enabled {
+            return replay_error_json(&params, "mark_covered requires enabled feedback writes");
+        }
+        let Some(store) = self.state.feedback.as_ref() else {
+            return replay_error_json(&params, "knowledge feedback is not configured");
+        };
+        let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
+            &params,
+            &McpConfig::load().knowledge,
+            store,
+        );
+        replay_report_json(&report)
     }
 }
 
@@ -328,9 +432,10 @@ impl ServerHandler for VescMcpService {
                 .build(),
         )
         .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
-        .with_instructions(
-            "MCP server for VESC firmware and vescpkg development. Start with ping, then list/inspect tools as they land.",
-        )
+        .with_instructions(server_instructions(
+            self.state.feedback.is_some(),
+            self.state.feedback_writes_enabled,
+        ))
     }
 }
 
@@ -352,13 +457,67 @@ impl HttpMcpService {
         ping_json(message)
     }
 
-    #[tool(description = "Search the embedded VESC firmware and package knowledge index")]
-    #[allow(clippy::unused_self)]
+    #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
         Parameters(params): Parameters<SearchVescKnowledgeParams>,
     ) -> String {
-        search_vesc_knowledge_json_with_config(&params, &McpConfig::load().knowledge)
+        search_vesc_knowledge_json_with_feedback(
+            &params,
+            &McpConfig::load().knowledge,
+            self.state.feedback.as_ref(),
+            &self.state.resources,
+        )
+    }
+
+    #[tool(
+        description = "Persist a low-trust reusable lesson after a user correction or newly discovered gap. Use for helpful notes that are not yet backed by registered VESC resources; the note remains visibly unverified in later search."
+    )]
+    fn submit_vesc_knowledge_feedback(
+        &self,
+        Parameters(params): Parameters<SubmitKnowledgeFeedbackParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            submit_vesc_knowledge_feedback_with_store(&params, store)
+        })
+    }
+
+    #[tool(
+        description = "Persist an evidence-backed VESC correction only after user authorization. Include exact registered evidence, why reasoning failed, structured gap diagnoses, and the bounded original retrieval trace so the base knowledge defect can be repaired and replayed."
+    )]
+    fn correct_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<CorrectVescKnowledgeParams>,
+    ) -> String {
+        feedback_json(self.state.feedback.as_ref(), |store| {
+            correct_vesc_knowledge_tool_with_store(&params, store, &self.state.resources)
+        })
+    }
+
+    #[tool(
+        description = "Replay a stored correction's original bounded query against base VESC knowledge only. Use the report to prove whether corpus/retrieval changes now surface every decisive evidence ID without the learned advisory."
+    )]
+    fn replay_vesc_knowledge_correction(
+        &self,
+        Parameters(params): Parameters<
+            crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams,
+        >,
+    ) -> String {
+        if params.mark_covered && !self.feedback_writes_enabled {
+            return replay_error_json(
+                &params,
+                "mark_covered requires authenticated feedback writes",
+            );
+        }
+        let Some(store) = self.state.feedback.as_ref() else {
+            return replay_error_json(&params, "knowledge feedback is not configured");
+        };
+        let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
+            &params,
+            &McpConfig::load().knowledge,
+            store,
+        );
+        replay_report_json(&report)
     }
 }
 
@@ -474,7 +633,7 @@ impl ServerHandler for HttpMcpService {
     }
 
     fn get_info(&self) -> ServerInfo {
-        http_server_info()
+        http_server_info(self.state.feedback.is_some(), self.feedback_writes_enabled)
     }
 }
 
@@ -489,7 +648,52 @@ fn ping_json(message: Option<String>) -> String {
     })
 }
 
-fn http_server_info() -> ServerInfo {
+fn feedback_json(
+    store: Option<&FeedbackStore>,
+    write: impl FnOnce(&FeedbackStore) -> crate::tools::knowledge_feedback::FeedbackWriteResponse,
+) -> String {
+    let response = store.map_or_else(
+        || crate::tools::knowledge_feedback::FeedbackWriteResponse {
+            ok: false,
+            id: None,
+            duplicate: false,
+            state: None,
+            evidence: Vec::new(),
+            next_actions: Vec::new(),
+            error: Some("knowledge feedback is not configured".into()),
+        },
+        write,
+    );
+    serde_json::to_string(&response).unwrap_or_else(feedback_serialization_error_json)
+}
+
+fn feedback_serialization_error_json(error: impl std::fmt::Display) -> String {
+    serde_json::json!({
+        "ok": false,
+        "error": format!("feedback serialization failed: {error}"),
+    })
+    .to_string()
+}
+
+fn replay_error_json(
+    params: &crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams,
+    error: &str,
+) -> String {
+    replay_report_json(
+        &crate::tools::search_knowledge::CorrectionReplayReport::failure(
+            &params.correction_id,
+            String::new(),
+            error.into(),
+        ),
+    )
+}
+
+fn replay_report_json(report: &crate::tools::search_knowledge::CorrectionReplayReport) -> String {
+    serde_json::to_string(report)
+        .expect("CorrectionReplayReport contains only infallibly serializable fields")
+}
+
+fn http_server_info(feedback_available: bool, feedback_writes_enabled: bool) -> ServerInfo {
     ServerInfo::new(
         ServerCapabilities::builder()
             .enable_tools()
@@ -498,9 +702,23 @@ fn http_server_info() -> ServerInfo {
             .build(),
     )
     .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
-    .with_instructions(
-        "Shared HTTP MCP service for VESC knowledge search. Package-tree tools remain on stdio until an authenticated root policy is configured.",
-    )
+    .with_instructions(server_instructions(
+        feedback_available,
+        feedback_writes_enabled,
+    ))
+}
+
+const fn server_instructions(
+    feedback_available: bool,
+    feedback_writes_enabled: bool,
+) -> &'static str {
+    if feedback_writes_enabled {
+        "VESC firmware/package knowledge service with durable feedback. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms; disagreement alone is neither evidence nor authorization. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
+    } else if feedback_available {
+        "VESC firmware/package knowledge service. Search before answering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
+    } else {
+        "VESC firmware/package knowledge service. Search before answering. Feedback storage is not configured on this connection, so learned advisories and correction records are unavailable. If evidence is incomplete or conflicting, say so and run a narrower search or read the decisive resources instead of guessing."
+    }
 }
 
 async fn notify_resource_updated_if_subscribed(
@@ -614,5 +832,123 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "search_vesc_knowledge"));
+    }
+
+    #[test]
+    fn feedback_write_tools_are_disabled_by_default() {
+        let names = VescMcpService::new().list_tool_names();
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == "submit_vesc_knowledge_feedback")
+        );
+        assert!(!names.iter().any(|name| name == "correct_vesc_knowledge"));
+    }
+
+    #[test]
+    fn instructions_without_feedback_do_not_advertise_advisories() {
+        let instructions = VescMcpService::new()
+            .get_info()
+            .instructions
+            .expect("server instructions");
+
+        assert!(!instructions.contains("Learned advisories are returned"));
+        assert!(instructions.contains("Feedback storage is not configured"));
+    }
+
+    #[test]
+    fn configured_feedback_exposes_write_tools_and_resource_template() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = VescMcpService::with_feedback_store(temp.path(), true);
+        let names = service.list_tool_names();
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "submit_vesc_knowledge_feedback")
+        );
+        assert!(names.iter().any(|name| name == "correct_vesc_knowledge"));
+        assert!(
+            names
+                .iter()
+                .any(|name| name == "replay_vesc_knowledge_correction")
+        );
+        assert!(
+            service
+                .resource_registry()
+                .list_mcp_templates()
+                .iter()
+                .any(|template| { template.uri_template == "vesc://knowledge/feedback/{id}" })
+        );
+        let instructions = service
+            .get_info()
+            .instructions
+            .expect("feedback instructions");
+        assert!(instructions.contains("correct_vesc_knowledge"));
+        assert!(instructions.contains("user explicitly asks"));
+        assert!(instructions.contains("disagreement alone is neither evidence nor authorization"));
+        assert!(instructions.contains("remind the user once"));
+        assert!(instructions.contains("replay the original query"));
+        assert!(instructions.contains("without the advisory"));
+        assert!(instructions.contains("instead of guessing"));
+    }
+
+    #[test]
+    fn http_feedback_writes_require_authenticated_mode() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = VescMcpService::with_feedback_store(temp.path(), true);
+        let read_only = service.http_service();
+        assert!(
+            !read_only
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "correct_vesc_knowledge")
+        );
+        let instructions = read_only
+            .get_info()
+            .instructions
+            .expect("read-only feedback instructions");
+        assert!(instructions.contains("Learned advisories are returned"));
+        assert!(instructions.contains("Feedback writes are disabled"));
+        let authenticated = service.http_service_with_authenticated_writes(true);
+        assert!(
+            authenticated
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "correct_vesc_knowledge")
+        );
+    }
+
+    #[test]
+    fn replay_errors_have_one_schema_on_stdio_and_http() {
+        let params = crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams {
+            correction_id: "correction-missing".into(),
+            mark_covered: false,
+            authorization: None,
+        };
+        let responses = [
+            VescMcpService::new().replay_vesc_knowledge_correction(Parameters(params.clone())),
+            VescMcpService::new()
+                .http_service()
+                .replay_vesc_knowledge_correction(Parameters(params)),
+        ];
+
+        for response in responses {
+            let report: crate::tools::search_knowledge::CorrectionReplayReport =
+                serde_json::from_str(&response).expect("complete replay report");
+            assert!(!report.ok);
+            assert_eq!(report.correction_id, "correction-missing");
+            assert!(report.error.is_some());
+        }
+    }
+
+    #[test]
+    fn feedback_serialization_error_json_escapes_error_text() {
+        let response = feedback_serialization_error_json("quoted \"error\"\nnext line");
+        let body: serde_json::Value = serde_json::from_str(&response).expect("valid fallback JSON");
+
+        assert_eq!(
+            body["error"],
+            "feedback serialization failed: quoted \"error\"\nnext line"
+        );
     }
 }

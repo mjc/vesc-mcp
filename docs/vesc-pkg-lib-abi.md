@@ -52,6 +52,73 @@ INIT_FUN init(lib_info *info) {
 
 On unload, firmware invokes `info->stop_fun`.
 
+## Loader review invariants: check exact lifetimes before applying general rules
+
+These invariants exist to prevent plausible embedded-Rust or ownership rules
+from overriding the actual VESC loader contract. They are retrieval guidance,
+not instructions to copy one project's policy into every package.
+
+### `arg` and `base_addr` can outlive `stop_fun`
+
+Do not infer that stopping a native library makes every pointer reachable from
+its package argument unreachable. In the VESC loader implementation,
+`lib_get_arg` locates the loaded-library entry by `base_addr` and returns the
+stored `arg`. Stopping the library clears `stop_fun`; it does not establish that
+`arg` or `base_addr` has been cleared, nor does LispBM extension registration
+provide a matching unregister/quiescence guarantee.
+
+Consequently, an SDK that admits late stateful LispBM callbacks may need two
+different lifetimes:
+
+- package state `T`, which can be dropped during stop; and
+- a small runtime admission header/backlink, which remains as a `STOPPED`
+  tombstone so a late callback can reject access without touching `T`.
+
+Freeing that header merely because package state has stopped can turn the first
+late-callback phase check into a use-after-free. Before calling retained memory
+a leak, inspect the exact `get_arg` path, callback-unregistration guarantee,
+regression tests naming late callbacks or tombstones, and the commit that
+introduced the lifetime split. Thread/custom-data examples are only comparable
+when they quiesce or unregister every accessor before freeing state.
+
+### `false` from init is a loader failure, not a warning
+
+The native init callback's boolean is the VESC loader success contract: `false`
+produces `Library init failed`. A package whose registrations are intentionally
+optional may therefore need best-effort initialization: attempt each optional
+hook/registration, preserve diagnostics, and return `true` so VESC can continue
+loading/probing the package. Do not convert optional setup into short-circuiting
+required setup without checking the package's accepted policy and
+hardware-known-good history.
+
+This does not mean every package must ignore every initialization error. It
+means three questions must remain separate: whether a branch introduced the
+behavior, what VESC does with the boolean, and what the package's accepted
+hardware contract requires.
+
+### Panic ownership is a project contract
+
+The general Rust convention that a final binary owns `#[panic_handler]` does
+not by itself prove an SDK-owned handler is a bug. Some VESC package SDKs
+deliberately own one minimal, non-returning ARM panic policy because packages
+have no unwind/recovery boundary and customization is out of scope. Before
+moving or duplicating a handler, search the project's accepted decisions and
+the introducing commit. Classify this as project-scoped policy, not a universal
+VESC ABI requirement.
+
+For loader and runtime reviews, use authorities in this order:
+
+1. accepted project decisions and hardware-known-good invariants;
+2. exact VESC implementation and ABI behavior;
+3. regression tests and introducing commit history;
+4. branch provenance against `main`;
+5. general Rust conventions and analogous examples.
+
+For each proposed finding, identify the introducing commit, read tests that name
+the behavior, search accepted decisions, verify the exact VESC contract, and
+classify it as branch-introduced, pre-existing, or intentional before editing
+code.
+
 ## refloat C path
 
 Catalog: `catalog/refloat/native-lib.yaml`, `catalog/refloat/build-flow.yaml`.
