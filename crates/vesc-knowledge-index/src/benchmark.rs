@@ -138,6 +138,9 @@ pub struct SemanticBenchmarkReport {
     pub intra_threads: Option<usize>,
     #[serde(default)]
     pub length_bucketed: bool,
+    /// Effective model input window used for this run.
+    #[serde(default)]
+    pub effective_max_length: Option<usize>,
     #[serde(default)]
     pub cold_initialization: Option<TimingDistribution>,
     pub warmup_iterations: usize,
@@ -376,6 +379,12 @@ impl SemanticBenchmarkReport {
             )
             .expect("write to String");
         }
+        writeln!(
+            markdown,
+            "- Effective max length: `{:?}`",
+            self.effective_max_length
+        )
+        .expect("write to String");
         writeln!(markdown).expect("write to String");
         writeln!(
             markdown,
@@ -586,6 +595,7 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
             outer_batch_size: provider.embedding_batch_size().get(),
             intra_threads: None,
             length_bucketed: false,
+            effective_max_length: None,
             cold_initialization: None,
             warmup_iterations,
             repetitions,

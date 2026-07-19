@@ -898,6 +898,13 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     });
     let length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    let max_length = argument_value(args, "--semantic-max-length").map(|value| {
+        let length = value
+            .parse::<usize>()
+            .expect("--semantic-max-length must be a positive integer");
+        assert!(length > 0, "--semantic-max-length must be positive");
+        length
+    });
     let lossless_windowing = args.iter().any(|arg| arg == "--semantic-lossless-windows");
     let execution_provider = semantic_execution_provider(args);
     let graph_optimization_level = semantic_graph_optimization_level(args);
@@ -1027,10 +1034,18 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
             candidate.name
         );
         let initialization_started = std::time::Instant::now();
+        let mut profile = semantic_profile(&candidate.model_id);
+        if let Some(max_length) = max_length {
+            assert!(
+                max_length <= profile.max_length,
+                "--semantic-max-length cannot exceed the model profile maximum"
+            );
+            profile.max_length = max_length;
+        }
         let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
             &model_dir,
             Some(batch_size),
-            semantic_profile(&candidate.model_id),
+            profile,
             intra_threads,
             execution_provider,
             graph_optimization_level,
@@ -1056,6 +1071,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         benchmark.cold_initialization = Some(initialization);
         benchmark.intra_threads = intra_threads;
         benchmark.length_bucketed = length_bucketed;
+        benchmark.effective_max_length = Some(provider.max_length());
         benchmark.token_statistics = Some(
             provider
                 .token_statistics_iter(chunks.iter().map(embedding_text))

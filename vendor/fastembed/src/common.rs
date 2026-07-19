@@ -228,6 +228,12 @@ pub(crate) fn init_session_builder_with_optimization(
         .map_err(builder_error)?
         .with_intra_threads(threads)
         .map_err(builder_error)?
+        // Sequential graph execution keeps long-context models from retaining
+        // parallel execution arenas across the many bounded windows used by
+        // lossless embedding.  This is particularly important for Jina v2,
+        // whose 8k-token graph otherwise grows resident memory until OOM.
+        .with_parallel_execution(false)
+        .map_err(builder_error)?
         // Dynamic sequence lengths otherwise retain an ORT memory pattern for
         // every shape encountered during a long embedding run.
         .with_memory_pattern(false)
