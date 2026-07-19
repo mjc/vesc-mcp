@@ -1,4 +1,5 @@
-//! Content-addressed ingestion of every tagged repository release.
+//! Content-addressed ingestion of every tagged repository release, with a
+//! `release_*` remote-branch fallback for repositories that do not use tags.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
@@ -350,7 +351,7 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
         }
         let mut snapshot = BTreeMap::new();
         for document in report.documents {
-            for chunk in history_chunks(&document, source.chunking)? {
+            for chunk in chunk_document(&document, source.chunking)? {
                 let input = embedding_text(&chunk);
                 let vector_key = ContentDigest::of(input.as_bytes());
                 contents
@@ -448,32 +449,6 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
     })
 }
 
-fn history_chunks(
-    document: &NormalizedDocument,
-    config: ChunkingConfig,
-) -> Result<Vec<super::Chunk>, ChunkingError> {
-    match chunk_document(document, config) {
-        Ok(chunks) => Ok(chunks),
-        Err(
-            ChunkingError::OversizedCodeBlock { .. }
-            | ChunkingError::OversizedStructuredRecord { .. },
-        ) => {
-            // Historical fidelity wins here: the lossless semantic provider can
-            // window one large structured record without dropping its contents.
-            let length = document.content.chars().count().max(1);
-            chunk_document(
-                document,
-                ChunkingConfig {
-                    target_chars: length,
-                    hard_max_chars: length,
-                    ..config
-                },
-            )
-        }
-        Err(error) => Err(error),
-    }
-}
-
 fn tagged_releases(repo: &gix::Repository) -> Result<Vec<RawRelease>, HistoryError> {
     let refs = repo
         .references()
@@ -482,9 +457,33 @@ fn tagged_releases(repo: &gix::Repository) -> Result<Vec<RawRelease>, HistoryErr
         .map_err(|error| HistoryError::Git(error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| HistoryError::Git(error.to_string()))?;
+    let mut named_refs = refs
+        .into_iter()
+        .map(|reference| {
+            let name = String::from_utf8_lossy(reference.name().shorten().as_ref()).into_owned();
+            (reference, name)
+        })
+        .collect::<Vec<_>>();
+    if named_refs.is_empty() {
+        let references = repo
+            .references()
+            .map_err(|error| HistoryError::Git(error.to_string()))?;
+        let refs = references
+            .remote_branches()
+            .map_err(|error| HistoryError::Git(error.to_string()))?;
+        for reference in refs {
+            let reference = reference.map_err(|error| HistoryError::Git(error.to_string()))?;
+            let short = String::from_utf8_lossy(reference.name().shorten().as_ref()).into_owned();
+            let branch = short
+                .rsplit_once('/')
+                .map_or(short.as_str(), |(_, name)| name);
+            if branch.starts_with("release_") {
+                named_refs.push((reference, branch.to_owned()));
+            }
+        }
+    }
     let mut grouped = BTreeMap::<String, (i64, Vec<String>, Vec<Revision>)>::new();
-    for mut reference in refs {
-        let tag = String::from_utf8_lossy(reference.name().shorten().as_ref()).into_owned();
+    for (mut reference, tag) in named_refs {
         let commit = reference
             .peel_to_commit()
             .map_err(|error| HistoryError::Git(error.to_string()))?;

@@ -14,7 +14,6 @@ pub struct ChunkingConfig {
     pub hard_max_chars: usize,
     pub minimum_chars: usize,
     pub overlap_chars: usize,
-    pub max_chunks_per_document: usize,
 }
 
 impl Default for ChunkingConfig {
@@ -24,7 +23,6 @@ impl Default for ChunkingConfig {
             hard_max_chars: 2_400,
             minimum_chars: 120,
             overlap_chars: 0,
-            max_chunks_per_document: 1_000,
         }
     }
 }
@@ -34,12 +32,6 @@ impl Default for ChunkingConfig {
 pub enum ChunkingError {
     #[error("chunk target and hard maximum must be positive and ordered")]
     InvalidConfig,
-    #[error("document produced more than {max} chunks")]
-    TooManyChunks { max: usize },
-    #[error("fenced code block exceeds hard maximum of {max} characters")]
-    OversizedCodeBlock { max: usize },
-    #[error("structured record exceeds hard maximum of {max} characters")]
-    OversizedStructuredRecord { max: usize },
     #[error(transparent)]
     Contract(#[from] CorpusError),
 }
@@ -51,9 +43,8 @@ pub enum ChunkingError {
 ///
 /// # Errors
 ///
-/// Returns [`ChunkingError`] when the configuration is invalid, a code block is
-/// too large, the chunk count is bounded out, or a generated chunk violates a
-/// corpus contract.
+/// Returns [`ChunkingError`] when the configuration is invalid or a generated
+/// chunk violates a corpus contract.
 pub fn chunk_markdown(
     document: &NormalizedDocument,
     config: ChunkingConfig,
@@ -66,7 +57,7 @@ pub fn chunk_markdown(
         if text.trim().is_empty() {
             continue;
         }
-        let pieces = split_block(text, block.code, config)?;
+        let pieces = split_block(text, block.code, config);
         let mut offset = block.start;
         for piece in pieces {
             let piece_start = offset;
@@ -75,19 +66,15 @@ pub fn chunk_markdown(
             let span = Some(source_span(&document.content, piece_start, piece_end));
             let chunk = Chunk::from_document(
                 document,
-                u32::try_from(chunks.len()).map_err(|_| ChunkingError::TooManyChunks {
-                    max: config.max_chunks_per_document,
+                u32::try_from(chunks.len()).map_err(|_| CorpusError::InvalidValue {
+                    kind: "chunk ordinal",
+                    value: chunks.len().to_string(),
                 })?,
                 piece,
                 block.heading_path.clone(),
                 span,
             )?;
             chunks.push(chunk);
-            if chunks.len() > config.max_chunks_per_document {
-                return Err(ChunkingError::TooManyChunks {
-                    max: config.max_chunks_per_document,
-                });
-            }
         }
     }
     for index in 0..chunks.len().saturating_sub(1) {
@@ -128,7 +115,7 @@ pub fn chunk_document(
                 document.source_span,
             )?]);
         }
-        let pieces = split_block(&document.content, false, config)?;
+        let pieces = split_block(&document.content, false, config);
         let mut chunks = Vec::with_capacity(pieces.len());
         let mut search_start = 0;
         for (ordinal, piece) in pieces.into_iter().enumerate() {
@@ -141,25 +128,16 @@ pub fn chunk_document(
             let start = search_start + relative_start;
             let end = start + piece.len();
             search_start = end;
-            if piece.chars().count() > config.hard_max_chars {
-                return Err(ChunkingError::OversizedStructuredRecord {
-                    max: config.hard_max_chars,
-                });
-            }
             chunks.push(Chunk::from_document(
                 document,
-                u32::try_from(ordinal).map_err(|_| ChunkingError::TooManyChunks {
-                    max: config.max_chunks_per_document,
+                u32::try_from(ordinal).map_err(|_| CorpusError::InvalidValue {
+                    kind: "chunk ordinal",
+                    value: ordinal.to_string(),
                 })?,
                 piece,
                 heading_path.clone(),
                 Some(source_span(&document.content, start, end)),
             )?);
-            if chunks.len() > config.max_chunks_per_document {
-                return Err(ChunkingError::TooManyChunks {
-                    max: config.max_chunks_per_document,
-                });
-            }
         }
         for index in 0..chunks.len().saturating_sub(1) {
             let (left, right) = chunks.split_at_mut(index + 1);
@@ -264,22 +242,13 @@ fn push_block(
     }
 }
 
-fn split_block(
-    text: &str,
-    code: bool,
-    config: ChunkingConfig,
-) -> Result<Vec<String>, ChunkingError> {
+fn split_block(text: &str, code: bool, config: ChunkingConfig) -> Vec<String> {
     let char_count = text.chars().count();
     if code {
-        if char_count > config.hard_max_chars {
-            return Err(ChunkingError::OversizedCodeBlock {
-                max: config.hard_max_chars,
-            });
-        }
-        return Ok(vec![text.to_owned()]);
+        return vec![text.to_owned()];
     }
     if char_count <= config.target_chars {
-        return Ok(vec![text.to_owned()]);
+        return vec![text.to_owned()];
     }
 
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -310,7 +279,7 @@ fn split_block(
         }
         start_char = end_char;
     }
-    Ok(pieces)
+    pieces
 }
 
 fn source_span(source: &str, start: usize, end: usize) -> SourceSpan {
@@ -334,7 +303,6 @@ const fn validate_config(config: ChunkingConfig) -> Result<(), ChunkingError> {
         || config.hard_max_chars < config.target_chars
         || config.minimum_chars > config.target_chars
         || config.overlap_chars > config.target_chars
-        || config.max_chunks_per_document == 0
     {
         Err(ChunkingError::InvalidConfig)
     } else {

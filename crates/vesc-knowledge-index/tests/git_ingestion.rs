@@ -346,7 +346,7 @@ fn exact_commits_produce_revision_correct_content_and_ids() {
 }
 
 #[test]
-fn configured_path_and_snapshot_limits_are_enforced() {
+fn configured_path_filters_are_enforced() {
     let (_root, _work, bare, revision) = bare_fixture();
     let repo = RepositoryId::try_from("vesc").expect("repository");
     let revision = Revision::try_from(revision.as_str()).expect("revision");
@@ -370,32 +370,6 @@ fn configured_path_and_snapshot_limits_are_enforced() {
             .documents
             .is_empty()
     );
-
-    let no_files = GitCorpusPolicy {
-        max_files: 0,
-        ..GitCorpusPolicy::default()
-    };
-    assert!(matches!(
-        ingest(&no_files),
-        Err(GitIngestionError::FileLimit { limit: 0 })
-    ));
-
-    let one_byte = GitCorpusPolicy {
-        max_total_bytes: 1,
-        ..GitCorpusPolicy::default()
-    };
-    assert!(matches!(
-        ingest(&one_byte),
-        Err(GitIngestionError::ByteLimit { limit: 1 })
-    ));
-
-    let tiny_files = GitCorpusPolicy {
-        max_file_bytes: 1,
-        ..GitCorpusPolicy::default()
-    };
-    let bounded = ingest(&tiny_files).expect("per-file rejection");
-    assert!(bounded.documents.is_empty());
-    assert!(bounded.rejected.iter().any(|item| item.code == "oversized"));
 
     for prefix in ["", "../imu", "/imu", "imu/../docs"] {
         let escaped = GitCorpusPolicy {

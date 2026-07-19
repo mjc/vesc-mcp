@@ -481,7 +481,6 @@ fn run_build_default(args: &[String]) {
             .unwrap_or_else(|| panic!("--{name}-revision is required"));
         let mut policy = GitCorpusPolicy::default();
         policy.extensions.remove("md");
-        policy.max_file_bytes = 512 * 1024;
         GitCorpusSource {
             repository_path: PathBuf::from(path),
             repository_id: RepositoryId::try_from(name).expect("valid repository identifier"),

@@ -32,16 +32,13 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 /// Version of the reviewed default code-corpus path and resource policy.
 pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v1";
 
-/// Reviewed path and resource bounds for one immutable repository snapshot.
+/// Reviewed path and media-type selection for one immutable repository snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCorpusPolicy {
     pub include_prefixes: Vec<String>,
     pub exclude_prefixes: Vec<String>,
     pub extensions: BTreeSet<String>,
     pub filenames: BTreeSet<String>,
-    pub max_file_bytes: u64,
-    pub max_files: usize,
-    pub max_total_bytes: u64,
 }
 
 impl Default for GitCorpusPolicy {
@@ -51,9 +48,6 @@ impl Default for GitCorpusPolicy {
             exclude_prefixes: DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect(),
             extensions: DEFAULT_EXTENSIONS.iter().map(ToString::to_string).collect(),
             filenames: DEFAULT_FILENAMES.iter().map(ToString::to_string).collect(),
-            max_file_bytes: 4 * 1024 * 1024,
-            max_files: 20_000,
-            max_total_bytes: 128 * 1024 * 1024,
         }
     }
 }
@@ -81,10 +75,6 @@ pub enum GitIngestionError {
     ReadTree(String),
     #[error("invalid Git corpus policy: {0}")]
     InvalidPolicy(String),
-    #[error("Git corpus exceeds {limit} file limit")]
-    FileLimit { limit: usize },
-    #[error("Git corpus exceeds {limit} byte limit")]
-    ByteLimit { limit: u64 },
     #[error(transparent)]
     Contract(#[from] CorpusError),
 }
@@ -252,19 +242,7 @@ fn ingest_git_commit_inner(
     };
     let candidate_sort_started = Instant::now();
     candidates.sort_by(|left, right| left.path.cmp(&right.path));
-    let total_bytes = candidates.iter().try_fold(0_u64, |total, candidate| {
-        total
-            .checked_add(candidate.size)
-            .ok_or(GitIngestionError::ByteLimit {
-                limit: policy.max_total_bytes,
-            })
-    })?;
     observations.candidate_sort_us = elapsed_us(candidate_sort_started);
-    if total_bytes > policy.max_total_bytes {
-        return Err(GitIngestionError::ByteLimit {
-            limit: policy.max_total_bytes,
-        });
-    }
 
     let mut report = IngestionReport {
         documents: Vec::with_capacity(candidates.len()),
@@ -452,7 +430,7 @@ fn collect_tree(
                 }
             }
             gix::object::tree::EntryKind::Blob | gix::object::tree::EntryKind::BlobExecutable => {
-                count_file(visited_files, policy.max_files)?;
+                *visited_files = visited_files.saturating_add(1);
                 if !is_selected(&path, policy) {
                     rejected.push(source_rejection(
                         &path,
@@ -461,26 +439,19 @@ fn collect_tree(
                     ));
                     continue;
                 }
-                let header = entry
+                let size = entry
                     .id()
                     .header()
-                    .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
-                if header.size() > policy.max_file_bytes {
-                    rejected.push(source_rejection(
-                        &path,
-                        "oversized",
-                        "Git blob exceeds its per-file byte bound",
-                    ));
-                    continue;
-                }
+                    .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?
+                    .size();
                 candidates.push(Candidate {
                     path,
                     id: entry.object_id(),
-                    size: header.size(),
+                    size,
                 });
             }
             gix::object::tree::EntryKind::Link | gix::object::tree::EntryKind::Commit => {
-                count_file(visited_files, policy.max_files)?;
+                *visited_files = visited_files.saturating_add(1);
                 rejected.push(source_rejection(
                     &path,
                     "unsupported",
@@ -490,15 +461,6 @@ fn collect_tree(
         }
     }
     Ok(())
-}
-
-const fn count_file(visited: &mut usize, limit: usize) -> Result<(), GitIngestionError> {
-    *visited = visited.saturating_add(1);
-    if *visited > limit {
-        Err(GitIngestionError::FileLimit { limit })
-    } else {
-        Ok(())
-    }
 }
 
 fn is_selected(path: &str, policy: &GitCorpusPolicy) -> bool {

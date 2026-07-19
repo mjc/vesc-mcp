@@ -138,6 +138,45 @@ fn tagged_history_preserves_aliases_and_version_change_evidence() {
     );
 }
 
+#[test]
+fn history_uses_remote_release_branches_when_repository_has_no_tags() {
+    let root = tempdir().expect("fixture root");
+    let work = root.path().join("work");
+    fs::create_dir(&work).expect("worktree");
+    git(&work, &["init", "-q"]);
+    git(&work, &["config", "user.email", "fixture@example.invalid"]);
+    git(&work, &["config", "user.name", "Fixture"]);
+
+    fs::write(work.join("release.c"), "void release_one(void) {}\n").expect("v1 source");
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "release 1"]);
+    git(
+        &work,
+        &["update-ref", "refs/remotes/origin/release_1_00", "HEAD"],
+    );
+
+    fs::write(work.join("release.c"), "void release_two(void) {}\n").expect("v2 source");
+    git(&work, &["commit", "-qam", "release 2"]);
+    git(
+        &work,
+        &["update-ref", "refs/remotes/origin/release_2_00", "HEAD"],
+    );
+
+    let mut source = source(work);
+    source.chunking = ChunkingConfig {
+        target_chars: 10,
+        hard_max_chars: 10,
+        minimum_chars: 1,
+        overlap_chars: 0,
+    };
+    let history = ingest_tagged_history(&source).expect("release branch history");
+
+    assert_eq!(history.observations.tag_count, 2);
+    assert_eq!(history.releases.len(), 2);
+    assert!(history.release_for_tag("release_1_00").is_some());
+    assert!(history.release_for_tag("release_2_00").is_some());
+}
+
 #[derive(Default)]
 struct CountingProvider {
     inputs: usize,
