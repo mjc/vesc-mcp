@@ -11,6 +11,7 @@ use fastembed::{
     RerankerModelInfo, SparseInitOptions, SparseTextEmbedding, TextEmbedding, TextRerank,
     TokenizerFiles, UserDefinedEmbeddingModel, UserDefinedRerankingModel,
 };
+use tokenizers::PaddingStrategy;
 
 /// A small epsilon value for floating point comparisons.
 const EPS: f32 = 1e-2;
@@ -619,4 +620,21 @@ fn clip_vit_b32_deterministic_across_calls() {
             );
         }
     }
+}
+
+#[test]
+fn fixed_padding_uses_the_requested_sequence_length() {
+    let mut model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
+        .expect("create model");
+
+    model.set_fixed_padding(32);
+
+    assert!(matches!(
+        model.tokenizer.get_padding().map(|padding| &padding.strategy),
+        Some(PaddingStrategy::Fixed(32))
+    ));
+    assert_eq!(
+        model.tokenizer.encode("short input", true).unwrap().len(),
+        32
+    );
 }
