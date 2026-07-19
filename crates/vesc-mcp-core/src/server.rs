@@ -432,7 +432,10 @@ impl ServerHandler for VescMcpService {
                 .build(),
         )
         .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
-        .with_instructions(server_instructions(self.state.feedback_writes_enabled))
+        .with_instructions(server_instructions(
+            self.state.feedback.is_some(),
+            self.state.feedback_writes_enabled,
+        ))
     }
 }
 
@@ -630,7 +633,7 @@ impl ServerHandler for HttpMcpService {
     }
 
     fn get_info(&self) -> ServerInfo {
-        http_server_info(self.feedback_writes_enabled)
+        http_server_info(self.state.feedback.is_some(), self.feedback_writes_enabled)
     }
 }
 
@@ -690,7 +693,7 @@ fn replay_report_json(report: &crate::tools::search_knowledge::CorrectionReplayR
         .expect("CorrectionReplayReport contains only infallibly serializable fields")
 }
 
-fn http_server_info(feedback_writes_enabled: bool) -> ServerInfo {
+fn http_server_info(feedback_available: bool, feedback_writes_enabled: bool) -> ServerInfo {
     ServerInfo::new(
         ServerCapabilities::builder()
             .enable_tools()
@@ -699,14 +702,22 @@ fn http_server_info(feedback_writes_enabled: bool) -> ServerInfo {
             .build(),
     )
     .with_server_info(Implementation::new("vesc-mcp", "0.1.0"))
-    .with_instructions(server_instructions(feedback_writes_enabled))
+    .with_instructions(server_instructions(
+        feedback_available,
+        feedback_writes_enabled,
+    ))
 }
 
-const fn server_instructions(feedback_writes_enabled: bool) -> &'static str {
+const fn server_instructions(
+    feedback_available: bool,
+    feedback_writes_enabled: bool,
+) -> &'static str {
     if feedback_writes_enabled {
         "VESC firmware/package knowledge service with durable feedback. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
-    } else {
+    } else if feedback_available {
         "VESC firmware/package knowledge service. Search before answering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
+    } else {
+        "VESC firmware/package knowledge service. Search before answering. Feedback storage is not configured on this connection, so learned advisories and correction records are unavailable. If evidence is incomplete or conflicting, say so and run a narrower search or read the decisive resources instead of guessing."
     }
 }
 
@@ -835,6 +846,17 @@ mod tests {
     }
 
     #[test]
+    fn instructions_without_feedback_do_not_advertise_advisories() {
+        let instructions = VescMcpService::new()
+            .get_info()
+            .instructions
+            .expect("server instructions");
+
+        assert!(!instructions.contains("Learned advisories are returned"));
+        assert!(instructions.contains("Feedback storage is not configured"));
+    }
+
+    #[test]
     fn configured_feedback_exposes_write_tools_and_resource_template() {
         let temp = tempfile::tempdir().expect("tempdir");
         let service = VescMcpService::with_feedback_store(temp.path(), true);
@@ -880,6 +902,12 @@ mod tests {
                 .iter()
                 .any(|name| name == "correct_vesc_knowledge")
         );
+        let instructions = read_only
+            .get_info()
+            .instructions
+            .expect("read-only feedback instructions");
+        assert!(instructions.contains("Learned advisories are returned"));
+        assert!(instructions.contains("Feedback writes are disabled"));
         let authenticated = service.http_service_with_authenticated_writes(true);
         assert!(
             authenticated
