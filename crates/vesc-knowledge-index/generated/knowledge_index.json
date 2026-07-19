@@ -1,12 +1,12 @@
 [
   {
-    "id": "priority.bldc-foc-audio-605",
-    "name": "bldc_foc_audio_605",
+    "id": "priority.vesc-foc-audio-605",
+    "name": "vesc_foc_audio_605",
     "category": "firmware_api",
     "summary": "FOC audio APIs added in firmware 6.05",
     "source": {
       "repo": "catalog",
-      "path": "catalog/bldc/vesc_c_if.yaml#foc_audio_605",
+      "path": "catalog/vesc/vesc_c_if.yaml#foc_audio_605",
       "line": 1
     },
     "keywords": [
@@ -16,68 +16,67 @@
       "FOC",
       "added",
       "audio",
-      "bldc",
       "firmware",
       "foc",
-      "in"
+      "in",
+      "vesc"
     ]
   },
   {
-    "id": "priority.bldc-native-lib-macros",
-    "name": "bldc_native_lib_macros",
+    "id": "priority.vesc-native-lib-macros",
+    "name": "vesc_native_lib_macros",
     "category": "firmware_api",
     "summary": "HEADER, INIT_FUN, VESC_IF loader contract",
     "source": {
       "repo": "catalog",
-      "path": "catalog/bldc/native-lib-macros.yaml",
+      "path": "catalog/vesc/native-lib-macros.yaml",
       "line": 1
     },
     "keywords": [
       "HEADER",
       "INIT_FUN",
       "VESC_IF",
-      "bldc",
       "contract",
       "lib",
       "loader",
       "macros",
-      "native"
+      "native",
+      "vesc"
     ]
   },
   {
-    "id": "priority.bldc-nvm",
-    "name": "bldc_nvm",
+    "id": "priority.vesc-nvm",
+    "name": "vesc_nvm",
     "category": "firmware_api",
     "summary": "read_nvm / write_nvm / wipe_nvm for package persistence",
     "source": {
       "repo": "catalog",
-      "path": "catalog/bldc/nvm.yaml",
+      "path": "catalog/vesc/nvm.yaml",
       "line": 1
     },
     "keywords": [
-      "bldc",
       "for",
       "nvm",
       "package",
       "persistence",
       "read_nvm",
+      "vesc",
       "wipe_nvm",
       "write_nvm"
     ]
   },
   {
-    "id": "priority.bldc-vesc-c-if-lbm",
-    "name": "bldc_vesc_c_if_lbm",
+    "id": "priority.vesc-vesc-c-if-lbm",
+    "name": "vesc_vesc_c_if_lbm",
     "category": "firmware_api",
     "summary": "lbm_add_extension and vesc_c_if function groups",
     "source": {
       "repo": "catalog",
-      "path": "catalog/bldc/vesc_c_if.yaml",
+      "path": "catalog/vesc/vesc_c_if.yaml",
       "line": 1
     },
     "keywords": [
       "and",
-      "bldc",
       "c",
       "function",
       "groups",
@@ -94,7 +93,7 @@
     "category": "firmware_api",
     "summary": "send_app_data / set_app_data_handler back refloat COMM_CUSTOM_APP_DATA commands (`commands_process_packet`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 490
     },
@@ -110,7 +109,7 @@
     "category": "firmware_api",
     "summary": "`free` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -126,7 +125,7 @@
     "category": "firmware_api",
     "summary": "`get_arg` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -142,7 +141,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_add_extension`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -158,7 +157,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_add_symbol_const`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -174,7 +173,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_block_ctx_from_extension`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -190,7 +189,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_car`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -206,7 +205,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_cdr`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -222,7 +221,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_cons`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -238,7 +237,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_continue_eval`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -254,7 +253,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_create_byte_array`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -270,7 +269,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_dec_as_float`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -286,7 +285,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_dec_as_i32`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -302,7 +301,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_dec_as_u32`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -318,7 +317,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_dec_char`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -334,7 +333,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_dec_str`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -350,7 +349,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_dec_sym`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -366,7 +365,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_char`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -382,7 +381,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_float`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -398,7 +397,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_i`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -414,7 +413,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_i32`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -430,7 +429,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_sym`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -446,7 +445,7 @@
     "category": "firmware_api",
     "summary": "`lbm_enc_sym_eerror` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -462,7 +461,7 @@
     "category": "firmware_api",
     "summary": "`lbm_enc_sym_merror` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -478,7 +477,7 @@
     "category": "firmware_api",
     "summary": "`lbm_enc_sym_nil` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -494,7 +493,7 @@
     "category": "firmware_api",
     "summary": "`lbm_enc_sym_terror` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -510,7 +509,7 @@
     "category": "firmware_api",
     "summary": "`lbm_enc_sym_true` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -526,7 +525,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_u`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -542,7 +541,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_enc_u32`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -558,7 +557,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_eval_is_paused`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -574,7 +573,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_get_current_cid`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -590,7 +589,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_get_symbol_by_name`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -606,7 +605,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_is_byte_array`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -622,7 +621,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_is_char`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -638,7 +637,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_is_cons`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -654,7 +653,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_is_number`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -670,7 +669,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_is_symbol`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -686,7 +685,7 @@
     "category": "firmware_api",
     "summary": "`lbm_is_symbol_nil` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -702,7 +701,7 @@
     "category": "firmware_api",
     "summary": "`lbm_is_symbol_true` in vesc_c_if `lbm_symbols` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 365
     },
@@ -718,7 +717,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_list_destructive_reverse`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -734,7 +733,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_pause_eval_with_gc`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -750,7 +749,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_send_message`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -766,7 +765,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_set_error_reason`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -782,7 +781,7 @@
     "category": "firmware_api",
     "summary": "Primary extension registration surface for native packages (`lbm_unblock_ctx`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 324
     },
@@ -798,7 +797,7 @@
     "category": "firmware_api",
     "summary": "`malloc` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -814,7 +813,7 @@
     "category": "firmware_api",
     "summary": "`printf` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -830,7 +829,7 @@
     "category": "firmware_api",
     "summary": "`read_nvm` in vesc_c_if `nvm` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 610
     },
@@ -846,7 +845,7 @@
     "category": "firmware_api",
     "summary": "`request_terminate` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -862,7 +861,7 @@
     "category": "firmware_api",
     "summary": "send_app_data / set_app_data_handler back refloat COMM_CUSTOM_APP_DATA commands (`send_app_data`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 490
     },
@@ -878,7 +877,7 @@
     "category": "firmware_api",
     "summary": "send_app_data / set_app_data_handler back refloat COMM_CUSTOM_APP_DATA commands (`set_app_data_handler`)",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 490
     },
@@ -894,7 +893,7 @@
     "category": "firmware_api",
     "summary": "`should_terminate` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -910,7 +909,7 @@
     "category": "firmware_api",
     "summary": "`sleep_ms` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -926,7 +925,7 @@
     "category": "firmware_api",
     "summary": "`sleep_us` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -942,7 +941,7 @@
     "category": "firmware_api",
     "summary": "`spawn` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -958,7 +957,7 @@
     "category": "firmware_api",
     "summary": "`system_time` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -974,7 +973,7 @@
     "category": "firmware_api",
     "summary": "`ts_to_age_s` in vesc_c_if `os` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 374
     },
@@ -990,7 +989,7 @@
     "category": "firmware_api",
     "summary": "`wipe_nvm` in vesc_c_if `nvm` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 610
     },
@@ -1006,7 +1005,7 @@
     "category": "firmware_api",
     "summary": "`write_nvm` in vesc_c_if `nvm` group",
     "source": {
-      "repo": "bldc",
+      "repo": "vesc",
       "path": "lispBM/c_libs/vesc_c_if.h",
       "line": 610
     },

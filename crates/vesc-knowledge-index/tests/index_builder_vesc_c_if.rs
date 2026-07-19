@@ -29,7 +29,7 @@ fn index_builder_parses_catalog_vesc_c_if_groups() {
         .expect("lbm_add_extension entry");
     assert_eq!(add_ext.id, "vesc_c_if.lbm_add_extension");
     assert_eq!(add_ext.category, Category::FirmwareApi);
-    assert_eq!(add_ext.source.repo, "bldc");
+    assert_eq!(add_ext.source.repo, "vesc");
     assert_eq!(add_ext.source.path, "lispBM/c_libs/vesc_c_if.h");
     assert_eq!(add_ext.source.line, 324);
     assert!(add_ext.summary.contains("Primary extension registration"));
@@ -69,12 +69,12 @@ fn index_builder_parses_catalog_vesc_c_if_groups() {
 }
 
 #[test]
-fn index_builder_validates_header_when_bldc_root_set() {
-    let Some(bldc_root) = std::env::var("VESC_BLDC_ROOT").ok().map(PathBuf::from) else {
-        eprintln!("skip: VESC_BLDC_ROOT unset");
+fn index_builder_validates_header_when_vesc_root_set() {
+    let Some(vesc_root) = std::env::var("VESC_ROOT").ok().map(PathBuf::from) else {
+        eprintln!("skip: VESC_ROOT unset");
         return;
     };
 
-    IndexBuilder::parse_vesc_c_if_groups_validated(&repo_catalog_root(), Some(&bldc_root))
+    IndexBuilder::parse_vesc_c_if_groups_validated(&repo_catalog_root(), Some(&vesc_root))
         .expect("validated parse against upstream header");
 }

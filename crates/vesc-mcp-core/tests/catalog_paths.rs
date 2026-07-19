@@ -28,7 +28,7 @@ fn catalog_schema_files_parse() {
 }
 
 #[test]
-#[ignore = "requires VESC_REFLOAT_ROOT, VESC_BLDC_ROOT, VESC_POC_ROOT checkouts"]
+#[ignore = "requires VESC_REFLOAT_ROOT, VESC_ROOT, VESC_POC_ROOT checkouts"]
 fn catalog_paths_exist_when_env_set() {
     let roots = RepoRoots::from_env();
     validate_catalog_paths(&catalog_root(), &roots)

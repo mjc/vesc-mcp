@@ -9,7 +9,7 @@ use crate::workspace::{self, expand_path};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CatalogRepo {
     Refloat,
-    Bldc,
+    Vesc,
     Poc,
     VescTool,
     VescMcp,
@@ -20,7 +20,7 @@ impl CatalogRepo {
     pub const fn env_var(self) -> &'static str {
         match self {
             Self::Refloat => "VESC_REFLOAT_ROOT",
-            Self::Bldc => "VESC_BLDC_ROOT",
+            Self::Vesc => "VESC_ROOT",
             Self::Poc => "VESC_POC_ROOT",
             Self::VescTool => workspace::VESC_VESC_TOOL_ROOT_ENV,
             Self::VescMcp => "VESC_MCP_ROOT",
@@ -31,7 +31,7 @@ impl CatalogRepo {
     pub const fn vendor_subdir(self) -> Option<&'static str> {
         match self {
             Self::Refloat => Some("refloat"),
-            Self::Bldc => Some("bldc"),
+            Self::Vesc => Some("vesc"),
             Self::VescTool => Some("vesc_tool"),
             Self::Poc | Self::VescMcp => None,
         }
@@ -41,7 +41,7 @@ impl CatalogRepo {
     pub const fn sibling_default(self) -> &'static str {
         match self {
             Self::Refloat => "~/projects/refloat",
-            Self::Bldc => "~/projects/bldc",
+            Self::Vesc => "~/projects/vesc",
             Self::Poc => "~/projects/vesc-rust-poc",
             Self::VescTool => "~/projects/vesc_tool",
             Self::VescMcp => ".",
@@ -70,7 +70,7 @@ impl CatalogRepo {
 #[derive(Debug, Clone)]
 pub struct RepoRoots {
     pub refloat: PathBuf,
-    pub bldc: PathBuf,
+    pub vesc: PathBuf,
     pub poc: PathBuf,
     pub vesc_tool: PathBuf,
     pub vesc_mcp: PathBuf,
@@ -82,7 +82,7 @@ impl RepoRoots {
         let config = crate::config::McpConfig::load();
         Self {
             refloat: config.refloat_root.clone(),
-            bldc: config.bldc_root.clone(),
+            vesc: config.vesc_root.clone(),
             poc: config.poc_root.clone(),
             vesc_tool: config.vesc_tool_root.clone(),
             vesc_mcp: CatalogRepo::VescMcp.resolve_root(),
@@ -93,7 +93,7 @@ impl RepoRoots {
     pub fn root_for(&self, repo: CatalogRepo) -> &Path {
         match repo {
             CatalogRepo::Refloat => &self.refloat,
-            CatalogRepo::Bldc => &self.bldc,
+            CatalogRepo::Vesc => &self.vesc,
             CatalogRepo::Poc => &self.poc,
             CatalogRepo::VescTool => &self.vesc_tool,
             CatalogRepo::VescMcp => &self.vesc_mcp,
@@ -107,17 +107,17 @@ mod tests {
 
     #[test]
     fn expand_path_resolves_vendor_relative() {
-        let expanded = expand_path("vendor/bldc");
+        let expanded = expand_path("vendor/vesc");
         if let Some(ws) = workspace::workspace_root() {
-            assert_eq!(expanded, ws.join("vendor/bldc"));
+            assert_eq!(expanded, ws.join("vendor/vesc"));
         }
     }
 
     #[test]
     fn resolve_root_falls_back_to_sibling_when_vendor_missing() {
-        if workspace::vendor_bldc().is_none() {
-            let root = CatalogRepo::Bldc.resolve_root();
-            assert!(root.ends_with("bldc"));
+        if workspace::vendor_vesc().is_none() {
+            let root = CatalogRepo::Vesc.resolve_root();
+            assert!(root.ends_with("vesc"));
         }
     }
 }

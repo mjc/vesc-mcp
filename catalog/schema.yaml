@@ -13,18 +13,18 @@ directory_layout:
     - catalog/refloat/lisp-loader.yaml
     - catalog/refloat/native-lib.yaml
     - catalog/refloat/commands.yaml
-    - catalog/bldc/vesc_c_if.yaml
-    - catalog/bldc/nvm.yaml
-    - catalog/bldc/native-lib-macros.yaml
+    - catalog/vesc/vesc_c_if.yaml
+    - catalog/vesc/nvm.yaml
+    - catalog/vesc/native-lib-macros.yaml
     - catalog/abi/minimal-test-package-abi.yaml
 
 env_vars:
   VESC_REFLOAT_ROOT:
     default: "~/projects/refloat"
     resolves: refloat catalog path entries
-  VESC_BLDC_ROOT:
-    default: "~/projects/bldc"
-    resolves: bldc catalog path entries
+  VESC_ROOT:
+    default: "~/projects/vesc"
+    resolves: vesc catalog path entries
   VESC_POC_ROOT:
     default: "~/projects/vesc-rust-poc"
     resolves: poc_equivalent references
@@ -34,7 +34,7 @@ env_vars:
 
 required_entry_fields:
   id: Unique catalog document id (kebab-case)
-  source_repo: Logical repo name (refloat | bldc | vesc-rust-poc | vesc_tool | vesc-mcp)
+  source_repo: Logical repo name (refloat | vesc | vesc-rust-poc | vesc_tool | vesc-mcp)
   source_repo_env: Environment variable holding checkout root
   version: Schema version integer for the document
 
@@ -62,15 +62,15 @@ catalog_document_types:
     required: [id, transport, public_commands]
 
   vesc_c_if_surface:
-    file_pattern: "catalog/bldc/vesc_c_if.yaml"
+    file_pattern: "catalog/vesc/vesc_c_if.yaml"
     required: [id, header, function_groups]
 
   nvm_api:
-    file_pattern: "catalog/bldc/nvm.yaml"
+    file_pattern: "catalog/vesc/nvm.yaml"
     required: [id, functions]
 
   native_lib_macros:
-    file_pattern: "catalog/bldc/native-lib-macros.yaml"
+    file_pattern: "catalog/vesc/native-lib-macros.yaml"
     required: [id, macros, init_contract]
 
 validation:

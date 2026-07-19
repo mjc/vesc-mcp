@@ -1,9 +1,9 @@
 {
   "schema": 2,
   "suite_id": "vescm-165-v2-full-corpus",
-  "corpus_digest": "sha256:45e55039cc4bd6b3a74edbc605864facfbdb90b9d088cf0c1af7bde560ea632a",
-  "corpus_documents": 2869,
-  "corpus_chunks": 13720,
+  "corpus_digest": "sha256:71342745041784d58f147b1cd99a7743377d3d9e0fa42ad4dab1f0aa280652ab",
+  "corpus_documents": 2875,
+  "corpus_chunks": 16586,
   "queries": [
     {
       "id": "concept-imu-orientation",

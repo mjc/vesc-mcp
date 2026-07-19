@@ -14,7 +14,7 @@ fn legacy_entry_migration_preserves_exact_name_and_id() {
         category: Category::FirmwareApi,
         summary: "Register a native extension".into(),
         source: SourceRef {
-            repo: "bldc".into(),
+            repo: "vesc".into(),
             path: "lispBM/c_libs/vesc_c_if.h".into(),
             line: 42,
         },

@@ -10,7 +10,7 @@ optional native-library ABI.
 |----------|-------|
 | [vescpkg-wire-format.md](vescpkg-wire-format.md) | Byte-level `.vescpkg` spec, `lispData` geometry, failure taxonomy, [golden hex appendix](vescpkg-wire-format.md#appendix--annotated-golden-hex-walkthrough) |
 | [vesc-pkg-lib-abi.md](vesc-pkg-lib-abi.md) | Native loader contract, macros, C vs Rust paths, firmware load sequence |
-| [configuration.md](configuration.md) | Env vars (`VESC_REFLOAT_ROOT`, `VESC_BLDC_ROOT`, `VESC_TOOL_PATH`, …) |
+| [configuration.md](configuration.md) | Env vars (`VESC_REFLOAT_ROOT`, `VESC_ROOT`, `VESC_TOOL_PATH`, …) |
 | [safety.md](safety.md) | Flash/upload gates (default off) |
 
 Related MCP resources: `vesc://catalog/doc/topic/vescpackage_reference`, `vesc://catalog/doc/topic/pkgdesc_dialects`, `vesc://catalog/doc/topic/lisp_imports`, `vesc://catalog/doc/topic/vesc_c_if`.
@@ -184,7 +184,7 @@ tools currently ship; see [safety.md](safety.md).
 
 Each table uses paths and code anchors instead of line numbers so it remains
 valid across upstream revisions. Roots resolve through `$VESC_REFLOAT_ROOT`,
-`$VESC_BLDC_ROOT`, `$VESC_VESC_TOOL_ROOT`, and `$VESC_POC_ROOT`; see
+`$VESC_ROOT`, `$VESC_VESC_TOOL_ROOT`, and `$VESC_POC_ROOT`; see
 [configuration.md](configuration.md).
 
 ### Example A — Refloat production package (authoring → artifact)
@@ -207,27 +207,27 @@ valid across upstream revisions. Roots resolve through `$VESC_REFLOAT_ROOT`,
 | Step | Path | Code anchor | What it proves | Next |
 |------|------|-------------|----------------|------|
 | 1. Header (Refloat) | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/vesc_c_if.h` | `lib_info`, `HEADER`, `INIT_FUN` | Native library entry contract | → link script |
-| 2. Header (bldc canonical) | `$VESC_BLDC_ROOT/lispBM/c_libs/vesc_c_if.h` | same macros | Firmware source of truth | → compile |
+| 2. Header (vesc canonical) | `$VESC_ROOT/lispBM/c_libs/vesc_c_if.h` | same macros | Firmware source of truth | → compile |
 | 3. Link script | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/link.ld` | `.program_ptr`, `.init_fun` | Entry sections are placed at memory start | → flags |
 | 4. Compile flags | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | `IS_VESC_LIB`, `--undefined=init` | Cortex-M native-library build settings | → bin output |
 | 5. Binary output | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/rules.mk` | `objcopy`, `conv.py` | Binary and optional Lisp representations | → import or conversion path |
 | 6. Converter | `$VESC_REFLOAT_ROOT/vesc_pkg_lib/conv.py` | Lisp `def` emission | Alternate byte-array embedding | Contrast: Refloat defaults to `.bin` import |
 
-### Example C — bldc firmware runtime (`load-native-lib`)
+### Example C — vesc firmware runtime (`load-native-lib`)
 
 | Step | Path | Code anchor | What it proves | Next |
 |------|------|-------------|----------------|------|
-| 1. Register extension | `$VESC_BLDC_ROOT/lispBM/lispif_vesc_extensions.c` | `load-native-lib`, `unload-native-lib` | Lisp entry points are registered | → entry |
-| 2. Entry | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `ext_load_native_lib` | One byte-array argument enters the loader | → CIF table |
-| 3. CIF table | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `cif.cif` | First load fills the firmware interface table | → load sequence |
-| 4. Load sequence | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `array->data`, `addr += 4`, `addr \|= 1` | Skip program pointer, set Thumb bit, call init | → result |
-| 5. Result | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `SYM_TRUE`, `Library init failed` | Loader success/error contract | → unload |
-| 6. Unload | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `stop_fun` | Library cleanup callback | — |
-| 7. Package import docs | `$VESC_BLDC_ROOT/lispBM/README.md` | `pkg@path.vescpkg` | Package import syntax | — |
+| 1. Register extension | `$VESC_ROOT/lispBM/lispif_vesc_extensions.c` | `load-native-lib`, `unload-native-lib` | Lisp entry points are registered | → entry |
+| 2. Entry | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `ext_load_native_lib` | One byte-array argument enters the loader | → CIF table |
+| 3. CIF table | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `cif.cif` | First load fills the firmware interface table | → load sequence |
+| 4. Load sequence | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `array->data`, `addr += 4`, `addr \|= 1` | Skip program pointer, set Thumb bit, call init | → result |
+| 5. Result | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `SYM_TRUE`, `Library init failed` | Loader success/error contract | → unload |
+| 6. Unload | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `stop_fun` | Library cleanup callback | — |
+| 7. Package import docs | `$VESC_ROOT/lispBM/README.md` | `pkg@path.vescpkg` | Package import syntax | — |
 
 **Swimlane:** `lispData` embedded `.bin` → Lisp byte array → skip 4-byte `prog_ptr` → `INIT_FUN` (cross-link Example A step 7).
 
-### Example D — vesc_tool wire writer (packer; not in bldc)
+### Example D — vesc_tool wire writer (packer; not in vesc)
 
 | Step | Path | Code anchor | What it proves | Next |
 |------|------|-------------|----------------|------|

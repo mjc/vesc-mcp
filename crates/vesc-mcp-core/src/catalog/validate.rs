@@ -63,7 +63,7 @@ fn ensure_repo_roots_exist(
 ) -> Result<(), CatalogValidationError> {
     for (repo, path) in [
         (CatalogRepo::Refloat, &roots.refloat),
-        (CatalogRepo::Bldc, &roots.bldc),
+        (CatalogRepo::Vesc, &roots.vesc),
         (CatalogRepo::Poc, &roots.poc),
     ] {
         if !path.is_dir() {

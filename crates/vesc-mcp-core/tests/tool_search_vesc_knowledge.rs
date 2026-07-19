@@ -79,7 +79,7 @@ fn full_search_detail_preserves_current_result_fields() {
             .is_some_and(|summary| summary.contains("extension")),
         "entry: {top}"
     );
-    assert_eq!(top["source"]["repo"], "bldc");
+    assert_eq!(top["source"]["repo"], "vesc");
     assert_eq!(top["source"]["path"], "lispBM/c_libs/vesc_c_if.h");
 }
 

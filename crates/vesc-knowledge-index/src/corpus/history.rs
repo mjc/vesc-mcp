@@ -1,5 +1,4 @@
-//! Content-addressed ingestion of every tagged repository release, with a
-//! `release_*` remote-branch fallback for repositories that do not use tags.
+//! Content-addressed ingestion of every tagged or `release_*` repository release.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
@@ -464,22 +463,20 @@ fn tagged_releases(repo: &gix::Repository) -> Result<Vec<RawRelease>, HistoryErr
             (reference, name)
         })
         .collect::<Vec<_>>();
-    if named_refs.is_empty() {
-        let references = repo
-            .references()
-            .map_err(|error| HistoryError::Git(error.to_string()))?;
-        let refs = references
-            .remote_branches()
-            .map_err(|error| HistoryError::Git(error.to_string()))?;
-        for reference in refs {
-            let reference = reference.map_err(|error| HistoryError::Git(error.to_string()))?;
-            let short = String::from_utf8_lossy(reference.name().shorten().as_ref()).into_owned();
-            let branch = short
-                .rsplit_once('/')
-                .map_or(short.as_str(), |(_, name)| name);
-            if branch.starts_with("release_") {
-                named_refs.push((reference, branch.to_owned()));
-            }
+    let references = repo
+        .references()
+        .map_err(|error| HistoryError::Git(error.to_string()))?;
+    let refs = references
+        .remote_branches()
+        .map_err(|error| HistoryError::Git(error.to_string()))?;
+    for reference in refs {
+        let reference = reference.map_err(|error| HistoryError::Git(error.to_string()))?;
+        let short = String::from_utf8_lossy(reference.name().shorten().as_ref()).into_owned();
+        let branch = short
+            .rsplit_once('/')
+            .map_or(short.as_str(), |(_, name)| name);
+        if branch.starts_with("release_") {
+            named_refs.push((reference, branch.to_owned()));
         }
     }
     let mut grouped = BTreeMap::<String, (i64, Vec<String>, Vec<Revision>)>::new();

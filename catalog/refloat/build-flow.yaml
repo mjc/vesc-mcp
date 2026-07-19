@@ -89,5 +89,5 @@ artifacts:
   - ui.qml
   - src/package_lib.bin
 
-related_bldc:
+related_vesc:
   - lispBM/c_libs/vesc_c_if.h

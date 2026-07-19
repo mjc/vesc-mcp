@@ -88,6 +88,6 @@ deprecated:
     command_id: 10
     replacement: REALTIME_DATA
 
-related_bldc:
+related_vesc:
   - vesc_c_if.send_app_data
   - vesc_c_if.set_app_data_handler

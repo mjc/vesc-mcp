@@ -110,7 +110,7 @@ static CONFIG: OnceLock<McpConfig> = OnceLock::new();
 pub struct McpConfig {
     pub package_roots: Vec<PathBuf>,
     pub refloat_root: PathBuf,
-    pub bldc_root: PathBuf,
+    pub vesc_root: PathBuf,
     pub poc_root: PathBuf,
     pub vesc_tool_root: PathBuf,
     pub vesc_tool_path: PathBuf,
@@ -192,7 +192,7 @@ struct ConfigFile {
 struct PathsSection {
     package_roots: Option<Vec<String>>,
     refloat_root: Option<String>,
-    bldc_root: Option<String>,
+    vesc_root: Option<String>,
     poc_root: Option<String>,
     vesc_tool_root: Option<String>,
     vesc_tool: Option<String>,
@@ -234,7 +234,7 @@ struct FeedbackSection {
 struct EnvOverrides {
     package_roots: Option<Vec<PathBuf>>,
     refloat_root: Option<PathBuf>,
-    bldc_root: Option<PathBuf>,
+    vesc_root: Option<PathBuf>,
     poc_root: Option<PathBuf>,
     vesc_tool_root: Option<PathBuf>,
     vesc_tool_path: Option<PathBuf>,
@@ -284,7 +284,7 @@ fn read_env_overrides() -> EnvOverrides {
         refloat_root: env::var(CatalogRepo::Refloat.env_var())
             .ok()
             .map(PathBuf::from),
-        bldc_root: env::var(CatalogRepo::Bldc.env_var())
+        vesc_root: env::var(CatalogRepo::Vesc.env_var())
             .ok()
             .map(PathBuf::from),
         poc_root: env::var(CatalogRepo::Poc.env_var()).ok().map(PathBuf::from),
@@ -356,10 +356,10 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
                     workspace::expand_path,
                 )
         }),
-        bldc_root: env.bldc_root.clone().unwrap_or_else(|| {
+        vesc_root: env.vesc_root.clone().unwrap_or_else(|| {
             paths
-                .and_then(|section| section.bldc_root.as_deref())
-                .map_or_else(|| CatalogRepo::Bldc.resolve_root(), workspace::expand_path)
+                .and_then(|section| section.vesc_root.as_deref())
+                .map_or_else(|| CatalogRepo::Vesc.resolve_root(), workspace::expand_path)
         }),
         poc_root: env.poc_root.clone().unwrap_or_else(|| {
             paths

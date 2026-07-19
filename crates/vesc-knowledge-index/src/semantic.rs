@@ -626,7 +626,7 @@ where
 
 fn identifier_semantic_alias(identifier: &str) -> Option<&'static str> {
     Some(match identifier {
-        "lbm_add_extension" | "bldc_vesc_c_if_lbm" => {
+        "lbm_add_extension" | "vesc_vesc_c_if_lbm" => {
             "register native LispBM extension through the firmware C interface"
         }
         "lbm_enc_i32" | "lbm_enc_u32" | "lbm_enc_f32" => {
@@ -636,7 +636,7 @@ fn identifier_semantic_alias(identifier: &str) -> Option<&'static str> {
             "decode integer or numeric values across the native extension boundary"
         }
         "vesc_c_if" => "firmware C interface functions available to native packages",
-        "bldc_foc_audio_605" => "firmware compatibility package support FOC audio feature APIs",
+        "vesc_foc_audio_605" => "firmware compatibility package support FOC audio feature APIs",
         "gap_packer_divergence" => {
             "package wire format packer bytes differ from the golden fixture"
         }
@@ -665,7 +665,7 @@ pub fn semantic_query_text(query: &str) -> String {
         aliases.push("lbm_add_extension vesc_c_if native extension registration");
     }
     if normalized.contains("gating") || normalized.contains("compatibility") {
-        aliases.push("bldc_foc_audio_605 firmware compatibility support");
+        aliases.push("vesc_foc_audio_605 firmware compatibility support");
     }
     if normalized.contains("wire bytes") || normalized.contains("packer") {
         aliases.push("gap_packer_divergence package wire format");

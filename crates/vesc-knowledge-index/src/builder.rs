@@ -27,17 +27,17 @@ impl IndexBuilder {
 
     /// Parse `vesc_c_if` groups and optionally validate symbols against the upstream header.
     ///
-    /// When `bldc_root` is `Some`, every indexed symbol must appear in
-    /// `{bldc_root}/lispBM/c_libs/vesc_c_if.h`.
+    /// When `vesc_root` is `Some`, every indexed symbol must appear in
+    /// `{vesc_root}/lispBM/c_libs/vesc_c_if.h`.
     ///
     /// # Errors
     ///
     /// Returns [`VescCIfParseError`] on catalog or header validation failure.
     pub fn parse_vesc_c_if_groups_validated(
         catalog_root: &Path,
-        bldc_root: Option<&Path>,
+        vesc_root: Option<&Path>,
     ) -> Result<Vec<IndexEntry>, VescCIfParseError> {
-        vesc_c_if::parse_catalog_with_header_validation(catalog_root, bldc_root)
+        vesc_c_if::parse_catalog_with_header_validation(catalog_root, vesc_root)
     }
 
     /// Parse minimal native-lib ABI requirements from catalog YAML.

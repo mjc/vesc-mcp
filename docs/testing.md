@@ -84,7 +84,7 @@ Set only the roots you have, then run:
 
 ```bash
 export VESC_REFLOAT_ROOT=/path/to/refloat
-export VESC_BLDC_ROOT=/path/to/bldc
+export VESC_ROOT=/path/to/vesc
 export VESC_POC_ROOT=/path/to/vesc-rust-poc
 cargo nextest run -p vesc-mcp-core --run-ignored all
 ```

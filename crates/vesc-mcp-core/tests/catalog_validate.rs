@@ -20,7 +20,7 @@ fn validate_missing_catalog_dir() {
     let missing = temp.path().join("nope");
     let roots = RepoRoots {
         refloat: temp.path().join("refloat"),
-        bldc: temp.path().join("bldc"),
+        vesc: temp.path().join("vesc"),
         poc: temp.path().join("poc"),
         vesc_tool: temp.path().join("vesc_tool"),
         vesc_mcp: temp.path().join("vesc_mcp"),
@@ -35,12 +35,12 @@ fn validate_missing_repo_root() {
     write_minimal_catalog(temp.path());
     let roots = RepoRoots {
         refloat: PathBuf::from("/nonexistent/refloat/root"),
-        bldc: temp.path().join("bldc"),
+        vesc: temp.path().join("vesc"),
         poc: temp.path().join("poc"),
         vesc_tool: temp.path().join("vesc_tool"),
         vesc_mcp: temp.path().join("vesc_mcp"),
     };
-    fs::create_dir_all(&roots.bldc).expect("bldc");
+    fs::create_dir_all(&roots.vesc).expect("vesc");
     fs::create_dir_all(&roots.poc).expect("poc");
     fs::create_dir_all(&roots.vesc_tool).expect("vesc_tool");
     fs::create_dir_all(&roots.vesc_mcp).expect("vesc_mcp");
@@ -59,12 +59,12 @@ fn validate_missing_catalog_path_reference() {
     fs::create_dir_all(&refloat).expect("refloat repo");
     let roots = RepoRoots {
         refloat,
-        bldc: temp.path().join("bldc"),
+        vesc: temp.path().join("vesc"),
         poc: temp.path().join("poc"),
         vesc_tool: temp.path().join("vesc_tool"),
         vesc_mcp: temp.path().join("vesc_mcp"),
     };
-    fs::create_dir_all(&roots.bldc).expect("bldc");
+    fs::create_dir_all(&roots.vesc).expect("vesc");
     fs::create_dir_all(&roots.poc).expect("poc");
     fs::create_dir_all(&roots.vesc_tool).expect("vesc_tool");
     fs::create_dir_all(&roots.vesc_mcp).expect("vesc_mcp");

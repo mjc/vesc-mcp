@@ -1,6 +1,6 @@
 # Test Fixtures
 
-Synthetic vescpkg workspace trees for vesc-mcp CI. All content is MIT-licensed synthetic data — no GPL code from refloat or bldc is vendored.
+Synthetic vescpkg workspace trees for vesc-mcp CI. All content is MIT-licensed synthetic data — no GPL code from refloat or vesc is vendored.
 
 | Fixture | Purpose |
 |---------|---------|

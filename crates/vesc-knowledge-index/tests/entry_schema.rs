@@ -10,7 +10,7 @@ fn index_entry_serializes_to_json() {
         category: Category::FirmwareApi,
         summary: "Register a native extension with lispBM".into(),
         source: SourceRef {
-            repo: "bldc".into(),
+            repo: "vesc".into(),
             path: "lispBM/c_libs/vesc_c_if.h".into(),
             line: 42,
         },
@@ -24,7 +24,7 @@ fn index_entry_serializes_to_json() {
     assert_eq!(value["name"], "lbm_add_extension");
     assert_eq!(value["category"], "firmware_api");
     assert_eq!(value["summary"], "Register a native extension with lispBM");
-    assert_eq!(value["source"]["repo"], "bldc");
+    assert_eq!(value["source"]["repo"], "vesc");
     assert_eq!(value["source"]["path"], "lispBM/c_libs/vesc_c_if.h");
     assert_eq!(value["source"]["line"], 42);
     assert_eq!(

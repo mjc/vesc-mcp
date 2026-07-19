@@ -11,8 +11,8 @@ fn suite() -> EvaluationSuite {
 fn v2_fixture_is_a_locked_five_category_suite() {
     let suite = suite();
     assert_eq!(suite.schema, 2);
-    assert_eq!(suite.corpus_documents, 2_869);
-    assert_eq!(suite.corpus_chunks, 13_720);
+    assert_eq!(suite.corpus_documents, 2_875);
+    assert_eq!(suite.corpus_chunks, 16_586);
     assert_eq!(suite.queries.len(), 25);
     assert_eq!(
         suite.failure_categories(),

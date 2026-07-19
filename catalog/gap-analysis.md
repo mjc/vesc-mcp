@@ -1,6 +1,6 @@
 # Refloat vs vesc-rust-poc Gap Analysis
 
-Cross-reference matrix for production refloat patterns, authoritative bldc firmware APIs, and the Rust POC experiment. Catalog YAML files provide machine-readable detail; this document captures intentional divergences and integration risks.
+Cross-reference matrix for production refloat patterns, authoritative vesc firmware APIs, and the Rust POC experiment. Catalog YAML files provide machine-readable detail; this document captures intentional divergences and integration risks.
 
 ## Summary
 
@@ -83,7 +83,7 @@ Both import native binary and call `load-native-lib`:
 
 ## Firmware API surface {#firmware}
 
-**bldc** `vesc_c_if.h` exposes 20+ function groups with append-only FW versioning (6.05 / 6.06 / 7.00 markers).
+**vesc** `vesc_c_if.h` exposes 20+ function groups with append-only FW versioning (6.05 / 6.06 / 7.00 markers).
 
 **POC** intentionally uses ~12 symbols for first proof (`lbm_add_extension`, encode/decode helpers, init macros).
 
@@ -100,7 +100,7 @@ sources through category and source metadata.
 
 ## Catalog coverage
 
-| refloat feature | bldc API | POC equivalent |
+| refloat feature | vesc API | POC equivalent |
 |-----------------|----------|----------------|
 | Build pkgdesc | — | `make package` + `PackageBuildPlan` |
 | load-native-lib | `ext_load_native_lib` in lispif_vesc_extensions.c | `code.lisp` + staticlib |
@@ -124,7 +124,7 @@ embedding issue IDs here.
 
 - `catalog/refloat/build-flow.yaml`
 - `catalog/refloat/lisp-loader.yaml`
-- `catalog/bldc/vesc_c_if.yaml`
+- `catalog/vesc/vesc_c_if.yaml`
 - `catalog/abi/minimal-test-package-abi.yaml`
 - `vesc-rust-poc/docs/package-flow.md`
 - `catalog/priorities.json`

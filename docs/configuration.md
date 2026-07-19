@@ -166,7 +166,7 @@ attribution.
 | Config key | Environment variable | Purpose |
 |------------|----------------------|---------|
 | `[paths] refloat_root` | `VESC_REFLOAT_ROOT` | Refloat source checkout |
-| `[paths] bldc_root` | `VESC_BLDC_ROOT` | VESC firmware source checkout |
+| `[paths] vesc_root` | `VESC_ROOT` | VESC firmware source checkout |
 | `[paths] poc_root` | `VESC_POC_ROOT` | Rust proof-of-concept checkout |
 | `[paths] vesc_tool_root` | `VESC_VESC_TOOL_ROOT` | VESC Tool source checkout |
 

@@ -26,7 +26,7 @@ pub const VESCPACKAGE_REFERENCE_URI: &str = "vesc://catalog/doc/topic/vescpackag
 /// `vesc://catalog/doc/topic/vesc_pkg_lib_abi`
 pub const VESC_PKG_LIB_ABI_URI: &str = "vesc://catalog/doc/topic/vesc_pkg_lib_abi";
 
-const VESC_C_IF_CATALOG_REL: &str = "bldc/vesc_c_if.yaml";
+const VESC_C_IF_CATALOG_REL: &str = "vesc/vesc_c_if.yaml";
 
 const PKGDESC_DIALECTS_BODY: &str = include_str!("snippets/pkgdesc_dialects.md");
 const LISP_IMPORTS_BODY: &str = include_str!("snippets/lisp_imports.md");
@@ -80,7 +80,7 @@ pub fn register_doc_topic_resources(
     registry.register(ResourceMeta {
         uri: VESC_C_IF_URI.into(),
         name: "vesc_c_if LBM core overview".into(),
-        description: Some("LispBM extension surface from bldc vesc_c_if.h".into()),
+        description: Some("LispBM extension surface from vesc vesc_c_if.h".into()),
         mime_type: "text/markdown".into(),
     })?;
     registry.register(ResourceMeta {
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn load_vesc_c_if_catalog_parses_fixture() {
         let doc = load_vesc_c_if_catalog(&repo_catalog_root()).expect("load catalog");
-        assert_eq!(doc.source_repo, "bldc");
+        assert_eq!(doc.source_repo, "vesc");
         assert!(
             doc.function_groups
                 .iter()

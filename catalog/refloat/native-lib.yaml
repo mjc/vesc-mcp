@@ -8,7 +8,7 @@ version: 1
 vendored_tree:
   path: vesc_pkg_lib/vesc_c_if.h
   header: vesc_pkg_lib/vesc_c_if.h
-  upstream: bldc/lispBM/c_libs/vesc_c_if.h
+  upstream: vesc/lispBM/c_libs/vesc_c_if.h
   build_rules: vesc_pkg_lib/rules.mk
   linker_script: vesc_pkg_lib/link.ld
   converter: vesc_pkg_lib/conv.py
@@ -52,5 +52,5 @@ config_generation:
   command: '$(VESC_TOOL) --xmlConfToCode conf/settings.xml'
   note: LTO workaround patches conf/confxml.c for vesc_tool XML config loading
 
-related_bldc:
+related_vesc:
   - lispBM/c_libs/vesc_c_if.h

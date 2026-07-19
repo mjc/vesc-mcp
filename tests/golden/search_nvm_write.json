@@ -2,10 +2,10 @@
   "query": "NVM",
   "top": {
     "category": "firmware_api",
-    "id": "priority.bldc-nvm",
-    "name": "bldc_nvm",
+    "id": "priority.vesc-nvm",
+    "name": "vesc_nvm",
     "score": 800,
-    "source_path": "catalog/bldc/nvm.yaml",
+    "source_path": "catalog/vesc/nvm.yaml",
     "source_repo": "catalog"
   }
 }

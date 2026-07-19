@@ -16,17 +16,17 @@
       "summary": "load-native-lib and package_lib.bin import path"
     },
     {
-      "id": "bldc-vesc-c-if-lbm",
+      "id": "vesc-vesc-c-if-lbm",
       "priority": "P0",
       "category": "firmware_api",
-      "catalog_ref": "catalog/bldc/vesc_c_if.yaml",
+      "catalog_ref": "catalog/vesc/vesc_c_if.yaml",
       "summary": "lbm_add_extension and vesc_c_if function groups"
     },
     {
-      "id": "bldc-native-lib-macros",
+      "id": "vesc-native-lib-macros",
       "priority": "P0",
       "category": "firmware_api",
-      "catalog_ref": "catalog/bldc/native-lib-macros.yaml",
+      "catalog_ref": "catalog/vesc/native-lib-macros.yaml",
       "summary": "HEADER, INIT_FUN, VESC_IF loader contract"
     },
     {
@@ -65,10 +65,10 @@
       "summary": "COMM_CUSTOM_APP_DATA / interface 101 command index"
     },
     {
-      "id": "bldc-nvm",
+      "id": "vesc-nvm",
       "priority": "P1",
       "category": "firmware_api",
-      "catalog_ref": "catalog/bldc/nvm.yaml",
+      "catalog_ref": "catalog/vesc/nvm.yaml",
       "summary": "read_nvm / write_nvm / wipe_nvm for package persistence"
     },
     {
@@ -93,10 +93,10 @@
       "summary": "Migrate vesc-rust-poc pkgdesc from legacy packageName to vesc_tool pkgName"
     },
     {
-      "id": "bldc-foc-audio-605",
+      "id": "vesc-foc-audio-605",
       "priority": "P2",
       "category": "firmware_api",
-      "catalog_ref": "catalog/bldc/vesc_c_if.yaml#foc_audio_605",
+      "catalog_ref": "catalog/vesc/vesc_c_if.yaml#foc_audio_605",
       "summary": "FOC audio APIs added in firmware 6.05"
     },
     {

@@ -1,4 +1,4 @@
-//! Parse `catalog/bldc/vesc_c_if.yaml` function groups into index entries.
+//! Parse `catalog/vesc/vesc_c_if.yaml` function groups into index entries.
 
 use std::path::Path;
 
@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::{Category, IndexEntry, SourceRef};
 
 /// Relative path from the catalog root to the `vesc_c_if` catalog document.
-pub const CATALOG_REL_PATH: &str = "bldc/vesc_c_if.yaml";
+pub const CATALOG_REL_PATH: &str = "vesc/vesc_c_if.yaml";
 
 /// Function groups indexed for package-relevant APIs (Wave 1 filter).
 pub const PACKAGE_API_GROUPS: &[&str] = &["lbm_core", "lbm_symbols", "os", "comm", "nvm"];
@@ -78,18 +78,18 @@ pub fn parse_catalog(catalog_root: &Path) -> Result<Vec<IndexEntry>, VescCIfPars
 
 /// Parse catalog entries and optionally validate symbol names against the upstream header.
 ///
-/// When `bldc_root` is `Some`, every indexed symbol must appear in
-/// `{bldc_root}/lispBM/c_libs/vesc_c_if.h`.
+/// When `vesc_root` is `Some`, every indexed symbol must appear in
+/// `{vesc_root}/lispBM/c_libs/vesc_c_if.h`.
 ///
 /// # Errors
 ///
 /// Returns [`VescCIfParseError`] on catalog or header validation failure.
 pub fn parse_catalog_with_header_validation(
     catalog_root: &Path,
-    bldc_root: Option<&Path>,
+    vesc_root: Option<&Path>,
 ) -> Result<Vec<IndexEntry>, VescCIfParseError> {
     let entries = parse_catalog(catalog_root)?;
-    if let Some(root) = bldc_root {
+    if let Some(root) = vesc_root {
         validate_against_header(&entries, root)?;
     }
     Ok(entries)
@@ -146,9 +146,9 @@ fn entries_from_catalog(catalog: &VescCIfCatalog) -> Result<Vec<IndexEntry>, Ves
 
 fn validate_against_header(
     entries: &[IndexEntry],
-    bldc_root: &Path,
+    vesc_root: &Path,
 ) -> Result<(), VescCIfParseError> {
-    let header_path = bldc_root.join(HEADER_REL_PATH);
+    let header_path = vesc_root.join(HEADER_REL_PATH);
     let content =
         std::fs::read_to_string(&header_path).map_err(|source| VescCIfParseError::Io {
             path: header_path.display().to_string(),

@@ -1,5 +1,5 @@
-[submodule "vendor/bldc"]
-	path = vendor/bldc
+[submodule "vendor/vesc"]
+	path = vendor/vesc
 	url = https://github.com/vedderb/bldc
 [submodule "vendor/refloat"]
 	path = vendor/refloat

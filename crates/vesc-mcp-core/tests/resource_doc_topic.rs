@@ -38,7 +38,7 @@ fn resource_doc_topic_vesc_c_if_covers_lbm_core() {
         "missing lbm_core symbol:\n{body}"
     );
     assert!(
-        body.contains("Source: bldc/lispBM/c_libs/vesc_c_if.h"),
+        body.contains("Source: vesc/lispBM/c_libs/vesc_c_if.h"),
         "missing header attribution:\n{body}"
     );
 }

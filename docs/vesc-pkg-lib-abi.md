@@ -13,9 +13,9 @@ Lisp alone is insufficient for many workloads. The firmware loads native code in
 
 ## Firmware interface table
 
-Source of truth: `$VESC_BLDC_ROOT/lispBM/c_libs/vesc_c_if.h` (refloat vendored copy: `$VESC_REFLOAT_ROOT/vesc_pkg_lib/vesc_c_if.h`).
+Source of truth: `$VESC_ROOT/lispBM/c_libs/vesc_c_if.h` (refloat vendored copy: `$VESC_REFLOAT_ROOT/vesc_pkg_lib/vesc_c_if.h`).
 
-Catalog: `catalog/bldc/native-lib-macros.yaml`, MCP resource `vesc://catalog/doc/topic/vesc_c_if`.
+Catalog: `catalog/vesc/native-lib-macros.yaml`, MCP resource `vesc://catalog/doc/topic/vesc_c_if`.
 
 ### Core macros and types
 
@@ -208,16 +208,16 @@ sequenceDiagram
   Nat-->>Lisp: SYM_TRUE or error
 ```
 
-### bldc implementation anchors
+### vesc implementation anchors
 
 | Step | Path | Code anchor | Content |
 |------|------|-------------|---------|
-| Register extension | `$VESC_BLDC_ROOT/lispBM/lispif_vesc_extensions.c` | `load-native-lib`, `unload-native-lib` | Lisp entry-point registration |
-| Entry | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `ext_load_native_lib` | One byte-array argument |
-| CIF table | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `cif.cif` | First load fills the interface table |
-| Load sequence | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `array->data`, `addr += 4`, `addr \|= 1` | Skip program pointer, set Thumb bit, call init |
-| Result | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `SYM_TRUE`, `Library init failed` | Success/error contract |
-| Unload | `$VESC_BLDC_ROOT/lispBM/lispif_c_lib.c` | `stop_fun` | Cleanup callback |
+| Register extension | `$VESC_ROOT/lispBM/lispif_vesc_extensions.c` | `load-native-lib`, `unload-native-lib` | Lisp entry-point registration |
+| Entry | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `ext_load_native_lib` | One byte-array argument |
+| CIF table | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `cif.cif` | First load fills the interface table |
+| Load sequence | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `array->data`, `addr += 4`, `addr \|= 1` | Skip program pointer, set Thumb bit, call init |
+| Result | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `SYM_TRUE`, `Library init failed` | Success/error contract |
+| Unload | `$VESC_ROOT/lispBM/lispif_c_lib.c` | `stop_fun` | Cleanup callback |
 
 **Thumb rule:** firmware sets bit 0 on init address before calling.
 
@@ -228,7 +228,7 @@ Embedded `.bin` in `lispData` → Lisp byte array → skip first 4 bytes (progra
 | Profile | Symbols | When |
 |---------|---------|------|
 | **Minimal POC** | 12 in `minimal-test-package-abi.yaml` | Proof packages, MCP fixtures |
-| **Feature package** | Subset of `catalog/bldc/vesc_c_if.yaml` groups | NVM, CAN, comm handlers as needed |
+| **Feature package** | Subset of `catalog/vesc/vesc_c_if.yaml` groups | NVM, CAN, comm handlers as needed |
 | **Full firmware API** | 20+ groups in `vesc_c_if.h` | Production refloat-scale packages |
 
 Guidelines:

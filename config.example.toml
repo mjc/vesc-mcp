@@ -13,7 +13,7 @@ package_roots = [
 # Upstream repo checkouts used for catalog path validation.
 # Relative paths resolve against the vesc-mcp workspace root (e.g. vendor/ submodules).
 # refloat_root = "/path/to/refloat"
-# bldc_root = "/path/to/bldc"
+# vesc_root = "/path/to/vesc"
 # poc_root = "/path/to/vesc-rust-poc"
 # vesc_tool_root = "/path/to/vesc_tool/source"
 

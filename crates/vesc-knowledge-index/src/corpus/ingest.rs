@@ -137,9 +137,9 @@ pub fn vesc_mcp_source_specs() -> Vec<SourceSpec> {
     }
     for path in [
         "catalog/abi/minimal-test-package-abi.yaml",
-        "catalog/bldc/native-lib-macros.yaml",
-        "catalog/bldc/nvm.yaml",
-        "catalog/bldc/vesc_c_if.yaml",
+        "catalog/vesc/native-lib-macros.yaml",
+        "catalog/vesc/nvm.yaml",
+        "catalog/vesc/vesc_c_if.yaml",
         "catalog/priorities.json",
         "catalog/refloat/build-flow.yaml",
         "catalog/refloat/commands.yaml",
@@ -173,10 +173,10 @@ pub fn vesc_mcp_source_specs() -> Vec<SourceSpec> {
     }
     for (path, title, media_type, repository) in [
         (
-            "vendor/bldc/lispBM/c_libs/vesc_c_if.h",
-            "bldc vesc_c_if.h",
+            "vendor/vesc/lispBM/c_libs/vesc_c_if.h",
+            "vesc vesc_c_if.h",
             "text/x-c",
-            "bldc",
+            "vesc",
         ),
         (
             "vendor/refloat/vesc_pkg_lib/README.md",

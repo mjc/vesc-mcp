@@ -6,6 +6,6 @@
     "name": "lbm_add_extension",
     "score": 1000,
     "source_path": "lispBM/c_libs/vesc_c_if.h",
-    "source_repo": "bldc"
+    "source_repo": "vesc"
   }
 }

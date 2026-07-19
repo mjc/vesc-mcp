@@ -1,4 +1,4 @@
-//! Catalog path resolution and validation for curated refloat/bldc knowledge.
+//! Catalog path resolution and validation for curated refloat/vesc knowledge.
 
 mod env;
 mod paths;

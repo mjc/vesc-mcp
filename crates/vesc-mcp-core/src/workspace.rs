@@ -62,8 +62,8 @@ pub fn vendor_checkout(subdir: &str) -> Option<PathBuf> {
 }
 
 #[must_use]
-pub fn vendor_bldc() -> Option<PathBuf> {
-    vendor_checkout("bldc")
+pub fn vendor_vesc() -> Option<PathBuf> {
+    vendor_checkout("vesc")
 }
 
 #[must_use]
@@ -76,7 +76,7 @@ pub fn vendor_vesc_tool() -> Option<PathBuf> {
     vendor_checkout("vesc_tool")
 }
 
-/// Expand `~/…` and workspace-relative paths (e.g. `vendor/bldc`).
+/// Expand `~/…` and workspace-relative paths (e.g. `vendor/vesc`).
 #[must_use]
 pub fn expand_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -123,15 +123,15 @@ mod tests {
 
     #[test]
     fn expand_path_resolves_vendor_relative() {
-        let expanded = expand_path("vendor/bldc");
+        let expanded = expand_path("vendor/vesc");
         if let Some(ws) = workspace_root() {
-            assert_eq!(expanded, ws.join("vendor/bldc"));
+            assert_eq!(expanded, ws.join("vendor/vesc"));
         }
     }
 
     #[test]
     fn vendor_checkout_missing_when_uninitialized() {
-        if vendor_bldc().is_none() {
+        if vendor_vesc().is_none() {
             assert!(workspace_root().is_some());
         }
     }

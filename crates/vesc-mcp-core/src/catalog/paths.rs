@@ -63,7 +63,7 @@ fn source_repo_from_value(value: &Value) -> Option<CatalogRepo> {
     let name = value.get("source_repo")?.as_str()?;
     match name {
         "refloat" => Some(CatalogRepo::Refloat),
-        "bldc" => Some(CatalogRepo::Bldc),
+        "vesc" => Some(CatalogRepo::Vesc),
         "vesc-rust-poc" => Some(CatalogRepo::Poc),
         "vesc_tool" => Some(CatalogRepo::VescTool),
         "vesc-mcp" => Some(CatalogRepo::VescMcp),

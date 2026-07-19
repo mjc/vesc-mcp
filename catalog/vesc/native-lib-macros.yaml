@@ -1,0 +1,78 @@
+# vesc native library loader macros and init contract
+# Source: vesc/lispBM/c_libs/vesc_c_if.h
+id: vesc-native-lib-macros
+source_repo: vesc
+source_repo_env: VESC_ROOT
+version: 1
+
+header:
+  path: lispBM/c_libs/vesc_c_if.h
+  lines: [677, 706]
+
+types:
+  - name: lib_info
+    lines: [677, 681]
+    fields:
+      - stop_fun
+      - arg
+      - base_addr
+
+macros:
+  - name: SYSTEM_TICK_RATE_HZ
+    line: 684
+    value: 10000
+
+  - name: VESC_IF
+    line: 687
+    expansion: "((vesc_c_if*)(0x1000F800))"
+    description: Fixed-address firmware interface table
+
+  - name: HEADER
+    line: 690
+    expansion: "volatile int __attribute__((__section__(\".program_ptr\"))) prog_ptr"
+    description: Place at start of native lib source; exposes program pointer section
+
+  - name: INIT_FUN
+    line: 693
+    expansion: "bool __attribute__((__section__(\".init_fun\"))) init"
+    description: Init function signature and section placement
+
+  - name: INIT_START
+    line: 696
+    expansion: "(void)prog_ptr"
+    description: First statement inside init()
+
+  - name: PROG_ADDR
+    line: 699
+    expansion: "((uint32_t)&prog_ptr)"
+
+  - name: ARG
+    line: 702
+    expansion: "(*VESC_IF->get_arg(PROG_ADDR))"
+
+symbols:
+  - name: prog_ptr
+    line: 704
+    kind: extern volatile int
+
+init_contract:
+  steps:
+    - Emit HEADER at file scope
+    - Define INIT_FUN init(lib_info *info) { INIT_START; ... register extensions via VESC_IF->lbm_add_extension; return true; }
+    - Link with --undefined=init so init section is retained
+  stop_callback: info->stop_fun invoked on package unload
+
+build_pipeline:
+  refloat_rules: vesc_pkg_lib/rules.mk
+  toolchain: arm-none-eabi-gcc
+  outputs: [.elf, .bin, .lisp via conv.py]
+
+poc_abi:
+  repo: vesc-rust-poc
+  required: [INIT_FUN, INIT_START, lib_info, lbm_add_extension]
+  doc: docs/abi-inventory.md
+  rust_crate: crates/vesc-ffi
+
+examples:
+  - vesc/lispBM/c_libs/examples/extension/code.c
+  - refloat/vesc_pkg_lib/examples/extension/code.c

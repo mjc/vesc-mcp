@@ -1,0 +1,187 @@
+# vesc vesc_c_if LispBM / package C API surface
+# Source: vesc/lispBM/c_libs/vesc_c_if.h
+id: vesc-vesc-c-if
+source_repo: vesc
+source_repo_env: VESC_ROOT
+version: 1
+
+header:
+  path: lispBM/c_libs/vesc_c_if.h
+  lines: [1, 707]
+  struct: vesc_c_if
+  vesc_if_macro:
+    symbol: VESC_IF
+    line: 687
+    address: "0x1000F800"
+
+compatibility:
+  rule: Append-only function pointer struct; null means unavailable on older FW
+  doc_lines: [316, 322]
+  firmware_sections:
+    - version: baseline
+      through_line: 624
+    - version: "6.05"
+      marker_line: 625
+      adds: [lbm_start_flatten, lbm_finish_flatten, f_cons, f_sym, f_i, f_b, f_i32, f_u32, f_float, f_i64, f_u64, f_lbm_array, lbm_unblock_ctx_unboxed, system_time_ticks, sleep_ticks, foc_beep, foc_play_tone, foc_stop_audio, foc_set_audio_sample_table, foc_get_audio_sample_table, foc_play_audio_samples, sem_create, sem_wait, sem_signal, sem_wait_to, sem_reset]
+    - version: "6.06"
+      marker_line: 665
+      adds: [thread_set_priority, shutdown_disable]
+    - version: "7.00"
+      marker_line: 673
+      adds: [foc_set_fw_override]
+
+function_groups:
+  - id: lbm_core
+    lines: [324, 373]
+    symbols: [lbm_add_extension, lbm_block_ctx_from_extension, lbm_unblock_ctx, lbm_get_current_cid, lbm_set_error_reason, lbm_pause_eval_with_gc, lbm_continue_eval, lbm_send_message, lbm_eval_is_paused, lbm_cons, lbm_car, lbm_cdr, lbm_list_destructive_reverse, lbm_create_byte_array, lbm_add_symbol_const, lbm_get_symbol_by_name, lbm_enc_i, lbm_enc_u, lbm_enc_char, lbm_enc_float, lbm_enc_u32, lbm_enc_i32, lbm_enc_sym, lbm_dec_as_float, lbm_dec_as_u32, lbm_dec_as_i32, lbm_dec_char, lbm_dec_str, lbm_dec_sym, lbm_is_byte_array, lbm_is_cons, lbm_is_number, lbm_is_char, lbm_is_symbol]
+    notes: Primary extension registration surface for native packages
+
+  - id: lbm_symbols
+    lines: [365, 372]
+    symbols: [lbm_enc_sym_nil, lbm_enc_sym_true, lbm_enc_sym_terror, lbm_enc_sym_eerror, lbm_enc_sym_merror, lbm_is_symbol_nil, lbm_is_symbol_true]
+
+  - id: os
+    lines: [374, 385]
+    symbols: [sleep_ms, sleep_us, system_time, ts_to_age_s, printf, malloc, free, spawn, request_terminate, should_terminate, get_arg]
+
+  - id: gpio
+    lines: [387, 397]
+    symbols: [set_pad_mode, set_pad, clear_pad, io_set_mode, io_write, io_read, io_read_analog, io_get_st_pin]
+
+  - id: can
+    lines: [399, 426]
+    symbols: [can_set_sid_cb, can_set_eid_cb, can_transmit_sid, can_transmit_eid, can_send_buffer, can_set_duty, can_set_current, can_set_current_off_delay, can_set_current_brake, can_set_rpm, can_set_pos, can_set_current_rel, can_set_current_rel_off_delay, can_set_current_brake_rel, can_ping, can_get_status_msg_index, can_get_status_msg_id, can_get_status_msg_2_index, can_get_status_msg_2_id, can_get_status_msg_3_index, can_get_status_msg_3_id, can_get_status_msg_4_index, can_get_status_msg_4_id, can_get_status_msg_5_index, can_get_status_msg_5_id, can_get_status_msg_6_index, can_get_status_msg_6_id]
+
+  - id: motor_control
+    lines: [428, 488]
+    symbols: [mc_motor_now, mc_select_motor_thread, mc_get_motor_thread, mc_dccal_done, mc_set_pwm_callback, mc_get_fault, mc_fault_to_string, mc_set_duty, mc_set_duty_noramp, mc_set_pid_speed, mc_set_pid_pos, mc_set_current, mc_set_brake_current, mc_set_current_rel, mc_set_brake_current_rel, mc_set_handbrake, mc_set_handbrake_rel, mc_set_tachometer_value, mc_release_motor, mc_wait_for_motor_release, mc_get_duty_cycle_now, mc_get_sampling_frequency_now, mc_get_rpm, mc_get_amp_hours, mc_get_amp_hours_charged, mc_get_watt_hours, mc_get_watt_hours_charged, mc_get_tot_current, mc_get_tot_current_filtered, mc_get_tot_current_directional, mc_get_tot_current_directional_filtered, mc_get_tot_current_in, mc_get_tot_current_in_filtered, mc_get_input_voltage_filtered, mc_get_tachometer_value, mc_get_tachometer_abs_value, mc_get_pid_pos_set, mc_get_pid_pos_now, mc_update_pid_pos_offset, mc_temp_fet_filtered, mc_temp_motor_filtered, mc_get_battery_level, mc_get_speed, mc_get_distance, mc_get_distance_abs, mc_get_odometer, mc_set_odometer, mc_set_current_off_delay, mc_stat_speed_avg, mc_stat_speed_max, mc_stat_power_avg, mc_stat_power_max, mc_stat_current_avg, mc_stat_current_max, mc_stat_temp_mosfet_avg, mc_stat_temp_mosfet_max, mc_stat_temp_motor_avg, mc_stat_temp_motor_max, mc_stat_count_time, mc_stat_reset]
+
+  - id: comm
+    lines: [490, 494]
+    symbols: [commands_process_packet, send_app_data, set_app_data_handler]
+    notes: send_app_data / set_app_data_handler back refloat COMM_CUSTOM_APP_DATA commands
+
+  - id: uart
+    lines: [496, 499]
+    symbols: [uart_start, uart_write, uart_read]
+
+  - id: packets
+    lines: [501, 507]
+    symbols: [packet_init, packet_reset, packet_process_byte, packet_send_packet]
+
+  - id: imu
+    lines: [509, 523]
+    symbols: [imu_startup_done, imu_get_roll, imu_get_pitch, imu_get_yaw, imu_get_rpy, imu_get_accel, imu_get_gyro, imu_get_mag, imu_derotate, imu_get_accel_derotated, imu_get_gyro_derotated, imu_get_quaternions, imu_get_calibration, imu_set_yaw]
+
+  - id: terminal
+    lines: [525, 531]
+    symbols: [terminal_register_command_callback, terminal_unregister_callback]
+
+  - id: eeprom
+    lines: [533, 535]
+    symbols: [read_eeprom_var, store_eeprom_var]
+
+  - id: timeout
+    lines: [537, 540]
+    symbols: [timeout_reset, timeout_has_timeout, timeout_secs_since_update]
+
+  - id: plot
+    lines: [542, 546]
+    symbols: [plot_init, plot_add_graph, plot_set_graph, plot_send_points]
+
+  - id: custom_config
+    lines: [548, 553]
+    symbols: [conf_custom_add_config, conf_custom_clear_configs]
+
+  - id: settings
+    lines: [555, 560]
+    symbols: [get_cfg_float, get_cfg_int, set_cfg_float, set_cfg_int, store_cfg]
+
+  - id: gnss
+    lines: [562, 563]
+    symbols: [mc_gnss]
+
+  - id: mutex
+    lines: [565, 568]
+    symbols: [mutex_create, mutex_lock, mutex_unlock]
+
+  - id: lbm_io
+    lines: [570, 571]
+    symbols: [lbm_symbol_to_io]
+
+  - id: timer
+    lines: [573, 576]
+    symbols: [timer_time_now, timer_seconds_elapsed_since, timer_sleep]
+
+  - id: sys_lock
+    lines: [578, 580]
+    symbols: [sys_lock, sys_unlock]
+
+  - id: comm_unregister
+    lines: [582, 583]
+    symbols: [commands_unregister_reply_func]
+
+  - id: ahrs
+    lines: [585, 593]
+    symbols: [imu_set_read_callback, ahrs_init_attitude_info, ahrs_update_initial_orientation, ahrs_update_mahony_imu, ahrs_update_madgwick_imu, ahrs_get_roll, ahrs_get_pitch, ahrs_get_yaw]
+
+  - id: encoder
+    lines: [595, 599]
+    symbols: [encoder_set_custom_callbacks]
+
+  - id: backup
+    lines: [601, 602]
+    symbols: [store_backup_data]
+
+  - id: input_devices
+    lines: [604, 608]
+    symbols: [get_remote_state, get_ppm, get_ppm_age, app_is_output_disabled]
+
+  - id: nvm
+    lines: [610, 613]
+    symbols: [read_nvm, write_nvm, wipe_nvm]
+    catalog_ref: catalog/vesc/nvm.yaml
+
+  - id: foc_basic
+    lines: [615, 623]
+    symbols: [foc_get_id, foc_get_iq, foc_get_vd, foc_get_vq, foc_set_openloop_current, foc_set_openloop_phase, foc_set_openloop_duty, foc_set_openloop_duty_phase]
+
+  - id: lbm_flatten_605
+    lines: [627, 642]
+    firmware_min: "6.05"
+    symbols: [lbm_start_flatten, lbm_finish_flatten, f_cons, f_sym, f_i, f_b, f_i32, f_u32, f_float, f_i64, f_u64, f_lbm_array, lbm_unblock_ctx_unboxed, system_time_ticks, sleep_ticks]
+
+  - id: foc_audio_605
+    lines: [650, 656]
+    firmware_min: "6.05"
+    symbols: [foc_beep, foc_play_tone, foc_stop_audio, foc_set_audio_sample_table, foc_get_audio_sample_table, foc_play_audio_samples]
+
+  - id: semaphore_605
+    lines: [658, 663]
+    firmware_min: "6.05"
+    symbols: [sem_create, sem_wait, sem_signal, sem_wait_to, sem_reset]
+
+  - id: thread_606
+    lines: [667, 671]
+    firmware_min: "6.06"
+    symbols: [thread_set_priority, shutdown_disable]
+
+  - id: foc_700
+    lines: [673, 674]
+    firmware_min: "7.00"
+    symbols: [foc_set_fw_override]
+
+package_loading:
+  - path: lispBM/lispif_vesc_extensions.c
+    symbols: [ext_load_native_lib, ext_unload_native_lib]
+    note: Firmware-side load-native-lib Lisp extension; calls into c_lib loader
+
+poc_abi_subset:
+  repo: vesc-rust-poc
+  doc: docs/abi-inventory.md
+  minimal_symbols: [INIT_FUN, INIT_START, lbm_add_extension, lbm_value, lbm_uint, lbm_dec_as_i32, lbm_enc_i]
+
+refloat_note:
+  source_repo: refloat
+  vendored_header: vesc_pkg_lib/vesc_c_if.h
+  description: Package projects vendor a snapshot of vesc_c_if.h from vesc

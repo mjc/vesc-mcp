@@ -17,7 +17,7 @@ steps:
 
   - line: 2
     form: "(load-native-lib package-lib)"
-    description: Load native library into LispBM runtime (bldc ext_load_native_lib)
+    description: Load native library into LispBM runtime (vesc ext_load_native_lib)
 
   - line: 4
     form: "(define fw-ver (sysinfo 'fw-ver))"
@@ -38,7 +38,7 @@ native_binary:
   built_by: src/Makefile (target package_lib)
   conversion: vesc_pkg_lib/conv.py emits .lisp wrapper; package packs .bin
 
-related_bldc:
+related_vesc:
   - lispBM/lispif_vesc_extensions.c (ext_load_native_lib, ext_unload_native_lib)
   - lispBM/c_libs/vesc_c_if.h (lbm_add_extension, VESC_IF)
 

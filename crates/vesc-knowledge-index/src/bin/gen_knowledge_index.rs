@@ -289,7 +289,7 @@ fn run_history_build(args: &[String]) {
         .write_artifact(&history_path)
         .unwrap_or_else(|error| panic!("write {}: {error}", history_path.display()));
     println!("history: {}", history_path.display());
-    println!("tags: {}", history.observations.tag_count);
+    println!("version-refs: {}", history.observations.tag_count);
     println!("releases: {}", history.observations.release_count);
     println!("occurrences: {}", history.observations.occurrence_count);
     println!(
