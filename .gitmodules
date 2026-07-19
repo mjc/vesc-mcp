@@ -7,3 +7,4 @@
 [submodule "vendor/vesc_tool"]
 	path = vendor/vesc_tool
 	url = https://github.com/vedderb/vesc_tool
+	ignore = untracked
