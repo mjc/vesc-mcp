@@ -33,5 +33,8 @@ schema. The expensive PPLX and Qwen rows are deferred by the staged stop rule:
 the first-stage Granite gain is modest after fusion and does not justify a full
 Cartesian benchmark.
 
-Apple M1 execution remains a separate hardware measurement. No M1 result is
-claimed by this report.
+The GitHub-hosted `macos-14` arm64 M1 control measured Granite 97M at 3.01 ms
+query p50 / 3.39 ms p95, 0.74 s cold initialization, 6.78 sampled chunks/s,
+and 2.81 GiB peak RSS. ONNX Runtime selected CPUExecutionProvider with no
+accelerator fallback. The raw report, timing output, and workflow identity are
+stored under `m1/`.

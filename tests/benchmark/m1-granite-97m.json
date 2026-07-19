@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "corpus_digest": "sha256:71342745041784d58f147b1cd99a7743377d3d9e0fa42ad4dab1f0aa280652ab",
+  "corpus_documents": 2875,
+  "corpus_chunks": 16586,
+  "candidates": [
+    {
+      "name": "granite-embedding-97m-multilingual-r2-qint8-avx2",
+      "model_id": "ibm-granite/granite-embedding-97m-multilingual-r2",
+      "model_revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+      "directory": "granite-embedding-97m-multilingual-r2-qint8-avx2",
+      "license": "Apache-2.0",
+      "production_eligible": true,
+      "quantization": "qint8-avx2",
+      "onnx_sha256": "a6022dd8220ea6f6595562a1328ee216f4a94faa55362f2f4747c80f1e78772e",
+      "onnx_bytes": 98247878
+    }
+  ]
+}

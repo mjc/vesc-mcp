@@ -1,0 +1,17 @@
+semantic-runtime: {"ort_dylib_path":"/nix/store/6w62cwm3w0gibn7wvfr5s1b2b3xppwg6-onnxruntime-1.26.0/lib/libonnxruntime.dylib","ort_build_info":"ORT Build Info: build type=Release","requested_provider":"Auto","selected_provider":"CPUExecutionProvider","selected_device":null,"provider_availability":["CPUExecutionProvider=true"],"cpu_fallback_possible":false,"graph_fallback_policy":"EP registration is fatal for explicit non-CPU requests; FastEmbed does not expose disable_cpu_fallback, so unsupported graph nodes may still fall back to CPU."}
+       83.48 real       176.83 user        27.07 sys
+          3020423168  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              611176  page reclaims
+                1038  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 215  voluntary context switches
+               92550  involuntary context switches
+          2417773248  peak memory footprint
