@@ -22,7 +22,13 @@ def combine(reports: list[dict], peak_rss: dict[str, int] | None = None) -> dict
     if not reports:
         raise ValueError("at least one report is required")
     first = reports[0]
-    shared = ("suite_id", "corpus_digest", "corpus_documents", "corpus_chunks")
+    shared = (
+        "suite_id",
+        "corpus_digest",
+        "corpus_documents",
+        "corpus_chunks",
+        "evaluated_chunks",
+    )
     for report in reports[1:]:
         for field in shared:
             if report[field] != first[field]:
@@ -40,12 +46,18 @@ def combine(reports: list[dict], peak_rss: dict[str, int] | None = None) -> dict
             candidate["benchmark"]["peak_rss_bytes"] = peak_rss[name]
         candidates.append(candidate)
         warnings.extend(report.get("warnings", []))
+    if peak_rss is not None and all(
+        candidate["benchmark"].get("peak_rss_bytes") is not None
+        for candidate in candidates
+    ):
+        warnings = [warning for warning in warnings if not warning.startswith("peak RSS is")]
     return {
         "schema": 1,
         "suite_id": first["suite_id"],
         "corpus_digest": first["corpus_digest"],
         "corpus_documents": first["corpus_documents"],
         "corpus_chunks": first["corpus_chunks"],
+        "evaluated_chunks": first["evaluated_chunks"],
         "lexical": first["lexical"],
         "candidates": candidates,
         "machine": first["machine"],
@@ -55,11 +67,12 @@ def combine(reports: list[dict], peak_rss: dict[str, int] | None = None) -> dict
 
 def markdown(report: dict) -> str:
     lines = [
-        "# VESCM-165 embedding bake-off",
+        "# Embedding bake-off",
         "",
         f"- Suite: `{report['suite_id']}`",
         f"- Corpus: `{report['corpus_digest']}`",
         f"- Documents / chunks: {report['corpus_documents']} / {report['corpus_chunks']}",
+        f"- Evaluated chunks: {report['evaluated_chunks']}",
         "",
         "| Candidate | Provider (s) | Chunks/s | Peak RSS (bytes) | Semantic R@5 | Hybrid R@5 | Hybrid MRR@10 |",
         "|---|---:|---:|---:|---:|---:|---:|",
@@ -68,6 +81,8 @@ def markdown(report: dict) -> str:
         benchmark = candidate["benchmark"]
         provider = benchmark["provider_inference"]["p50_us"] / 1_000_000
         throughput = benchmark.get("throughput_chunks_per_second")
+        if throughput is None and provider > 0:
+            throughput = report["evaluated_chunks"] / provider
         peak_rss = benchmark.get("peak_rss_bytes")
         lines.append(
             "| {name} | {provider:.3f} | {throughput} | {rss} | {semantic:.4f} | "

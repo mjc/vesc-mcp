@@ -148,11 +148,11 @@ def main() -> int:
         raise AssertionError("report/suite chunk count differs")
     suite_queries = suite["queries"]
     verify_report("lexical", report["lexical"], suite_queries)
-    if len(report["candidates"]) != 4:
-        raise AssertionError("bake-off report must contain four candidates")
     expected_candidates = {
         candidate["name"]: candidate for candidate in config["candidates"]
     }
+    if len(report["candidates"]) != len(expected_candidates):
+        raise AssertionError("bake-off report candidate count differs from config")
     if set(expected_candidates) != {
         candidate["candidate"]["name"] for candidate in report["candidates"]
     }:
@@ -171,6 +171,8 @@ def main() -> int:
             "model_id",
             "model_revision",
             "directory",
+            "license",
+            "production_eligible",
             "quantization",
             "onnx_sha256",
             "onnx_bytes",
@@ -207,10 +209,10 @@ def main() -> int:
             raise AssertionError(f"{name}: benchmark revision differs")
         if benchmark["corpus_digest"] != report["corpus_digest"]:
             raise AssertionError(f"{name}: benchmark corpus digest differs")
-        if benchmark["corpus_chunks"] != report["corpus_chunks"]:
-            raise AssertionError(f"{name}: benchmark chunk count differs")
-        if benchmark["vector_count"] != report["corpus_chunks"]:
-            raise AssertionError(f"{name}: vector count does not cover the corpus")
+        if benchmark["corpus_chunks"] != report["evaluated_chunks"]:
+            raise AssertionError(f"{name}: benchmark sample count differs")
+        if benchmark["vector_count"] != report["evaluated_chunks"]:
+            raise AssertionError(f"{name}: vector count does not cover the evaluated sample")
         verify_report(f"{name}.semantic", candidate["semantic"], suite_queries)
         verify_report(f"{name}.hybrid", candidate["hybrid"], suite_queries)
     print(f"verified {len(report['candidates'])} candidates and lexical control")

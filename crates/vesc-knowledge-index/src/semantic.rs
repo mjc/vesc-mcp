@@ -404,6 +404,27 @@ impl EmbeddingProfile {
         }
     }
 
+    /// Profile for Granite Embedding 97M Multilingual R2.
+    #[must_use]
+    pub const fn granite_embedding_97m_r2() -> Self {
+        Self {
+            pooling: Pooling::Cls,
+            query_prefix: String::new(),
+            document_prefix: String::new(),
+            max_length: 32_768,
+            dimension: 384,
+            normalize: true,
+        }
+    }
+
+    /// Profile for Granite Embedding 311M Multilingual R2.
+    #[must_use]
+    pub const fn granite_embedding_311m_r2() -> Self {
+        let mut profile = Self::granite_embedding_97m_r2();
+        profile.dimension = 768;
+        profile
+    }
+
     /// Resolves the supported profile from a model identity.
     #[must_use]
     pub fn for_model_id(model_id: &str) -> Option<Self> {
@@ -416,6 +437,10 @@ impl EmbeddingProfile {
             Some(Self::snowflake_arctic())
         } else if model_id.contains("jina-embeddings-v2-base-code") {
             Some(Self::jina_v2_base_code())
+        } else if model_id.contains("granite-embedding-97m-multilingual-r2") {
+            Some(Self::granite_embedding_97m_r2())
+        } else if model_id.contains("granite-embedding-311m-multilingual-r2") {
+            Some(Self::granite_embedding_311m_r2())
         } else {
             None
         }
@@ -2510,6 +2535,24 @@ mod tests {
         assert!(text.starts_with("encoded values crossing"));
         assert!(text.contains("lbm_enc_i32"));
         assert!(semantic_query_text("lbm_add_extension").eq("lbm_add_extension"));
+    }
+
+    #[test]
+    fn granite_r2_profiles_preserve_native_dimensions() {
+        let small =
+            EmbeddingProfile::for_model_id("ibm-granite/granite-embedding-97m-multilingual-r2")
+                .expect("97M profile");
+        let large =
+            EmbeddingProfile::for_model_id("ibm-granite/granite-embedding-311m-multilingual-r2")
+                .expect("311M profile");
+
+        assert_eq!(small.pooling, Pooling::Cls);
+        assert_eq!(small.max_length, 32_768);
+        assert_eq!(small.dimension, 384);
+        assert_eq!(large.dimension, 768);
+        assert!(small.query_prefix.is_empty());
+        assert!(small.document_prefix.is_empty());
+        assert!(small.normalize && large.normalize);
     }
 
     #[cfg(feature = "semantic-fastembed")]

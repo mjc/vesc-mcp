@@ -198,6 +198,8 @@ pub struct BakeoffCandidateSpec {
     pub model_revision: String,
     /// Relative directory below the operator-provided model root.
     pub directory: String,
+    pub license: String,
+    pub production_eligible: bool,
     pub quantization: String,
     pub onnx_sha256: String,
     pub onnx_bytes: u64,
@@ -223,6 +225,8 @@ pub struct BakeoffReport {
     pub corpus_digest: ContentDigest,
     pub corpus_documents: usize,
     pub corpus_chunks: usize,
+    /// Chunks actually embedded by this run; smaller only for an explicit benchmark sample.
+    pub evaluated_chunks: usize,
     pub lexical: EvaluationReport,
     pub candidates: Vec<BakeoffCandidateReport>,
     pub machine: MachineProfile,
@@ -245,6 +249,8 @@ impl BakeoffReport {
             self.corpus_documents, self.corpus_chunks
         )
         .expect("write to String");
+        writeln!(markdown, "- Evaluated chunks: {}", self.evaluated_chunks)
+            .expect("write to String");
         writeln!(markdown).expect("write to String");
         writeln!(
             markdown,
@@ -268,7 +274,7 @@ impl BakeoffReport {
             let chunks_per_second = if provider_seconds == 0.0 {
                 0.0
             } else {
-                self.corpus_chunks as f64 / provider_seconds
+                self.evaluated_chunks as f64 / provider_seconds
             };
             let peak_rss = benchmark.peak_rss_bytes.map_or_else(
                 || "—".into(),

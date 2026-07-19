@@ -1334,11 +1334,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
             "--candidate must select one candidate"
         );
     } else {
-        assert_eq!(
-            candidates_to_run.len(),
-            4,
-            "bake-off must contain four candidates"
-        );
+        assert!(!candidates_to_run.is_empty(), "bake-off has no candidates");
     }
     let (mut chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact_root));
     let manifest = inspect_manifest(&active_manifest_path(&artifact_root))
@@ -1359,6 +1355,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     assert_eq!(config.corpus_digest, corpus_digest.to_string());
     assert_eq!(config.corpus_documents, corpus_documents);
     assert_eq!(config.corpus_chunks, chunks.len());
+    let corpus_chunks = chunks.len();
     let bounded_quality_chunks = argument_value(args, "--semantic-quality-chunks").map(|value| {
         let size = value
             .parse::<usize>()
@@ -1519,7 +1516,8 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         suite_id: suite.suite_id,
         corpus_digest,
         corpus_documents,
-        corpus_chunks: chunks.len(),
+        corpus_chunks,
+        evaluated_chunks: chunks.len(),
         lexical: lexical_report,
         candidates,
         machine,
