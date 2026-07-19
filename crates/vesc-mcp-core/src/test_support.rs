@@ -86,6 +86,8 @@ pub fn asset_missing(root: &Path, relative: &Path) -> bool {
 #[derive(Debug, Clone)]
 pub struct McpTestHarness {
     service: crate::VescMcpService,
+    feedback: Option<crate::tools::knowledge_feedback::FeedbackStore>,
+    feedback_writes_enabled: bool,
 }
 
 impl McpTestHarness {
@@ -93,12 +95,97 @@ impl McpTestHarness {
     pub fn new() -> Self {
         Self {
             service: crate::VescMcpService::new(),
+            feedback: None,
+            feedback_writes_enabled: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_feedback_store(root: impl AsRef<Path>, writes_enabled: bool) -> Self {
+        let root = root.as_ref();
+        let store = crate::tools::knowledge_feedback::FeedbackStore::new(root);
+        Self {
+            service: crate::VescMcpService::with_feedback_store(root, writes_enabled),
+            feedback: Some(store),
+            feedback_writes_enabled: writes_enabled,
         }
     }
 
     #[must_use]
     pub fn list_tool_names(&self) -> Vec<String> {
         self.service.list_tool_names()
+    }
+
+    /// Read a registered MCP resource through the service registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the resource cannot be read.
+    #[must_use]
+    pub fn read_resource(&self, uri: &str) -> String {
+        self.service
+            .resource_registry()
+            .read(uri)
+            .unwrap_or_else(|error| panic!("read resource {uri}: {error}"))
+    }
+
+    fn call_feedback_tool(&self, name: &str, arguments: serde_json::Value) -> Option<String> {
+        use crate::tools::knowledge_feedback::{
+            CorrectVescKnowledgeParams, SubmitKnowledgeFeedbackParams,
+            correct_vesc_knowledge_tool_with_store, submit_vesc_knowledge_feedback_with_store,
+        };
+        use crate::tools::search_knowledge::{
+            CorrectionReplayReport, ReplayVescKnowledgeCorrectionParams,
+            replay_vesc_knowledge_correction,
+        };
+
+        let response = match name {
+            "submit_vesc_knowledge_feedback" => {
+                let params: SubmitKnowledgeFeedbackParams = serde_json::from_value(arguments)
+                    .expect("submit_vesc_knowledge_feedback requires its public request schema");
+                serde_json::to_string(&submit_vesc_knowledge_feedback_with_store(
+                    &params,
+                    self.feedback.as_ref().expect("configured feedback store"),
+                ))
+                .expect("feedback response json")
+            }
+            "correct_vesc_knowledge" => {
+                let params: CorrectVescKnowledgeParams = serde_json::from_value(arguments)
+                    .expect("correct_vesc_knowledge requires its public request schema");
+                serde_json::to_string(&correct_vesc_knowledge_tool_with_store(
+                    &params,
+                    self.feedback.as_ref().expect("configured feedback store"),
+                    self.service.resource_registry(),
+                ))
+                .expect("correction response json")
+            }
+            "replay_vesc_knowledge_correction" => {
+                let params: ReplayVescKnowledgeCorrectionParams = serde_json::from_value(arguments)
+                    .expect("replay_vesc_knowledge_correction requires its public request schema");
+                let report = if params.mark_covered && !self.feedback_writes_enabled {
+                    CorrectionReplayReport::failure(
+                        &params.correction_id,
+                        String::new(),
+                        "mark_covered requires enabled feedback writes".into(),
+                    )
+                } else if let Some(store) = &self.feedback {
+                    replay_vesc_knowledge_correction(
+                        &params,
+                        &crate::config::McpConfig::load().knowledge,
+                        store,
+                    )
+                } else {
+                    CorrectionReplayReport::failure(
+                        &params.correction_id,
+                        String::new(),
+                        "knowledge feedback is not configured".into(),
+                    )
+                };
+                serde_json::to_string(&report).expect("replay response json")
+            }
+            _ => return None,
+        };
+        Some(response)
     }
 
     /// Call a registered MCP tool and return the JSON text payload.
@@ -123,7 +210,7 @@ impl McpTestHarness {
         };
         use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
         use crate::tools::search_knowledge::{
-            SearchVescKnowledgeParams, search_vesc_knowledge_json,
+            SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
         };
         use crate::tools::validate::{
             ValidatePackageLayoutParams, validate_package_layout_tool_with_sandbox,
@@ -136,6 +223,10 @@ impl McpTestHarness {
             "tool {name} is not registered; have {:?}",
             self.list_tool_names()
         );
+
+        if let Some(response) = self.call_feedback_tool(name, arguments.clone()) {
+            return response;
+        }
 
         match name {
             "ping" => {
@@ -195,7 +286,12 @@ impl McpTestHarness {
             "search_vesc_knowledge" => {
                 let params: SearchVescKnowledgeParams = serde_json::from_value(arguments)
                     .expect("search_vesc_knowledge requires { \"query\": \"...\" }");
-                search_vesc_knowledge_json(&params)
+                search_vesc_knowledge_json_with_feedback(
+                    &params,
+                    &crate::config::McpConfig::load().knowledge,
+                    self.feedback.as_ref(),
+                    self.service.resource_registry(),
+                )
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),
         }

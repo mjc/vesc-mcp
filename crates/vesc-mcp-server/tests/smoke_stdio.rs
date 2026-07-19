@@ -69,7 +69,8 @@ async fn smoke_compact_search_rows_cross_stdio_boundary() -> anyhow::Result<()> 
             "excerpt",
             "source_index",
             "chunk_id",
-            "correction_ids"
+            "correction_ids",
+            "origin"
         ])
     );
     assert!(

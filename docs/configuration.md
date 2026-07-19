@@ -126,7 +126,7 @@ The default `lexical` mode is local and does not download a model.
 
 Feedback reads are available whenever `path` is configured. Write tools require
 both `path` and `writes_enabled = true`. Streamable HTTP writes also require the
-existing `VESC_MCP_AUTH_TOKEN` boundary; otherwise HTTP remains read-only.
+existing `VESC_MCP_HTTP_AUTH_TOKEN` boundary; otherwise HTTP remains read-only.
 
 Supported modes:
 

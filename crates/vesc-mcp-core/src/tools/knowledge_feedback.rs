@@ -1,14 +1,15 @@
 //! Durable learned notes and VESC-resource-backed corrections.
 
 use crate::resources::ResourceRegistry;
+use fs4::fs_std::FileExt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
 };
 use thiserror::Error;
 use vesc_knowledge_index::{
@@ -25,8 +26,6 @@ const MAX_LIST_ITEMS: usize = 32;
 const MAX_ITEM_BYTES: usize = 512;
 const MAX_EVIDENCE_ITEMS: usize = 16;
 const EVIDENCE_EXCERPT_CHARS: usize = 512;
-
-static STORE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Bounded learned-note submission.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -404,10 +403,8 @@ impl FeedbackStore {
                 "coverage_evidence must not be empty".into(),
             ));
         }
-        let lock = STORE_WRITE_LOCK.get_or_init(|| Mutex::new(()));
-        let _guard = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        validate_lists(&[("coverage_evidence", coverage_evidence)])?;
+        let _guard = self.lock_for_write()?;
         let mut snapshot = self.load()?;
         let record = snapshot
             .records
@@ -429,10 +426,7 @@ impl FeedbackStore {
         record: KnowledgeRecord,
         supersedes: Option<&str>,
     ) -> Result<bool, FeedbackError> {
-        let lock = STORE_WRITE_LOCK.get_or_init(|| Mutex::new(()));
-        let _guard = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = self.lock_for_write()?;
         let mut snapshot = self.load()?;
         if snapshot
             .records
@@ -477,6 +471,32 @@ impl FeedbackStore {
 
     fn path(&self) -> PathBuf {
         self.root.join("feedback.json")
+    }
+
+    fn lock_for_write(&self) -> Result<File, FeedbackError> {
+        reject_symlink(&self.root)?;
+        fs::create_dir_all(&self.root)?;
+        reject_symlink(&self.root)?;
+        let path = self.root.join(".feedback.lock");
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(FeedbackError::Invalid(format!(
+                    "feedback lock {} must be a regular file",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        FileExt::lock_exclusive(&lock)?;
+        Ok(lock)
     }
 
     fn load(&self) -> Result<FeedbackSnapshot, FeedbackError> {
@@ -528,11 +548,11 @@ impl FeedbackStore {
                 "feedback store exceeds {MAX_STORE_BYTES} bytes"
             )));
         }
-        let temp = self
-            .root
-            .join(format!(".feedback.tmp-{}", std::process::id()));
-        fs::write(&temp, bytes)?;
-        fs::rename(temp, self.path())?;
+        let mut temp = tempfile::NamedTempFile::new_in(&self.root)?;
+        temp.write_all(&bytes)?;
+        temp.as_file().sync_all()?;
+        temp.persist(self.path())
+            .map_err(|error| FeedbackError::Io(error.error))?;
         Ok(())
     }
 }
@@ -1006,9 +1026,10 @@ fn validate_retrieval_trace(trace: &RetrievalTrace) -> Result<(), FeedbackError>
             "retrieval_trace.limit must be between 1 and 100".into(),
         ));
     }
-    if trace.results.len() > MAX_LIST_ITEMS {
+    if trace.results.len() > trace.limit {
         return Err(FeedbackError::Limit(format!(
-            "retrieval_trace.results exceeds {MAX_LIST_ITEMS} items"
+            "retrieval_trace.results exceeds retrieval_trace.limit ({})",
+            trace.limit
         )));
     }
     if trace.decisive_evidence.is_empty() {
@@ -1072,7 +1093,7 @@ fn normalized_retrieval_trace(trace: &RetrievalTrace) -> RetrievalTrace {
     }
 }
 
-fn validate_lists(lists: &[(&str, &Vec<String>)]) -> Result<(), FeedbackError> {
+fn validate_lists(lists: &[(&str, &[String])]) -> Result<(), FeedbackError> {
     for (name, values) in lists {
         if values.len() > MAX_LIST_ITEMS {
             return Err(FeedbackError::Limit(format!(

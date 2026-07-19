@@ -301,20 +301,17 @@ impl VescMcpService {
         >,
     ) -> String {
         if params.mark_covered && !self.state.feedback_writes_enabled {
-            return r#"{"ok":false,"error":"mark_covered requires enabled feedback writes"}"#
-                .into();
+            return replay_error_json(&params, "mark_covered requires enabled feedback writes");
         }
         let Some(store) = self.state.feedback.as_ref() else {
-            return r#"{"ok":false,"error":"knowledge feedback is not configured"}"#.into();
+            return replay_error_json(&params, "knowledge feedback is not configured");
         };
         let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
             &params,
             &McpConfig::load().knowledge,
             store,
         );
-        serde_json::to_string(&report).unwrap_or_else(|error| {
-            format!(r#"{{"ok":false,"error":"replay serialization failed: {error}"}}"#)
-        })
+        replay_report_json(&report)
     }
 }
 
@@ -504,20 +501,20 @@ impl HttpMcpService {
         >,
     ) -> String {
         if params.mark_covered && !self.feedback_writes_enabled {
-            return r#"{"ok":false,"error":"mark_covered requires authenticated feedback writes"}"#
-                .into();
+            return replay_error_json(
+                &params,
+                "mark_covered requires authenticated feedback writes",
+            );
         }
         let Some(store) = self.state.feedback.as_ref() else {
-            return r#"{"ok":false,"error":"knowledge feedback is not configured"}"#.into();
+            return replay_error_json(&params, "knowledge feedback is not configured");
         };
         let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
             &params,
             &McpConfig::load().knowledge,
             store,
         );
-        serde_json::to_string(&report).unwrap_or_else(|error| {
-            format!(r#"{{"ok":false,"error":"replay serialization failed: {error}"}}"#)
-        })
+        replay_report_json(&report)
     }
 }
 
@@ -667,6 +664,24 @@ fn feedback_json(
     serde_json::to_string(&response).unwrap_or_else(|error| {
         format!(r#"{{"ok":false,"error":"feedback serialization failed: {error}"}}"#)
     })
+}
+
+fn replay_error_json(
+    params: &crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams,
+    error: &str,
+) -> String {
+    replay_report_json(
+        &crate::tools::search_knowledge::CorrectionReplayReport::failure(
+            &params.correction_id,
+            String::new(),
+            error.into(),
+        ),
+    )
+}
+
+fn replay_report_json(report: &crate::tools::search_knowledge::CorrectionReplayReport) -> String {
+    serde_json::to_string(report)
+        .expect("CorrectionReplayReport contains only infallibly serializable fields")
 }
 
 fn http_server_info(feedback_writes_enabled: bool) -> ServerInfo {
@@ -866,5 +881,28 @@ mod tests {
                 .iter()
                 .any(|name| name == "correct_vesc_knowledge")
         );
+    }
+
+    #[test]
+    fn replay_errors_have_one_schema_on_stdio_and_http() {
+        let params = crate::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams {
+            correction_id: "correction-missing".into(),
+            mark_covered: false,
+            authorization: None,
+        };
+        let responses = [
+            VescMcpService::new().replay_vesc_knowledge_correction(Parameters(params.clone())),
+            VescMcpService::new()
+                .http_service()
+                .replay_vesc_knowledge_correction(Parameters(params)),
+        ];
+
+        for response in responses {
+            let report: crate::tools::search_knowledge::CorrectionReplayReport =
+                serde_json::from_str(&response).expect("complete replay report");
+            assert!(!report.ok);
+            assert_eq!(report.correction_id, "correction-missing");
+            assert!(report.error.is_some());
+        }
     }
 }

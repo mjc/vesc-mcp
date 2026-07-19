@@ -4,6 +4,7 @@ use serde_json::Value;
 use vesc_mcp_core::{
     config::KnowledgeConfig,
     resources::ResourceRegistry,
+    test_support::McpTestHarness,
     tools::{
         knowledge_feedback::{
             CorrectVescKnowledgeParams, FeedbackStore, SubmitKnowledgeFeedbackParams,
@@ -117,6 +118,140 @@ fn submitted_note_is_idempotent_and_survives_reopen() {
 }
 
 #[test]
+fn a_second_store_replacement_persists_the_new_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = FeedbackStore::new(temp.path());
+    let first = submit_vesc_knowledge_feedback_with_store(&learned_note(), &store);
+    let mut second_note = learned_note();
+    second_note.question = "How is the native payload embedded?".into();
+    second_note.lesson = "lispData carries the native payload bytes.".into();
+    let second = submit_vesc_knowledge_feedback_with_store(&second_note, &store);
+
+    assert!(first.ok, "{first:?}");
+    assert!(second.ok, "{second:?}");
+    assert_eq!(
+        FeedbackStore::new(temp.path())
+            .active_records()
+            .expect("reopened snapshot")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn feedback_workflow_crosses_the_registered_mcp_boundary() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let harness = McpTestHarness::with_feedback_store(temp.path(), true);
+    let note: Value = serde_json::from_str(&harness.call_tool(
+        "submit_vesc_knowledge_feedback",
+        serde_json::to_value(learned_note()).expect("note request JSON"),
+    ))
+    .expect("note response JSON");
+    assert_eq!(note["ok"], true, "{note}");
+
+    let correction: Value = serde_json::from_str(
+        &harness.call_tool(
+            "correct_vesc_knowledge",
+            serde_json::to_value(loader_correction(
+                CorrectionAuthorization::ExplicitUserRequest,
+            ))
+            .expect("correction request JSON"),
+        ),
+    )
+    .expect("correction response JSON");
+    assert_eq!(correction["ok"], true, "{correction}");
+
+    let search: Value = serde_json::from_str(&harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({ "query": "load-native-lib import tag", "limit": 2 }),
+    ))
+    .expect("search response JSON");
+    assert!(
+        search["results"].as_array().is_some_and(|results| {
+            results
+                .iter()
+                .any(|row| row[6] == "unverified_model_feedback")
+        }),
+        "{search}"
+    );
+
+    let replay: Value = serde_json::from_str(&harness.call_tool(
+        "replay_vesc_knowledge_correction",
+        serde_json::json!({
+            "correction_id": correction["id"],
+            "mark_covered": false
+        }),
+    ))
+    .expect("replay response JSON");
+    assert!(
+        replay.get("covered_by_base_knowledge").is_some(),
+        "{replay}"
+    );
+    assert!(replay.get("ordered_result_ids").is_some(), "{replay}");
+
+    let id = note["id"].as_str().expect("note id");
+    let reopened = McpTestHarness::with_feedback_store(temp.path(), true);
+    assert!(
+        reopened
+            .read_resource(&format!("vesc://knowledge/feedback/{id}"))
+            .contains("import tag bound to embedded native bytes")
+    );
+}
+
+#[test]
+fn replay_errors_keep_the_public_report_schema() {
+    let harness = McpTestHarness::new();
+    let body: Value = serde_json::from_str(&harness.call_tool(
+        "replay_vesc_knowledge_correction",
+        serde_json::json!({ "correction_id": "correction-missing" }),
+    ))
+    .expect("replay error JSON");
+
+    for field in [
+        "ok",
+        "correction_id",
+        "query",
+        "covered_by_base_knowledge",
+        "marked_covered",
+        "matched_decisive_evidence",
+        "missing_decisive_evidence",
+        "ordered_result_ids",
+        "warnings",
+        "error",
+    ] {
+        assert!(body.get(field).is_some(), "missing {field}: {body}");
+    }
+}
+
+#[test]
+fn feedback_search_respects_total_limit_and_updates_timing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = FeedbackStore::new(temp.path());
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    assert!(submit_vesc_knowledge_feedback_with_store(&learned_note(), &store).ok);
+
+    let json = search_vesc_knowledge_json_with_feedback(
+        &SearchVescKnowledgeParams {
+            query: "load-native-lib import tag".into(),
+            category: None,
+            limit: 1,
+            mode: None,
+            filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
+            max_response_bytes: None,
+            max_context_bytes: None,
+            detail: vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Full,
+        },
+        &KnowledgeConfig::default(),
+        Some(&store),
+        &resources,
+    );
+    let body: Value = serde_json::from_str(&json).expect("search response JSON");
+
+    assert_eq!(body["results"].as_array().map(Vec::len), Some(1), "{body}");
+    assert_eq!(body["timing"]["result_count"], 1, "{body}");
+}
+
+#[test]
 fn persisted_feedback_is_readable_by_resource_uri() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = FeedbackStore::new(temp.path());
@@ -168,10 +303,10 @@ fn correction_replay_measures_base_knowledge_without_advisory() {
             query: correction.retrieval_trace.query.clone(),
             category: None,
             limit: correction.retrieval_trace.limit,
-            mode: None,
+            mode: Some(vesc_mcp_core::tools::search_knowledge::SearchMode::Lexical),
             filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
-            max_response_bytes: None,
-            max_context_bytes: None,
+            max_response_bytes: correction.retrieval_trace.max_response_bytes,
+            max_context_bytes: correction.retrieval_trace.max_context_bytes,
             detail: vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Full,
         },
         &KnowledgeConfig::default(),
@@ -195,7 +330,113 @@ fn correction_replay_measures_base_knowledge_without_advisory() {
     assert!(report.marked_covered, "{report:?}");
     assert_eq!(report.matched_decisive_evidence, vec![decisive_id]);
     assert!(report.missing_decisive_evidence.is_empty());
+    assert_eq!(
+        report.ordered_result_ids,
+        baseline
+            .results
+            .iter()
+            .map(|result| result.id.clone())
+            .collect::<Vec<_>>()
+    );
     assert!(store.active_records().expect("active records").is_empty());
+}
+
+#[test]
+fn replay_rejects_an_unreconstructable_mode() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let mut correction = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    correction.retrieval_trace.mode = Some("not-a-mode".into());
+    let write = correct_vesc_knowledge_tool_with_store(&correction, &store, &resources);
+    let report = vesc_mcp_core::tools::search_knowledge::replay_vesc_knowledge_correction(
+        &vesc_mcp_core::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams {
+            correction_id: write.id.expect("correction id"),
+            mark_covered: true,
+            authorization: Some(CorrectionAuthorization::ExplicitUserRequest),
+        },
+        &KnowledgeConfig::default(),
+        &store,
+    );
+
+    assert!(!report.ok, "{report:?}");
+    assert!(
+        report
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("mode")),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn replay_rejects_an_unreconstructable_filter() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let mut correction = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    correction.retrieval_trace.filters = vec!["unknown=value".into()];
+    let write = correct_vesc_knowledge_tool_with_store(&correction, &store, &resources);
+    let report = vesc_mcp_core::tools::search_knowledge::replay_vesc_knowledge_correction(
+        &vesc_mcp_core::tools::search_knowledge::ReplayVescKnowledgeCorrectionParams {
+            correction_id: write.id.expect("correction id"),
+            mark_covered: true,
+            authorization: Some(CorrectionAuthorization::ExplicitUserRequest),
+        },
+        &KnowledgeConfig::default(),
+        &store,
+    );
+
+    assert!(!report.ok, "{report:?}");
+    assert!(
+        report
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("filter")),
+        "{report:?}"
+    );
+    assert_eq!(store.active_records().expect("active records").len(), 1);
+}
+
+#[test]
+fn correction_trace_accepts_every_result_within_its_search_limit() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let mut correction = loader_correction(CorrectionAuthorization::ExplicitUserRequest);
+    correction.retrieval_trace.limit = 100;
+    correction.retrieval_trace.results = (0..100)
+        .map(
+            |index| vesc_mcp_core::tools::knowledge_feedback::RetrievalTraceResult {
+                id: format!("result-{index}"),
+                score: None,
+                excerpt: "bounded excerpt".into(),
+                resource_uri: None,
+            },
+        )
+        .collect();
+
+    let write = correct_vesc_knowledge_tool_with_store(&correction, &store, &resources);
+    assert!(write.ok, "{write:?}");
+}
+
+#[test]
+fn blank_coverage_evidence_does_not_retire_a_correction() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let resources = ResourceRegistry::with_defaults().expect("resource registry");
+    let store = FeedbackStore::new(temp.path());
+    let write = correct_vesc_knowledge_tool_with_store(
+        &loader_correction(CorrectionAuthorization::ExplicitUserRequest),
+        &store,
+        &resources,
+    );
+    let id = write.id.expect("correction id");
+
+    let error = store
+        .mark_correction_covered(&id, &["   ".into()])
+        .expect_err("blank evidence must be rejected");
+    assert!(error.to_string().contains("coverage_evidence"));
+    assert_eq!(store.active_records().expect("active records").len(), 1);
 }
 
 #[test]

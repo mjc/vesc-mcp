@@ -24,7 +24,7 @@ vesc-mcp supports two MCP connections:
 | Connection | Best for | Available tools |
 |------------|----------|-----------------|
 | stdio | One local assistant that needs package files | All configured tools |
-| Streamable HTTP | Multiple clients sharing knowledge search | `ping`, `search_vesc_knowledge`, resources, and authenticated feedback writes when configured |
+| Streamable HTTP | Multiple clients sharing knowledge search | `ping`, `search_vesc_knowledge`, `replay_vesc_knowledge_correction`, resources, and authenticated feedback writes when configured |
 
 Package inspection, validation, checks, and builds are stdio-only because they
 access local files. Streamable HTTP intentionally does not expose them.
