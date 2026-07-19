@@ -11,6 +11,8 @@ use crate::{Category, IndexEntry};
 pub mod chunking;
 #[cfg(feature = "git-corpus")]
 pub mod git;
+#[cfg(feature = "git-corpus")]
+pub mod history;
 pub mod ingest;
 
 use self::ingest::{SourceInventory, SourceRejection};

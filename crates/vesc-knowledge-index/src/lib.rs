@@ -18,6 +18,12 @@ pub use builder::IndexBuilder;
 pub use corpus::chunking::{ChunkingConfig, ChunkingError, chunk_document, chunk_markdown};
 #[cfg(feature = "git-corpus")]
 pub use corpus::git::GitIngestionObservations;
+#[cfg(feature = "git-corpus")]
+pub use corpus::history::{
+    ChangeEvent, ChangeKind, EmbeddingContract, HistoryContent, HistoryError, HistoryOccurrence,
+    HistoryRelease, HistorySemanticHit, HistoryVectorBuildObservations, HistoryVectorIndex,
+    TaggedHistory, TaggedHistoryObservations, TaggedHistorySource, ingest_tagged_history,
+};
 pub use corpus::ingest::{
     IngestionError, IngestionReport, SourceInventory, SourceRejection, SourceSpec,
     vesc_mcp_source_specs,

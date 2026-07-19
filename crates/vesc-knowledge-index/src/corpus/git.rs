@@ -1,6 +1,6 @@
 //! Bounded ingestion of immutable Git commit trees without a worktree.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -96,6 +96,26 @@ struct Candidate {
     size: u64,
 }
 
+#[derive(Debug, Clone)]
+enum CachedGitBlob {
+    Text {
+        content: String,
+        digest: ContentDigest,
+        media_type: String,
+        identifiers: BTreeSet<String>,
+        line_count: u32,
+    },
+    Rejected {
+        code: &'static str,
+        message: &'static str,
+    },
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct GitIngestionCache {
+    blobs: HashMap<(gix::ObjectId, String), CachedGitBlob>,
+}
+
 /// Aggregate Git-ingestion work, retained for profiling rather than artifact identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -110,6 +130,8 @@ pub struct GitIngestionObservations {
     pub blob_bytes_loaded: u64,
     pub binary_rejection_count: u64,
     pub encoding_rejection_count: u64,
+    #[serde(default)]
+    pub blob_cache_hits: u64,
 }
 
 impl GitIngestionObservations {
@@ -136,6 +158,7 @@ impl GitIngestionObservations {
         self.encoding_rejection_count = self
             .encoding_rejection_count
             .saturating_add(other.encoding_rejection_count);
+        self.blob_cache_hits = self.blob_cache_hits.saturating_add(other.blob_cache_hits);
     }
 }
 
@@ -157,6 +180,47 @@ pub fn ingest_git_commit(
     trust_tier: TrustTier,
     license: &LicenseStatus,
     policy: &GitCorpusPolicy,
+) -> Result<IngestionReport, GitIngestionError> {
+    ingest_git_commit_inner(
+        repository_path,
+        repository_id,
+        revision,
+        trust_tier,
+        license,
+        policy,
+        None,
+    )
+}
+
+pub(crate) fn ingest_git_commit_cached(
+    repository_path: &Path,
+    repository_id: &RepositoryId,
+    revision: &Revision,
+    trust_tier: TrustTier,
+    license: &LicenseStatus,
+    policy: &GitCorpusPolicy,
+    cache: &mut GitIngestionCache,
+) -> Result<IngestionReport, GitIngestionError> {
+    ingest_git_commit_inner(
+        repository_path,
+        repository_id,
+        revision,
+        trust_tier,
+        license,
+        policy,
+        Some(cache),
+    )
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn ingest_git_commit_inner(
+    repository_path: &Path,
+    repository_id: &RepositoryId,
+    revision: &Revision,
+    trust_tier: TrustTier,
+    license: &LicenseStatus,
+    policy: &GitCorpusPolicy,
+    mut cache: Option<&mut GitIngestionCache>,
 ) -> Result<IngestionReport, GitIngestionError> {
     validate_policy(policy)?;
     let repo =
@@ -211,67 +275,57 @@ pub fn ingest_git_commit(
         git_observations: None,
     };
     for candidate in candidates {
-        let blob_load_started = Instant::now();
-        let object = repo
-            .find_object(candidate.id)
-            .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
-        observations.blob_load_us = observations
-            .blob_load_us
-            .saturating_add(elapsed_us(blob_load_started));
-        observations.blob_bytes_loaded = observations
-            .blob_bytes_loaded
-            .saturating_add(u64::try_from(object.data.len()).unwrap_or(u64::MAX));
-        let binary_scan_started = Instant::now();
-        let is_binary = object.data.contains(&0);
-        observations.binary_scan_us = observations
-            .binary_scan_us
-            .saturating_add(elapsed_us(binary_scan_started));
-        if is_binary {
-            observations.binary_rejection_count =
-                observations.binary_rejection_count.saturating_add(1);
-            report.rejected.push(source_rejection(
-                &candidate.path,
-                "binary",
-                "Git blob contains binary data",
-            ));
-            continue;
-        }
-        let utf8_started = Instant::now();
-        let content = normalize_text_ref(&object.data);
-        observations.utf8_normalization_us = observations
-            .utf8_normalization_us
-            .saturating_add(elapsed_us(utf8_started));
-        let Ok(content) = content else {
-            observations.encoding_rejection_count =
-                observations.encoding_rejection_count.saturating_add(1);
-            report.rejected.push(source_rejection(
-                &candidate.path,
-                "encoding",
-                "Git blob is not UTF-8 text",
-            ));
+        let cache_key = (candidate.id, candidate.path.clone());
+        let cached = cache
+            .as_deref()
+            .and_then(|cache| cache.blobs.get(&cache_key))
+            .cloned();
+        let blob = if let Some(cached) = cached {
+            observations.blob_cache_hits = observations.blob_cache_hits.saturating_add(1);
+            cached
+        } else {
+            let loaded = load_git_blob(&repo, &candidate, &mut observations)?;
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.blobs.insert(cache_key, loaded.clone());
+            }
+            loaded
+        };
+        let CachedGitBlob::Text {
+            content,
+            digest,
+            media_type,
+            identifiers,
+            line_count,
+        } = blob
+        else {
+            let CachedGitBlob::Rejected { code, message } = blob else {
+                unreachable!()
+            };
+            report
+                .rejected
+                .push(source_rejection(&candidate.path, code, message));
             continue;
         };
         let metadata_started = Instant::now();
-        let digest = ContentDigest::of(content.as_bytes());
         let mut document = NormalizedDocument::new(
             candidate.path.clone(),
             SourceKind::GitBlob,
             repository_id.clone(),
             revision.clone(),
             candidate.path.clone(),
-            media_type(&candidate.path),
+            media_type,
             content,
         )?;
         document.trust_tier = trust_tier;
         document.license = license.clone();
         document.source_span = SourceSpan::new(
             1,
-            u32::try_from(document.content.lines().count().max(1)).unwrap_or(u32::MAX),
+            line_count,
             Some(0),
             u64::try_from(document.content.len()).ok(),
         )
         .ok();
-        document.identifiers = identifiers(&document.path, &document.content);
+        document.identifiers = identifiers;
         document.canonical_uri =
             Some(format!("vesc://knowledge/document/{}", document.document_id).try_into()?);
         report.sources.push(SourceInventory {
@@ -296,6 +350,55 @@ pub fn ingest_git_commit(
     }
     report.git_observations = Some(observations);
     Ok(report)
+}
+
+fn load_git_blob(
+    repo: &gix::Repository,
+    candidate: &Candidate,
+    observations: &mut GitIngestionObservations,
+) -> Result<CachedGitBlob, GitIngestionError> {
+    let blob_load_started = Instant::now();
+    let object = repo
+        .find_object(candidate.id)
+        .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
+    observations.blob_load_us = observations
+        .blob_load_us
+        .saturating_add(elapsed_us(blob_load_started));
+    observations.blob_bytes_loaded = observations
+        .blob_bytes_loaded
+        .saturating_add(u64::try_from(object.data.len()).unwrap_or(u64::MAX));
+    let binary_scan_started = Instant::now();
+    let is_binary = object.data.contains(&0);
+    observations.binary_scan_us = observations
+        .binary_scan_us
+        .saturating_add(elapsed_us(binary_scan_started));
+    if is_binary {
+        observations.binary_rejection_count = observations.binary_rejection_count.saturating_add(1);
+        return Ok(CachedGitBlob::Rejected {
+            code: "binary",
+            message: "Git blob contains binary data",
+        });
+    }
+    let utf8_started = Instant::now();
+    let content = normalize_text_ref(&object.data);
+    observations.utf8_normalization_us = observations
+        .utf8_normalization_us
+        .saturating_add(elapsed_us(utf8_started));
+    let Ok(content) = content else {
+        observations.encoding_rejection_count =
+            observations.encoding_rejection_count.saturating_add(1);
+        return Ok(CachedGitBlob::Rejected {
+            code: "encoding",
+            message: "Git blob is not UTF-8 text",
+        });
+    };
+    Ok(CachedGitBlob::Text {
+        digest: ContentDigest::of(content.as_bytes()),
+        media_type: media_type(&candidate.path).to_owned(),
+        identifiers: identifiers(&candidate.path, &content),
+        line_count: u32::try_from(content.lines().count().max(1)).unwrap_or(u32::MAX),
+        content,
+    })
 }
 
 fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngestionError> {

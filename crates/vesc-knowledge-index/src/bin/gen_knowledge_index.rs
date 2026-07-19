@@ -3,12 +3,14 @@
 #[cfg(feature = "semantic-fastembed")]
 use std::collections::BTreeMap;
 use std::env;
-#[cfg(feature = "semantic-fastembed-online")]
+#[cfg(feature = "semantic-fastembed")]
 use std::fmt::Write as _;
 use std::fs;
+#[cfg(feature = "semantic-fastembed")]
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "semantic-fastembed-online")]
+#[cfg(feature = "semantic-fastembed")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
@@ -31,6 +33,12 @@ use vesc_knowledge_index::{
     build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
     fuse_candidates, semantic_runtime_diagnostics,
 };
+#[cfg(feature = "git-corpus")]
+use vesc_knowledge_index::{
+    ChunkingConfig, LicenseStatus, TaggedHistorySource, TrustTier, build_git_artifacts,
+    corpus::git::{GitCorpusPolicy, GitCorpusSource, GitIngestionObservations},
+    ingest_tagged_history,
+};
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
 use vesc_knowledge_index::{DEFAULT_SEMANTIC_BATCH_SIZE, default_semantic_intra_threads};
@@ -39,14 +47,13 @@ use vesc_knowledge_index::{
     build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest, search_knowledge,
     search_lexical_knowledge, vesc_mcp_source_specs,
 };
-#[cfg(feature = "git-corpus")]
-use vesc_knowledge_index::{
-    LicenseStatus, TrustTier, build_git_artifacts,
-    corpus::git::{GitCorpusPolicy, GitCorpusSource, GitIngestionObservations},
-};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "history-build") {
+        run_history_build(&args[1..]);
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "provision-model") {
         run_provision_model(&args[1..]);
         return;
@@ -77,6 +84,191 @@ fn main() {
     }
 
     generate_index();
+}
+
+#[cfg(feature = "git-corpus")]
+#[allow(clippy::too_many_lines)]
+fn run_history_build(args: &[String]) {
+    let history_only = args.iter().any(|arg| arg == "--history-only");
+    let detected_args = (!history_only)
+        .then(|| detected_rx5700xt_8600g_build_args(args))
+        .flatten();
+    let args = detected_args.as_deref().unwrap_or(args);
+    let repository_path = PathBuf::from(
+        argument_value(args, "--repo")
+            .unwrap_or_else(|| panic!("history-build requires --repo PATH")),
+    );
+    let repository = RepositoryId::try_from(
+        argument_value(args, "--repository").unwrap_or_else(|| "history".into()),
+    )
+    .expect("valid repository identifier");
+    let out = PathBuf::from(
+        argument_value(args, "--out").unwrap_or_else(|| "target/tagged-history".into()),
+    );
+    let source = TaggedHistorySource {
+        repository_path,
+        repository_id: repository,
+        trust_tier: TrustTier::CuratedUpstream,
+        license: LicenseStatus::ReferenceOnly,
+        policy: GitCorpusPolicy::default(),
+        chunking: ChunkingConfig::default(),
+    };
+    let started = std::time::Instant::now();
+    let history = ingest_tagged_history(&source)
+        .unwrap_or_else(|error| panic!("ingest tagged history: {error}"));
+    fs::create_dir_all(&out).expect("create tagged-history output directory");
+    let history_path = out.join("history.json");
+    history
+        .write_artifact(&history_path)
+        .unwrap_or_else(|error| panic!("write {}: {error}", history_path.display()));
+    println!("history: {}", history_path.display());
+    println!("tags: {}", history.observations.tag_count);
+    println!("releases: {}", history.observations.release_count);
+    println!("occurrences: {}", history.observations.occurrence_count);
+    println!(
+        "unique-embedding-inputs: {}",
+        history.observations.unique_embedding_inputs
+    );
+    println!(
+        "git-blob-cache-hits: {}",
+        history.observations.git.blob_cache_hits
+    );
+    println!("history-build-ms: {}", started.elapsed().as_millis());
+
+    if history_only {
+        return;
+    }
+
+    let model_dir = argument_value(args, "--semantic-model-dir");
+    if model_dir.is_none() {
+        return;
+    }
+    #[cfg(feature = "semantic-fastembed")]
+    build_history_vectors(
+        args,
+        &out,
+        &history,
+        &PathBuf::from(model_dir.expect("checked above")),
+    );
+    #[cfg(not(feature = "semantic-fastembed"))]
+    {
+        let _ = model_dir;
+        panic!(
+            "history vector builds require semantic-fastembed; rerun with --features git-corpus,semantic-fastembed"
+        );
+    }
+}
+
+#[cfg(not(feature = "git-corpus"))]
+fn run_history_build(_args: &[String]) {
+    panic!("history-build requires the git-corpus feature");
+}
+
+#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
+fn build_history_vectors(
+    args: &[String],
+    out: &Path,
+    history: &vesc_knowledge_index::TaggedHistory,
+    model_dir: &Path,
+) {
+    let model_id = argument_value(args, "--semantic-model-id")
+        .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
+    let model_revision = argument_value(args, "--semantic-model-revision").unwrap_or_else(|| {
+        panic!("--semantic-model-revision is required with --semantic-model-dir")
+    });
+    let batch_size = argument_value(args, "--semantic-batch-size").map_or(
+        DEFAULT_SEMANTIC_BATCH_SIZE,
+        |value| {
+            value
+                .parse()
+                .expect("--semantic-batch-size must be an integer")
+        },
+    );
+    let intra_threads = argument_value(args, "--semantic-intra-threads").map_or_else(
+        default_semantic_intra_threads,
+        |value| {
+            value
+                .parse()
+                .expect("--semantic-intra-threads must be an integer")
+        },
+    );
+    let profile = semantic_profile_with_args(&model_id, args);
+    let length_bucketed = argument_value(args, "--semantic-length-bucketed")
+        .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
+    let lossless = args.iter().any(|arg| arg == "--semantic-lossless-windows");
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
+        model_dir,
+        Some(batch_size),
+        profile.clone(),
+        Some(intra_threads),
+        semantic_execution_provider(args),
+    )
+    .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+    provider.set_length_bucketed(length_bucketed);
+    provider.set_lossless_windowing(lossless);
+    let model_path = [
+        model_dir.join("model.onnx"),
+        model_dir.join("onnx/model.onnx"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .unwrap_or_else(|| panic!("no model.onnx found under {}", model_dir.display()));
+    let tokenizer_path = model_dir.join("tokenizer.json");
+    let contract = vesc_knowledge_index::EmbeddingContract {
+        schema: 1,
+        model_id,
+        model_revision,
+        model_digest: digest_file(&model_path),
+        tokenizer_digest: digest_file(&tokenizer_path),
+        profile,
+        windowing: format!("lossless={lossless};length-bucketed={length_bucketed}"),
+        embedding_text_version: 1,
+    };
+    let cache =
+        argument_value(args, "--cache").map_or_else(|| out.join("vector-cache"), PathBuf::from);
+    let started = std::time::Instant::now();
+    let (vectors, observations) = vesc_knowledge_index::HistoryVectorIndex::build_with_cache(
+        &mut provider,
+        history,
+        contract,
+        &cache,
+    )
+    .unwrap_or_else(|error| panic!("build history vectors: {error}"));
+    let vector_path = out.join("vectors.json");
+    vectors
+        .write_artifact(&vector_path)
+        .unwrap_or_else(|error| panic!("write {}: {error}", vector_path.display()));
+    println!("vectors: {}", vector_path.display());
+    println!("vector-cache: {}", cache.display());
+    println!("cache-hits: {}", observations.cache_hits);
+    println!("provider-inputs: {}", observations.provider_inputs);
+    println!(
+        "avoided-provider-inputs: {}",
+        observations.avoided_provider_inputs
+    );
+    println!("vector-build-ms: {}", started.elapsed().as_millis());
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn digest_file(path: &Path) -> ContentDigest {
+    let mut file = fs::File::open(path)
+        .unwrap_or_else(|error| panic!("open {} for hashing: {error}", path.display()));
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .unwrap_or_else(|error| panic!("read {} for hashing: {error}", path.display()));
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    let mut hex = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    ContentDigest::try_from(format!("sha256:{hex}")).expect("SHA-256 is a valid content digest")
 }
 
 #[cfg(feature = "git-corpus")]
@@ -534,6 +726,7 @@ fn print_git_observations(observations: Option<&GitIngestionObservations>) {
     );
     println!("git-candidate-count: {}", observations.candidate_count);
     println!("git-blob-bytes-loaded: {}", observations.blob_bytes_loaded);
+    println!("git-blob-cache-hits: {}", observations.blob_cache_hits);
     println!(
         "git-binary-rejections: {}",
         observations.binary_rejection_count
