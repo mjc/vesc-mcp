@@ -925,11 +925,12 @@ fn resolve_evidence(
     let text = resources
         .read(uri)
         .map_err(|error| FeedbackError::Evidence(error.to_string()))?;
-    let mut excerpt = text
-        .chars()
+    let mut chars = text.chars();
+    let mut excerpt = chars
+        .by_ref()
         .take(EVIDENCE_EXCERPT_CHARS)
         .collect::<String>();
-    if text.chars().count() > EVIDENCE_EXCERPT_CHARS {
+    if chars.next().is_some() {
         excerpt.push('…');
     }
     Ok(ResourceEvidence {
