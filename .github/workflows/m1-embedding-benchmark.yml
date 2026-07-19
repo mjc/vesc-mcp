@@ -30,7 +30,7 @@ jobs:
         run: nix develop -c cargo build --release -p vesc-knowledge-index --bin gen-knowledge-index --features semantic-fastembed
       - name: Run bounded native ONNX CPU benchmark
         run: |
-          /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
+          nix develop -c /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
             --artifact target/vescm195-artifacts \
             --model-root target/models \
             --suite tests/evaluation/v2/queries.json \
@@ -51,6 +51,7 @@ jobs:
             > target/vescm195-m1/stdout \
             2> target/vescm195-m1/stderr
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: vescm-195-m1-granite-97m
           path: target/vescm195-m1
