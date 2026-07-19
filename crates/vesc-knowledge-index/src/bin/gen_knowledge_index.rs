@@ -1373,7 +1373,7 @@ fn run_semantic_benchmark(
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         &model_dir,
         Some(batch_sizes[0]),
-        semantic_profile(&model_id),
+        semantic_benchmark_profile(&model_id, args),
         intra_threads,
         execution_provider,
         graph_optimization_level,
@@ -1721,6 +1721,37 @@ fn embedding_profile(model_id: &str) -> EmbeddingProfile {
 #[cfg(feature = "semantic-fastembed")]
 fn semantic_profile(model_id: &str) -> EmbeddingProfile {
     embedding_profile(model_id)
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_benchmark_profile(model_id: &str, args: &[String]) -> EmbeddingProfile {
+    let mut profile = semantic_profile(model_id);
+    if let Some(value) = argument_value(args, "--semantic-max-length") {
+        let max_length = value
+            .parse::<usize>()
+            .expect("--semantic-max-length must be a positive integer");
+        assert!(max_length > 0, "--semantic-max-length must be positive");
+        assert!(
+            max_length <= profile.max_length,
+            "--semantic-max-length cannot exceed the model profile maximum"
+        );
+        profile.max_length = max_length;
+    }
+    profile
+}
+
+#[cfg(all(test, feature = "semantic-fastembed"))]
+mod semantic_profile_tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_profile_honors_shorter_max_length() {
+        let args = vec!["--semantic-max-length".to_string(), "512".to_string()];
+
+        let profile = semantic_benchmark_profile("jinaai/jina-embeddings-v2-base-code", &args);
+
+        assert_eq!(profile.max_length, 512);
+    }
 }
 
 fn print_text_report(report: &EvaluationReport) {

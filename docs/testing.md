@@ -170,8 +170,9 @@ memory.
 
 The benchmark defaults to ONNX Runtime graph-optimization level 3. Use
 `--semantic-graph-optimization-level 0`, `1`, `2`, or `3` only when comparing
-runtime behavior. The model's registered input length is fixed and has no
-command-line override.
+runtime behavior. Use `--semantic-max-length` to benchmark a shorter input
+length without changing the registered model profile; the override cannot
+exceed the profile maximum.
 
 ## Coverage
 
