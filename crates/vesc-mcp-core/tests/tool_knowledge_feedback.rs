@@ -524,24 +524,25 @@ fn correction_requires_and_digests_registered_vesc_resources() {
 }
 
 #[test]
-fn related_search_returns_correction_before_results() {
+fn compact_related_search_compacts_correction_advisory() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = FeedbackStore::new(temp.path());
     let resources = ResourceRegistry::with_defaults().expect("resource registry");
     let correction = loader_correction(CorrectionAuthorization::ConfirmedAfterPrompt);
     assert!(correct_vesc_knowledge_tool_with_store(&correction, &store, &resources).ok);
 
+    let mut params = SearchVescKnowledgeParams {
+        query: "native loader tag".into(),
+        category: None,
+        limit: 10,
+        mode: None,
+        filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
+        max_response_bytes: None,
+        max_context_bytes: None,
+        detail: vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Compact,
+    };
     let json = search_vesc_knowledge_json_with_feedback(
-        &SearchVescKnowledgeParams {
-            query: "native loader tag".into(),
-            category: None,
-            limit: 10,
-            mode: None,
-            filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
-            max_response_bytes: None,
-            max_context_bytes: None,
-            detail: vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::default(),
-        },
+        &params,
         &KnowledgeConfig::default(),
         Some(&store),
         &resources,
@@ -563,6 +564,21 @@ fn related_search_returns_correction_before_results() {
         body["corrections"][0]["check_next"]
             .as_array()
             .is_some_and(|items| !items.is_empty())
+    );
+    assert_eq!(body["corrections"][0]["evidence"][0]["excerpt"], "");
+
+    params.detail = vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Full;
+    let json = search_vesc_knowledge_json_with_feedback(
+        &params,
+        &KnowledgeConfig::default(),
+        Some(&store),
+        &resources,
+    );
+    let body: Value = serde_json::from_str(&json).expect("full search response JSON");
+    assert!(
+        body["corrections"][0]["evidence"][0]["excerpt"]
+            .as_str()
+            .is_some_and(|excerpt| !excerpt.is_empty())
     );
 }
 

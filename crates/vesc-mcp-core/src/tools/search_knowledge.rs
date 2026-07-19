@@ -547,7 +547,8 @@ impl SearchVescKnowledgeResponse {
             .max_response_bytes
             .unwrap_or(config.max_response_bytes)
             .min(config.max_response_bytes);
-        if response_exceeds_budget(&self, budget, detail) {
+        if detail == SearchResponseDetail::Compact || response_exceeds_budget(&self, budget, detail)
+        {
             for correction in &mut self.corrections {
                 compact_correction(correction);
             }
