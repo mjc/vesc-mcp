@@ -13,6 +13,7 @@ pub mod lexical;
 pub mod lifecycle;
 pub mod parsers;
 pub mod path_evaluation;
+pub mod reranking;
 mod search;
 pub mod semantic;
 
