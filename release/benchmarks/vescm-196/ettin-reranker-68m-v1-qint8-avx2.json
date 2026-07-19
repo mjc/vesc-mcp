@@ -1,0 +1,272 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-194-loader-path-v1",
+  "case_id": "historical-vescpkg-native-loader",
+  "model": {
+    "name": "ettin-reranker-68m-v1-qint8-avx2",
+    "model_id": "cross-encoder/ettin-reranker-68m-v1",
+    "model_revision": "d166fa88ddde3c42bc3ee92f7df476d941c8204a",
+    "directory": "ettin-reranker-68m-v1-qint8-avx2",
+    "license": "Apache-2.0",
+    "onnx_sha256": "32972293b8c229a906129aee4feb08fee3df993f9e5ed247179c94bcbbaae06a",
+    "onnx_bytes": 69276379,
+    "head_artifacts": [
+      {
+        "path": "2_Dense/model.safetensors",
+        "sha256": "ee9b8a9186fffb05cea0cd73e2ccfc8a4bf641c075d8f304e5c4e4f5fe0716d0",
+        "bytes": 1048664
+      },
+      {
+        "path": "3_LayerNorm/model.safetensors",
+        "sha256": "3906f4be69408f4f370c7bfdc2de6ef825d4d1f4da4f01221d831336c0e3a91a",
+        "bytes": 4248
+      },
+      {
+        "path": "4_Dense/model.safetensors",
+        "sha256": "1a391820f020c8fc3efb1da894e1719cfdfb8a6c73d214f34f5b1802bac8b9dd",
+        "bytes": 2196
+      }
+    ]
+  },
+  "provider": "CPUExecutionProvider",
+  "os": "linux",
+  "arch": "x86_64",
+  "cpu": "AMD Ryzen 5 8600G w/ Radeon 760M Graphics",
+  "ort_dylib": "/nix/store/g90l6w6x6zspv9gvvps68igbifsh9ys9-onnxruntime-1.26.0/lib/libonnxruntime.so",
+  "ort_dylib_sha256": "86d939274969f9cfdea19168f7fef0ab1bf2bbd708c45568775bd4ecb37c7b92",
+  "max_length": 512,
+  "batch_size": 8,
+  "intra_threads": 12,
+  "facet_quota": 1,
+  "candidate_count": 9,
+  "candidate_set_sha256": "5f78d0110f923503d18ac0722f0ebbc67668a2cffd8f79695c977bda39a96e3a",
+  "peak_rss_bytes": 229179392,
+  "timing": {
+    "initialization_seconds": 0.349208021,
+    "warm_p50_seconds": 0.115602885,
+    "warm_p95_seconds": 0.14248219,
+    "candidate_pairs_per_second": 75.6228384254076,
+    "repetitions": 20
+  },
+  "decisions": [
+    {
+      "evidence_id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+      "retrieval_score": 9.0,
+      "rerank_score": 3.6034248
+    },
+    {
+      "evidence_id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+      "retrieval_score": 8.0,
+      "rerank_score": 5.002914
+    },
+    {
+      "evidence_id": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+      "retrieval_score": 7.0,
+      "rerank_score": 6.4423175
+    },
+    {
+      "evidence_id": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+      "retrieval_score": 6.0,
+      "rerank_score": 3.4713008
+    },
+    {
+      "evidence_id": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+      "retrieval_score": 5.0,
+      "rerank_score": 1.2449882
+    },
+    {
+      "evidence_id": "refloat:9a16b5c:lisp/package.lisp:load-native-lib",
+      "retrieval_score": 4.0,
+      "rerank_score": 8.345863
+    },
+    {
+      "evidence_id": "vesc:1af7e84:lispBM/lispif_c_lib.c:ext_load_native_lib",
+      "retrieval_score": 3.0,
+      "rerank_score": 6.0898356
+    },
+    {
+      "evidence_id": "refloat-old:0000000:lisp/package.lisp:load-native-lib",
+      "retrieval_score": 2.0,
+      "rerank_score": 8.489087
+    },
+    {
+      "evidence_id": "vesc:c835e9f:lispBM/lispif_vesc_extensions.c:load-native-lib-registration",
+      "retrieval_score": 1.0,
+      "rerank_score": 5.7118735
+    }
+  ],
+  "retained": [
+    {
+      "facet_id": "abi-dispatch",
+      "facet_rank": 1,
+      "evidence": {
+        "id": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+        "repository": "vesc_firmware",
+        "stage": "abi_dispatch",
+        "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+        "path": "lispBM/lispif_c_lib.c",
+        "decisive": true
+      },
+      "retrieval_score": 6.0,
+      "rerank_score": 3.4713008
+    },
+    {
+      "facet_id": "consumer-invocation",
+      "facet_rank": 1,
+      "evidence": {
+        "id": "refloat:9a16b5c:lisp/package.lisp:load-native-lib",
+        "repository": "refloat",
+        "stage": "consumer_invocation",
+        "revision": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+        "path": "lisp/package.lisp",
+        "decisive": true
+      },
+      "retrieval_score": 4.0,
+      "rerank_score": 8.345863
+    },
+    {
+      "facet_id": "firmware-loader",
+      "facet_rank": 1,
+      "evidence": {
+        "id": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+        "repository": "vesc_firmware",
+        "stage": "firmware_loader",
+        "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+        "path": "lispBM/lispif_c_lib.c",
+        "decisive": true
+      },
+      "retrieval_score": 7.0,
+      "rerank_score": 6.4423175
+    },
+    {
+      "facet_id": "generated-entry",
+      "facet_rank": 1,
+      "evidence": {
+        "id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+        "repository": "vesc_package_lib",
+        "stage": "generated_entry",
+        "revision": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+        "path": "vesc_pkg_lib/vesc_c_if.h",
+        "decisive": true
+      },
+      "retrieval_score": 8.0,
+      "rerank_score": 5.002914
+    },
+    {
+      "facet_id": "package-format",
+      "facet_rank": 1,
+      "evidence": {
+        "id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+        "repository": "vesc_package_lib",
+        "stage": "package_format",
+        "revision": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+        "path": "vesc_pkg_lib/link.ld",
+        "decisive": true
+      },
+      "retrieval_score": 9.0,
+      "rerank_score": 3.6034248
+    },
+    {
+      "facet_id": "runtime-module-loading",
+      "facet_rank": 1,
+      "evidence": {
+        "id": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+        "repository": "chibi_os",
+        "stage": "runtime_module_loading",
+        "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+        "path": "ChibiOS_3.0.5/os/rt/src/chheap.c",
+        "decisive": true
+      },
+      "retrieval_score": 5.0,
+      "rerank_score": 1.2449882
+    }
+  ],
+  "comparison": {
+    "no_reranker_global": {
+      "schema": 1,
+      "suite_id": "vescm-194-loader-path-v1",
+      "case_id": "historical-vescpkg-native-loader",
+      "ablation": "reranking",
+      "budget_n": 6,
+      "facet_coverage_at_budget": 1.0,
+      "path_complete_at_n": 1.0,
+      "wrong_era_rate": 0.0,
+      "missing_facet_detection": 1.0,
+      "frontier_shortcut_rate": 0.0,
+      "frontier_shortcut_target": 0.0,
+      "evidence_utilization": 1.0,
+      "duplicate_history_waste": 0.0,
+      "missing_facets": [],
+      "missing_relationships": [],
+      "controls": null,
+      "release_gate_passed": true
+    },
+    "no_reranker_per_facet": {
+      "schema": 1,
+      "suite_id": "vescm-194-loader-path-v1",
+      "case_id": "historical-vescpkg-native-loader",
+      "ablation": "reranking",
+      "budget_n": 6,
+      "facet_coverage_at_budget": 1.0,
+      "path_complete_at_n": 1.0,
+      "wrong_era_rate": 0.0,
+      "missing_facet_detection": 1.0,
+      "frontier_shortcut_rate": 0.0,
+      "frontier_shortcut_target": 0.0,
+      "evidence_utilization": 1.0,
+      "duplicate_history_waste": 0.0,
+      "missing_facets": [],
+      "missing_relationships": [],
+      "controls": null,
+      "release_gate_passed": true
+    },
+    "reranker_global": {
+      "schema": 1,
+      "suite_id": "vescm-194-loader-path-v1",
+      "case_id": "historical-vescpkg-native-loader",
+      "ablation": "reranking",
+      "budget_n": 6,
+      "facet_coverage_at_budget": 0.5,
+      "path_complete_at_n": 0.0,
+      "wrong_era_rate": 0.3333333333333333,
+      "missing_facet_detection": 1.0,
+      "frontier_shortcut_rate": 0.0,
+      "frontier_shortcut_target": 0.0,
+      "evidence_utilization": 0.5,
+      "duplicate_history_waste": 0.3333333333333333,
+      "missing_facets": [
+        "abi-dispatch",
+        "package-format",
+        "runtime-module-loading"
+      ],
+      "missing_relationships": [
+        "abi-runs-in-runtime",
+        "loader-dispatches-abi",
+        "package-produces-entry",
+        "runtime-invoked-by-consumer"
+      ],
+      "controls": null,
+      "release_gate_passed": true
+    },
+    "reranker_per_facet": {
+      "schema": 1,
+      "suite_id": "vescm-194-loader-path-v1",
+      "case_id": "historical-vescpkg-native-loader",
+      "ablation": "reranking",
+      "budget_n": 6,
+      "facet_coverage_at_budget": 1.0,
+      "path_complete_at_n": 1.0,
+      "wrong_era_rate": 0.0,
+      "missing_facet_detection": 1.0,
+      "frontier_shortcut_rate": 0.0,
+      "frontier_shortcut_target": 0.0,
+      "evidence_utilization": 1.0,
+      "duplicate_history_waste": 0.0,
+      "missing_facets": [],
+      "missing_relationships": [],
+      "controls": null,
+      "release_gate_passed": true
+    }
+  },
+  "warning": "The locked suite stores evidence metadata rather than complete source passages; these measurements prove runtime and path-retention behavior, not standalone semantic reranker quality."
+}

@@ -1,0 +1,63 @@
+name: Apple M1 reranker benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ettin:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - name: Stage pinned Ettin encoders and heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          root='target/reranker-models'
+          mkdir -p "$root" target/vescm196-m1
+          while read -r size revision directory; do
+            destination="$root/$directory"
+            base="https://huggingface.co/cross-encoder/ettin-reranker-$size-v1/resolve/$revision"
+            mkdir -p "$destination"
+            curl -fLsS --retry 3 "$base/onnx/model_quint8_avx2.onnx" -o "$destination/model.onnx"
+            for file in tokenizer.json config.json tokenizer_config.json; do
+              curl -fLsS --retry 3 "$base/$file" -o "$destination/$file"
+            done
+            for file in 1_Pooling/config.json 2_Dense/config.json 2_Dense/model.safetensors 3_LayerNorm/config.json 3_LayerNorm/model.safetensors 4_Dense/config.json 4_Dense/model.safetensors; do
+              mkdir -p "$destination/${file%/*}"
+              curl -fLsS --retry 3 "$base/$file" -o "$destination/$file"
+            done
+          done <<'MODELS'
+          17m 9e4aa35321a6dd1a43ca313f500c4b4f7cfb5cc6 ettin-reranker-17m-v1-qint8-avx2
+          32m b33e5ceb5110773ea9cf5e00c9bedc83a8c2afdd ettin-reranker-32m-v1-qint8-avx2
+          68m d166fa88ddde3c42bc3ee92f7df476d941c8204a ettin-reranker-68m-v1-qint8-avx2
+          MODELS
+      - name: Build release benchmark
+        run: nix develop -c cargo build --release -p vesc-knowledge-index --features semantic-fastembed --bin reranker_bench
+      - name: Run bounded native ONNX CPU matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          for candidate in ettin-reranker-{17m,32m,68m}-v1-qint8-avx2; do
+            output="target/vescm196-m1/$candidate.json"
+            timing="target/vescm196-m1/$candidate.time"
+            nix develop -c /usr/bin/time -l target/release/reranker_bench \
+              tests/evaluation/v3/loader_path.json \
+              tests/benchmark/reranker-models.json \
+              target/reranker-models \
+              "$candidate" "$output" \
+              20 512 8 3 1 0 \
+              2> "$timing"
+            rss=$(awk '/maximum resident set size/ {print $1}' "$timing")
+            jq --argjson rss "$rss" '.peak_rss_bytes = $rss' "$output" > "$output.tmp"
+            mv "$output.tmp" "$output"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vescm-196-m1-ettin
+          path: target/vescm196-m1

@@ -36,6 +36,11 @@ rayon = { workspace = true, optional = true }
 name = "gen-knowledge-index"
 path = "src/bin/gen_knowledge_index.rs"
 
+[[bin]]
+name = "reranker_bench"
+path = "src/bin/reranker_bench.rs"
+required-features = ["semantic-fastembed"]
+
 [dev-dependencies]
 serde_json.workspace = true
 tempfile = "3"

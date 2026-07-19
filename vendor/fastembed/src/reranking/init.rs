@@ -12,6 +12,7 @@ pub struct TextRerank {
     pub tokenizer: Tokenizer,
     pub(crate) session: Session,
     pub(crate) need_token_type_ids: bool,
+    pub(crate) ettin_head: Option<super::EttinHead>,
 }
 
 impl HasMaxLength for RerankerModel {

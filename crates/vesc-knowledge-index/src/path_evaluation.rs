@@ -55,7 +55,8 @@ pub struct PathEvaluationCase {
 }
 
 impl PathEvaluationCase {
-    fn contract(&self) -> InvestigationContract {
+    #[must_use]
+    pub fn contract(&self) -> InvestigationContract {
         InvestigationContract::historical_package_loader(HistoricalTraceRevisions::new(
             &self.revisions.package,
             &self.revisions.firmware,
@@ -159,7 +160,8 @@ impl EvidenceIdentity {
             && !self.content_key.trim().is_empty()
     }
 
-    fn as_evidence(&self) -> Evidence {
+    #[must_use]
+    pub fn as_evidence(&self) -> Evidence {
         if self.adjacent {
             Evidence::adjacent(
                 &self.id,
@@ -177,6 +179,14 @@ impl EvidenceIdentity {
                 &self.path,
             )
         }
+    }
+
+    #[must_use]
+    pub fn reranker_text(&self) -> String {
+        format!(
+            "repository: {:?}\nstage: {:?}\nrevision: {}\npath: {}\nsymbol: {}\n{}",
+            self.repository, self.stage, self.revision, self.path, self.symbol, self.content_key
+        )
     }
 }
 

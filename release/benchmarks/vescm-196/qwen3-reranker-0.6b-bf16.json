@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-194-loader-path-v1",
+  "case_id": "historical-vescpkg-native-loader",
+  "model": {
+    "model_id": "Qwen/Qwen3-Reranker-0.6B",
+    "model_revision": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
+    "license": "Apache-2.0",
+    "dtype": "bfloat16"
+  },
+  "provider": "PyTorch CPU",
+  "os": "linux",
+  "arch": "x86_64",
+  "cpu": "AMD Ryzen 5 8600G w/ Radeon 760M Graphics",
+  "max_length": 512,
+  "batch_size": 8,
+  "candidate_count": 9,
+  "peak_rss_bytes": 2398228480,
+  "runtime": {
+    "python": "3.13.13",
+    "sentence_transformers": "5.6.0",
+    "transformers": "5.14.1",
+    "torch": "2.13.0+cu130",
+    "torch_threads": 6
+  },
+  "timing": {
+    "initialization_seconds": 16.395543169986922,
+    "warm_p50_seconds": 1.806742578977719,
+    "warm_p95_seconds": 1.806742578977719,
+    "candidate_pairs_per_second": 5.008393378707469,
+    "repetitions": 2
+  },
+  "decisions": [
+    {
+      "evidence_id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+      "rerank_score": -3.8125
+    },
+    {
+      "evidence_id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+      "rerank_score": -3.375
+    },
+    {
+      "evidence_id": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+      "rerank_score": 4.0625
+    },
+    {
+      "evidence_id": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+      "rerank_score": -3.25
+    },
+    {
+      "evidence_id": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+      "rerank_score": -5.75
+    },
+    {
+      "evidence_id": "refloat:9a16b5c:lisp/package.lisp:load-native-lib",
+      "rerank_score": 6.75
+    },
+    {
+      "evidence_id": "vesc:1af7e84:lispBM/lispif_c_lib.c:ext_load_native_lib",
+      "rerank_score": 4.0625
+    },
+    {
+      "evidence_id": "refloat-old:0000000:lisp/package.lisp:load-native-lib",
+      "rerank_score": 6.0
+    },
+    {
+      "evidence_id": "vesc:c835e9f:lispBM/lispif_vesc_extensions.c:load-native-lib-registration",
+      "rerank_score": 0.875
+    }
+  ],
+  "warning": "Research ceiling only. The locked suite stores evidence metadata rather than complete source passages, so this does not establish standalone quality.",
+  "comparison": {
+    "reranker_global": {
+      "schema": 1,
+      "suite_id": "vescm-194-loader-path-v1",
+      "case_id": "historical-vescpkg-native-loader",
+      "ablation": "reranking",
+      "budget_n": 6,
+      "facet_coverage_at_budget": 0.5,
+      "path_complete_at_n": 0.0,
+      "wrong_era_rate": 0.3333333333333333,
+      "missing_facet_detection": 1.0,
+      "frontier_shortcut_rate": 0.0,
+      "frontier_shortcut_target": 0.0,
+      "evidence_utilization": 0.0,
+      "duplicate_history_waste": 0.3333333333333333,
+      "missing_facets": [
+        "generated-entry",
+        "package-format",
+        "runtime-module-loading"
+      ],
+      "missing_relationships": [
+        "abi-runs-in-runtime",
+        "entry-loaded-by-firmware",
+        "package-produces-entry",
+        "runtime-invoked-by-consumer"
+      ],
+      "controls": null,
+      "release_gate_passed": true
+    },
+    "reranker_per_facet": {
+      "schema": 1,
+      "suite_id": "vescm-194-loader-path-v1",
+      "case_id": "historical-vescpkg-native-loader",
+      "ablation": "reranking",
+      "budget_n": 6,
+      "facet_coverage_at_budget": 1.0,
+      "path_complete_at_n": 1.0,
+      "wrong_era_rate": 0.0,
+      "missing_facet_detection": 1.0,
+      "frontier_shortcut_rate": 0.0,
+      "frontier_shortcut_target": 0.0,
+      "evidence_utilization": 1.0,
+      "duplicate_history_waste": 0.0,
+      "missing_facets": [],
+      "missing_relationships": [],
+      "controls": null,
+      "release_gate_passed": true
+    }
+  },
+  "prompt_name": "query (model default)"
+}

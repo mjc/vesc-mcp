@@ -6,6 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::investigation::{Era, Evidence, InvestigationContract};
 
+#[cfg(feature = "semantic-fastembed")]
+use std::path::Path;
+
+#[cfg(feature = "semantic-fastembed")]
+use fastembed::{
+    RerankInitOptionsUserDefined, TextRerank, TokenizerFiles, UserDefinedRerankingModel,
+};
+
 pub const MAX_FACET_QUOTA: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,4 +141,70 @@ pub fn retain_per_facet(
         );
     }
     retained
+}
+
+#[cfg(feature = "semantic-fastembed")]
+pub struct FastEmbedReranker {
+    model: TextRerank,
+    batch_size: usize,
+}
+
+#[cfg(feature = "semantic-fastembed")]
+impl FastEmbedReranker {
+    /// Loads a pinned user-provided ONNX cross encoder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a required file cannot be read or ONNX initialization fails.
+    pub fn from_model_dir(
+        root: &Path,
+        max_length: usize,
+        batch_size: usize,
+        intra_threads: usize,
+    ) -> Result<Self, String> {
+        if max_length == 0 || batch_size == 0 || intra_threads == 0 {
+            return Err("reranker lengths, batch size, and threads must be positive".into());
+        }
+        let read = |name: &str| {
+            std::fs::read(root.join(name))
+                .map_err(|error| format!("read {}: {error}", root.join(name).display()))
+        };
+        let files = TokenizerFiles {
+            tokenizer_file: read("tokenizer.json")?,
+            config_file: read("config.json")?,
+            special_tokens_map_file: match std::fs::read(root.join("special_tokens_map.json")) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => b"{}".to_vec(),
+                Err(error) => return Err(error.to_string()),
+            },
+            tokenizer_config_file: read("tokenizer_config.json")?,
+        };
+        let model = UserDefinedRerankingModel::new(root.join("model.onnx"), files);
+        let options = RerankInitOptionsUserDefined::new()
+            .with_max_length(max_length)
+            .with_intra_threads(intra_threads);
+        Ok(Self {
+            model: TextRerank::try_new_ettin_from_user_defined(model, options, root)
+                .map_err(|error| error.to_string())?,
+            batch_size,
+        })
+    }
+
+    /// Scores documents in input order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when tokenization or ONNX execution fails.
+    pub fn score(&mut self, query: &str, documents: &[String]) -> Result<Vec<f32>, String> {
+        let document_refs = documents.iter().map(String::as_str).collect::<Vec<_>>();
+        let ranked = self
+            .model
+            .rerank(query, document_refs, false, Some(self.batch_size))
+            .map_err(|error| error.to_string())?;
+        let mut scores = vec![0.0; documents.len()];
+        for row in ranked {
+            scores[row.index] = row.score;
+        }
+        Ok(scores)
+    }
 }

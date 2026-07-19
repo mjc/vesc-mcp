@@ -5,3 +5,13 @@ mod init;
 pub use init::*;
 
 mod r#impl;
+
+#[derive(Debug)]
+pub(crate) struct EttinHead {
+    dense: Vec<f32>,
+    norm_weight: Vec<f32>,
+    norm_bias: Vec<f32>,
+    output_weight: Vec<f32>,
+    output_bias: f32,
+    dimension: usize,
+}

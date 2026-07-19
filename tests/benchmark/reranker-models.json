@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "candidates": [
+    {
+      "name": "ettin-reranker-17m-v1-qint8-avx2",
+      "model_id": "cross-encoder/ettin-reranker-17m-v1",
+      "model_revision": "9e4aa35321a6dd1a43ca313f500c4b4f7cfb5cc6",
+      "directory": "ettin-reranker-17m-v1-qint8-avx2",
+      "license": "Apache-2.0",
+      "onnx_sha256": "3f567dda364320baa51b274a41ec8cbbdf34f685c86d398f6b3b4df60fe0cc02",
+      "onnx_bytes": 17127703,
+      "head_artifacts": [
+        {"path": "2_Dense/model.safetensors", "sha256": "85e9596d9250a871deb159fb5db6979e910b4cf181d05c806733c49bc43d47c8", "bytes": 262232},
+        {"path": "3_LayerNorm/model.safetensors", "sha256": "de99fa351fb4badb74b56e85fa70b5bbd3fcf4d0e74de79eb749dba1e9e28b4a", "bytes": 2200},
+        {"path": "4_Dense/model.safetensors", "sha256": "654827171b89c76d19d663162243f38d63d1ba812ac1ec9c1b36512f1a8e9ce8", "bytes": 1172}
+      ]
+    },
+    {
+      "name": "ettin-reranker-32m-v1-qint8-avx2",
+      "model_id": "cross-encoder/ettin-reranker-32m-v1",
+      "model_revision": "b33e5ceb5110773ea9cf5e00c9bedc83a8c2afdd",
+      "directory": "ettin-reranker-32m-v1-qint8-avx2",
+      "license": "Apache-2.0",
+      "onnx_sha256": "7ca231b98dc591122774127865a293aae90b9a2ccb148afe8c2587d03703f8d0",
+      "onnx_bytes": 32416083,
+      "head_artifacts": [
+        {"path": "2_Dense/model.safetensors", "sha256": "ae4d8431b8ed8afeda16dd51608c4cb7e0f810724a91423dbbb867c047285000", "bytes": 589912},
+        {"path": "3_LayerNorm/model.safetensors", "sha256": "3e8b5ae0d2716b538d0cdd8664bef438f20a09a1b79654fc09f19560197d3274", "bytes": 3224},
+        {"path": "4_Dense/model.safetensors", "sha256": "03aa39279659756a52fb02cd569b97f2d1fb0d8036ab74d45c4736f358389e01", "bytes": 1684}
+      ]
+    },
+    {
+      "name": "ettin-reranker-68m-v1-qint8-avx2",
+      "model_id": "cross-encoder/ettin-reranker-68m-v1",
+      "model_revision": "d166fa88ddde3c42bc3ee92f7df476d941c8204a",
+      "directory": "ettin-reranker-68m-v1-qint8-avx2",
+      "license": "Apache-2.0",
+      "onnx_sha256": "32972293b8c229a906129aee4feb08fee3df993f9e5ed247179c94bcbbaae06a",
+      "onnx_bytes": 69276379,
+      "head_artifacts": [
+        {"path": "2_Dense/model.safetensors", "sha256": "ee9b8a9186fffb05cea0cd73e2ccfc8a4bf641c075d8f304e5c4e4f5fe0716d0", "bytes": 1048664},
+        {"path": "3_LayerNorm/model.safetensors", "sha256": "3906f4be69408f4f370c7bfdc2de6ef825d4d1f4da4f01221d831336c0e3a91a", "bytes": 4248},
+        {"path": "4_Dense/model.safetensors", "sha256": "1a391820f020c8fc3efb1da894e1719cfdfb8a6c73d214f34f5b1802bac8b9dd", "bytes": 2196}
+      ]
+    }
+  ]
+}
