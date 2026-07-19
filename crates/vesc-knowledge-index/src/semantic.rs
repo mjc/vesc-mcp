@@ -1091,8 +1091,7 @@ fn pad_window_batch(windows: &mut Vec<String>, batch_size: usize) {
     if windows.is_empty() || windows.len() >= batch_size {
         return;
     }
-    let filler = windows[0].clone();
-    windows.resize(batch_size, filler);
+    windows.resize(batch_size, String::new());
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2097,12 +2096,12 @@ mod tests {
 
     #[cfg(feature = "semantic-fastembed")]
     #[test]
-    fn fixed_window_batch_padding_preserves_real_owner_count() {
+    fn pad_window_batch_fills_short_batch_with_synthetic_inputs() {
         let mut windows = vec!["one".to_string(), "two".to_string()];
 
         pad_window_batch(&mut windows, 4);
 
-        assert_eq!(windows, ["one", "two", "one", "one"]);
+        assert_eq!(windows, ["one", "two", "", ""]);
     }
 
     #[test]
