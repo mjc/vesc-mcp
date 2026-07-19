@@ -1,0 +1,56 @@
+name: Apple M1 embedding benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  granite-97m:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - name: Stage the pinned corpus and model
+        run: |
+          digest='sha256:71342745041784d58f147b1cd99a7743377d3d9e0fa42ad4dab1f0aa280652ab'
+          artifact='target/vescm195-artifacts'
+          model='target/models/granite-embedding-97m-multilingual-r2-qint8-avx2'
+          mkdir -p "$artifact/generations/$digest" "$model" target/vescm195-m1
+          gzip -dc release/knowledge/active.json.gz > "$artifact/active.json"
+          gzip -dc "release/knowledge/generations/$digest/lexical.json.gz" > "$artifact/generations/$digest/lexical.json"
+          base='https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/835ad14087e140460703cf0fae09f97d469d65c2'
+          curl -fL --retry 3 "$base/onnx/model_quint8_avx2.onnx" -o "$model/model.onnx"
+          for file in tokenizer.json config.json special_tokens_map.json tokenizer_config.json; do
+            curl -fsSL --retry 3 "$base/$file" -o "$model/$file"
+          done
+      - name: Build release benchmark
+        run: nix develop -c cargo build --release -p vesc-knowledge-index --bin gen-knowledge-index --features semantic-fastembed
+      - name: Run bounded native ONNX CPU benchmark
+        run: |
+          /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
+            --artifact target/vescm195-artifacts \
+            --model-root target/models \
+            --suite tests/evaluation/v2/queries.json \
+            --config tests/benchmark/modern-embedding-models.json \
+            --candidate granite-embedding-97m-multilingual-r2-qint8-avx2 \
+            --semantic-quality-chunks 128 \
+            --semantic-batch-size 8 \
+            --semantic-intra-threads 3 \
+            --semantic-length-bucketed true \
+            --semantic-max-length 512 \
+            --semantic-lossless-windows \
+            --execution-provider cpu \
+            --warmup 2 \
+            --repetitions 3 \
+            --format json \
+            --json-out target/vescm195-m1/granite-97m.json \
+            --markdown-out target/vescm195-m1/granite-97m.md \
+            > target/vescm195-m1/stdout \
+            2> target/vescm195-m1/stderr
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vescm-195-m1-granite-97m
+          path: target/vescm195-m1
