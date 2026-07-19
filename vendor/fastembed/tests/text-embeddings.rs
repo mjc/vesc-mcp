@@ -11,6 +11,7 @@ use fastembed::{
     RerankerModelInfo, SparseInitOptions, SparseTextEmbedding, TextEmbedding, TextRerank,
     TokenizerFiles, UserDefinedEmbeddingModel, UserDefinedRerankingModel,
 };
+use tokenizers::PaddingStrategy;
 
 /// A small epsilon value for floating point comparisons.
 const EPS: f32 = 1e-2;
@@ -618,5 +619,174 @@ fn clip_vit_b32_deterministic_across_calls() {
                 i
             );
         }
+    }
+}
+
+/// By default, the tokenizer pads a batch to the length of its longest
+/// member, which produces a dynamic sequence dimension. `set_fixed_padding`
+/// exists specifically to override this for execution providers (e.g.
+/// MIGraphX) that require every batch to share one static sequence length.
+#[test]
+fn test_set_fixed_padding_overrides_default_batch_longest_strategy() {
+    let mut model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
+        .expect("Create model successfully");
+
+    let default_strategy = model
+        .tokenizer
+        .get_padding()
+        .expect("tokenizer has padding configured by default")
+        .strategy
+        .clone();
+    assert!(
+        matches!(default_strategy, PaddingStrategy::BatchLongest),
+        "expected the default padding strategy to be BatchLongest, got {default_strategy:?}"
+    );
+
+    model.set_fixed_padding(16);
+
+    let updated_strategy = model
+        .tokenizer
+        .get_padding()
+        .expect("padding must remain configured after set_fixed_padding")
+        .strategy
+        .clone();
+    assert!(
+        matches!(updated_strategy, PaddingStrategy::Fixed(16)),
+        "expected a fixed padding strategy of 16, got {updated_strategy:?}"
+    );
+}
+
+/// After enabling fixed padding, every encoded sequence -- regardless of its
+/// natural token length -- must be padded out to exactly the requested
+/// length, since execution providers that specialize on sequence length
+/// cannot tolerate a batch with mixed lengths.
+#[test]
+fn test_set_fixed_padding_pads_short_and_long_inputs_to_equal_length() {
+    let mut model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
+        .expect("Create model successfully");
+
+    const FIXED_LENGTH: usize = 32;
+    model.set_fixed_padding(FIXED_LENGTH);
+
+    let short_encoding = model
+        .tokenizer
+        .encode("hi", true)
+        .expect("encode short text");
+    let long_encoding = model
+        .tokenizer
+        .encode(
+            "this is a noticeably longer sentence than the other one",
+            true,
+        )
+        .expect("encode longer text");
+
+    assert_eq!(short_encoding.len(), FIXED_LENGTH);
+    assert_eq!(long_encoding.len(), FIXED_LENGTH);
+}
+
+/// Fixed padding changes how the tokenizer prepares inputs, but the model's
+/// end-to-end embedding output must still be produced successfully and keep
+/// its documented dimensionality.
+#[test]
+fn test_set_fixed_padding_preserves_embedding_output_shape() {
+    let test_model_info = TextEmbedding::get_model_info(&EmbeddingModel::AllMiniLML6V2).unwrap();
+    let mut model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
+        .expect("Create model successfully");
+
+    model.set_fixed_padding(32);
+
+    let documents = vec![
+        "short",
+        "a somewhat longer piece of text than the first document",
+    ];
+    let embeddings = model
+        .embed(documents.clone(), None)
+        .expect("embeddings should be generated with fixed padding enabled");
+
+    assert_eq!(embeddings.len(), documents.len());
+    for embedding in embeddings {
+        assert_eq!(embedding.len(), test_model_info.dim);
+    }
+}
+
+/// `set_fixed_padding` must also work for "bring your own model" instances
+/// created via `try_new_from_user_defined`, since that is the exact
+/// construction path used before a caller may want fixed-length padding
+/// (e.g. downstream MIGraphX integrations).
+#[test]
+fn test_set_fixed_padding_with_user_defined_model() {
+    let test_model_info = TextEmbedding::get_model_info(&EmbeddingModel::AllMiniLML6V2).unwrap();
+
+    // Constitute the model in order to ensure it's downloaded and cached.
+    TextEmbedding::try_new(InitOptions::new(test_model_info.model.clone())).unwrap();
+
+    let model_name = test_model_info.model_code.replace('/', "--");
+    let model_dir = Path::new(&get_cache_dir()).join(format!("models--{}", model_name));
+    let snapshots_dir = model_dir.join("snapshots");
+    let model_files_dir = snapshots_dir
+        .read_dir()
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+
+    let onnx_file = std::fs::read(
+        model_files_dir
+            .read_dir()
+            .unwrap()
+            .find(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    == "onnx"
+            })
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .expect("Could not read onnx file");
+
+    let tokenizer_files = TokenizerFiles {
+        tokenizer_file: std::fs::read(model_files_dir.join("tokenizer.json"))
+            .expect("Could not read tokenizer.json"),
+        config_file: std::fs::read(model_files_dir.join("config.json"))
+            .expect("Could not read config.json"),
+        special_tokens_map_file: std::fs::read(model_files_dir.join("special_tokens_map.json"))
+            .expect("Could not read special_tokens_map.json"),
+        tokenizer_config_file: std::fs::read(model_files_dir.join("tokenizer_config.json"))
+            .expect("Could not read tokenizer_config.json"),
+    };
+    let user_defined_model =
+        UserDefinedEmbeddingModel::new(onnx_file, tokenizer_files).with_pooling(Pooling::Mean);
+
+    let mut user_defined_text_embedding = TextEmbedding::try_new_from_user_defined(
+        user_defined_model,
+        InitOptionsUserDefined::default(),
+    )
+    .unwrap();
+
+    user_defined_text_embedding.set_fixed_padding(16);
+
+    let strategy = user_defined_text_embedding
+        .tokenizer
+        .get_padding()
+        .expect("padding must remain configured")
+        .strategy
+        .clone();
+    assert!(matches!(strategy, PaddingStrategy::Fixed(16)));
+
+    let documents = vec!["Hello, World!", "This is an example passage."];
+    let embeddings = user_defined_text_embedding
+        .embed(documents.clone(), None)
+        .unwrap();
+    assert_eq!(embeddings.len(), documents.len());
+    for embedding in embeddings {
+        assert_eq!(embedding.len(), test_model_info.dim);
     }
 }
