@@ -1448,7 +1448,13 @@ pub fn search_vesc_knowledge_json_with_feedback(
             } else {
                 params.limit
             };
-            match search_feedback(&params.query, store, resources, limit) {
+            let feedback = parse_filters(params)
+                .map_err(|error| format!("feedback filters unavailable: {error}"))
+                .and_then(|(_, filters)| {
+                    search_feedback(&params.query, store, resources, &filters, limit)
+                        .map_err(|error| error.to_string())
+                });
+            match feedback {
                 Ok(matches) => {
                     response.corrections = matches.corrections;
                     annotate_affected_results(&mut response.results, &response.corrections);

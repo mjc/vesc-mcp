@@ -661,9 +661,15 @@ fn feedback_json(
         },
         write,
     );
-    serde_json::to_string(&response).unwrap_or_else(|error| {
-        format!(r#"{{"ok":false,"error":"feedback serialization failed: {error}"}}"#)
+    serde_json::to_string(&response).unwrap_or_else(feedback_serialization_error_json)
+}
+
+fn feedback_serialization_error_json(error: impl std::fmt::Display) -> String {
+    serde_json::json!({
+        "ok": false,
+        "error": format!("feedback serialization failed: {error}"),
     })
+    .to_string()
 }
 
 fn replay_error_json(
@@ -904,5 +910,16 @@ mod tests {
             assert_eq!(report.correction_id, "correction-missing");
             assert!(report.error.is_some());
         }
+    }
+
+    #[test]
+    fn feedback_serialization_error_json_escapes_error_text() {
+        let response = feedback_serialization_error_json("quoted \"error\"\nnext line");
+        let body: serde_json::Value = serde_json::from_str(&response).expect("valid fallback JSON");
+
+        assert_eq!(
+            body["error"],
+            "feedback serialization failed: quoted \"error\"\nnext line"
+        );
     }
 }

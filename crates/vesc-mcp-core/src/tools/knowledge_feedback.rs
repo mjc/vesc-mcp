@@ -684,6 +684,7 @@ pub fn search_feedback(
     query: &str,
     store: &FeedbackStore,
     resources: &ResourceRegistry,
+    filters: &LexicalFilters,
     limit: usize,
 ) -> Result<FeedbackMatches, FeedbackError> {
     const MIN_ADVISORY_SCORE: f32 = 0.5;
@@ -706,7 +707,7 @@ pub fn search_feedback(
     let index =
         LexicalIndex::build(&chunks).map_err(|error| FeedbackError::Index(error.to_string()))?;
     let hits = index
-        .search(query, &LexicalFilters::default(), limit.max(1))
+        .search(query, filters, limit.max(1))
         .map_err(|error| FeedbackError::Index(error.to_string()))?;
     let mut notes = Vec::new();
     let mut corrections = Vec::new();

@@ -252,6 +252,42 @@ fn feedback_search_respects_total_limit_and_updates_timing() {
 }
 
 #[test]
+fn filtered_feedback_search_excludes_incompatible_overlay_records() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let harness = McpTestHarness::with_feedback_store(temp.path(), true);
+    let note: Value = serde_json::from_str(&harness.call_tool(
+        "submit_vesc_knowledge_feedback",
+        serde_json::to_value(learned_note()).expect("note request JSON"),
+    ))
+    .expect("note response JSON");
+    assert_eq!(note["ok"], true, "{note}");
+
+    let search: Value = serde_json::from_str(&harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({
+            "query": "load-native-lib import tag",
+            "limit": 3,
+            "detail": "full",
+            "filters": { "trust_tier": "first_party" }
+        }),
+    ))
+    .expect("search response JSON");
+
+    assert!(
+        search["results"].as_array().is_some_and(|results| results
+            .iter()
+            .all(|result| result["origin"] != "unverified_model_feedback")),
+        "{search}"
+    );
+    assert!(
+        search
+            .get("corrections")
+            .is_none_or(|corrections| corrections.as_array().is_some_and(Vec::is_empty)),
+        "{search}"
+    );
+}
+
+#[test]
 fn persisted_feedback_is_readable_by_resource_uri() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = FeedbackStore::new(temp.path());
