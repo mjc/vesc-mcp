@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-194-loader-path-v1",
+  "cases": [
+    {
+      "id": "historical-vescpkg-native-loader",
+      "question": "How did a packaged native library become executable firmware code and get invoked by Refloat in this historical version set?",
+      "revisions": {
+        "package": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+        "firmware": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+        "rtos": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+        "consumer": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f"
+      },
+      "judgments": [
+        {
+          "id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+          "repository": "vesc_package_lib",
+          "stage": "package_format",
+          "revision": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+          "path": "vesc_pkg_lib/link.ld",
+          "symbol": ".program_ptr",
+          "content_key": "linker-program-pointer"
+        },
+        {
+          "id": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+          "repository": "vesc_package_lib",
+          "stage": "generated_entry",
+          "revision": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+          "path": "vesc_pkg_lib/vesc_c_if.h",
+          "symbol": "INIT_FUN",
+          "content_key": "native-init-entry"
+        },
+        {
+          "id": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+          "repository": "vesc_firmware",
+          "stage": "firmware_loader",
+          "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+          "path": "lispBM/lispif_c_lib.c",
+          "symbol": "ext_load_native_lib",
+          "content_key": "native-loader"
+        },
+        {
+          "id": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+          "repository": "vesc_firmware",
+          "stage": "abi_dispatch",
+          "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+          "path": "lispBM/lispif_c_lib.c",
+          "symbol": "cif",
+          "content_key": "vesc-c-interface-dispatch"
+        },
+        {
+          "id": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+          "repository": "chibi_os",
+          "stage": "runtime_module_loading",
+          "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+          "path": "ChibiOS_3.0.5/os/rt/src/chheap.c",
+          "symbol": "chHeapAlloc",
+          "content_key": "chibios-runtime-allocation"
+        },
+        {
+          "id": "refloat:9a16b5c:lisp/package.lisp:load-native-lib",
+          "repository": "refloat",
+          "stage": "consumer_invocation",
+          "revision": "9a16b5c5dd0ca661b2bd856827c638115eb7df5f",
+          "path": "lisp/package.lisp",
+          "symbol": "load-native-lib",
+          "content_key": "refloat-native-load-call"
+        }
+      ],
+      "distractors": [
+        {
+          "id": "vesc:1af7e84:lispBM/lispif_c_lib.c:ext_load_native_lib",
+          "repository": "vesc_firmware",
+          "stage": "firmware_loader",
+          "revision": "1af7e8440216140844472ad9241c3efd27b4ce43",
+          "path": "lispBM/lispif_c_lib.c",
+          "symbol": "ext_load_native_lib",
+          "content_key": "native-loader"
+        },
+        {
+          "id": "refloat-old:0000000:lisp/package.lisp:load-native-lib",
+          "repository": "refloat",
+          "stage": "consumer_invocation",
+          "revision": "0000000000000000000000000000000000000000",
+          "path": "lisp/package.lisp",
+          "symbol": "load-native-lib",
+          "content_key": "refloat-native-load-call"
+        },
+        {
+          "id": "vesc:c835e9f:lispBM/lispif_vesc_extensions.c:load-native-lib-registration",
+          "repository": "vesc_firmware",
+          "stage": "configuration",
+          "revision": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+          "path": "lispBM/lispif_vesc_extensions.c",
+          "symbol": "load-native-lib",
+          "content_key": "adjacent-extension-registration",
+          "adjacent": true
+        }
+      ],
+      "relationships": [
+        {
+          "from_evidence": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+          "to_evidence": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+          "kind": "produces"
+        },
+        {
+          "from_evidence": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+          "to_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+          "kind": "loaded_by"
+        },
+        {
+          "from_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+          "to_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+          "kind": "dispatches_to"
+        },
+        {
+          "from_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+          "to_evidence": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+          "kind": "runs_in"
+        },
+        {
+          "from_evidence": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+          "to_evidence": "refloat:9a16b5c:lisp/package.lisp:load-native-lib",
+          "kind": "invoked_by"
+        }
+      ],
+      "adversarial_bundles": [
+        {
+          "id": "complete",
+          "evidence_ids": [
+            "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+            "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+            "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+            "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+            "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+            "refloat:9a16b5c:lisp/package.lisp:load-native-lib"
+          ],
+          "expected_missing_facets": []
+        },
+        {
+          "id": "missing-chibios",
+          "evidence_ids": [
+            "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+            "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+            "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+            "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+            "refloat:9a16b5c:lisp/package.lisp:load-native-lib"
+          ],
+          "expected_missing_facets": ["runtime-module-loading"]
+        },
+        {
+          "id": "wrong-era-loader",
+          "evidence_ids": [
+            "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+            "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+            "vesc:1af7e84:lispBM/lispif_c_lib.c:ext_load_native_lib",
+            "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+            "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+            "refloat:9a16b5c:lisp/package.lisp:load-native-lib"
+          ],
+          "expected_missing_facets": ["firmware-loader"]
+        }
+      ]
+    }
+  ]
+}

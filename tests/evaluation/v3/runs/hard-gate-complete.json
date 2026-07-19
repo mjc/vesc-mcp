@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "case_id": "historical-vescpkg-native-loader",
+  "ablation": "hard_gate",
+  "budget_n": 20,
+  "ranked_evidence_ids": [
+    "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+    "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+    "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+    "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+    "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+    "refloat:9a16b5c:lisp/package.lisp:load-native-lib"
+  ],
+  "relationships": [
+    {
+      "from_evidence": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+      "to_evidence": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+      "kind": "produces"
+    },
+    {
+      "from_evidence": "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+      "to_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+      "kind": "loaded_by"
+    },
+    {
+      "from_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+      "to_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+      "kind": "dispatches_to"
+    },
+    {
+      "from_evidence": "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+      "to_evidence": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+      "kind": "runs_in"
+    },
+    {
+      "from_evidence": "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+      "to_evidence": "refloat:9a16b5c:lisp/package.lisp:load-native-lib",
+      "kind": "invoked_by"
+    }
+  ],
+  "reported_missing_facets": [],
+  "answered": true,
+  "answer_citations": [
+    "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/link.ld:.program_ptr",
+    "vesc-pkg-lib:9a16b5c:vesc_pkg_lib/vesc_c_if.h:INIT_FUN",
+    "vesc:c835e9f:lispBM/lispif_c_lib.c:ext_load_native_lib",
+    "vesc:c835e9f:lispBM/lispif_c_lib.c:cif",
+    "chibios:c835e9f:ChibiOS_3.0.5/os/rt/src/chheap.c:chHeapAlloc",
+    "refloat:9a16b5c:lisp/package.lisp:load-native-lib"
+  ],
+  "controls": null
+}

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-194-loader-path-v1",
+  "case_id": "historical-vescpkg-native-loader",
+  "ablation": "hard_gate",
+  "budget_n": 20,
+  "facet_coverage_at_budget": 1.0,
+  "path_complete_at_n": 1.0,
+  "wrong_era_rate": 0.0,
+  "missing_facet_detection": 1.0,
+  "frontier_shortcut_rate": 0.0,
+  "frontier_shortcut_target": 0.0,
+  "evidence_utilization": 1.0,
+  "duplicate_history_waste": 0.0,
+  "missing_facets": [],
+  "missing_relationships": [],
+  "controls": null,
+  "release_gate_passed": true
+}
