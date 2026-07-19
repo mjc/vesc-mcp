@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "corpus_digest": "sha256:45e55039cc4bd6b3a74edbc605864facfbdb90b9d088cf0c1af7bde560ea632a",
+  "corpus_documents": 2869,
+  "corpus_chunks": 13720,
+  "candidates": [
+    {
+      "name": "jina-embeddings-v2-base-code-fp16",
+      "model_id": "jinaai/jina-embeddings-v2-base-code",
+      "model_revision": "516f4baf13dec4ddddda8631e019b5737c8bc250",
+      "directory": "jina-embeddings-v2-base-code-fp16",
+      "quantization": "fp16",
+      "onnx_sha256": "1aafc4fcd63d2e6899e88402ff731e7c646c2e435048294a3cbc908a40d45d7c",
+      "onnx_bytes": 321072580
+    }
+  ]
+}

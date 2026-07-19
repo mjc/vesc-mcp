@@ -13,6 +13,37 @@ pub const JINA_CODE_FP16_SHA256: &str =
 pub const JINA_CODE_INT8_SHA256: &str =
     "ed45870251c9f0cf656e78aab0d37a23489066df8a222bb1c8caf8a45f2cb16d";
 pub const JINA_CODE_MAX_LENGTH: usize = 512;
+pub const JINA_CODE_INGEST_MAX_LENGTH: usize = 64;
+pub const JINA_CODE_INGEST_BATCH_SIZE: usize = 64;
+
+/// Platform-neutral CPU query side of the pinned Jina split profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JinaCodeQueryProfile {
+    pub query_model_dir: PathBuf,
+    pub artifact_dir: PathBuf,
+}
+
+impl JinaCodeQueryProfile {
+    #[must_use]
+    pub fn detect(workspace_root: &Path) -> Option<Self> {
+        let profile = Self {
+            query_model_dir: workspace_root
+                .join("target/models/jina-embeddings-v2-base-code-quantized"),
+            artifact_dir: workspace_root.join("target/knowledge-artifacts-jina-code-fp16-rx5700xt"),
+        };
+        profile
+            .artifact_dir
+            .join("active.json")
+            .is_file()
+            .then_some(())?;
+        model_matches(
+            &profile.query_model_dir.join("model.onnx"),
+            161_895_621,
+            JINA_CODE_INT8_SHA256,
+        )
+        .then_some(profile)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rx5700Xt8600gProfile {

@@ -3,15 +3,23 @@
 #[cfg(feature = "semantic-fastembed")]
 use std::collections::BTreeMap;
 use std::env;
-#[cfg(feature = "semantic-fastembed")]
+#[cfg(any(
+    all(feature = "git-corpus", feature = "semantic-fastembed"),
+    feature = "semantic-fastembed-online"
+))]
 use std::fmt::Write as _;
 use std::fs;
-#[cfg(feature = "semantic-fastembed")]
+#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "semantic-fastembed")]
+#[cfg(any(
+    all(feature = "git-corpus", feature = "semantic-fastembed"),
+    feature = "semantic-fastembed-online"
+))]
 use sha2::{Digest, Sha256};
+#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
+use vesc_knowledge_index::TaggedHistory;
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
 #[cfg(feature = "semantic-fastembed")]
@@ -28,10 +36,11 @@ use vesc_knowledge_index::evaluation::{
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{
-    Chunk, ChunkId, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider, FusionConfig,
-    SemanticExecutionProvider, VectorArtifact, build_allowlisted_artifacts_with_provider,
+    Chunk, ChunkId, DocumentWindowVectors, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider,
+    FusionConfig, SemanticExecutionProvider, VectorArtifact, WindowAggregation,
+    aggregate_window_vectors, build_allowlisted_artifacts_with_provider,
     build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
-    fuse_candidates, semantic_runtime_diagnostics,
+    fuse_candidates, semantic_runtime_diagnostics, sequence_length_census,
 };
 #[cfg(feature = "git-corpus")]
 use vesc_knowledge_index::{
@@ -50,6 +59,14 @@ use vesc_knowledge_index::{
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "sequence-census") {
+        run_sequence_census(&args[1..]);
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "window-quality") {
+        run_window_quality(&args[1..]);
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "history-build") {
         run_history_build(&args[1..]);
         return;
@@ -84,6 +101,156 @@ fn main() {
     }
 
     generate_index();
+}
+
+#[cfg(feature = "semantic-fastembed")]
+#[allow(clippy::option_if_let_else)]
+fn run_sequence_census(args: &[String]) {
+    let model_dir = argument_value(args, "--semantic-model-dir")
+        .map_or_else(|| panic!("--semantic-model-dir is required"), PathBuf::from);
+    let max_lengths = argument_value(args, "--sequence-lengths")
+        .unwrap_or_else(|| "64,128,256,512".into())
+        .split(',')
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("--sequence-lengths must be comma-separated positive integers")
+        })
+        .collect::<Vec<_>>();
+    let token_budget = argument_value(args, "--semantic-token-budget")
+        .as_deref()
+        .unwrap_or("4096")
+        .parse::<usize>()
+        .expect("--semantic-token-budget must be a positive integer");
+    let texts: Vec<String> = if let Some(history_path) = argument_value(args, "--history") {
+        #[cfg(feature = "git-corpus")]
+        {
+            TaggedHistory::read_artifact(Path::new(&history_path))
+                .unwrap_or_else(|error| panic!("read tagged history: {error}"))
+                .contents
+                .into_iter()
+                .map(|content| content.embedding_text)
+                .collect::<Vec<_>>()
+        }
+        #[cfg(not(feature = "git-corpus"))]
+        {
+            let _ = history_path;
+            panic!("--history requires the git-corpus feature")
+        }
+    } else {
+        let artifact = argument_value(args, "--artifact").map(PathBuf::from);
+        let (chunks, _) = semantic_benchmark_chunks(artifact.as_deref());
+        chunks.iter().map(embedding_text).collect::<Vec<_>>()
+    };
+    let census = sequence_length_census(
+        &model_dir.join("tokenizer.json"),
+        &texts,
+        &max_lengths,
+        token_budget,
+    )
+    .unwrap_or_else(|error| panic!("measure sequence lengths: {error}"));
+    match argument_value(args, "--format")
+        .as_deref()
+        .unwrap_or("json")
+    {
+        "json" => println!(
+            "{}",
+            serde_json::to_string_pretty(&census).expect("serialize sequence census")
+        ),
+        "text" => println!("{census:#?}"),
+        other => panic!("unsupported census format {other:?}; use json or text"),
+    }
+}
+
+#[cfg(not(feature = "semantic-fastembed"))]
+fn run_sequence_census(_args: &[String]) {
+    panic!("sequence census requires the semantic-fastembed feature")
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn run_window_quality(args: &[String]) {
+    let artifact = argument_value(args, "--artifact")
+        .map_or_else(|| panic!("--artifact is required"), PathBuf::from);
+    let suite_path = argument_value(args, "--suite").map_or_else(
+        || PathBuf::from("tests/evaluation/v2/queries.json"),
+        PathBuf::from,
+    );
+    let suite: EvaluationSuite = serde_json::from_slice(
+        &fs::read(&suite_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", suite_path.display())),
+    )
+    .unwrap_or_else(|error| panic!("parse {}: {error}", suite_path.display()));
+    let (chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact));
+    let manifest = inspect_manifest(&active_manifest_path(&artifact))
+        .unwrap_or_else(|error| panic!("inspect quality artifact: {error}"));
+    let chunk_ids = chunks
+        .iter()
+        .map(|chunk| chunk.chunk_id.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    suite
+        .validate_for_corpus(
+            corpus_digest.as_ref(),
+            manifest.corpus.documents.len(),
+            chunks.len(),
+            &chunk_ids,
+        )
+        .unwrap_or_else(|error| panic!("validate quality suite: {error}"));
+    let sample_size = argument_value(args, "--semantic-quality-chunks")
+        .as_deref()
+        .unwrap_or("128")
+        .parse::<usize>()
+        .expect("--semantic-quality-chunks must be a positive integer");
+    let chunks = judged_chunk_sample(&chunks, &suite.queries, sample_size);
+    let model_dir = argument_value(args, "--semantic-model-dir")
+        .map_or_else(|| panic!("--semantic-model-dir is required"), PathBuf::from);
+    let model_id = argument_value(args, "--semantic-model-id")
+        .unwrap_or_else(|| panic!("--semantic-model-id is required"));
+    let batch_size = argument_value(args, "--semantic-batch-size")
+        .as_deref()
+        .unwrap_or("8")
+        .parse::<usize>()
+        .expect("--semantic-batch-size must be positive");
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
+        &model_dir,
+        Some(batch_size),
+        semantic_profile_with_args(&model_id, args),
+        argument_value(args, "--semantic-intra-threads").map(|value| {
+            value.parse::<usize>().expect("--semantic-intra-threads must be positive")
+        }),
+        semantic_execution_provider(args),
+        semantic_graph_optimization_level(args),
+    )
+    .unwrap_or_else(|error| panic!("load quality model: {error}"));
+    provider.set_lossless_windowing(args.iter().any(|arg| arg == "--semantic-lossless-windows"));
+    let texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
+    let windows = provider
+        .embed_document_windows(&texts)
+        .unwrap_or_else(|error| panic!("embed quality windows: {error}"));
+    let mean = aggregate_window_rows(&windows, chunks.len(), WindowAggregation::Mean);
+    let weighted =
+        aggregate_window_rows(&windows, chunks.len(), WindowAggregation::TokenWeightedMean);
+    let mean_report = evaluate_window_vectors(&suite.queries, &chunks, &mean, &mut provider);
+    let weighted_report =
+        evaluate_window_vectors(&suite.queries, &chunks, &weighted, &mut provider);
+    let max_report = evaluate_max_window_vectors(&suite.queries, &chunks, &windows, &mut provider);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": 1,
+            "corpus_digest": corpus_digest,
+            "sample_chunks": chunks.len(),
+            "windows": windows.vectors.len(),
+            "mean": mean_report,
+            "token_weighted_mean": weighted_report,
+            "max_similarity": max_report,
+        }))
+        .expect("serialize window quality")
+    );
+}
+
+#[cfg(not(feature = "semantic-fastembed"))]
+fn run_window_quality(_args: &[String]) {
+    panic!("window quality requires the semantic-fastembed feature")
 }
 
 #[cfg(feature = "git-corpus")]
@@ -196,16 +363,6 @@ fn build_history_vectors(
     let length_bucketed = argument_value(args, "--semantic-length-bucketed")
         .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
     let lossless = args.iter().any(|arg| arg == "--semantic-lossless-windows");
-    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
-        model_dir,
-        Some(batch_size),
-        profile.clone(),
-        Some(intra_threads),
-        semantic_execution_provider(args),
-    )
-    .unwrap_or_else(|error| panic!("load semantic model: {error}"));
-    provider.set_length_bucketed(length_bucketed);
-    provider.set_lossless_windowing(lossless);
     let model_path = [
         model_dir.join("model.onnx"),
         model_dir.join("onnx/model.onnx"),
@@ -221,12 +378,42 @@ fn build_history_vectors(
         model_digest: digest_file(&model_path),
         tokenizer_digest: digest_file(&tokenizer_path),
         profile,
-        windowing: format!("lossless={lossless};length-bucketed={length_bucketed}"),
-        embedding_text_version: 1,
+        windowing: format!(
+            "lossless={lossless};length-bucketed={length_bucketed};aggregation={:?}",
+            semantic_window_aggregation(args)
+        ),
+        embedding_text_version: 2,
     };
     let cache =
         argument_value(args, "--cache").map_or_else(|| out.join("vector-cache"), PathBuf::from);
     let started = std::time::Instant::now();
+    let vector_path = out.join("vectors.json");
+    if let Ok(vectors) = vesc_knowledge_index::HistoryVectorIndex::read_artifact(&vector_path)
+        && vectors.contract == contract
+        && vectors
+            .keys
+            .iter()
+            .eq(history.contents.iter().map(|content| &content.vector_key))
+    {
+        println!("vectors: {}", vector_path.display());
+        println!("vector-cache: {}", cache.display());
+        println!("cache-hits: {}", history.contents.len());
+        println!("provider-inputs: 0");
+        println!("avoided-provider-inputs: {}", history.contents.len());
+        println!("vector-build-ms: {}", started.elapsed().as_millis());
+        return;
+    }
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
+        model_dir,
+        Some(batch_size),
+        contract.profile.clone(),
+        Some(intra_threads),
+        semantic_execution_provider(args),
+    )
+    .unwrap_or_else(|error| panic!("load semantic model: {error}"));
+    provider.set_length_bucketed(length_bucketed);
+    provider.set_lossless_windowing(lossless);
+    provider.set_window_aggregation(semantic_window_aggregation(args));
     let (vectors, observations) = vesc_knowledge_index::HistoryVectorIndex::build_with_cache(
         &mut provider,
         history,
@@ -234,7 +421,6 @@ fn build_history_vectors(
         &cache,
     )
     .unwrap_or_else(|error| panic!("build history vectors: {error}"));
-    let vector_path = out.join("vectors.json");
     vectors
         .write_artifact(&vector_path)
         .unwrap_or_else(|error| panic!("write {}: {error}", vector_path.display()));
@@ -249,7 +435,7 @@ fn build_history_vectors(
     println!("vector-build-ms: {}", started.elapsed().as_millis());
 }
 
-#[cfg(feature = "semantic-fastembed")]
+#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
 fn digest_file(path: &Path) -> ContentDigest {
     let mut file = fs::File::open(path)
         .unwrap_or_else(|error| panic!("open {} for hashing: {error}", path.display()));
@@ -346,6 +532,7 @@ fn run_build_default(args: &[String]) {
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(length_bucketed);
             provider.set_lossless_windowing(lossless_windowing);
+            provider.set_window_aggregation(semantic_window_aggregation(args));
             build_git_artifacts_with_provider(
                 &staging,
                 &sources,
@@ -625,6 +812,7 @@ fn run_build(args: &[String]) {
             .unwrap_or_else(|error| panic!("load semantic model: {error}"));
             provider.set_length_bucketed(semantic_length_bucketed);
             provider.set_lossless_windowing(semantic_lossless_windowing);
+            provider.set_window_aggregation(semantic_window_aggregation(args));
             match source_root.as_deref() {
                 Some(source_root) => build_allowlisted_artifacts_with_provider(
                     &out,
@@ -1149,7 +1337,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
             "bake-off must contain four candidates"
         );
     }
-    let (chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact_root));
+    let (mut chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact_root));
     let manifest = inspect_manifest(&active_manifest_path(&artifact_root))
         .unwrap_or_else(|error| panic!("inspect bake-off artifact: {error}"));
     let corpus_documents = manifest.corpus.documents.len();
@@ -1168,6 +1356,14 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     assert_eq!(config.corpus_digest, corpus_digest.to_string());
     assert_eq!(config.corpus_documents, corpus_documents);
     assert_eq!(config.corpus_chunks, chunks.len());
+    let bounded_quality_chunks = argument_value(args, "--semantic-quality-chunks").map(|value| {
+        let size = value
+            .parse::<usize>()
+            .expect("--semantic-quality-chunks must be a positive integer");
+        assert!(size > 0, "--semantic-quality-chunks must be positive");
+        chunks = judged_chunk_sample(&chunks, &suite.queries, size);
+        size
+    });
 
     let generation = artifact_root
         .join("generations")
@@ -1194,6 +1390,12 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     );
     let peak_rss = parse_peak_rss(args);
     let mut warnings = Vec::new();
+    if let Some(size) = bounded_quality_chunks {
+        warnings.push(format!(
+            "bounded quality gate: all judged-relevant chunks plus representative decoys, requested {size}, selected {}",
+            chunks.len()
+        ));
+    }
     if peak_rss.is_empty() {
         warnings.push(
             "peak RSS is externally measured; pass --peak-rss-bytes name=bytes,... to attach it"
@@ -1250,6 +1452,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         .unwrap_or_else(|error| panic!("load bake-off candidate {}: {error}", candidate.name));
         provider.set_length_bucketed(length_bucketed);
         provider.set_lossless_windowing(lossless_windowing);
+        provider.set_window_aggregation(semantic_window_aggregation(args));
         let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
             u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
         );
@@ -1334,6 +1537,129 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         "markdown" => print!("{markdown}"),
         other => panic!("unsupported bake-off format {other:?}; use json or markdown"),
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn judged_chunk_sample(chunks: &[Chunk], queries: &[EvaluationQuery], size: usize) -> Vec<Chunk> {
+    let relevant = queries
+        .iter()
+        .flat_map(|query| {
+            query
+                .relevant
+                .iter()
+                .filter_map(|(id, &score)| (score > 0).then_some(id.as_str()))
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut selected = chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, chunk)| {
+            stable_chunk_result_ids(chunk)
+                .iter()
+                .any(|id| relevant.contains(id.as_str()))
+                .then_some(index)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let target = size.max(selected.len()).min(chunks.len());
+    if selected.len() < target {
+        let remaining = chunks.len().saturating_sub(selected.len());
+        let step = remaining.div_ceil(target - selected.len()).max(1);
+        for index in (0..chunks.len()).step_by(step) {
+            selected.insert(index);
+            if selected.len() == target {
+                break;
+            }
+        }
+    }
+    selected
+        .into_iter()
+        .map(|index| chunks[index].clone())
+        .collect()
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn aggregate_window_rows(
+    windows: &DocumentWindowVectors,
+    documents: usize,
+    aggregation: WindowAggregation,
+) -> Vec<Vec<f32>> {
+    (0..documents)
+        .map(|owner| {
+            let start = windows
+                .owners
+                .partition_point(|&candidate| candidate < owner);
+            let end = windows
+                .owners
+                .partition_point(|&candidate| candidate <= owner);
+            aggregate_window_vectors(
+                &windows.vectors[start..end],
+                &windows.token_counts[start..end],
+                aggregation,
+            )
+            .unwrap_or_else(|error| panic!("aggregate document windows: {error}"))
+        })
+        .collect()
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn evaluate_window_vectors(
+    queries: &[EvaluationQuery],
+    chunks: &[Chunk],
+    vectors: &[Vec<f32>],
+    provider: &mut FastEmbedProvider,
+) -> EvaluationReport {
+    evaluate_suite_with_mode(queries, EvaluationMode::Semantic, Vec::new(), |query| {
+        let vector = provider
+            .embed_query(&vesc_knowledge_index::semantic_query_text(query))
+            .unwrap_or_else(|error| panic!("embed window-quality query: {error}"));
+        let scores = vectors
+            .iter()
+            .map(|candidate| dot_product(candidate, &vector))
+            .collect::<Vec<_>>();
+        rank_chunk_scores(chunks, &scores)
+    })
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn evaluate_max_window_vectors(
+    queries: &[EvaluationQuery],
+    chunks: &[Chunk],
+    windows: &DocumentWindowVectors,
+    provider: &mut FastEmbedProvider,
+) -> EvaluationReport {
+    evaluate_suite_with_mode(queries, EvaluationMode::Semantic, Vec::new(), |query| {
+        let vector = provider
+            .embed_query(&vesc_knowledge_index::semantic_query_text(query))
+            .unwrap_or_else(|error| panic!("embed max-window query: {error}"));
+        let mut scores = vec![f32::NEG_INFINITY; chunks.len()];
+        for (candidate, &owner) in windows.vectors.iter().zip(&windows.owners) {
+            scores[owner] = scores[owner].max(dot_product(candidate, &vector));
+        }
+        rank_chunk_scores(chunks, &scores)
+    })
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn dot_product(left: &[f32], right: &[f32]) -> f32 {
+    left.iter()
+        .zip(right)
+        .map(|(left, right)| left * right)
+        .sum()
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn rank_chunk_scores(chunks: &[Chunk], scores: &[f32]) -> Vec<String> {
+    let mut order = (0..chunks.len()).collect::<Vec<_>>();
+    order.sort_unstable_by(|&left, &right| {
+        scores[right]
+            .total_cmp(&scores[left])
+            .then_with(|| chunks[left].chunk_id.cmp(&chunks[right].chunk_id))
+    });
+    order
+        .into_iter()
+        .take(50)
+        .flat_map(|index| stable_chunk_result_ids(&chunks[index]))
+        .collect()
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -1577,6 +1903,7 @@ fn run_semantic_benchmark(
     )
     .unwrap_or_else(|error| panic!("load semantic model: {error}"));
     provider.set_lossless_windowing(lossless_windowing);
+    provider.set_window_aggregation(semantic_window_aggregation(args));
     let chunks = if length_bucketed {
         let lengths = provider
             .token_lengths(&embedding_texts)
@@ -1858,7 +2185,9 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
 }
 
 fn detected_rx5700xt_8600g_build_args(args: &[String]) -> Option<Vec<String>> {
-    if argument_value(args, "--semantic-model-dir").is_some() {
+    if argument_value(args, "--semantic-model-dir").is_some()
+        || args.iter().any(|arg| arg == "--no-semantic")
+    {
         return None;
     }
     let root = std::env::current_dir().ok()?;
@@ -1883,12 +2212,14 @@ fn rx5700xt_8600g_build_args(
         "--semantic-device-id".into(),
         "0".into(),
         "--semantic-max-length".into(),
-        vesc_knowledge_index::JINA_CODE_MAX_LENGTH.to_string(),
+        vesc_knowledge_index::JINA_CODE_INGEST_MAX_LENGTH.to_string(),
         "--semantic-batch-size".into(),
-        "8".into(),
+        vesc_knowledge_index::JINA_CODE_INGEST_BATCH_SIZE.to_string(),
         "--semantic-length-bucketed".into(),
         "true".into(),
         "--semantic-lossless-windows".into(),
+        "--semantic-window-aggregation".into(),
+        "token-weighted-mean".into(),
     ]);
     resolved
 }
@@ -1946,6 +2277,17 @@ fn semantic_graph_optimization_level(
 }
 
 #[cfg(feature = "semantic-fastembed")]
+fn semantic_window_aggregation(args: &[String]) -> WindowAggregation {
+    match argument_value(args, "--semantic-window-aggregation").as_deref() {
+        None | Some("mean") => WindowAggregation::Mean,
+        Some("token-weighted-mean") => WindowAggregation::TokenWeightedMean,
+        Some(other) => panic!(
+            "unsupported --semantic-window-aggregation {other:?}; use mean or token-weighted-mean"
+        ),
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
 fn embedding_profile(model_id: &str) -> EmbeddingProfile {
     EmbeddingProfile::for_model_id(model_id)
         .unwrap_or_else(|| panic!("no embedding profile is registered for {model_id}"))
@@ -1987,6 +2329,19 @@ mod semantic_profile_tests {
     }
 
     #[test]
+    fn semantic_window_aggregation_is_explicit() {
+        let args = vec![
+            "--semantic-window-aggregation".to_string(),
+            "token-weighted-mean".to_string(),
+        ];
+
+        assert_eq!(
+            semantic_window_aggregation(&args),
+            WindowAggregation::TokenWeightedMean
+        );
+    }
+
+    #[test]
     fn rx5700xt_8600g_build_args_select_measured_ingestion_path() {
         let profile = vesc_knowledge_index::Rx5700Xt8600gProfile {
             ingestion_model_dir: PathBuf::from("fp16"),
@@ -2009,13 +2364,22 @@ mod semantic_profile_tests {
         );
         assert_eq!(
             argument_value(&args, "--semantic-max-length").as_deref(),
-            Some("512")
+            Some("64")
         );
         assert_eq!(
             argument_value(&args, "--semantic-batch-size").as_deref(),
-            Some("8")
+            Some("64")
+        );
+        assert_eq!(
+            argument_value(&args, "--semantic-window-aggregation").as_deref(),
+            Some("token-weighted-mean")
         );
         assert!(args.iter().any(|arg| arg == "--semantic-lossless-windows"));
+    }
+
+    #[test]
+    fn no_semantic_disables_the_hardware_default() {
+        assert!(detected_rx5700xt_8600g_build_args(&["--no-semantic".into()]).is_none());
     }
 }
 

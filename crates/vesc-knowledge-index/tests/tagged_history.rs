@@ -11,7 +11,8 @@ use vesc_knowledge_index::corpus::history::{
 };
 use vesc_knowledge_index::{
     ChunkingConfig, ContentDigest, EmbeddingBatchSize, EmbeddingError, EmbeddingProfile,
-    EmbeddingProvider, LicenseStatus, RepositoryId, TrustTier,
+    EmbeddingProvider, JINA_CODE_FP16_SHA256, JINA_CODE_INT8_SHA256, JINA_CODE_MODEL_ID,
+    JINA_CODE_MODEL_REVISION, LicenseStatus, RepositoryId, TrustTier,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -176,6 +177,26 @@ fn contract() -> EmbeddingContract {
     }
 }
 
+fn parsed_digest(hex: &str) -> ContentDigest {
+    serde_json::from_str(&format!("\"sha256:{hex}\"")).expect("valid digest")
+}
+
+#[test]
+fn fp16_jina_history_accepts_the_pinned_int8_cpu_query_model() {
+    let mut artifact = contract();
+    artifact.model_id = JINA_CODE_MODEL_ID.into();
+    artifact.model_revision = JINA_CODE_MODEL_REVISION.into();
+    artifact.model_digest = parsed_digest(JINA_CODE_FP16_SHA256);
+    artifact.profile.max_length = 64;
+    let mut query = artifact.clone();
+    query.model_digest = parsed_digest(JINA_CODE_INT8_SHA256);
+    query.profile.max_length = 512;
+
+    assert!(artifact.supports_query(&query));
+    query.tokenizer_digest = ContentDigest::of(b"different tokenizer");
+    assert!(!artifact.supports_query(&query));
+}
+
 #[test]
 fn history_vectors_embed_unique_inputs_once_and_resume_from_cache() {
     let (_root, work) = tagged_fixture();
@@ -212,7 +233,7 @@ fn history_vectors_embed_unique_inputs_once_and_resume_from_cache() {
     assert!(first.occurrence_count() > first.unique_vector_count());
     assert_eq!(first_observations.cache_hits, 1);
     let hits = first
-        .search(&[0.5, 0.5], Some("stable-1"), 10)
+        .search(&[0.5, 0.5], &contract(), Some("stable-1"), 10)
         .expect("version-filtered semantic search");
     assert!(!hits.is_empty());
     assert!(hits.iter().all(|hit| hit.occurrence.tag == "stable-1"));
@@ -235,4 +256,19 @@ fn history_vectors_embed_unique_inputs_once_and_resume_from_cache() {
         HistoryVectorIndex::read_artifact(&artifact).expect("read artifact"),
         second
     );
+}
+
+#[test]
+fn history_search_rejects_an_incompatible_query_contract() {
+    let (_root, work) = tagged_fixture();
+    let history = ingest_tagged_history(&source(work)).expect("tagged history");
+    let cache = tempdir().expect("cache root");
+    let mut provider = CountingProvider::default();
+    let (index, _) =
+        HistoryVectorIndex::build_with_cache(&mut provider, &history, contract(), cache.path())
+            .expect("vector build");
+    let mut incompatible = contract();
+    incompatible.tokenizer_digest = ContentDigest::of(b"another tokenizer");
+
+    assert!(index.search(&[0.5, 0.5], &incompatible, None, 10).is_err());
 }

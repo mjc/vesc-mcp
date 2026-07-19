@@ -78,6 +78,14 @@ pub enum Pooling {
     Mean,
 }
 
+/// Aggregation used when one document requires multiple model windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowAggregation {
+    Mean,
+    TokenWeightedMean,
+}
+
 /// Contract for whether a provider's output vectors are already normalized.
 ///
 /// `Guaranteed` is reserved for an explicitly normalized `FastEmbed` profile or
@@ -115,6 +123,203 @@ pub struct TokenStatistics {
     pub truncated_chunks: usize,
     /// Padding waste expressed as parts per million of padded tokens.
     pub padding_ratio_ppm: u64,
+}
+
+/// One fixed input shape in a constant-token-budget benchmark matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceBucket {
+    pub max_length: usize,
+    pub batch_size: usize,
+}
+
+/// Tokenizer-only cost projection for one fixed sequence shape.
+#[cfg(feature = "semantic-fastembed")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceBucketCensus {
+    pub bucket: SequenceBucket,
+    pub windows: usize,
+    pub multi_window_inputs: usize,
+    pub provider_batches: usize,
+    pub real_tokens: u64,
+    pub padded_tokens: u64,
+    pub padding_ratio_ppm: u64,
+}
+
+/// Tokenizer-only sequence matrix over exact embedding inputs.
+#[cfg(feature = "semantic-fastembed")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SequenceLengthCensus {
+    pub inputs: usize,
+    pub token_budget: usize,
+    pub total_untruncated_tokens: u64,
+    pub metadata_tokens: u64,
+    pub metadata_ratio_ppm: u64,
+    pub buckets: Vec<SequenceBucketCensus>,
+}
+
+/// Builds fixed sequence shapes that consume at most `token_budget` tokens per batch.
+///
+/// # Errors
+///
+/// Returns [`EmbeddingError`] when the budget or any sequence length is zero,
+/// or when a sequence cannot fit within the budget.
+pub fn sequence_bucket_plan(
+    max_lengths: &[usize],
+    token_budget: usize,
+) -> Result<Vec<SequenceBucket>, EmbeddingError> {
+    if token_budget == 0 || max_lengths.is_empty() {
+        return Err(EmbeddingError::Provider(
+            "sequence lengths and token budget must be nonzero".into(),
+        ));
+    }
+    max_lengths
+        .iter()
+        .copied()
+        .map(|max_length| {
+            let batch_size = token_budget.checked_div(max_length).unwrap_or_default();
+            if max_length == 0 || batch_size == 0 {
+                return Err(EmbeddingError::Provider(format!(
+                    "sequence length {max_length} does not fit token budget {token_budget}"
+                )));
+            }
+            Ok(SequenceBucket {
+                max_length,
+                batch_size,
+            })
+        })
+        .collect()
+}
+
+/// Measures fixed-shape window and padding costs without loading an ONNX model.
+///
+/// # Errors
+///
+/// Returns [`EmbeddingError`] when the tokenizer cannot be loaded or an input
+/// cannot be represented by one of the requested sequence lengths.
+#[cfg(feature = "semantic-fastembed")]
+pub fn sequence_length_census(
+    tokenizer_path: &std::path::Path,
+    texts: &[String],
+    max_lengths: &[usize],
+    token_budget: usize,
+) -> Result<SequenceLengthCensus, EmbeddingError> {
+    if texts.is_empty() {
+        return Err(EmbeddingError::EmptyInput);
+    }
+    let mut tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path)
+        .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+    tokenizer.with_padding(None);
+    tokenizer
+        .with_truncation(None)
+        .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+    let buckets = sequence_bucket_plan(max_lengths, token_budget)?;
+    let mut total_untruncated_tokens = 0_u64;
+    let mut metadata_tokens = 0_u64;
+    for text in texts {
+        let encoding = tokenizer
+            .encode(text.as_str(), true)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        total_untruncated_tokens = total_untruncated_tokens
+            .saturating_add(u64::try_from(encoding.get_ids().len()).unwrap_or(u64::MAX));
+        if let Some(content) = text.find("Content: ") {
+            let encoding = tokenizer
+                .encode(&text[..content], false)
+                .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+            metadata_tokens = metadata_tokens
+                .saturating_add(u64::try_from(encoding.get_ids().len()).unwrap_or(u64::MAX));
+        }
+    }
+
+    let mut results = Vec::with_capacity(buckets.len());
+    for bucket in buckets {
+        let mut windows = 0_usize;
+        let mut multi_window_inputs = 0_usize;
+        let mut real_tokens = 0_u64;
+        for text in texts {
+            let source_windows = bounded_document_windows(&tokenizer, text, bucket.max_length)?;
+            multi_window_inputs += usize::from(source_windows.len() > 1);
+            windows = windows.saturating_add(source_windows.len());
+            real_tokens = real_tokens.saturating_add(
+                source_windows
+                    .iter()
+                    .map(|(_, tokens)| u64::try_from(*tokens).unwrap_or(u64::MAX))
+                    .sum::<u64>(),
+            );
+        }
+        let provider_batches = windows.div_ceil(bucket.batch_size);
+        let padded_tokens = u64::try_from(provider_batches)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::try_from(bucket.batch_size).unwrap_or(u64::MAX))
+            .saturating_mul(u64::try_from(bucket.max_length).unwrap_or(u64::MAX));
+        results.push(SequenceBucketCensus {
+            bucket,
+            windows,
+            multi_window_inputs,
+            provider_batches,
+            real_tokens,
+            padded_tokens,
+            padding_ratio_ppm: padded_tokens
+                .saturating_sub(real_tokens)
+                .saturating_mul(1_000_000)
+                .checked_div(padded_tokens)
+                .unwrap_or_default(),
+        });
+    }
+    Ok(SequenceLengthCensus {
+        inputs: texts.len(),
+        token_budget,
+        total_untruncated_tokens,
+        metadata_tokens,
+        metadata_ratio_ppm: metadata_tokens
+            .saturating_mul(1_000_000)
+            .checked_div(total_untruncated_tokens)
+            .unwrap_or_default(),
+        buckets: results,
+    })
+}
+
+/// Pools normalized document-window vectors into one normalized document vector.
+///
+/// # Errors
+///
+/// Returns [`EmbeddingError`] for empty, inconsistent, or zero-weight input.
+pub fn aggregate_window_vectors(
+    vectors: &[Vec<f32>],
+    token_counts: &[usize],
+    aggregation: WindowAggregation,
+) -> Result<Vec<f32>, EmbeddingError> {
+    let Some(dimension) = vectors.first().map(Vec::len) else {
+        return Err(EmbeddingError::EmptyInput);
+    };
+    if dimension == 0 || vectors.len() != token_counts.len() {
+        return Err(EmbeddingError::DimensionMismatch {
+            expected: vectors.len(),
+            actual: token_counts.len(),
+        });
+    }
+    let mut pooled = vec![0.0_f32; dimension];
+    for (vector, &token_count) in vectors.iter().zip(token_counts) {
+        if vector.len() != dimension {
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: dimension,
+                actual: vector.len(),
+            });
+        }
+        let weight = match aggregation {
+            WindowAggregation::Mean => 1.0,
+            WindowAggregation::TokenWeightedMean => u16::try_from(token_count)
+                .map(f32::from)
+                .map_err(|_| EmbeddingError::Provider("window token count exceeds u16".into()))?,
+        };
+        for (pooled, value) in pooled.iter_mut().zip(vector) {
+            *pooled += weight * value;
+        }
+    }
+    normalize(&mut pooled)?;
+    Ok(pooled)
 }
 
 /// Model-specific contract shared by corpus generation and query embedding.
@@ -268,6 +473,7 @@ pub trait EmbeddingProvider {
 pub fn embedding_text(chunk: &Chunk) -> String {
     let capacity = embedding_text_capacity(chunk);
     let mut text = String::with_capacity(capacity);
+    let identifiers = embedding_identifiers(chunk);
     if !chunk.title.is_empty() {
         text.push_str("Title: ");
         text.push_str(&chunk.title);
@@ -282,24 +488,18 @@ pub fn embedding_text(chunk: &Chunk) -> String {
         );
         text.push('\n');
     }
-    if !chunk.identifiers.is_empty() {
+    if !identifiers.is_empty() {
         text.push_str("Identifiers: ");
-        append_joined(
-            &mut text,
-            chunk.identifiers.iter().map(String::as_str),
-            ", ",
-        );
+        append_joined(&mut text, identifiers.iter().copied(), ", ");
         text.push('\n');
-        if chunk
-            .identifiers
+        if identifiers
             .iter()
             .any(|identifier| identifier_semantic_alias(identifier).is_some())
         {
             text.push_str("Concepts: ");
             append_joined(
                 &mut text,
-                chunk
-                    .identifiers
+                identifiers
                     .iter()
                     .filter_map(|identifier| identifier_semantic_alias(identifier)),
                 "; ",
@@ -315,6 +515,27 @@ pub fn embedding_text(chunk: &Chunk) -> String {
     text.push_str("Content: ");
     text.push_str(&chunk.text);
     text
+}
+
+fn embedding_identifiers(chunk: &Chunk) -> Vec<&str> {
+    const MAX_IDENTIFIERS: usize = 32;
+    if chunk.identifiers.len() <= MAX_IDENTIFIERS {
+        return chunk.identifiers.iter().map(String::as_str).collect();
+    }
+    let local = chunk
+        .text
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|token| !token.is_empty())
+        .collect::<BTreeSet<_>>();
+    chunk
+        .identifiers
+        .iter()
+        .map(String::as_str)
+        .filter(|identifier| {
+            local.contains(identifier) || identifier_semantic_alias(identifier).is_some()
+        })
+        .take(MAX_IDENTIFIERS)
+        .collect()
 }
 
 fn joined_capacity<I>(items: I, separator_len: usize) -> usize
@@ -517,7 +738,16 @@ pub struct FastEmbedProvider {
     profile: EmbeddingProfile,
     length_bucketed: bool,
     lossless_windowing: bool,
+    window_aggregation: WindowAggregation,
     fixed_batch_size: bool,
+}
+
+/// Raw normalized window vectors and their source-document owners.
+#[cfg(feature = "semantic-fastembed")]
+pub struct DocumentWindowVectors {
+    pub vectors: Vec<Vec<f32>>,
+    pub owners: Vec<usize>,
+    pub token_counts: Vec<usize>,
 }
 
 /// Runtime execution provider requested for a `FastEmbed` session.
@@ -567,6 +797,7 @@ impl FastEmbedProvider {
             profile,
             length_bucketed: false,
             lossless_windowing: false,
+            window_aggregation: WindowAggregation::Mean,
             fixed_batch_size: false,
         })
     }
@@ -592,10 +823,106 @@ impl FastEmbedProvider {
     /// Enables lossless token windows for documents longer than the model limit.
     ///
     /// Each document still produces exactly one vector. Window vectors are
-    /// averaged and normalized, preserving deterministic chunk ordering while
+    /// aggregated and normalized, preserving deterministic chunk ordering while
     /// preventing the tokenizer or ONNX graph from discarding document text.
     pub const fn set_lossless_windowing(&mut self, enabled: bool) {
         self.lossless_windowing = enabled;
+    }
+
+    /// Selects how lossless document-window vectors are combined.
+    pub const fn set_window_aggregation(&mut self, aggregation: WindowAggregation) {
+        self.window_aggregation = aggregation;
+    }
+
+    /// Embeds every lossless source window separately for aggregation-quality gates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when tokenization or provider inference fails.
+    pub fn embed_document_windows(
+        &mut self,
+        texts: &[String],
+    ) -> Result<DocumentWindowVectors, EmbeddingError> {
+        if texts.is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        let prefixed = texts
+            .iter()
+            .map(|text| format!("{}{}", self.profile.document_prefix, text))
+            .collect::<Vec<_>>();
+        let mut tokenizer = self.model.tokenizer.clone();
+        tokenizer.with_padding(None);
+        tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        let mut all_vectors = Vec::new();
+        let mut all_owners = Vec::new();
+        let mut all_token_counts = Vec::new();
+        let mut windows = Vec::with_capacity(self.batch_size.get());
+        let mut owners = Vec::with_capacity(self.batch_size.get());
+        let mut token_counts = Vec::with_capacity(self.batch_size.get());
+        for (owner, text) in prefixed.iter().enumerate() {
+            for (window, token_count) in
+                bounded_document_windows(&tokenizer, text, self.profile.max_length)?
+            {
+                windows.push(window);
+                owners.push(owner);
+                token_counts.push(token_count);
+                if windows.len() == self.batch_size.get() {
+                    self.embed_raw_window_batch(
+                        &mut windows,
+                        &mut owners,
+                        &mut token_counts,
+                        &mut all_vectors,
+                        &mut all_owners,
+                        &mut all_token_counts,
+                    )?;
+                }
+            }
+        }
+        self.embed_raw_window_batch(
+            &mut windows,
+            &mut owners,
+            &mut token_counts,
+            &mut all_vectors,
+            &mut all_owners,
+            &mut all_token_counts,
+        )?;
+        Ok(DocumentWindowVectors {
+            vectors: all_vectors,
+            owners: all_owners,
+            token_counts: all_token_counts,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn embed_raw_window_batch(
+        &mut self,
+        windows: &mut Vec<String>,
+        owners: &mut Vec<usize>,
+        token_counts: &mut Vec<usize>,
+        all_vectors: &mut Vec<Vec<f32>>,
+        all_owners: &mut Vec<usize>,
+        all_token_counts: &mut Vec<usize>,
+    ) -> Result<(), EmbeddingError> {
+        if windows.is_empty() {
+            return Ok(());
+        }
+        let real_windows = windows.len();
+        if self.fixed_batch_size {
+            pad_window_batch(windows, self.batch_size.get());
+        }
+        let batch_size = self.effective_batch_size(windows.len());
+        let vectors = self
+            .model
+            .embed(&mut *windows, batch_size)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        self.validate_vectors(&vectors)?;
+        all_vectors.extend(vectors.into_iter().take(real_windows));
+        all_owners.append(owners);
+        all_token_counts.append(token_counts);
+        windows.clear();
+        Ok(())
     }
 
     /// Returns the maximum number of tokens accepted in one model window.
@@ -707,8 +1034,11 @@ impl FastEmbedProvider {
         let read = |name: &str| {
             std::fs::read(root.join(name)).map_err(|error| EmbeddingError::Io(error.to_string()))
         };
+        let model_bytes = read("model.onnx")?;
+        let model_digest = ContentDigest::of(&model_bytes);
+        validate_migraphx_model_digest(model_digest.as_str(), &profile, execution_provider)?;
         let model = fastembed::UserDefinedEmbeddingModel::new(
-            read("model.onnx")?,
+            model_bytes,
             fastembed::TokenizerFiles {
                 tokenizer_file: read("tokenizer.json")?,
                 config_file: read("config.json")?,
@@ -933,71 +1263,8 @@ impl FastEmbedProvider {
         tokenizer
             .with_truncation(None)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        let encoding = tokenizer
-            .encode(text, true)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        let offsets = encoding
-            .get_offsets()
-            .iter()
-            .copied()
-            .filter(|&(start, end)| end > start)
-            .collect::<Vec<_>>();
-        let special_tokens = encoding.get_ids().len().saturating_sub(offsets.len());
-        let content_limit = self.profile.max_length.saturating_sub(special_tokens);
-        if content_limit == 0 {
-            return Err(EmbeddingError::Provider(
-                "model limit is smaller than its special-token overhead".into(),
-            ));
-        }
-        if encoding.get_ids().len() <= self.profile.max_length {
-            return Ok(vec![text.to_owned()]);
-        }
-
-        let mut windows = Vec::with_capacity(offsets.len().div_ceil(content_limit));
-        let mut start = 0;
-        for group in offsets.chunks(content_limit) {
-            let end = group.last().map_or(start, |&(_, end)| end.min(text.len()));
-            if end > start {
-                windows.push(text[start..end].to_owned());
-                start = end;
-            }
-        }
-        if start < text.len() {
-            if let Some(last) = windows.last_mut() {
-                last.push_str(&text[start..]);
-            } else {
-                windows.push(text.to_owned());
-            }
-        }
-
-        let mut bounded = Vec::with_capacity(windows.len());
-        let mut pending = windows;
-        while let Some(window) = pending.pop() {
-            let length = tokenizer
-                .encode(window.as_str(), true)
-                .map_err(|error| EmbeddingError::Provider(error.to_string()))?
-                .get_ids()
-                .len();
-            if length <= self.profile.max_length {
-                bounded.push(window);
-                continue;
-            }
-
-            let mut midpoint = window.len() / 2;
-            while midpoint > 0 && !window.is_char_boundary(midpoint) {
-                midpoint -= 1;
-            }
-            if midpoint == 0 {
-                return Err(EmbeddingError::Provider(format!(
-                    "model input cannot fit within the model limit of {} tokens",
-                    self.profile.max_length
-                )));
-            }
-            pending.push(window[midpoint..].to_owned());
-            pending.push(window[..midpoint].to_owned());
-        }
-        bounded.reverse();
-        Ok(bounded)
+        bounded_document_windows(&tokenizer, text, self.profile.max_length)
+            .map(|windows| windows.into_iter().map(|(window, _)| window).collect())
     }
 
     fn ensure_document_lengths(&self, texts: &[&str]) -> Result<(), EmbeddingError> {
@@ -1060,6 +1327,20 @@ impl FastEmbedProvider {
         if windows.is_empty() {
             return Ok(());
         }
+        let token_counts = match self.window_aggregation {
+            WindowAggregation::Mean => vec![1; owners.len()],
+            WindowAggregation::TokenWeightedMean => windows
+                .iter()
+                .take(owners.len())
+                .map(|window| {
+                    self.model
+                        .tokenizer
+                        .encode(window.as_str(), true)
+                        .map(|encoding| encoding.get_ids().len())
+                        .map_err(|error| EmbeddingError::Provider(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        };
         if self.fixed_batch_size {
             pad_window_batch(windows, self.batch_size.get());
         }
@@ -1069,14 +1350,17 @@ impl FastEmbedProvider {
             .embed(&mut *windows, batch_size)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         self.validate_vectors(&vectors)?;
-        for (vector, &owner) in vectors.iter().zip(owners.iter()) {
+        for ((vector, &owner), token_count) in vectors.iter().zip(owners.iter()).zip(token_counts) {
             let Some(sum) = sums.get_mut(owner) else {
                 return Err(EmbeddingError::Provider(
                     "lossless window owner is out of range".into(),
                 ));
             };
+            let weight = u16::try_from(token_count)
+                .map(f32::from)
+                .map_err(|_| EmbeddingError::Provider("window token count exceeds u16".into()))?;
             for (sum, value) in sum.iter_mut().zip(vector) {
-                *sum += *value;
+                *sum = weight.mul_add(*value, *sum);
             }
             counts[owner] = counts[owner].saturating_add(1);
         }
@@ -1084,6 +1368,102 @@ impl FastEmbedProvider {
         owners.clear();
         Ok(())
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn validate_migraphx_model_digest(
+    model_digest: &str,
+    profile: &EmbeddingProfile,
+    execution_provider: SemanticExecutionProvider,
+) -> Result<(), EmbeddingError> {
+    if matches!(
+        execution_provider,
+        SemanticExecutionProvider::Migraphx { .. }
+    ) && profile.pooling == Pooling::Mean
+        && profile.dimension == 768
+        && model_digest == crate::JINA_CODE_INT8_SHA256
+    {
+        return Err(EmbeddingError::Provider(
+            "the pinned Jina INT8 graph is disabled on MIGraphX; use the pinned FP16 graph".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn bounded_document_windows(
+    tokenizer: &tokenizers::Tokenizer,
+    text: &str,
+    max_length: usize,
+) -> Result<Vec<(String, usize)>, EmbeddingError> {
+    let encoding = tokenizer
+        .encode(text, true)
+        .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+    let offsets = encoding
+        .get_offsets()
+        .iter()
+        .copied()
+        .filter(|&(start, end)| end > start)
+        .collect::<Vec<_>>();
+    let special_tokens = encoding
+        .get_special_tokens_mask()
+        .iter()
+        .filter(|&&is_special| is_special != 0)
+        .count();
+    let content_limit = max_length.saturating_sub(special_tokens);
+    if content_limit == 0 {
+        return Err(EmbeddingError::Provider(
+            "model limit is smaller than its special-token overhead".into(),
+        ));
+    }
+    if encoding.get_ids().len() <= max_length {
+        return Ok(vec![(text.to_owned(), encoding.get_ids().len())]);
+    }
+
+    let mut windows = Vec::with_capacity(offsets.len().div_ceil(content_limit));
+    let mut start = 0;
+    for group in offsets.chunks(content_limit) {
+        let end = group.last().map_or(start, |&(_, end)| end.min(text.len()));
+        if end > start {
+            windows.push(text[start..end].to_owned());
+            start = end;
+        }
+    }
+    if start < text.len() {
+        if let Some(last) = windows.last_mut() {
+            last.push_str(&text[start..]);
+        } else {
+            windows.push(text.to_owned());
+        }
+    }
+
+    let mut bounded = Vec::with_capacity(windows.len());
+    let mut pending = windows;
+    while let Some(window) = pending.pop() {
+        let length = tokenizer
+            .encode(window.as_str(), true)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?
+            .get_ids()
+            .len();
+        if length <= max_length {
+            bounded.push((window, length));
+            continue;
+        }
+
+        let mut midpoint = window.len() / 2;
+        while midpoint > 0 && !window.is_char_boundary(midpoint) {
+            midpoint -= 1;
+        }
+        if midpoint == 0 {
+            return Err(EmbeddingError::Provider(format!(
+                "model input cannot fit within the model limit of {max_length} tokens"
+            )));
+        }
+        pending.push(window[midpoint..].to_owned());
+        pending.push(window[..midpoint].to_owned());
+    }
+    bounded.reverse();
+    Ok(bounded)
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2086,6 +2466,23 @@ mod tests {
     }
 
     #[test]
+    fn embedding_text_drops_document_wide_identifier_noise() {
+        let mut chunk = chunks().remove(0);
+        chunk.text = "target_function();".into();
+        chunk.identifiers.insert("target_function".into());
+        for index in 0..100 {
+            chunk
+                .identifiers
+                .insert(format!("unrelated_identifier_{index}"));
+        }
+
+        let text = embedding_text(&chunk);
+
+        assert!(text.contains("target_function"));
+        assert!(!text.contains("unrelated_identifier_99"));
+    }
+
+    #[test]
     fn semantic_query_text_uses_reviewed_concept_aliases() {
         let text = semantic_query_text("encoded values crossing the native extension boundary");
 
@@ -2102,6 +2499,29 @@ mod tests {
         pad_window_batch(&mut windows, 4);
 
         assert_eq!(windows, ["one", "two", "", ""]);
+    }
+
+    #[cfg(feature = "semantic-migraphx")]
+    #[test]
+    fn migraphx_rejects_the_known_jina_int8_graph() {
+        let profile = EmbeddingProfile::jina_v2_base_code();
+
+        assert!(
+            validate_migraphx_model_digest(
+                crate::JINA_CODE_INT8_SHA256,
+                &profile,
+                SemanticExecutionProvider::Migraphx { device_id: 0 },
+            )
+            .is_err()
+        );
+        assert!(
+            validate_migraphx_model_digest(
+                crate::JINA_CODE_FP16_SHA256,
+                &profile,
+                SemanticExecutionProvider::Migraphx { device_id: 0 },
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -2152,6 +2572,43 @@ mod tests {
     fn outer_batch_size_rejects_zero() {
         assert!(EmbeddingBatchSize::new(0).is_err());
         assert_eq!(EmbeddingBatchSize::new(3).expect("batch").get(), 3);
+    }
+
+    #[test]
+    fn sequence_buckets_hold_a_constant_token_budget() {
+        let buckets = sequence_bucket_plan(&[64, 128, 256, 512], 4096).expect("bucket plan");
+
+        assert_eq!(
+            buckets,
+            [
+                SequenceBucket {
+                    max_length: 64,
+                    batch_size: 64,
+                },
+                SequenceBucket {
+                    max_length: 128,
+                    batch_size: 32,
+                },
+                SequenceBucket {
+                    max_length: 256,
+                    batch_size: 16,
+                },
+                SequenceBucket {
+                    max_length: 512,
+                    batch_size: 8,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn token_weighted_window_pooling_does_not_overweight_a_short_tail() {
+        let vectors = [vec![1.0, 0.0], vec![0.0, 1.0]];
+        let pooled =
+            aggregate_window_vectors(&vectors, &[100, 1], WindowAggregation::TokenWeightedMean)
+                .expect("pooled vector");
+
+        assert!(pooled[0] > 0.999 && pooled[1] < 0.011);
     }
 
     #[test]

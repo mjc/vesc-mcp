@@ -4216,6 +4216,7 @@ dependencies = [
  "tantivy",
  "tempfile",
  "thiserror",
+ "tokenizers",
 ]
 
 [[package]]

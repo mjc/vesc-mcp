@@ -32,6 +32,7 @@ pulldown-cmark = "0.13"
 tantivy = "0.26"
 gix = { version = "0.85", default-features = false, features = ["sha1"] }
 thiserror = "2"
+tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
 flate2 = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }
 tokio-util = "0.7"

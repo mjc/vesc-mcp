@@ -17,6 +17,7 @@ use super::{
     ChunkId, ContentDigest, LicenseStatus, NormalizedDocument, RepositoryId, Revision, SourceSpan,
     TrustTier,
 };
+use crate::hardware::{JINA_CODE_FP16_SHA256, JINA_CODE_INT8_SHA256};
 use crate::semantic::{
     EmbeddingError, EmbeddingProfile, EmbeddingProvider, OutputNormalization, embedding_text,
 };
@@ -247,6 +248,8 @@ pub enum HistoryError {
     Json(#[from] serde_json::Error),
     #[error("embedding contract does not match the existing cache namespace")]
     CacheContractMismatch,
+    #[error("query embedding contract is incompatible with the history vector artifact")]
+    QueryContractMismatch,
     #[error("cached vector {key} has dimension {actual}, expected {expected}")]
     CacheDimension {
         key: ContentDigest,
@@ -805,6 +808,36 @@ pub struct EmbeddingContract {
 }
 
 impl EmbeddingContract {
+    /// Returns whether query vectors share this artifact's embedding space.
+    #[must_use]
+    pub fn supports_query(&self, query: &Self) -> bool {
+        let same_profile = self.profile.pooling == query.profile.pooling
+            && self.profile.query_prefix == query.profile.query_prefix
+            && self.profile.document_prefix == query.profile.document_prefix
+            && self.profile.dimension == query.profile.dimension
+            && self.profile.normalize == query.profile.normalize;
+        let same_model = self.model_digest == query.model_digest;
+        let approved_jina_split = self.model_id == crate::hardware::JINA_CODE_MODEL_ID
+            && self.model_revision == crate::hardware::JINA_CODE_MODEL_REVISION
+            && digest_is(&self.model_digest, JINA_CODE_FP16_SHA256)
+            && digest_is(&query.model_digest, JINA_CODE_INT8_SHA256);
+        self.schema == query.schema
+            && self.model_id == query.model_id
+            && self.model_revision == query.model_revision
+            && self.tokenizer_digest == query.tokenizer_digest
+            && same_profile
+            && (same_model || approved_jina_split)
+    }
+}
+
+fn digest_is(digest: &ContentDigest, expected_hex: &str) -> bool {
+    digest
+        .as_str()
+        .strip_prefix("sha256:")
+        .is_some_and(|actual| actual == expected_hex)
+}
+
+impl EmbeddingContract {
     fn digest(&self) -> Result<ContentDigest, serde_json::Error> {
         Ok(ContentDigest::of(&serde_json::to_vec(self)?))
     }
@@ -946,13 +979,18 @@ impl HistoryVectorIndex {
     ///
     /// # Errors
     ///
-    /// Returns [`HistoryError`] when the query dimension differs from the index.
+    /// Returns [`HistoryError`] when the query contract or dimension differs
+    /// from the index.
     pub fn search(
         &self,
         query: &[f32],
+        query_contract: &EmbeddingContract,
         tag: Option<&str>,
         limit: usize,
     ) -> Result<Vec<HistorySemanticHit>, HistoryError> {
+        if !self.contract.supports_query(query_contract) {
+            return Err(HistoryError::QueryContractMismatch);
+        }
         if query.len() != self.dimension {
             return Err(HistoryError::CacheDimension {
                 key: ContentDigest::of(b"query"),

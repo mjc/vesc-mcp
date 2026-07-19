@@ -130,7 +130,7 @@ impl McpConfig {
         let file = read_config_file(&config_file_path());
         let env = read_env_overrides();
         let mut config = merge_config(&file, &env);
-        apply_rx5700xt_8600g_defaults(&mut config, &file, &env);
+        apply_jina_code_query_defaults(&mut config, &file, &env);
         if config.package_roots.is_empty() {
             #[cfg(any(test, feature = "test-fixtures"))]
             {
@@ -144,7 +144,7 @@ impl McpConfig {
     }
 }
 
-fn apply_rx5700xt_8600g_defaults(config: &mut McpConfig, file: &ConfigFile, env: &EnvOverrides) {
+fn apply_jina_code_query_defaults(config: &mut McpConfig, file: &ConfigFile, env: &EnvOverrides) {
     let knowledge = file.knowledge.as_ref();
     let explicit = env.knowledge_mode.is_some()
         || env.knowledge_artifact.is_some()
@@ -161,21 +161,15 @@ fn apply_rx5700xt_8600g_defaults(config: &mut McpConfig, file: &ConfigFile, env:
     let Some(root) = workspace::workspace_root() else {
         return;
     };
-    if !root
-        .join("target/knowledge-artifacts-jina-code-fp16-rx5700xt/active.json")
-        .is_file()
-    {
-        return;
-    }
-    let Some(profile) = vesc_knowledge_index::Rx5700Xt8600gProfile::detect(&root) else {
+    let Some(profile) = vesc_knowledge_index::JinaCodeQueryProfile::detect(&root) else {
         return;
     };
-    apply_rx5700xt_8600g_profile(config, profile);
+    apply_jina_code_query_profile(config, profile);
 }
 
-fn apply_rx5700xt_8600g_profile(
+fn apply_jina_code_query_profile(
     config: &mut McpConfig,
-    profile: vesc_knowledge_index::Rx5700Xt8600gProfile,
+    profile: vesc_knowledge_index::JinaCodeQueryProfile,
 ) {
     config.knowledge.mode = RetrievalMode::Auto;
     config.knowledge.artifact_path = Some(profile.artifact_dir);
@@ -739,12 +733,11 @@ idle_timeout_secs = 60
     }
 
     #[test]
-    fn rx5700xt_8600g_profile_selects_int8_queries() {
+    fn jina_code_profile_selects_int8_queries_on_any_cpu() {
         let mut merged = merge_config(&ConfigFile::default(), &EnvOverrides::default());
-        apply_rx5700xt_8600g_profile(
+        apply_jina_code_query_profile(
             &mut merged,
-            vesc_knowledge_index::Rx5700Xt8600gProfile {
-                ingestion_model_dir: PathBuf::from("fp16"),
+            vesc_knowledge_index::JinaCodeQueryProfile {
                 query_model_dir: PathBuf::from("int8"),
                 artifact_dir: PathBuf::from("artifact"),
             },

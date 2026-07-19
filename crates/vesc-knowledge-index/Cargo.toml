@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 git-corpus = ["dep:gix"]
-semantic-fastembed = ["dep:fastembed", "dep:ort", "fastembed/ort-load-dynamic", "ort/load-dynamic"]
+semantic-fastembed = ["dep:fastembed", "dep:ort", "dep:tokenizers", "fastembed/ort-load-dynamic", "ort/load-dynamic"]
 semantic-coreml = ["semantic-fastembed", "dep:ort", "ort/coreml"]
 semantic-rocm = ["semantic-fastembed", "dep:ort", "ort/rocm"]
 semantic-migraphx = ["semantic-fastembed", "dep:ort", "ort/migraphx"]
@@ -29,6 +29,7 @@ gix = { workspace = true, optional = true }
 fastembed = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
 thiserror.workspace = true
+tokenizers = { workspace = true, optional = true }
 
 [[bin]]
 name = "gen-knowledge-index"

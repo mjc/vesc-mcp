@@ -40,8 +40,9 @@ pub use fusion::{
     ExpandedContext, FusedHit, FusionConfig, expand_adjacent_context, fuse_candidates,
 };
 pub use hardware::{
-    JINA_CODE_FP16_SHA256, JINA_CODE_INT8_SHA256, JINA_CODE_MAX_LENGTH, JINA_CODE_MODEL_ID,
-    JINA_CODE_MODEL_REVISION, Rx5700Xt8600gProfile,
+    JINA_CODE_FP16_SHA256, JINA_CODE_INGEST_BATCH_SIZE, JINA_CODE_INGEST_MAX_LENGTH,
+    JINA_CODE_INT8_SHA256, JINA_CODE_MAX_LENGTH, JINA_CODE_MODEL_ID, JINA_CODE_MODEL_REVISION,
+    JinaCodeQueryProfile, Rx5700Xt8600gProfile,
 };
 pub use lexical::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{
@@ -57,16 +58,18 @@ pub use parsers::priorities::PrioritiesParseError;
 pub use parsers::refloat_commands::RefloatCommandsParseError;
 pub use parsers::vesc_c_if::VescCIfParseError;
 pub use search::{ScoredEntry, rank_entries};
-#[cfg(feature = "semantic-fastembed")]
-pub use semantic::FastEmbedProvider;
 pub use semantic::{
     DEFAULT_SEMANTIC_BATCH_SIZE, EmbeddingBatchSize, EmbeddingError, EmbeddingProfile,
     EmbeddingProvider, FakeEmbeddingProvider, OutputNormalization, Pooling, SemanticHit,
-    TokenStatistics, VectorArtifact, VectorBuildObservations, default_semantic_intra_threads,
-    embedding_text, semantic_query_text,
+    SequenceBucket, TokenStatistics, VectorArtifact, VectorBuildObservations, WindowAggregation,
+    aggregate_window_vectors, default_semantic_intra_threads, embedding_text, semantic_query_text,
+    sequence_bucket_plan,
 };
 #[cfg(feature = "semantic-fastembed")]
+pub use semantic::{DocumentWindowVectors, FastEmbedProvider};
+#[cfg(feature = "semantic-fastembed")]
 pub use semantic::{
-    SemanticExecutionProvider, SemanticRuntimeDiagnostics, configure_ort_verbose_logging,
-    semantic_runtime_diagnostics,
+    SemanticExecutionProvider, SemanticRuntimeDiagnostics, SequenceBucketCensus,
+    SequenceLengthCensus, configure_ort_verbose_logging, semantic_runtime_diagnostics,
+    sequence_length_census,
 };
