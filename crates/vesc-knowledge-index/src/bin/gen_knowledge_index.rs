@@ -82,6 +82,8 @@ fn main() {
 #[cfg(feature = "git-corpus")]
 #[allow(clippy::option_if_let_else, clippy::too_many_lines)]
 fn run_build_default(args: &[String]) {
+    let detected_args = detected_rx5700xt_8600g_build_args(args);
+    let args = detected_args.as_deref().unwrap_or(args);
     let generated = argument_value(args, "--generated-dir").map_or_else(
         || PathBuf::from("crates/vesc-knowledge-index/generated"),
         PathBuf::from,
@@ -145,7 +147,7 @@ fn run_build_default(args: &[String]) {
             let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
                 &PathBuf::from(model_dir),
                 Some(batch_size),
-                embedding_profile(&model_id),
+                semantic_profile_with_args(&model_id, args),
                 Some(intra_threads),
                 semantic_execution_provider(args),
             )
@@ -370,6 +372,8 @@ mod provisioning_tests {
 #[allow(clippy::option_if_let_else)]
 #[allow(clippy::too_many_lines)]
 fn run_build(args: &[String]) {
+    let detected_args = detected_rx5700xt_8600g_build_args(args);
+    let args = detected_args.as_deref().unwrap_or(args);
     let out = argument_value(args, "--out").map_or_else(
         || PathBuf::from("target/knowledge-artifacts"),
         PathBuf::from,
@@ -422,7 +426,7 @@ fn run_build(args: &[String]) {
             let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
                 &PathBuf::from(model_dir),
                 Some(semantic_batch_size),
-                embedding_profile(&model_id),
+                semantic_profile_with_args(&model_id, args),
                 Some(semantic_intra_threads),
                 semantic_execution_provider(args),
             )
@@ -1373,7 +1377,7 @@ fn run_semantic_benchmark(
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         &model_dir,
         Some(batch_sizes[0]),
-        semantic_benchmark_profile(&model_id, args),
+        semantic_profile_with_args(&model_id, args),
         intra_threads,
         execution_provider,
         graph_optimization_level,
@@ -1660,6 +1664,42 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
         .map(|pair| pair[1].clone())
 }
 
+fn detected_rx5700xt_8600g_build_args(args: &[String]) -> Option<Vec<String>> {
+    if argument_value(args, "--semantic-model-dir").is_some() {
+        return None;
+    }
+    let root = std::env::current_dir().ok()?;
+    let profile = vesc_knowledge_index::Rx5700Xt8600gProfile::detect(&root)?;
+    Some(rx5700xt_8600g_build_args(args, &profile))
+}
+
+fn rx5700xt_8600g_build_args(
+    args: &[String],
+    profile: &vesc_knowledge_index::Rx5700Xt8600gProfile,
+) -> Vec<String> {
+    let mut resolved = args.to_vec();
+    resolved.extend([
+        "--semantic-model-dir".into(),
+        profile.ingestion_model_dir.display().to_string(),
+        "--semantic-model-id".into(),
+        vesc_knowledge_index::JINA_CODE_MODEL_ID.into(),
+        "--semantic-model-revision".into(),
+        vesc_knowledge_index::JINA_CODE_MODEL_REVISION.into(),
+        "--semantic-provider".into(),
+        "migraphx".into(),
+        "--semantic-device-id".into(),
+        "0".into(),
+        "--semantic-max-length".into(),
+        vesc_knowledge_index::JINA_CODE_MAX_LENGTH.to_string(),
+        "--semantic-batch-size".into(),
+        "8".into(),
+        "--semantic-length-bucketed".into(),
+        "true".into(),
+        "--semantic-lossless-windows".into(),
+    ]);
+    resolved
+}
+
 #[cfg(feature = "semantic-fastembed")]
 fn semantic_execution_provider(args: &[String]) -> SemanticExecutionProvider {
     let provider = argument_value(args, "--semantic-provider")
@@ -1724,7 +1764,7 @@ fn semantic_profile(model_id: &str) -> EmbeddingProfile {
 }
 
 #[cfg(feature = "semantic-fastembed")]
-fn semantic_benchmark_profile(model_id: &str, args: &[String]) -> EmbeddingProfile {
+fn semantic_profile_with_args(model_id: &str, args: &[String]) -> EmbeddingProfile {
     let mut profile = semantic_profile(model_id);
     if let Some(value) = argument_value(args, "--semantic-max-length") {
         let max_length = value
@@ -1745,12 +1785,44 @@ mod semantic_profile_tests {
     use super::*;
 
     #[test]
-    fn benchmark_profile_honors_shorter_max_length() {
+    fn semantic_profile_honors_shorter_max_length() {
         let args = vec!["--semantic-max-length".to_string(), "512".to_string()];
 
-        let profile = semantic_benchmark_profile("jinaai/jina-embeddings-v2-base-code", &args);
+        let profile = semantic_profile_with_args("jinaai/jina-embeddings-v2-base-code", &args);
 
         assert_eq!(profile.max_length, 512);
+    }
+
+    #[test]
+    fn rx5700xt_8600g_build_args_select_measured_ingestion_path() {
+        let profile = vesc_knowledge_index::Rx5700Xt8600gProfile {
+            ingestion_model_dir: PathBuf::from("fp16"),
+            query_model_dir: PathBuf::from("int8"),
+            artifact_dir: PathBuf::from("artifact"),
+        };
+        let args = rx5700xt_8600g_build_args(&["build".into()], &profile);
+
+        assert_eq!(
+            argument_value(&args, "--semantic-model-dir").as_deref(),
+            Some("fp16")
+        );
+        assert_eq!(
+            argument_value(&args, "--semantic-provider").as_deref(),
+            Some("migraphx")
+        );
+        assert_eq!(
+            argument_value(&args, "--semantic-device-id").as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            argument_value(&args, "--semantic-max-length").as_deref(),
+            Some("512")
+        );
+        assert_eq!(
+            argument_value(&args, "--semantic-batch-size").as_deref(),
+            Some("8")
+        );
+        assert!(args.iter().any(|arg| arg == "--semantic-lossless-windows"));
     }
 }
 

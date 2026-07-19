@@ -1,0 +1,16 @@
+# Explicit mirror of the automatically selected Ryzen 5 8600G + RX 5700 XT
+# local defaults. Use this file only when overriding automatic detection.
+# Build the FP16 artifact and start the CPU INT8 query server with:
+#   scripts/rx5700xt-jina-split.sh ingest
+#   scripts/rx5700xt-jina-split.sh serve --http
+
+[knowledge]
+mode = "hybrid"
+artifact_path = "target/knowledge-artifacts-jina-code-fp16-rx5700xt"
+
+[knowledge.semantic]
+model_dir = "target/models/jina-embeddings-v2-base-code-quantized"
+model_id = "jinaai/jina-embeddings-v2-base-code"
+model_revision = "516f4baf13dec4ddddda8631e019b5737c8bc250"
+max_length = 512
+idle_timeout_secs = 300

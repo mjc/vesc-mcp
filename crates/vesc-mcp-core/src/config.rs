@@ -32,6 +32,8 @@ pub const VESC_RAG_SEMANTIC_MODEL_DIR_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_DIR";
 pub const VESC_RAG_SEMANTIC_MODEL_ID_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_ID";
 /// Environment variable identifying the provisioned semantic model revision.
 pub const VESC_RAG_SEMANTIC_MODEL_REVISION_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_REVISION";
+/// Environment variable limiting semantic model inputs below the registered maximum.
+pub const VESC_RAG_SEMANTIC_MAX_LENGTH_ENV: &str = "VESC_RAG_SEMANTIC_MAX_LENGTH";
 /// Environment variable controlling how long an idle semantic model remains loaded.
 pub const VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV: &str = "VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS";
 
@@ -75,6 +77,7 @@ pub struct KnowledgeConfig {
     pub semantic_model_dir: Option<PathBuf>,
     pub semantic_model_id: Option<String>,
     pub semantic_model_revision: Option<String>,
+    pub semantic_max_length: Option<usize>,
     pub semantic_idle_timeout_secs: u64,
     pub max_limit: usize,
     pub max_query_bytes: usize,
@@ -90,6 +93,7 @@ impl Default for KnowledgeConfig {
             semantic_model_dir: None,
             semantic_model_id: None,
             semantic_model_revision: None,
+            semantic_max_length: None,
             semantic_idle_timeout_secs: 5 * 60,
             max_limit: 50,
             max_query_bytes: 4 * 1024,
@@ -124,7 +128,9 @@ impl McpConfig {
 
     fn from_sources() -> Self {
         let file = read_config_file(&config_file_path());
-        let config = merge_config(&file, &read_env_overrides());
+        let env = read_env_overrides();
+        let mut config = merge_config(&file, &env);
+        apply_rx5700xt_8600g_defaults(&mut config, &file, &env);
         if config.package_roots.is_empty() {
             #[cfg(any(test, feature = "test-fixtures"))]
             {
@@ -136,6 +142,48 @@ impl McpConfig {
         }
         config
     }
+}
+
+fn apply_rx5700xt_8600g_defaults(config: &mut McpConfig, file: &ConfigFile, env: &EnvOverrides) {
+    let knowledge = file.knowledge.as_ref();
+    let explicit = env.knowledge_mode.is_some()
+        || env.knowledge_artifact.is_some()
+        || env.semantic_model_dir.is_some()
+        || env.semantic_model_id.is_some()
+        || env.semantic_model_revision.is_some()
+        || env.semantic_max_length.is_some()
+        || knowledge.is_some_and(|section| {
+            section.mode.is_some() || section.artifact_path.is_some() || section.semantic.is_some()
+        });
+    if explicit {
+        return;
+    }
+    let Some(root) = workspace::workspace_root() else {
+        return;
+    };
+    if !root
+        .join("target/knowledge-artifacts-jina-code-fp16-rx5700xt/active.json")
+        .is_file()
+    {
+        return;
+    }
+    let Some(profile) = vesc_knowledge_index::Rx5700Xt8600gProfile::detect(&root) else {
+        return;
+    };
+    apply_rx5700xt_8600g_profile(config, profile);
+}
+
+fn apply_rx5700xt_8600g_profile(
+    config: &mut McpConfig,
+    profile: vesc_knowledge_index::Rx5700Xt8600gProfile,
+) {
+    config.knowledge.mode = RetrievalMode::Auto;
+    config.knowledge.artifact_path = Some(profile.artifact_dir);
+    config.knowledge.semantic_model_dir = Some(profile.query_model_dir);
+    config.knowledge.semantic_model_id = Some(vesc_knowledge_index::JINA_CODE_MODEL_ID.into());
+    config.knowledge.semantic_model_revision =
+        Some(vesc_knowledge_index::JINA_CODE_MODEL_REVISION.into());
+    config.knowledge.semantic_max_length = Some(vesc_knowledge_index::JINA_CODE_MAX_LENGTH);
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -178,6 +226,7 @@ struct SemanticSection {
     model_dir: Option<String>,
     model_id: Option<String>,
     model_revision: Option<String>,
+    max_length: Option<usize>,
     idle_timeout_secs: Option<u64>,
 }
 
@@ -201,6 +250,7 @@ struct EnvOverrides {
     semantic_model_dir: Option<PathBuf>,
     semantic_model_id: Option<String>,
     semantic_model_revision: Option<String>,
+    semantic_max_length: Option<usize>,
     semantic_idle_timeout_secs: Option<u64>,
     feedback_path: Option<PathBuf>,
     feedback_writes_enabled: Option<bool>,
@@ -263,6 +313,9 @@ fn read_env_overrides() -> EnvOverrides {
             .map(|value| workspace::expand_path(&value)),
         semantic_model_id: env::var(VESC_RAG_SEMANTIC_MODEL_ID_ENV).ok(),
         semantic_model_revision: env::var(VESC_RAG_SEMANTIC_MODEL_REVISION_ENV).ok(),
+        semantic_max_length: env::var(VESC_RAG_SEMANTIC_MAX_LENGTH_ENV)
+            .ok()
+            .and_then(|value| value.parse().ok()),
         semantic_idle_timeout_secs: env::var(VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV)
             .ok()
             .and_then(|value| value.parse().ok()),
@@ -361,6 +414,11 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
                 knowledge
                     .and_then(|section| section.semantic.as_ref())
                     .and_then(|semantic| semantic.model_revision.clone())
+            }),
+            semantic_max_length: env.semantic_max_length.or_else(|| {
+                knowledge
+                    .and_then(|section| section.semantic.as_ref())
+                    .and_then(|semantic| semantic.max_length)
             }),
             semantic_idle_timeout_secs: env
                 .semantic_idle_timeout_secs
@@ -646,6 +704,7 @@ max_limit = 20
 model_dir = "models/bge-small"
 model_id = "bge-small-en-v1.5"
 model_revision = "sha256:model"
+max_length = 512
 idle_timeout_secs = 60
 "#,
         )
@@ -675,7 +734,32 @@ idle_timeout_secs = 60
             merged.knowledge.semantic_model_revision.as_deref(),
             Some("sha256:model")
         );
+        assert_eq!(merged.knowledge.semantic_max_length, Some(512));
         assert_eq!(merged.knowledge.semantic_idle_timeout_secs, 60);
+    }
+
+    #[test]
+    fn rx5700xt_8600g_profile_selects_int8_queries() {
+        let mut merged = merge_config(&ConfigFile::default(), &EnvOverrides::default());
+        apply_rx5700xt_8600g_profile(
+            &mut merged,
+            vesc_knowledge_index::Rx5700Xt8600gProfile {
+                ingestion_model_dir: PathBuf::from("fp16"),
+                query_model_dir: PathBuf::from("int8"),
+                artifact_dir: PathBuf::from("artifact"),
+            },
+        );
+
+        assert_eq!(merged.knowledge.mode, RetrievalMode::Auto);
+        assert_eq!(
+            merged.knowledge.artifact_path,
+            Some(PathBuf::from("artifact"))
+        );
+        assert_eq!(
+            merged.knowledge.semantic_model_dir,
+            Some(PathBuf::from("int8"))
+        );
+        assert_eq!(merged.knowledge.semantic_max_length, Some(512));
     }
 
     #[test]

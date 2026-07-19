@@ -1053,15 +1053,30 @@ fn initialize_semantic_model(
         .semantic_model_revision
         .as_deref()
         .ok_or_else(|| "semantic model revision is not configured".to_string())?;
-    let key = format!("{}\0{}\0{}", model_dir.display(), model_id, model_revision);
+    let key = format!(
+        "{}\0{}\0{}\0{:?}",
+        model_dir.display(),
+        model_id,
+        model_revision,
+        config.semantic_max_length
+    );
     let cache = semantic_model_cache();
     let mut state = cache
         .state
         .lock()
         .map_err(|_| "semantic provider cache is poisoned".to_string())?;
     if state.entry.as_ref().is_none_or(|entry| entry.key != key) {
-        let profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(model_id)
+        let mut profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(model_id)
             .ok_or_else(|| format!("no embedding profile is registered for {model_id}"))?;
+        if let Some(max_length) = config.semantic_max_length {
+            if max_length == 0 || max_length > profile.max_length {
+                return Err(format!(
+                    "semantic max length must be between 1 and {} for {model_id}",
+                    profile.max_length
+                ));
+            }
+            profile.max_length = max_length;
+        }
         let provider =
             vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile_and_threads(
                 model_dir,
@@ -1752,6 +1767,7 @@ mod tests {
             semantic_model_dir: None,
             semantic_model_id: None,
             semantic_model_revision: None,
+            semantic_max_length: None,
             semantic_idle_timeout_secs: 300,
             max_limit: 1,
             max_query_bytes: 32,

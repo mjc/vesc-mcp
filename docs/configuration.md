@@ -120,6 +120,7 @@ The default `lexical` mode is local and does not download a model.
 | `[knowledge.semantic] model_dir` | `VESC_RAG_SEMANTIC_MODEL_DIR` | unset | Pinned local model directory |
 | `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
 | `[knowledge.semantic] model_revision` | `VESC_RAG_SEMANTIC_MODEL_REVISION` | unset | Pinned model revision |
+| `[knowledge.semantic] max_length` | `VESC_RAG_SEMANTIC_MAX_LENGTH` | model profile | Optional lower input-length limit shared with artifact ingestion |
 | `[knowledge.semantic] idle_timeout_secs` | `VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS` | `300` | Seconds before unloading an idle model |
 | `[feedback] path` | `VESC_RAG_FEEDBACK_PATH` | unset | Durable directory containing the bounded `feedback.json` store |
 | `[feedback] writes_enabled` | `VESC_RAG_FEEDBACK_WRITES` | `false` | Expose model feedback write tools when a store is configured |
@@ -139,6 +140,11 @@ Supported modes:
 
 The server never downloads a semantic model at startup. Model directory,
 identity, and revision must match the vector artifact manifest.
+
+On the measured Ryzen 5 8600G + RX 5700 XT development host only, the server
+selects the pinned Jina code INT8 query model automatically after the matching
+FP16 artifact has been built. Any explicit knowledge mode, artifact, or
+semantic-model setting takes precedence.
 
 Search is bounded to a 4 KiB query, 50 results, 8 KiB per passage, and a 64
 KiB serialized response by default. These file-only limits can be adjusted:

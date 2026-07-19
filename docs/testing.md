@@ -172,7 +172,8 @@ The benchmark defaults to ONNX Runtime graph-optimization level 3. Use
 `--semantic-graph-optimization-level 0`, `1`, `2`, or `3` only when comparing
 runtime behavior. Use `--semantic-max-length` to benchmark a shorter input
 length without changing the registered model profile; the override cannot
-exceed the profile maximum.
+exceed the profile maximum. The build command accepts the same lower override;
+configure `[knowledge.semantic] max_length` to match it at query time.
 
 ## Coverage
 

@@ -43,3 +43,4 @@ writes_enabled = false
 # model_dir = "/path/to/your-pinned-model"
 # model_id = "your-model-id"
 # model_revision = "your-model-revision"
+# max_length = 512

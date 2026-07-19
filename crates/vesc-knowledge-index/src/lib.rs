@@ -7,6 +7,7 @@ mod embedded;
 mod entry;
 pub mod evaluation;
 pub mod fusion;
+pub mod hardware;
 pub mod lexical;
 pub mod lifecycle;
 pub mod parsers;
@@ -31,6 +32,10 @@ pub use embedded::{lexical_index, search_lexical_knowledge};
 pub use entry::{Category, IndexEntry, SourceRef};
 pub use fusion::{
     ExpandedContext, FusedHit, FusionConfig, expand_adjacent_context, fuse_candidates,
+};
+pub use hardware::{
+    JINA_CODE_FP16_SHA256, JINA_CODE_INT8_SHA256, JINA_CODE_MAX_LENGTH, JINA_CODE_MODEL_ID,
+    JINA_CODE_MODEL_REVISION, Rx5700Xt8600gProfile,
 };
 pub use lexical::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{
