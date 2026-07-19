@@ -517,6 +517,7 @@ pub struct FastEmbedProvider {
     profile: EmbeddingProfile,
     length_bucketed: bool,
     lossless_windowing: bool,
+    fixed_batch_size: bool,
 }
 
 /// Runtime execution provider requested for a `FastEmbed` session.
@@ -566,6 +567,7 @@ impl FastEmbedProvider {
             profile,
             length_bucketed: false,
             lossless_windowing: false,
+            fixed_batch_size: false,
         })
     }
 
@@ -718,6 +720,10 @@ impl FastEmbedProvider {
             Pooling::Cls => fastembed::Pooling::Cls,
             Pooling::Mean => fastembed::Pooling::Mean,
         });
+        let fixed_batch_size = matches!(
+            execution_provider,
+            SemanticExecutionProvider::Migraphx { .. }
+        );
         let mut options = fastembed::InitOptionsUserDefined::new()
             .with_max_length(profile.max_length)
             .with_execution_providers(semantic_execution_providers(execution_provider)?)
@@ -732,13 +738,12 @@ impl FastEmbedProvider {
         }
         let mut model = fastembed::TextEmbedding::try_new_from_user_defined(model, options)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        if matches!(
-            execution_provider,
-            SemanticExecutionProvider::Migraphx { .. }
-        ) {
+        if fixed_batch_size {
             model.set_fixed_padding(profile.max_length);
         }
-        Self::new(model, batch_size, profile)
+        let mut provider = Self::new(model, batch_size, profile)?;
+        provider.fixed_batch_size = fixed_batch_size;
+        Ok(provider)
     }
 
     /// Measures the token counts and padding used by `FastEmbed`'s configured
@@ -1055,6 +1060,9 @@ impl FastEmbedProvider {
         if windows.is_empty() {
             return Ok(());
         }
+        if self.fixed_batch_size {
+            pad_window_batch(windows, self.batch_size.get());
+        }
         let batch_size = self.effective_batch_size(windows.len());
         let vectors = self
             .model
@@ -1076,6 +1084,14 @@ impl FastEmbedProvider {
         owners.clear();
         Ok(())
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn pad_window_batch(windows: &mut Vec<String>, batch_size: usize) {
+    if windows.is_empty() || windows.len() >= batch_size {
+        return;
+    }
+    windows.resize(batch_size, String::new());
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2076,6 +2092,16 @@ mod tests {
         assert!(text.starts_with("encoded values crossing"));
         assert!(text.contains("lbm_enc_i32"));
         assert!(semantic_query_text("lbm_add_extension").eq("lbm_add_extension"));
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn pad_window_batch_fills_short_batch_with_synthetic_inputs() {
+        let mut windows = vec!["one".to_string(), "two".to_string()];
+
+        pad_window_batch(&mut windows, 4);
+
+        assert_eq!(windows, ["one", "two", "", ""]);
     }
 
     #[test]
