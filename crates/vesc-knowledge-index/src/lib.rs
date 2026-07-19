@@ -8,6 +8,7 @@ mod entry;
 pub mod evaluation;
 pub mod fusion;
 pub mod hardware;
+pub mod investigation;
 pub mod lexical;
 pub mod lifecycle;
 pub mod parsers;
