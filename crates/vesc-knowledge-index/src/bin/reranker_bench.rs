@@ -366,6 +366,16 @@ fn cpu_name() -> Option<String> {
                     .map(str::to_owned)
             })
         })
+        .or_else(|| {
+            std::process::Command::new("sysctl")
+                .args(["-n", "machdep.cpu.brand_string"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+        })
 }
 
 #[cfg(test)]

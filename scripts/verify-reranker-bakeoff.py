@@ -40,7 +40,17 @@ def main() -> None:
     assert qwen["comparison"]["reranker_global"]["path_complete_at_n"] == 0.0
     assert qwen["comparison"]["reranker_per_facet"]["path_complete_at_n"] == 1.0
     assert qwen["peak_rss_bytes"] > 0
-    print("VESCM-196 Ryzen bakeoff verified: default=no-reranker")
+    m1 = [read(root / "m1" / f"{name}.json") for name in ETTIN]
+    assert all(report["os"] == "macos" and report["arch"] == "aarch64" for report in m1)
+    assert all(report["cpu"] == "Apple M1 (GitHub macos-14 arm64)" for report in m1)
+    assert all(report["candidate_set_sha256"] in candidate_hashes for report in m1)
+    for report in m1:
+        comparison = report["comparison"]
+        assert comparison["no_reranker_global"]["path_complete_at_n"] == 1.0
+        assert comparison["reranker_global"]["path_complete_at_n"] == 0.0
+        assert comparison["reranker_per_facet"]["path_complete_at_n"] == 1.0
+        assert report["peak_rss_bytes"] > 0
+    print("VESCM-196 Ryzen and M1 bakeoff verified: default=no-reranker")
 
 
 if __name__ == "__main__":
