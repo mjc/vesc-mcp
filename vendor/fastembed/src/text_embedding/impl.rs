@@ -18,7 +18,7 @@ use ndarray::Array;
 use ort::{session::Session, value::Value};
 #[cfg(feature = "hf-hub")]
 use std::path::PathBuf;
-use tokenizers::Tokenizer;
+use tokenizers::{PaddingStrategy, Tokenizer};
 
 #[cfg(feature = "hf-hub")]
 use super::TextInitOptions;
@@ -27,6 +27,14 @@ use super::{
 };
 
 impl TextEmbedding {
+    /// Pad every input to one fixed length for execution providers that
+    /// specialize dynamic sequence dimensions.
+    pub fn set_fixed_padding(&mut self, max_length: usize) {
+        if let Some(padding) = self.tokenizer.get_padding_mut() {
+            padding.strategy = PaddingStrategy::Fixed(max_length);
+        }
+    }
+
     /// Try to generate a new TextEmbedding Instance
     ///
     /// Uses the highest level of Graph optimization

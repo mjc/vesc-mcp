@@ -730,8 +730,14 @@ impl FastEmbedProvider {
             }
             options = options.with_intra_threads(intra_threads);
         }
-        let model = fastembed::TextEmbedding::try_new_from_user_defined(model, options)
+        let mut model = fastembed::TextEmbedding::try_new_from_user_defined(model, options)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        if matches!(
+            execution_provider,
+            SemanticExecutionProvider::Migraphx { .. }
+        ) {
+            model.set_fixed_padding(profile.max_length);
+        }
         Self::new(model, batch_size, profile)
     }
 
