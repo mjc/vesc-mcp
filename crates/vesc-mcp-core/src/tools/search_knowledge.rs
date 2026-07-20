@@ -205,6 +205,12 @@ pub struct SearchVescKnowledgeSpan {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct SearchVescKnowledgeIndex {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repositories: BTreeMap<String, String>,
     pub corpus_version: String,
     pub corpus_digest: Option<String>,
     pub document_count: usize,
@@ -649,14 +655,22 @@ fn elapsed_us(start: Instant) -> u64 {
 }
 
 fn index_metadata(config: &KnowledgeConfig) -> Option<SearchVescKnowledgeIndex> {
-    if let Some(root) = &config.artifact_path {
+    if let Some(resolved) = config.resolved_artifact() {
+        let root = resolved.path;
         if root.is_file() {
             return None;
         }
         if let Ok(manifest) = vesc_knowledge_index::inspect_manifest(
-            &vesc_knowledge_index::active_manifest_path(root),
+            &vesc_knowledge_index::active_manifest_path(&root),
         ) {
             return Some(SearchVescKnowledgeIndex {
+                snapshot_id: resolved.snapshot_id.map(|id| id.as_str().to_owned()),
+                snapshot_profile: resolved.snapshot_profile,
+                repositories: resolved
+                    .repositories
+                    .into_iter()
+                    .map(|(id, commit)| (id.as_str().to_owned(), commit))
+                    .collect(),
                 corpus_version: manifest.corpus.corpus_version.to_string(),
                 corpus_digest: Some(manifest.corpus.content_digest.to_string()),
                 document_count: manifest.corpus.documents.len(),
@@ -670,6 +684,9 @@ fn index_metadata(config: &KnowledgeConfig) -> Option<SearchVescKnowledgeIndex> 
     }
     let count = vesc_knowledge_index::embedded_entries().len();
     Some(SearchVescKnowledgeIndex {
+        snapshot_id: None,
+        snapshot_profile: None,
+        repositories: BTreeMap::new(),
         corpus_version: "embedded-legacy-v1".into(),
         corpus_digest: None,
         document_count: count,
@@ -809,8 +826,8 @@ fn lexical_results(
     limit: usize,
     config: &KnowledgeConfig,
 ) -> Result<Vec<LexicalHit>, String> {
-    if let Some(path) = &config.artifact_path {
-        let lexical_path = active_lexical_path(path)?;
+    if let Some(path) = config.resolved_artifact_path() {
+        let lexical_path = active_lexical_path(&path)?;
         return with_cached_lexical_index(&lexical_path, |index| {
             index
                 .search(query, filters, limit)
@@ -842,7 +859,6 @@ fn hybrid_results(
         &chunks,
         FusionConfig {
             limit,
-            lexical_floor: true,
             ..FusionConfig::default()
         },
     )
@@ -885,7 +901,6 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
         &chunks,
         FusionConfig {
             limit,
-            lexical_floor: true,
             ..FusionConfig::default()
         },
     )
@@ -910,8 +925,8 @@ fn lexical_hits_and_chunks(
     ),
     String,
 > {
-    if let Some(path) = &config.artifact_path {
-        let lexical_path = active_lexical_path(path)?;
+    if let Some(path) = config.resolved_artifact_path() {
+        let lexical_path = active_lexical_path(&path)?;
         return with_cached_lexical_index(&lexical_path, |index| {
             let hits = index
                 .search(query, filters, limit)
@@ -1135,11 +1150,10 @@ fn load_vector_artifact(
     chunks: &BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
 ) -> Result<VectorArtifact, String> {
     let root = config
-        .artifact_path
-        .as_deref()
+        .resolved_artifact_path()
         .ok_or_else(|| "vector artifact is not configured".to_string())?;
     let manifest =
-        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(root))
+        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(&root))
             .map_err(|_| "configured vector artifact unavailable".to_string())?;
     let vector_path = root
         .join("generations")

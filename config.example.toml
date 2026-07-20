@@ -35,8 +35,8 @@ max_query_bytes = 4096
 max_response_bytes = 65536
 max_passage_bytes = 8192
 
-# Managed source repositories are optional. They are configuration only here;
-# VESCM-158 never performs network access or downloads semantic models.
+# Managed source repositories are optional. Release startup/explicit refresh
+# fetches them with gix and atomically publishes one combined history default.
 # [[knowledge.repositories]]
 # id = "vesc-tool"
 # remote_url = "https://github.com/vedderb/vesc_tool.git"

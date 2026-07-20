@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use vesc_mcp_core::managed_git::ManagedGitStore;
 use vesc_mcp_core::managed_repositories::{KnowledgeDataLayout, RepositoryPolicy};
+use vesc_mcp_core::managed_snapshots::{KnowledgeSnapshotStore, SnapshotDisposition};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,7 +42,8 @@ async fn synchronize_managed_repositories() -> anyhow::Result<()> {
         .data_root
         .clone()
         .ok_or_else(|| anyhow::anyhow!("managed repositories require a data root"))?;
-    let store = ManagedGitStore::new(KnowledgeDataLayout::new(data_root));
+    let layout = KnowledgeDataLayout::new(data_root);
+    let store = ManagedGitStore::new(layout.clone());
     for (id, result) in store.startup_sync(&config.knowledge.repositories).await {
         match result {
             Ok(outcome) => {
@@ -69,6 +71,28 @@ async fn synchronize_managed_repositories() -> anyhow::Result<()> {
                 tracing::warn!(repository = %id, %error, "optional managed repository unavailable");
             }
         }
+    }
+    let prepared = KnowledgeSnapshotStore::new(layout)
+        .prepare_configured(&config.knowledge.repositories, &config.knowledge.prewarm)
+        .await?;
+    if prepared.default.disposition == SnapshotDisposition::Stale {
+        tracing::warn!(
+            snapshot = %prepared.default.manifest.id.as_str(),
+            "using stale default knowledge snapshot"
+        );
+    } else {
+        tracing::info!(
+            snapshot = %prepared.default.manifest.id.as_str(),
+            disposition = ?prepared.default.disposition,
+            "prepared default knowledge snapshot"
+        );
+    }
+    for snapshot in prepared.prewarmed {
+        tracing::info!(
+            snapshot = %snapshot.manifest.id.as_str(),
+            disposition = ?snapshot.disposition,
+            "prepared historical knowledge snapshot"
+        );
     }
     Ok(())
 }

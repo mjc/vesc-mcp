@@ -1,5 +1,6 @@
 //! MCP server configuration from `~/.config/vesc-mcp/config.toml` and environment.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -9,8 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::CatalogRepo;
 use crate::managed_repositories::{
-    DataRoot, DataRootInputs, ManagedRepositoryError, RepositoryRegistry, RepositoryWire,
-    resolve_data_root, validate_repository_config,
+    DataRoot, DataRootInputs, KnowledgeDataLayout, KnowledgeSnapshotId, ManagedRepositoryError,
+    RepositoryId, RepositoryRegistry, RepositoryWire, resolve_data_root,
+    validate_repository_config,
 };
 use crate::workspace;
 
@@ -49,6 +51,10 @@ pub enum ConfigError {
     Toml,
     #[error(transparent)]
     ManagedRepository(#[from] ManagedRepositoryError),
+    #[error("prewarm selection references unknown repository {0}")]
+    UnknownPrewarmRepository(RepositoryId),
+    #[error("invalid prewarm selector for repository {0}")]
+    InvalidPrewarmSelector(RepositoryId),
 }
 
 /// Knowledge retrieval rollout mode.
@@ -90,6 +96,7 @@ pub struct KnowledgeConfig {
     pub artifact_path: Option<PathBuf>,
     pub data_root: Option<DataRoot>,
     pub repositories: RepositoryRegistry,
+    pub prewarm: Vec<BTreeMap<RepositoryId, String>>,
     pub semantic_model_dir: Option<PathBuf>,
     pub semantic_model_id: Option<String>,
     pub semantic_model_revision: Option<String>,
@@ -108,6 +115,7 @@ impl Default for KnowledgeConfig {
             artifact_path: None,
             data_root: None,
             repositories: RepositoryRegistry::default(),
+            prewarm: Vec::new(),
             semantic_model_dir: None,
             semantic_model_id: None,
             semantic_model_revision: None,
@@ -119,6 +127,75 @@ impl Default for KnowledgeConfig {
             max_passage_bytes: 8 * 1024,
         }
     }
+}
+
+impl KnowledgeConfig {
+    pub(crate) fn resolved_artifact(&self) -> Option<ResolvedKnowledgeArtifact> {
+        if let Some(path) = self.artifact_path.clone() {
+            return Some(ResolvedKnowledgeArtifact {
+                path,
+                snapshot_id: None,
+                snapshot_profile: None,
+                repositories: BTreeMap::new(),
+            });
+        }
+        if self.repositories.is_empty() {
+            return None;
+        }
+        let layout = KnowledgeDataLayout::new(self.data_root.clone()?);
+        let alias: DefaultSnapshotAlias = serde_json::from_slice(
+            &std::fs::read(layout.root().as_path().join("default-snapshot.json")).ok()?,
+        )
+        .ok()?;
+        let snapshot: StoredSnapshotManifest =
+            serde_json::from_slice(&std::fs::read(layout.snapshot(&alias.id)).ok()?).ok()?;
+        if snapshot.id != alias.id {
+            return None;
+        }
+        let path = layout.artifact(&alias.id);
+        path.is_dir().then(|| ResolvedKnowledgeArtifact {
+            path,
+            snapshot_id: Some(snapshot.id),
+            snapshot_profile: snapshot.profile,
+            repositories: snapshot
+                .repositories
+                .into_iter()
+                .map(|repository| (repository.repository, repository.commit))
+                .collect(),
+        })
+    }
+
+    /// Resolve the explicit compatibility artifact or the current managed default.
+    #[must_use]
+    pub fn resolved_artifact_path(&self) -> Option<PathBuf> {
+        self.resolved_artifact().map(|artifact| artifact.path)
+    }
+}
+
+pub(crate) struct ResolvedKnowledgeArtifact {
+    pub path: PathBuf,
+    pub snapshot_id: Option<KnowledgeSnapshotId>,
+    pub snapshot_profile: Option<String>,
+    pub repositories: BTreeMap<RepositoryId, String>,
+}
+
+#[derive(Deserialize)]
+struct DefaultSnapshotAlias {
+    id: KnowledgeSnapshotId,
+}
+
+#[derive(Deserialize)]
+struct StoredSnapshotManifest {
+    id: KnowledgeSnapshotId,
+    #[serde(default)]
+    profile: Option<String>,
+    repositories: Vec<StoredSnapshotRepository>,
+}
+
+#[derive(Deserialize)]
+struct StoredSnapshotRepository {
+    repository: RepositoryId,
+    commit: String,
 }
 
 static CONFIG: OnceLock<McpConfig> = OnceLock::new();
@@ -243,6 +320,8 @@ struct KnowledgeSection {
     data_root: Option<String>,
     #[serde(default)]
     repositories: Vec<RepositoryWire>,
+    #[serde(default)]
+    prewarm: Vec<BTreeMap<String, String>>,
     semantic: Option<SemanticSection>,
     max_limit: Option<usize>,
     max_query_bytes: Option<usize>,
@@ -395,6 +474,10 @@ fn try_merge_config(
     let repositories = validate_repository_config(
         knowledge.map_or_else(Vec::new, |section| section.repositories.clone()),
     )?;
+    let prewarm = validate_prewarm(
+        knowledge.map_or_else(Vec::new, |section| section.prewarm.clone()),
+        &repositories,
+    )?;
     Ok(McpConfig {
         package_roots,
         refloat_root: env.refloat_root.clone().unwrap_or_else(|| {
@@ -444,6 +527,7 @@ fn try_merge_config(
             }),
             data_root: Some(data_root),
             repositories,
+            prewarm,
             semantic_model_dir: env.semantic_model_dir.clone().or_else(|| {
                 knowledge
                     .and_then(|section| section.semantic.as_ref())
@@ -498,6 +582,34 @@ fn try_merge_config(
                 .unwrap_or(false),
         },
     })
+}
+
+fn validate_prewarm(
+    selections: Vec<BTreeMap<String, String>>,
+    repositories: &RepositoryRegistry,
+) -> Result<Vec<BTreeMap<RepositoryId, String>>, ConfigError> {
+    selections
+        .into_iter()
+        .map(|selection| {
+            selection
+                .into_iter()
+                .map(|(raw_id, selector)| {
+                    let id = RepositoryId::new(raw_id)?;
+                    if !repositories.iter().any(|repository| repository.id() == &id) {
+                        return Err(ConfigError::UnknownPrewarmRepository(id));
+                    }
+                    let valid = !selector.is_empty()
+                        && selector.len() <= 256
+                        && !selector
+                            .chars()
+                            .any(|character| character.is_control() || character.is_whitespace());
+                    valid
+                        .then_some((id.clone(), selector))
+                        .ok_or(ConfigError::InvalidPrewarmSelector(id))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -843,6 +955,130 @@ max_total_bytes = 268435456
                 .expect("resolved data root")
                 .as_path(),
             Path::new("/var/lib/vesc-mcp-empty")
+        );
+    }
+
+    #[test]
+    fn managed_snapshot_prewarm_selections_are_typed_and_deterministic() {
+        let config = McpConfig::from_toml(
+            r#"
+[knowledge]
+data_root = "/var/lib/vesc-mcp"
+prewarm = [
+  { vesc = "refs/heads/release_6_06", refloat = "refs/tags/v1.2.3" },
+]
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "https://github.com/vedderb/bldc.git"
+default_ref = "refs/heads/master"
+policy = "required"
+include = ["**/*.c"]
+exclude = []
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+
+[[knowledge.repositories]]
+id = "refloat"
+remote_url = "https://github.com/vedderb/vesc_pkg.git"
+default_ref = "refs/heads/main"
+policy = "optional"
+include = ["**/*.lisp"]
+exclude = []
+trust_tier = "community"
+license = "GPL-3.0-or-later"
+attribution = "VESC contributors"
+max_file_bytes = 524288
+max_files = 10000
+max_total_bytes = 268435456
+"#,
+            &DataRootInputs::default(),
+        )
+        .expect("managed snapshot configuration");
+
+        assert_eq!(
+            config.knowledge.prewarm[0]
+                .iter()
+                .map(|(id, selector)| (id.as_str(), selector.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("refloat", "refs/tags/v1.2.3"),
+                ("vesc", "refs/heads/release_6_06"),
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_default_snapshot_resolves_as_the_active_artifact() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let config = McpConfig::from_toml(
+            &format!(
+                r#"
+[knowledge]
+data_root = "{}"
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "https://github.com/vedderb/bldc.git"
+default_ref = "refs/heads/master"
+policy = "required"
+include = ["**/*.c"]
+exclude = []
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+"#,
+                temp.path().display()
+            ),
+            &DataRootInputs::default(),
+        )
+        .expect("managed configuration");
+        let id = "a".repeat(64);
+        std::fs::write(
+            temp.path().join("default-snapshot.json"),
+            serde_json::to_vec(&serde_json::json!({ "id": id })).expect("alias JSON"),
+        )
+        .expect("default alias");
+        std::fs::create_dir_all(temp.path().join("snapshots")).expect("snapshot directory");
+        std::fs::write(
+            temp.path()
+                .join("snapshots")
+                .join(format!("{}.json", "a".repeat(64))),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "a".repeat(64),
+                "repositories": [{
+                    "repository": "vesc",
+                    "commit": "b".repeat(40),
+                }],
+            }))
+            .expect("snapshot JSON"),
+        )
+        .expect("snapshot manifest");
+        let artifact = temp.path().join("artifacts").join("a".repeat(64));
+        std::fs::create_dir_all(&artifact).expect("artifact directory");
+
+        assert_eq!(config.knowledge.resolved_artifact_path(), Some(artifact));
+        let resolved = config
+            .knowledge
+            .resolved_artifact()
+            .expect("resolved snapshot");
+        assert_eq!(
+            resolved.snapshot_id.expect("snapshot id").as_str(),
+            "a".repeat(64)
+        );
+        assert_eq!(
+            resolved
+                .repositories
+                .get(&RepositoryId::new("vesc").expect("repository id"))
+                .expect("resolved repository"),
+            &"b".repeat(40)
         );
     }
 

@@ -90,11 +90,15 @@ impl<'de> Deserialize<'de> for RepositoryId {
     }
 }
 
-/// Immutable snapshot identifier used only after validation.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SnapshotId(String);
+/// Immutable knowledge snapshot identifier used only after validation.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct KnowledgeSnapshotId(String);
 
-impl SnapshotId {
+/// Compatibility name retained for callers of the original data-layout API.
+pub type SnapshotId = KnowledgeSnapshotId;
+
+impl KnowledgeSnapshotId {
     /// Validate an immutable snapshot identifier.
     ///
     /// # Errors

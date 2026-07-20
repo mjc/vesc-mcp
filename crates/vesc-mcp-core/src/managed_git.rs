@@ -161,7 +161,7 @@ impl ManagedGitStore {
         .await
     }
 
-    async fn sync_source(
+    pub(crate) async fn sync_source(
         &self,
         id: &RepositoryId,
         remote_url: &str,
@@ -283,11 +283,14 @@ impl ManagedGitStore {
         selector: &str,
     ) -> Result<ResolvedRevision, ManagedGitError> {
         let catalog = read_catalog(&self.layout, id)?;
-        if let Some(entry) = catalog
-            .refs
-            .iter()
-            .find(|entry| entry.full_name == selector || entry.display_version == selector)
-        {
+        let configured_branch = selector.strip_prefix("refs/heads/");
+        if let Some(entry) = catalog.refs.iter().find(|entry| {
+            entry.full_name == selector
+                || entry.display_version == selector
+                || configured_branch.is_some_and(|branch| {
+                    entry.full_name.strip_prefix("refs/remotes/origin/") == Some(branch)
+                })
+        }) {
             return Ok(ResolvedRevision {
                 commit: entry.commit.clone(),
             });

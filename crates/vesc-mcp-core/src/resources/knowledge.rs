@@ -197,8 +197,7 @@ impl ConfiguredKnowledgeDocumentResourceHandler {
         Self {
             artifact_root: crate::config::McpConfig::load()
                 .knowledge
-                .artifact_path
-                .clone(),
+                .resolved_artifact_path(),
         }
     }
 }
@@ -255,8 +254,7 @@ impl ConfiguredKnowledgeChunkResourceHandler {
         Self {
             artifact_root: crate::config::McpConfig::load()
                 .knowledge
-                .artifact_path
-                .clone(),
+                .resolved_artifact_path(),
         }
     }
 }

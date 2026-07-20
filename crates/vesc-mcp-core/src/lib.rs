@@ -7,6 +7,8 @@ pub mod error;
 #[cfg(feature = "managed-git")]
 pub mod managed_git;
 pub mod managed_repositories;
+#[cfg(feature = "managed-git")]
+pub mod managed_snapshots;
 pub mod resources;
 pub mod server;
 pub mod tools;

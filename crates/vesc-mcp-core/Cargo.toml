@@ -12,7 +12,7 @@ workspace = true
 
 [features]
 test-fixtures = []
-managed-git = ["dep:gix"]
+managed-git = ["dep:gix", "vesc-knowledge-index/git-corpus"]
 semantic-fastembed = ["vesc-knowledge-index/semantic-fastembed"]
 semantic-coreml = ["semantic-fastembed", "vesc-knowledge-index/semantic-coreml"]
 semantic-rocm = ["semantic-fastembed", "vesc-knowledge-index/semantic-rocm"]

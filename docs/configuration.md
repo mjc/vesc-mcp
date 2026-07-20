@@ -190,14 +190,26 @@ repositories/<id>.git/
 repositories/<id>.refs.json
 snapshots/<snapshot-id>.json
 artifacts/<snapshot-id>/
+artifacts/<snapshot-id>/history.json
 tmp/
 ```
 
 At server startup, enabled repositories are cloned or refreshed as bare stores;
-all configured heads and tags are recorded as immutable commit IDs. A failed
-refresh keeps the last complete catalog and reports it as stale. Run
-`vesc-mcp-server --refresh-repositories` to perform the same explicit refresh
-and exit. There is no background refresh scheduler.
+all configured heads and tags are recorded as immutable commit IDs. The default
+artifact is one combined history containing every commit reachable from each
+configured default branch. It stores changed path occurrences separately from
+content-addressed passages, so unchanged blobs and chunks are not duplicated
+for every commit. Tags and branches are retained as named aliases into the
+commit graph.
+
+A later refresh walks the current graph with `gix`, reuses commits and passages
+from the previous immutable generation, ingests only newly reachable changed
+blobs, validates the new artifact, and then atomically advances the mutable
+default alias. Explicit prewarm selections remain commit-tree snapshots for
+version-specific comparisons. A failed refresh keeps the last complete default
+and reports it as stale. Run `vesc-mcp-server --refresh-repositories` from a
+deployment hook or timer to perform an incremental refresh and exit. There is
+no built-in background scheduler.
 
 `tmp/` is inside the data root so clone staging can atomically rename on the
 same filesystem. Git network operations and directory creation belong to the
