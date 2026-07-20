@@ -2,13 +2,15 @@ CARGO ?= cargo
 
 .DEFAULT_GOAL := check
 
-.PHONY: check test fmt clippy feature-boundaries doc clean coverage coverage-html coverage-summary
+.PHONY: check lint test fmt clippy feature-boundaries doc clean coverage coverage-html coverage-summary
 
 COVERAGE_FLAGS = --workspace --profile ci --features vesc-mcp-core/test-fixtures
 COVERAGE_IGNORE = $(shell awk 'substr($$0, 1, 1) != sprintf("%c", 35) { print; exit }' .config/coverage-exclude.regex)
 LCOV_INFO ?= lcov.info
 
-check: fmt clippy feature-boundaries test doc
+check: lint feature-boundaries test
+
+lint: fmt clippy doc
 
 test:
 	$(CARGO) nextest run $(COVERAGE_FLAGS)
@@ -36,7 +38,7 @@ feature-boundaries:
 	$(CARGO) check -p vesc-mcp-core --no-default-features
 
 doc:
-	RUSTDOCFLAGS='-D warnings' $(CARGO) doc --workspace --no-deps
+	RUSTDOCFLAGS='-D warnings' $(CARGO) doc --workspace --no-deps --all-features
 
 clean:
 	$(CARGO) clean

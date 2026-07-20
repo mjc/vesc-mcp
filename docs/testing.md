@@ -30,11 +30,12 @@ cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
 cargo doc --workspace --no-deps
 ```
 
-`make check` runs formatting, Clippy with warnings denied, a no-default-features
-boundary check for `vesc-mcp-core`, the workspace test suite, and documentation
-generation with warnings denied. The default fixture suite is offline and does
-not require sibling source checkouts. Use `nix develop .#ci -c make check` to
-run the exact lean-shell command used by GitHub Actions.
+`make check` runs formatting, Clippy with warnings denied, documentation with
+warnings denied, a no-default-features boundary check for `vesc-mcp-core`, and
+the workspace test suite. The default fixture suite is offline and does not
+require sibling source checkouts. GitHub Actions runs the same `lint`,
+`feature-boundaries`, and `test` targets concurrently in the lean `.#ci` shell;
+`nix develop .#ci -c make check` reproduces all three locally.
 
 Nextest configuration lives in [`.config/nextest.toml`](../.config/nextest.toml).
 
