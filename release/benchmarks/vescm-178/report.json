@@ -1,0 +1,246 @@
+{
+  "schema": 1,
+  "issue": "VESCM-178",
+  "status": "quality and integrated evidence gates passed",
+  "decision": "Retain quantized BGE and the registered-evidence ranking fix; do not promote INT8 or AMD GPU providers.",
+  "identity": {
+    "host": "Tali (Ryzen 5 8600G)",
+    "corpus_digest": "sha256:ee5aca5157a7cab911d8d70643cbb69de0421f7760582c88402e8d407f6e6b1e",
+    "documents": 2854,
+    "chunks": 13689,
+    "model": "quantized BGE Small",
+    "model_revision": "ea104dacec62c0de699686887e3f920caeb4f3e3",
+    "provider": "CPUExecutionProvider",
+    "onnx_runtime": "1.26.0",
+    "rustc": "1.96.0 (ac68faa20 2026-05-25)",
+    "llvm": "22.1.2",
+    "target": "x86_64-unknown-linux-gnu",
+    "release_lto": true,
+    "release_codegen_units": 1,
+    "batch_size": 8,
+    "length_bucketing": true,
+    "intra_op_threads": 12,
+    "sources": {
+      "bldc": "c835e9f10989f217269efb4ec943dfea7d280dfd",
+      "vesc_tool": "005a08a0189f6df83bb47fbe2f93a3320c15c11a",
+      "refloat": "0ef6e99d8701886feeb7fe6c07cc4ec53fb3d97a"
+    }
+  },
+  "lifecycle": [
+    {
+      "label": "before",
+      "samples": [
+        {"build_seconds": 22.733310, "external_seconds": 23.98, "peak_rss_bytes": 4021727232, "ingestion_seconds": 0.223501, "chunking_seconds": 1.066735, "lexical_seconds": 3.586845, "validation_seconds": 16.999417},
+        {"build_seconds": 11.603780, "external_seconds": 12.24, "peak_rss_bytes": 3928489984, "ingestion_seconds": 0.169064, "chunking_seconds": 0.543385, "lexical_seconds": 2.242778, "validation_seconds": 8.165364},
+        {"build_seconds": 24.369905, "external_seconds": 25.51, "peak_rss_bytes": 3930877952, "ingestion_seconds": 0.265413, "chunking_seconds": 0.713035, "lexical_seconds": 4.806933, "validation_seconds": 17.833067}
+      ]
+    },
+    {
+      "label": "final",
+      "samples": [
+        {"build_seconds": 3.377212, "external_seconds": 3.81, "peak_rss_bytes": 1968308224, "ingestion_seconds": 0.169184, "chunking_seconds": 0.520330, "lexical_seconds": 2.218124, "validation_seconds": 0.000139},
+        {"build_seconds": 6.477455, "external_seconds": 7.53, "peak_rss_bytes": 1984876544, "ingestion_seconds": 0.478839, "chunking_seconds": 0.913079, "lexical_seconds": 4.269147, "validation_seconds": 0.000986},
+        {"build_seconds": 6.657319, "external_seconds": 7.19, "peak_rss_bytes": 2023251968, "ingestion_seconds": 0.227797, "chunking_seconds": 0.766194, "lexical_seconds": 4.912082, "validation_seconds": 0.000153}
+      ]
+    }
+  ],
+  "semantic_builds": [
+    {
+      "run": 1,
+      "build_seconds": 543.865,
+      "provider_seconds": 533.834,
+      "throughput_chunks_per_second": 25.643,
+      "external_seconds": 544.45,
+      "peak_rss_kib": 2453948
+    },
+    {
+      "run": 2,
+      "build_seconds": 543.468,
+      "provider_seconds": 533.488,
+      "throughput_chunks_per_second": 25.659,
+      "external_seconds": 544.06,
+      "peak_rss_kib": 2469500
+    },
+    {
+      "run": 3,
+      "build_seconds": 1153.759,
+      "provider_seconds": 1130.879,
+      "throughput_chunks_per_second": 12.105,
+      "external_seconds": 1155.19,
+      "peak_rss_kib": 2477960
+    }
+  ],
+  "semantic_phase_breakdown": {
+    "run": 3,
+    "inference_seconds": 1130.879225,
+    "vector_finalization_seconds": 0.096338,
+    "encoding_seconds": 1.033587,
+    "writing_seconds": 0.042712
+  },
+  "artifacts": [
+    {
+      "name": "corpus",
+      "bytes": 1202110,
+      "sha256": "e8f0337a616ea9fb7f22777f57c5db37efd1dcfe2c91236e03552078e593fef7",
+      "byte_identical_across_final_builds": true
+    },
+    {
+      "name": "lexical",
+      "bytes": 135840360,
+      "sha256": "8a98d234a06de40ac7aa46aa5b0fcfad193ca8625f9ae3404d74bebd212a1459",
+      "byte_identical_across_final_builds": true
+    },
+    {
+      "name": "vectors",
+      "bytes": 22012069,
+      "sha256": "08f02a0b0add25adbcb7e88b4f8be68d5a8f6a69d86d916864f7a9675ddcfb8f",
+      "byte_identical_across_final_builds": true
+    },
+    {
+      "name": "manifest",
+      "bytes": 2706852,
+      "sha256": "e318935ee8f3cf2c26e00a82cede16344a43c4297805638badc8673a6e157e7e",
+      "byte_identical_across_final_builds": true
+    }
+  ],
+  "quality": [
+    {
+      "mode": "legacy",
+      "recall_at_5": 0.3333,
+      "recall_at_10": 0.3333,
+      "mrr_at_10": 0.3333,
+      "ndcg_at_10": 0.3333,
+      "identifier_top_1": 1.0
+    },
+    {
+      "mode": "lexical",
+      "recall_at_5": 0.4417,
+      "recall_at_10": 0.4667,
+      "mrr_at_10": 0.4624,
+      "ndcg_at_10": 0.4525,
+      "identifier_top_1": 1.0
+    },
+    {
+      "mode": "semantic",
+      "recall_at_5": 0.8083,
+      "recall_at_10": 0.8333,
+      "mrr_at_10": 0.7860,
+      "ndcg_at_10": 0.7560,
+      "identifier_top_1": 0.85
+    },
+    {
+      "mode": "hybrid",
+      "recall_at_5": 0.7444,
+      "recall_at_10": 0.8417,
+      "mrr_at_10": 0.5818,
+      "ndcg_at_10": 0.6302,
+      "identifier_top_1": 1.0
+    },
+    {
+      "mode": "hybrid (registered evidence fix)",
+      "recall_at_5": 0.9083,
+      "recall_at_10": 0.9333,
+      "mrr_at_10": 0.8861,
+      "ndcg_at_10": 0.8561,
+      "identifier_top_1": 1.0
+    }
+  ],
+  "quality_gates": {
+    "recall_at_5": 0.90,
+    "mrr_at_10": 0.80,
+    "ndcg_at_10": 0.80,
+    "identifier_top_1": 1.0,
+    "passed": true
+  },
+  "query_benchmark": {
+    "warmup_iterations": 1,
+    "repetitions": 3,
+    "cold_initialization_us": 140512,
+    "first_query_us": 10908,
+    "embedding_p50_us": 2303,
+    "embedding_p95_us": 2970,
+    "samples": 189,
+    "query_count": 63,
+    "vector_count": 13689,
+    "vector_dimension": 384,
+    "rss_before_queries_bytes": 131002368,
+    "rss_after_queries_bytes": 131010560,
+    "rss_retained_delta_bytes": 8192,
+    "exact_search": [
+      {"k": 5, "samples": 189, "min_us": 8148, "p50_us": 8241, "p95_us": 8373, "max_us": 8784},
+      {"k": 10, "samples": 189, "min_us": 8348, "p50_us": 8455, "p95_us": 8798, "max_us": 10680},
+      {"k": 20, "samples": 189, "min_us": 8547, "p50_us": 8665, "p95_us": 8913, "max_us": 11329},
+      {"k": 50, "samples": 189, "min_us": 8343, "p50_us": 8720, "p95_us": 9064, "max_us": 9662}
+    ]
+  },
+  "batch_sweep": [
+    {"order": "source", "batch": 8, "seconds": 50.736, "throughput": 20.183, "padding_percent": 16.138, "peak_rss_gib": 1.28},
+    {"order": "source", "batch": 16, "seconds": 48.979, "throughput": 20.907, "padding_percent": 16.138, "peak_rss_gib": 1.73},
+    {"order": "source", "batch": 32, "seconds": 48.545, "throughput": 21.094, "padding_percent": 16.138, "peak_rss_gib": 2.63},
+    {"order": "source", "batch": 64, "seconds": 48.067, "throughput": 21.304, "padding_percent": 16.138, "peak_rss_gib": 4.43},
+    {"order": "source", "batch": 128, "seconds": 47.620, "throughput": 21.504, "padding_percent": 16.138, "peak_rss_gib": 8.03},
+    {"order": "source", "batch": 256, "seconds": 47.016, "throughput": 21.780, "padding_percent": 16.138, "peak_rss_gib": 15.25},
+    {"order": "length_bucketed", "batch": 8, "seconds": 32.984, "throughput": 31.046, "padding_percent": 0.364, "peak_rss_gib": 1.29},
+    {"order": "length_bucketed", "batch": 16, "seconds": 34.724, "throughput": 29.489, "padding_percent": 0.805, "peak_rss_gib": 1.73},
+    {"order": "length_bucketed", "batch": 32, "seconds": 39.863, "throughput": 25.688, "padding_percent": 1.604, "peak_rss_gib": 2.60},
+    {"order": "length_bucketed", "batch": 64, "seconds": 40.488, "throughput": 25.291, "padding_percent": 3.158, "peak_rss_gib": 5.07}
+  ],
+  "thread_sweep": [
+    {"threads": 1, "seconds": 94.529, "throughput": 10.833, "peak_rss_gib": 1.28},
+    {"threads": 2, "seconds": 54.827, "throughput": 18.677, "peak_rss_gib": 1.28},
+    {"threads": 4, "seconds": 39.648, "throughput": 25.826, "peak_rss_gib": 1.28},
+    {"threads": 6, "seconds": 38.321, "throughput": 26.722, "peak_rss_gib": 1.28},
+    {"threads": 8, "seconds": 35.489, "throughput": 28.854, "peak_rss_gib": 1.28},
+    {"threads": 12, "seconds": 33.936, "throughput": 30.174, "peak_rss_gib": 1.28}
+  ],
+  "provider_matrix": [
+    {"provider": "CPU", "seconds": 39.510, "throughput": 25.92, "peak_rss_kib": 1338976, "usable": true},
+    {"provider": "ROCm RX", "seconds": null, "throughput": null, "peak_rss_kib": null, "usable": false},
+    {"provider": "ROCm iGPU", "seconds": null, "throughput": null, "peak_rss_kib": null, "usable": false},
+    {"provider": "MIGraphX RX", "seconds": 71.012, "throughput": 14.42, "peak_rss_kib": 2819364, "usable": true},
+    {"provider": "MIGraphX iGPU", "seconds": 80.769, "throughput": 12.68, "peak_rss_kib": 2805884, "usable": true}
+  ],
+  "git_ingestion": {
+    "samples": 2,
+    "total_seconds": [3.339, 3.347],
+    "git_ingestion_milliseconds": [160.271, 160.131],
+    "metadata_milliseconds": [111.317, 111.546],
+    "lexical_artifact_byte_identical": true
+  },
+  "attempts": [
+    {
+      "name": "lifecycle validation reuse",
+      "decision": "retained",
+      "reason": "In three directly comparable reruns, median build time fell from 22.733 s to 6.477 s, median validation from 16.999 s to 0.000153 s, and median peak RSS from 3.93 GB to 1.98 GB."
+    },
+    {
+      "name": "length bucketing, batch 8",
+      "decision": "retained",
+      "reason": "Best controlled throughput with low padding and bounded memory."
+    },
+    {
+      "name": "INT8 BGE",
+      "decision": "rejected",
+      "reason": "6.3% faster, but peak RSS increased 9.3%, semantic identifier top-1 fell to 0.75, and quality gates still failed."
+    },
+    {
+      "name": "AMD GPU providers",
+      "decision": "rejected",
+      "reason": "ROCm registration failed; MIGraphX was slower and used more memory than CPU."
+    }
+  ],
+  "top_costs": [
+    "Semantic provider inference is about 98.2% of the full semantic build.",
+    "Lexical construction remains the largest non-provider phase (4.269 s median in the comparable final reruns; 39.083 s in the original cold final run).",
+    "Git ingestion is about 160 milliseconds of a 3.34-second warm build and is not the primary target."
+  ],
+  "acceptance_gaps": [],
+  "evidence_commits": [
+    "e32630c",
+    "4887951",
+    "332b418",
+    "5a84d0d",
+    "e292600",
+    "b9f9f43"
+  ]
+}
