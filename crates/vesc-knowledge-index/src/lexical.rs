@@ -193,19 +193,6 @@ impl LexicalIndex {
         Self::write_chunk_refs_artifact_with_digest(self.chunks.values(), path)
     }
 
-    /// Writes chunks as a deterministic lexical source artifact without
-    /// constructing the transient Tantivy index used for queries.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LexicalError`] when serialization or writing fails.
-    pub(crate) fn write_chunks_artifact_with_digest(
-        chunks: &[Chunk],
-        path: &Path,
-    ) -> Result<(ContentDigest, u64), LexicalError> {
-        Self::write_chunk_refs_artifact_with_digest(chunks, path)
-    }
-
     pub(crate) fn write_chunk_refs_artifact_with_digest<'a>(
         chunks: impl IntoIterator<Item = &'a Chunk>,
         path: &Path,
@@ -751,7 +738,7 @@ mod tests {
         let root = tempfile::tempdir().expect("artifact root");
         let path = root.path().join("lexical.json");
 
-        let (_, bytes) = LexicalIndex::write_chunks_artifact_with_digest(&chunks, &path)
+        let (_, bytes) = LexicalIndex::write_chunk_refs_artifact_with_digest(chunks.iter(), &path)
             .expect("write source artifact");
 
         assert!(bytes > 0);
