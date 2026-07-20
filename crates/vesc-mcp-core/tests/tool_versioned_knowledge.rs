@@ -126,7 +126,19 @@ async fn preparation_errors_are_structured_and_actionable() {
             "unknown_repository",
         ),
         (
+            json!({"sources": {"../bldc": "refs/heads/main"}}),
+            "unknown_repository",
+        ),
+        (
             json!({"sources": {"bldc": "refs/tags/missing"}}),
+            "unknown_ref",
+        ),
+        (
+            json!({"sources": {"bldc": "https://example.invalid/repository.git"}}),
+            "unknown_ref",
+        ),
+        (
+            json!({"sources": {"bldc": "/tmp/unmanaged-repository"}}),
             "unknown_ref",
         ),
         (
