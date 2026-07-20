@@ -611,7 +611,7 @@ fn media_type(path: &str) -> &'static str {
     }
 }
 
-fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
+pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
     let mut values = BTreeSet::new();
     values.insert(path.to_owned());
     if let Some(stem) = Path::new(path).file_stem().and_then(|stem| stem.to_str()) {

@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use super::chunking::{ChunkingConfig, chunk_document};
 use super::git::{
     CachedGitBlob, Candidate, GitCorpusPolicy, GitCorpusSource, GitIngestionError,
-    GitIngestionObservations, document_from_git_blob, is_selected, load_git_blob, validate_policy,
+    GitIngestionObservations, document_from_git_blob, identifiers, is_selected, load_git_blob,
+    validate_policy,
 };
 use super::{Chunk, ContentDigest, RepositoryId, Revision};
 use crate::semantic::embedding_text;
@@ -619,8 +620,11 @@ fn ingest_upsert(
         &source.license,
         blob,
     )?;
-    let chunks = chunk_document(&document, ChunkingConfig::default())
+    let mut chunks = chunk_document(&document, ChunkingConfig::default())
         .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
+    for chunk in &mut chunks {
+        chunk.identifiers = identifiers(&path, &chunk.text);
+    }
     let mut content_keys = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());

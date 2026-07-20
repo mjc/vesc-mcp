@@ -136,6 +136,38 @@ fn binary_blobs_remain_in_history_without_becoming_search_chunks() {
 }
 
 #[test]
+fn historical_chunks_keep_only_passage_local_identifiers() {
+    let (_root, work) = fixture();
+    let content = format!(
+        "pub fn alpha_unique() {{}}\n{}pub fn omega_unique() {{}}\n",
+        "// padding\n".repeat(2_000)
+    );
+    fs::write(work.join("src/large.rs"), content).expect("large source");
+    git(&work, &["add", "src/large.rs"]);
+    git(&work, &["commit", "-qm", "large source"]);
+    let source = at_head(source(work.clone(), "fixture"), &work);
+
+    let (history, _) = ingest_git_history(&[source], None).expect("history");
+    let alpha = history
+        .contents
+        .iter()
+        .map(|content| &content.chunk)
+        .find(|chunk| chunk.text.contains("alpha_unique"))
+        .expect("alpha passage");
+    let omega = history
+        .contents
+        .iter()
+        .map(|content| &content.chunk)
+        .find(|chunk| chunk.text.contains("omega_unique"))
+        .expect("omega passage");
+
+    assert!(alpha.identifiers.contains("alpha_unique"));
+    assert!(!alpha.identifiers.contains("omega_unique"));
+    assert!(omega.identifiers.contains("omega_unique"));
+    assert!(!omega.identifiers.contains("alpha_unique"));
+}
+
+#[test]
 fn fast_forward_ingests_only_the_new_commit_and_matches_a_cold_rebuild() {
     let (_root, work) = fixture();
     let source = at_head(source(work.clone(), "fixture"), &work);
