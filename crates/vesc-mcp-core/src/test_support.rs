@@ -82,6 +82,181 @@ pub fn asset_missing(root: &Path, relative: &Path) -> bool {
     !root.join(relative).is_file()
 }
 
+/// Three-repository managed knowledge fixture with release and tag refs.
+#[cfg(feature = "managed-git")]
+pub struct VersionedKnowledgeFixture {
+    _temp: tempfile::TempDir,
+    knowledge: crate::config::KnowledgeConfig,
+    old_commit: String,
+    tagged_commit: String,
+}
+
+#[cfg(feature = "managed-git")]
+impl VersionedKnowledgeFixture {
+    /// Build and synchronize a local three-repository fixture.
+    pub async fn new() -> Self {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (remote, old_commit, tagged_commit) = versioned_fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let toml = format!(
+            "[knowledge]\ndata_root = \"{}\"\n{}{}{}",
+            data_root.display(),
+            versioned_repository_toml("bldc"),
+            versioned_repository_toml("refloat"),
+            versioned_repository_toml("vesc_tool")
+        );
+        let knowledge = crate::config::McpConfig::from_toml(
+            &toml,
+            &crate::managed_repositories::DataRootInputs::default(),
+        )
+        .expect("knowledge config")
+        .knowledge;
+        let layout = crate::managed_repositories::KnowledgeDataLayout::new(
+            knowledge.data_root.clone().expect("data root"),
+        );
+        let git = crate::managed_git::ManagedGitStore::new(layout);
+        for repository in knowledge.repositories.iter() {
+            git.sync_source(
+                repository.id(),
+                remote.to_str().expect("UTF-8 remote"),
+                repository.default_ref(),
+            )
+            .await
+            .expect("managed source sync");
+        }
+        Self {
+            _temp: temp,
+            knowledge,
+            old_commit,
+            tagged_commit,
+        }
+    }
+
+    #[must_use]
+    pub const fn knowledge(&self) -> &crate::config::KnowledgeConfig {
+        &self.knowledge
+    }
+
+    #[must_use]
+    pub fn old_commit(&self) -> &str {
+        &self.old_commit
+    }
+
+    #[must_use]
+    pub fn tagged_commit(&self) -> &str {
+        &self.tagged_commit
+    }
+
+    #[must_use]
+    pub fn data_root(&self) -> &Path {
+        self.knowledge
+            .data_root
+            .as_ref()
+            .expect("fixture data root")
+            .as_path()
+    }
+
+    #[must_use]
+    pub fn selection() -> serde_json::Value {
+        serde_json::json!({
+            "sources": {
+                "bldc": "refs/heads/release_6_06",
+                "vesc_tool": "refs/heads/release_6_06",
+                "refloat": "refs/tags/v1.2.3"
+            }
+        })
+    }
+}
+
+#[cfg(feature = "managed-git")]
+fn versioned_git(cwd: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("UTF-8 git output")
+        .trim()
+        .to_owned()
+}
+
+#[cfg(feature = "managed-git")]
+fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
+    let work = root.join("work");
+    let remote = root.join("remote.git");
+    std::fs::create_dir(&work).expect("work tree");
+    versioned_git(&work, &["init", "-b", "main"]);
+    std::fs::write(work.join("README.md"), "alphaunique old release\n").expect("old source");
+    versioned_git(&work, &["add", "README.md"]);
+    versioned_git(
+        &work,
+        &[
+            "-c",
+            "user.name=Test Author",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "old release",
+        ],
+    );
+    let old = versioned_git(&work, &["rev-parse", "HEAD"]);
+    versioned_git(&work, &["branch", "release_6_06", &old]);
+    std::fs::write(work.join("README.md"), "betaunique refloat tag\n").expect("tagged source");
+    versioned_git(
+        &work,
+        &[
+            "-c",
+            "user.name=Test Author",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-am",
+            "refloat tag",
+        ],
+    );
+    let tagged = versioned_git(&work, &["rev-parse", "HEAD"]);
+    versioned_git(&work, &["tag", "v1.2.3", &tagged]);
+    versioned_git(
+        &work,
+        &[
+            "clone",
+            "--bare",
+            ".",
+            remote.to_str().expect("UTF-8 remote"),
+        ],
+    );
+    (remote, old, tagged)
+}
+
+#[cfg(feature = "managed-git")]
+fn versioned_repository_toml(id: &str) -> String {
+    format!(
+        r#"
+[[knowledge.repositories]]
+id = "{id}"
+remote_url = "https://example.invalid/{id}.git"
+default_ref = "refs/heads/main"
+policy = "required"
+include = ["**/*.md"]
+exclude = []
+trust_tier = "official"
+license = "MIT"
+attribution = "Test fixture"
+max_file_bytes = 1048576
+max_files = 100
+max_total_bytes = 10485760
+"#
+    )
+}
+
 /// In-process MCP server harness for integration tests.
 #[derive(Debug, Clone)]
 pub struct McpTestHarness {

@@ -13,6 +13,13 @@ fail-fast = true
 [test-groups.managed-snapshots]
 max-threads = 1
 
+[test-groups.versioned-knowledge]
+max-threads = 1
+
 [[profile.default.overrides]]
 filter = 'test(/managed_snapshots::tests/)'
 test-group = 'managed-snapshots'
+
+[[profile.default.overrides]]
+filter = 'test(agent_can_list_prepare_search_and_read_an_explicit_snapshot) | test(two_http_clients_prepare_one_shared_snapshot_artifact)'
+test-group = 'versioned-knowledge'
