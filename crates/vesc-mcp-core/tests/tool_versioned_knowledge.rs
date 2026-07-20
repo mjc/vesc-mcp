@@ -72,3 +72,44 @@ async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
         1
     );
 }
+
+#[tokio::test]
+async fn preparation_errors_are_structured_and_actionable() {
+    let fixture = VersionedKnowledgeFixture::new().await;
+    let harness = McpTestHarness::with_knowledge_config(fixture.knowledge().clone());
+    for (selection, expected) in [
+        (
+            json!({"sources": {"unknown": "refs/heads/main"}}),
+            "unknown_repository",
+        ),
+        (
+            json!({"sources": {"bldc": "refs/tags/missing"}}),
+            "unknown_ref",
+        ),
+        (
+            json!({"sources": {"bldc": "ffffffffffffffffffffffffffffffffffffffff"}}),
+            "unreachable_commit",
+        ),
+        (
+            json!({
+                "sources": {"bldc": "refs/heads/release_6_06"},
+                "timeout_secs": 0
+            }),
+            "timeout",
+        ),
+    ] {
+        let response: Value = serde_json::from_str(
+            &harness
+                .call_tool_async("prepare_vesc_knowledge", selection)
+                .await,
+        )
+        .expect("prepare error response");
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], expected);
+        assert!(
+            response["error"]["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("list_vesc_source_versions"))
+        );
+    }
+}

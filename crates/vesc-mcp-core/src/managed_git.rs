@@ -310,7 +310,7 @@ impl ManagedGitStore {
         let repo = gix::open(self.repository_path(id)).map_err(git_error)?;
         let object = repo
             .find_object(object_id)
-            .map_err(|_| ManagedGitError::UnknownSelector)?
+            .map_err(|_| ManagedGitError::UnreachableCommit)?
             .peel_tags_to_end()
             .map_err(git_error)?;
         if object.kind != gix::object::Kind::Commit {
@@ -681,7 +681,7 @@ mod tests {
         ));
         assert!(matches!(
             store.resolve(&id, "0000000000000000000000000000000000000000"),
-            Err(ManagedGitError::UnknownSelector)
+            Err(ManagedGitError::UnreachableCommit)
         ));
         assert!(matches!(
             store.resolve(&id, &blob),

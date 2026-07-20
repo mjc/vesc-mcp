@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::KnowledgeConfig;
+use crate::managed_git::ManagedGitError;
 use crate::managed_repositories::{KnowledgeDataLayout, RepositoryId};
 use crate::managed_snapshots::{
     KnowledgeSnapshotStore, PreparedSnapshot, SnapshotDisposition, SnapshotError,
@@ -16,6 +17,9 @@ pub struct PrepareVescKnowledgeParams {
     /// Configured repository ID to ref or commit selector.
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
+    /// Maximum preparation time; defaults to 120 seconds and is capped at 600.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -59,9 +63,19 @@ pub async fn prepare_vesc_knowledge_tool(
         selectors.insert(id, selector.clone());
     }
     let store = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(root));
-    match store.prepare(&config.repositories, &selectors).await {
-        Ok(prepared) => success(&prepared),
-        Err(error) => snapshot_failure(&error),
+    let timeout_secs = params.timeout_secs.unwrap_or(120);
+    if timeout_secs > 600 {
+        return failure("invalid_selection", "timeout exceeds 600 seconds");
+    }
+    let prepared = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        store.prepare(&config.repositories, &selectors),
+    )
+    .await;
+    match prepared {
+        Err(_) => failure("timeout", "snapshot preparation timed out"),
+        Ok(Ok(prepared)) => success(&prepared),
+        Ok(Err(error)) => snapshot_failure(&error),
     }
 }
 
@@ -98,7 +112,12 @@ fn success(prepared: &PreparedSnapshot) -> PrepareVescKnowledgeResponse {
 fn snapshot_failure(error: &SnapshotError) -> PrepareVescKnowledgeResponse {
     let code = match error {
         SnapshotError::UnknownRepository(_) => "unknown_repository",
-        SnapshotError::ManagedGit(_) => "unknown_ref",
+        SnapshotError::ManagedGit(error) => match error {
+            ManagedGitError::UnknownSelector | ManagedGitError::NotACommit => "unknown_ref",
+            ManagedGitError::UnreachableCommit => "unreachable_commit",
+            ManagedGitError::Storage(_) | ManagedGitError::Git(_) => "source_unavailable",
+            ManagedGitError::Task(_) => "cancelled",
+        },
         SnapshotError::Build(_) => "build_failed",
         SnapshotError::Task(_) => "cancelled",
         SnapshotError::Storage(_)
