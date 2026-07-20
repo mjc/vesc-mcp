@@ -4,6 +4,8 @@ pub mod benchmark;
 pub mod catalog;
 pub mod config;
 pub mod error;
+#[cfg(feature = "managed-git")]
+pub mod managed_git;
 pub mod managed_repositories;
 pub mod resources;
 pub mod server;

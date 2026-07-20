@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 test-fixtures = []
+managed-git = ["dep:gix"]
 semantic-fastembed = ["vesc-knowledge-index/semantic-fastembed"]
 semantic-coreml = ["semantic-fastembed", "vesc-knowledge-index/semantic-coreml"]
 semantic-rocm = ["semantic-fastembed", "vesc-knowledge-index/semantic-rocm"]
@@ -19,6 +20,7 @@ semantic-rocm = ["semantic-fastembed", "vesc-knowledge-index/semantic-rocm"]
 [dependencies]
 anyhow.workspace = true
 fs4 = "0.13"
+gix = { workspace = true, optional = true, features = ["blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "revision"] }
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
