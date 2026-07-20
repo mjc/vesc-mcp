@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "corpus_digest": "sha256:71342745041784d58f147b1cd99a7743377d3d9e0fa42ad4dab1f0aa280652ab",
+  "corpus_documents": 2875,
+  "corpus_chunks": 16586,
+  "candidates": [
+    {
+      "name": "jina-embeddings-v2-base-code-quantized",
+      "model_id": "jinaai/jina-embeddings-v2-base-code",
+      "model_revision": "516f4baf13dec4ddddda8631e019b5737c8bc250",
+      "directory": "jina-embeddings-v2-base-code-quantized",
+      "license": "Apache-2.0",
+      "production_eligible": true,
+      "quantization": "quantized",
+      "onnx_sha256": "ed45870251c9f0cf656e78aab0d37a23489066df8a222bb1c8caf8a45f2cb16d",
+      "onnx_bytes": 161895621
+    }
+  ]
+}
