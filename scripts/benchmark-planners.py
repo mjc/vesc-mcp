@@ -259,7 +259,7 @@ def run_candidate(args: argparse.Namespace, spec: dict, loader_case: dict, cases
     log_path = args.output / f"{spec['name']}.server.log"
     log = log_path.open("w", encoding="utf-8")
     command = [
-        "llama-server",
+        str(args.server),
         "-m",
         str(model_path),
         "--device",
@@ -315,7 +315,7 @@ def run_candidate(args: argparse.Namespace, spec: dict, loader_case: dict, cases
                         ],
                         "temperature": 0,
                         "seed": 42,
-                        "max_tokens": 400,
+                        "max_tokens": args.max_tokens,
                         "chat_template_kwargs": {"enable_thinking": False},
                     },
                 )
@@ -371,8 +371,8 @@ def run_candidate(args: argparse.Namespace, spec: dict, loader_case: dict, cases
         "suite_id": cases["suite_id"],
         "candidate": spec,
         "runtime": {
-            "llama_cpp_commit": "6f4f53f",
-            "llama_cpp_package_version": 9842,
+            "llama_cpp_commit": args.runtime_commit,
+            "llama_cpp_package_version": args.runtime_version,
             "provider": "llama.cpp Vulkan",
             "device": args.device,
             "gpu_layers": 999,
@@ -382,7 +382,7 @@ def run_candidate(args: argparse.Namespace, spec: dict, loader_case: dict, cases
             "seed": 42,
             "schema_grammar": "rejected by llama.cpp sampler; strict post-validation used",
             "device_inventory": subprocess.check_output(
-                ["llama-server", "--list-devices"], text=True
+                [str(args.server), "--list-devices"], text=True
             ).strip(),
         },
         "initialization_seconds": initialization_seconds,
@@ -450,9 +450,15 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=6)
     parser.add_argument("--repetitions", type=int, default=2)
     parser.add_argument("--port", type=int, default=8097)
+    parser.add_argument("--server", type=pathlib.Path, default="llama-server")
+    parser.add_argument("--runtime-commit", default="6f4f53f")
+    parser.add_argument("--runtime-version", default=9842)
+    parser.add_argument("--max-tokens", type=int, default=400)
     args = parser.parse_args()
     if not 1 <= args.repetitions <= 3:
         raise SystemExit("repetitions must be in 1..=3")
+    if not 1 <= args.max_tokens <= 400:
+        raise SystemExit("max-tokens must be in 1..=400")
     args.output.mkdir(parents=True, exist_ok=True)
     models = read(args.models)
     loader_case = read(args.loader_suite)["cases"][0]

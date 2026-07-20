@@ -1,10 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schema", "facet_additions", "relationship_additions", "search_queries", "request_critic"],
-  "properties": {
-    "schema": {"const": 1},
+  "$defs": {
     "facet_additions": {
       "type": "array",
       "maxItems": 8,
@@ -65,7 +61,16 @@
           "query": {"type": "string"}
         }
       }
-    },
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "facet_additions", "relationship_additions", "search_queries", "request_critic"],
+  "properties": {
+    "schema": {"const": 1},
+    "facet_additions": {"$ref": "#/$defs/facet_additions"},
+    "relationship_additions": {"$ref": "#/$defs/relationship_additions"},
+    "search_queries": {"$ref": "#/$defs/search_queries"},
     "request_critic": {"type": "boolean"}
   }
 }

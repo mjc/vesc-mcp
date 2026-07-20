@@ -42,6 +42,63 @@ pub struct PlannerProposal {
     pub request_critic: bool,
 }
 
+/// A critic can only request more evidence or record bounded concerns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CriticProposal {
+    pub schema: u16,
+    pub facet_additions: Vec<FacetRequirement>,
+    pub relationship_additions: Vec<RelationshipRequirement>,
+    pub search_queries: Vec<SearchQuery>,
+    pub concerns: Vec<String>,
+}
+
+impl CriticProposal {
+    #[must_use]
+    pub const fn new(
+        facet_additions: Vec<FacetRequirement>,
+        relationship_additions: Vec<RelationshipRequirement>,
+        search_queries: Vec<SearchQuery>,
+        concerns: Vec<String>,
+    ) -> Self {
+        Self {
+            schema: PLANNER_SCHEMA,
+            facet_additions,
+            relationship_additions,
+            search_queries,
+            concerns,
+        }
+    }
+
+    /// Applies only monotonic additions; the schema has no approval field.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid planner additions or blank, unbounded, or control-bearing concerns.
+    pub fn apply(
+        &self,
+        contract: &InvestigationContract,
+    ) -> Result<InvestigationContract, PlannerProposalError> {
+        if self.concerns.len() > MAX_ADDITIONS
+            || self.concerns.iter().any(|concern| {
+                concern.trim().is_empty()
+                    || concern.len() > MAX_QUERY_BYTES
+                    || concern.chars().any(char::is_control)
+            })
+        {
+            return Err(PlannerProposalError::InvalidConcern);
+        }
+        PlannerProposal {
+            schema: self.schema,
+            facet_additions: self.facet_additions.clone(),
+            relationship_additions: self.relationship_additions.clone(),
+            search_queries: self.search_queries.clone(),
+            request_critic: false,
+        }
+        .apply(contract)
+    }
+}
+
 impl PlannerProposal {
     #[must_use]
     pub const fn new(
@@ -114,6 +171,8 @@ pub enum PlannerProposalError {
     UnknownQueryFacet,
     #[error("planner query is blank, duplicated, too long, or contains control characters")]
     InvalidQuery,
+    #[error("critic concern is blank, unbounded, or contains control characters")]
+    InvalidConcern,
     #[error(transparent)]
     Contract(#[from] ContractError),
 }

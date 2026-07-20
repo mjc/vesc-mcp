@@ -1,7 +1,9 @@
 use vesc_knowledge_index::investigation::{
     Era, FacetRequirement, HistoricalTraceRevisions, InvestigationContract, Repository, Stage,
 };
-use vesc_knowledge_index::planning::{PlannerProposal, SearchQuery, hard_coded_proposal};
+use vesc_knowledge_index::planning::{
+    CriticProposal, PlannerProposal, SearchQuery, hard_coded_proposal,
+};
 
 fn contract() -> InvestigationContract {
     InvestigationContract::historical_package_loader(HistoricalTraceRevisions::new(
@@ -76,4 +78,49 @@ fn hard_coded_mode_queries_each_missing_facet_without_a_model() {
     let audit = contract.audit(&evidence, &[]);
     let proposal = hard_coded_proposal(&contract, &audit);
     assert_eq!(proposal.search_queries.len(), contract.facets().len());
+}
+
+#[test]
+fn critic_can_only_add_monotonic_evidence_requests() {
+    let proposal = CriticProposal::new(
+        Vec::new(),
+        Vec::new(),
+        vec![SearchQuery::new(
+            "runtime-module-loading",
+            "ChibiOS runtime allocation c835e9f",
+        )],
+        vec!["runtime evidence is still missing".into()],
+    );
+    assert_eq!(proposal.apply(&contract()).unwrap(), contract());
+}
+
+#[test]
+fn critic_json_has_no_completeness_approval_surface() {
+    let json = r#"{
+      "schema": 1,
+      "facet_additions": [],
+      "relationship_additions": [],
+      "search_queries": [],
+      "concerns": [],
+      "complete": true
+    }"#;
+    assert!(serde_json::from_str::<CriticProposal>(json).is_err());
+}
+
+#[test]
+fn critic_rejects_unbounded_or_control_character_concerns() {
+    let unbounded = CriticProposal::new(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        (0..9).map(|index| format!("concern {index}")).collect(),
+    );
+    assert!(unbounded.apply(&contract()).is_err());
+    let control = CriticProposal::new(
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        vec!["bad\nconcern".into()],
+    );
+    assert!(control.apply(&contract()).is_err());
 }

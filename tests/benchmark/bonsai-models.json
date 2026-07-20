@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "runtime": {
+    "repository": "PrismML-Eng/llama.cpp",
+    "branch": "prism",
+    "commit": "9fcaed763ccda38ea81068ad9d7f991aaddca451",
+    "build": "b1-9fcaed7",
+    "backend": "Vulkan"
+  },
+  "mainline_control": {
+    "repository": "ggml-org/llama.cpp",
+    "commit": "6f4f53f",
+    "package_version": 9842,
+    "result": "rejects GGML tensor type 42 before model load"
+  },
+  "candidates": [
+    {
+      "name": "bonsai-27b-q1_0",
+      "model_id": "prism-ml/Bonsai-27B-gguf",
+      "model_revision": "f10afb355f104535e3e3e98cf7ab7795c72bd292",
+      "file": "Bonsai-27B-Q1_0.gguf",
+      "quantization": "Q1_0_g128",
+      "sha256": "17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0",
+      "bytes": 3803452480,
+      "license": "Apache-2.0",
+      "status": "shortlisted"
+    },
+    {
+      "name": "ternary-bonsai-8b-q2_0_g64",
+      "model_id": "prism-ml/Ternary-Bonsai-8B-gguf",
+      "model_revision": "c2aefbeb4b24469cd11579c3384b990404c17a30",
+      "file": "Ternary-Bonsai-8B-Q2_0_g64.gguf",
+      "quantization": "Q2_0_g64",
+      "sha256": "e17b298d84ee78797916ae5c2ecc8211469cc65cccfe3080cd9a9bb503fbc55e",
+      "bytes": 2310125920,
+      "license": "Apache-2.0",
+      "status": "shortlisted"
+    },
+    {
+      "name": "ternary-bonsai-8b-q2_0-g128-fallback",
+      "model_id": "prism-ml/Ternary-Bonsai-8B-gguf",
+      "model_revision": "c2aefbeb4b24469cd11579c3384b990404c17a30",
+      "file": "Ternary-Bonsai-8B-Q2_0.gguf",
+      "quantization": "Q2_0_g128",
+      "sha256": "3c8d70470a5d97e5a2b9410ddd899cb740116591462626c60cb2fead6448f60b",
+      "bytes": 2182184672,
+      "license": "Apache-2.0",
+      "status": "fallback"
+    }
+  ]
+}

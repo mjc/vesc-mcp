@@ -1,0 +1,10 @@
+
+Loading model... |0.00.040.335 I srv    load_model: loading model 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+0.00.060.079 E gguf_init_from_reader: tensor 'output_norm.weight' has offset 174722688, expected 165015872
+0.00.060.083 E gguf_init_from_reader: failed to read tensor data
+0.00.061.668 E llama_model_load: error loading model: llama_model_loader: failed to load model from target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf
+0.00.061.671 E llama_model_load_from_file_impl: failed to load model
+0.00.061.672 E common_init_from_params: failed to load model 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+0.00.061.674 E srv    load_model: failed to load model, 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+
+Failed to load the model

@@ -5,9 +5,11 @@ import importlib.util
 import json
 import pathlib
 import re
+import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.dont_write_bytecode = True
 REPORTS = ROOT / "release/benchmarks/vescm-197"
 
 

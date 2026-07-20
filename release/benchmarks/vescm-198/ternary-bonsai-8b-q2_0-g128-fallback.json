@@ -1,0 +1,266 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-197-planner-v1",
+  "candidate": {
+    "name": "ternary-bonsai-8b-q2_0-g128-fallback",
+    "model_id": "prism-ml/Ternary-Bonsai-8B-gguf",
+    "model_revision": "c2aefbeb4b24469cd11579c3384b990404c17a30",
+    "file": "Ternary-Bonsai-8B-Q2_0.gguf",
+    "quantization": "Q2_0_g128",
+    "sha256": "3c8d70470a5d97e5a2b9410ddd899cb740116591462626c60cb2fead6448f60b",
+    "bytes": 2182184672,
+    "license": "Apache-2.0",
+    "status": "fallback"
+  },
+  "runtime": {
+    "llama_cpp_commit": "9fcaed763ccda38ea81068ad9d7f991aaddca451",
+    "llama_cpp_package_version": "b1-9fcaed7",
+    "provider": "llama.cpp Vulkan",
+    "device": "Vulkan0",
+    "gpu_layers": 999,
+    "context_size": 8192,
+    "threads": 6,
+    "temperature": 0,
+    "seed": 42,
+    "schema_grammar": "rejected by llama.cpp sampler; strict post-validation used",
+    "device_inventory": "Available devices:\n  Vulkan0: AMD Radeon RX 5700 XT 50th Anniversary (RADV NAVI10) (8176 MiB, 6463 MiB free)\n  Vulkan1: AMD Radeon 760M Graphics (RADV PHOENIX) (16113 MiB, 16016 MiB free)"
+  },
+  "initialization_seconds": 1.3839473060215823,
+  "cases": [
+    {
+      "case_id": "complete",
+      "expected_query_facets": [],
+      "prompt_sha256": "355027fc0a8c062d0571b6c572bf5b2a75da78abf07252fa817fe84b0e0fcdef",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 38,
+            "prompt_tokens": 714,
+            "total_tokens": 752,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 714,
+            "prompt_ms": 1542.231,
+            "prompt_per_token_ms": 2.1599873949579833,
+            "prompt_per_second": 462.9656646766924,
+            "predicted_n": 38,
+            "predicted_ms": 515.969,
+            "predicted_per_token_ms": 13.578131578947369,
+            "predicted_per_second": 73.64783543197362
+          },
+          "wall_seconds": 2.0637408200418577,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 38,
+            "prompt_tokens": 714,
+            "total_tokens": 752,
+            "prompt_tokens_details": {
+              "cached_tokens": 713
+            }
+          },
+          "timings": {
+            "cache_n": 713,
+            "prompt_n": 1,
+            "prompt_ms": 17.167,
+            "prompt_per_token_ms": 17.167,
+            "prompt_per_second": 58.25129609133803,
+            "predicted_n": 38,
+            "predicted_ms": 513.498,
+            "predicted_per_token_ms": 13.513105263157897,
+            "predicted_per_second": 74.00223564648742
+          },
+          "wall_seconds": 0.5370186429936439,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "missing-chibios",
+      "expected_query_facets": [
+        "runtime-module-loading"
+      ],
+      "prompt_sha256": "918084621242c85e7eea97238fca95a275b04e7900d8ddc2d034f80fa665d575",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"chibi_os/runtime_module_loading:9a16b5c:vesc_c_if.h:INIT_FUN\"\n    }\n  ],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"chibi_os/runtime_module_loading:9a16b5c:vesc_c_if.h:INIT_FUN\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 128,
+            "prompt_tokens": 683,
+            "total_tokens": 811,
+            "prompt_tokens_details": {
+              "cached_tokens": 544
+            }
+          },
+          "timings": {
+            "cache_n": 544,
+            "prompt_n": 139,
+            "prompt_ms": 415.143,
+            "prompt_per_token_ms": 2.986640287769784,
+            "prompt_per_second": 334.82438581404483,
+            "predicted_n": 128,
+            "predicted_ms": 1773.435,
+            "predicted_per_token_ms": 13.8549609375,
+            "predicted_per_second": 72.1763132000891
+          },
+          "wall_seconds": 2.19469776598271,
+          "score": {
+            "schema_valid": false,
+            "error": "facet addition shape is invalid",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"chibi_os/runtime_module_loading:9a16b5c:vesc_c_if.h:INIT_FUN\"\n    }\n  ],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"chibi_os/runtime_module_loading:9a16b5c:vesc_c_if.h:INIT_FUN\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 128,
+            "prompt_tokens": 683,
+            "total_tokens": 811,
+            "prompt_tokens_details": {
+              "cached_tokens": 682
+            }
+          },
+          "timings": {
+            "cache_n": 682,
+            "prompt_n": 1,
+            "prompt_ms": 18.335,
+            "prompt_per_token_ms": 18.335,
+            "prompt_per_second": 54.540496318516496,
+            "predicted_n": 128,
+            "predicted_ms": 1768.049,
+            "predicted_per_token_ms": 13.8128828125,
+            "predicted_per_second": 72.39618358993444
+          },
+          "wall_seconds": 1.7926657750504091,
+          "score": {
+            "schema_valid": false,
+            "error": "facet addition shape is invalid",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "wrong-era-loader",
+      "expected_query_facets": [
+        "firmware-loader"
+      ],
+      "prompt_sha256": "bd93caeb214859067fcfdbe6546c0169c365f6e177eac88f0c4bb2382a4b6402",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"How did a packaged native library become executable firmware code and get invoked by Refloat in this historical version set?\"\n    }\n  ],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"How did a packaged native library become executable firmware code and get invoked by Refloat in this historical version set?\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 124,
+            "prompt_tokens": 715,
+            "total_tokens": 839,
+            "prompt_tokens_details": {
+              "cached_tokens": 544
+            }
+          },
+          "timings": {
+            "cache_n": 544,
+            "prompt_n": 171,
+            "prompt_ms": 431.881,
+            "prompt_per_token_ms": 2.5256198830409353,
+            "prompt_per_second": 395.94240080022047,
+            "predicted_n": 124,
+            "predicted_ms": 1717.293,
+            "predicted_per_token_ms": 13.849137096774193,
+            "predicted_per_second": 72.20666479162263
+          },
+          "wall_seconds": 2.1550833309884183,
+          "score": {
+            "schema_valid": false,
+            "error": "facet addition shape is invalid",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": true
+          }
+        },
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"How did a packaged native library become executable firmware code and get invoked by Refloat in this historical version set?\"\n    }\n  ],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"How did a packaged native library become executable firmware code and get invoked by Refloat in this historical version set?\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 124,
+            "prompt_tokens": 715,
+            "total_tokens": 839,
+            "prompt_tokens_details": {
+              "cached_tokens": 714
+            }
+          },
+          "timings": {
+            "cache_n": 714,
+            "prompt_n": 1,
+            "prompt_ms": 17.95,
+            "prompt_per_token_ms": 17.95,
+            "prompt_per_second": 55.71030640668524,
+            "predicted_n": 124,
+            "predicted_ms": 1721.128,
+            "predicted_per_token_ms": 13.880064516129032,
+            "predicted_per_second": 72.04577463152073
+          },
+          "wall_seconds": 1.7454085390199907,
+          "score": {
+            "schema_valid": false,
+            "error": "facet addition shape is invalid",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": true
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "schema_valid_rate": 0.3333333333333333,
+    "query_facets_exact_rate": 0.3333333333333333,
+    "query_quality_rate": 0.3333333333333333,
+    "false_requirement_output_rate": 0,
+    "answer_leak_rate": 0.3333333333333333,
+    "repeatability_rate": 1,
+    "cold_wall_p50_seconds": 2.1550833309884183,
+    "warm_wall_p50_seconds": 1.7454085390199907,
+    "cached_prompt_tokens": [
+      713,
+      682,
+      714
+    ]
+  }
+}

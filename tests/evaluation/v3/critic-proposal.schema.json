@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "facet_additions", "relationship_additions", "search_queries", "concerns"],
+  "properties": {
+    "schema": {"const": 1},
+    "facet_additions": {"$ref": "planner-proposal.schema.json#/$defs/facet_additions"},
+    "relationship_additions": {"$ref": "planner-proposal.schema.json#/$defs/relationship_additions"},
+    "search_queries": {"$ref": "planner-proposal.schema.json#/$defs/search_queries"},
+    "concerns": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {"type": "string", "maxLength": 256}
+    }
+  }
+}

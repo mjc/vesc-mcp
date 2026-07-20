@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "ticket": "VESCM-198",
+  "default_planner": "hard-coded-contract-only",
+  "default_critic": null,
+  "bonsai_enabled": false,
+  "escalation_rule": {
+    "enabled": false,
+    "prospective_conditions": [
+      "deterministic coverage remains incomplete after the fixed retrieval-round budget",
+      "a schema-valid planner explicitly requests critique",
+      "the configured critic passes the locked validity and quality gates"
+    ],
+    "observed_model_call_rate": 0
+  },
+  "decision": "Neither shortlisted Bonsai artifact qualifies for production planning or critique.",
+  "reasons": [
+    "The exact Ternary 8B group-64 artifact fails to load in both the pinned mainline control and the publisher's pinned Vulkan fork.",
+    "The supported group-128 8B fallback is only 33% schema-valid/query-correct and leaks the user question in one case.",
+    "Bonsai 27B fully offloads and runs stably, but all planner and critic outputs violate the strict JSON boundary.",
+    "Nanbeige plus Bonsai critique remains at 0% schema validity and does not improve Nanbeige alone.",
+    "Hard contracts remain 100% valid, correct, deterministic, and require no model call."
+  ]
+}

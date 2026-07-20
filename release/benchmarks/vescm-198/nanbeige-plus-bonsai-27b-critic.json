@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-198-bonsai-critic-v1",
+  "candidate": {
+    "name": "bonsai-27b-q1_0",
+    "model_id": "prism-ml/Bonsai-27B-gguf",
+    "model_revision": "f10afb355f104535e3e3e98cf7ab7795c72bd292",
+    "file": "Bonsai-27B-Q1_0.gguf",
+    "quantization": "Q1_0_g128",
+    "sha256": "17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0",
+    "bytes": 3803452480,
+    "license": "Apache-2.0",
+    "status": "shortlisted"
+  },
+  "source_planner": {
+    "candidate": "nanbeige4.1-3b-q4_k_m",
+    "schema_valid_rate": 0
+  },
+  "runtime": {
+    "repository": "PrismML-Eng/llama.cpp",
+    "branch": "prism",
+    "commit": "9fcaed763ccda38ea81068ad9d7f991aaddca451",
+    "build": "b1-9fcaed7",
+    "backend": "Vulkan",
+    "device": "Vulkan0: AMD Radeon RX 5700 XT 50th Anniversary (RADV NAVI10)",
+    "context_size": 8192,
+    "max_tokens": 400,
+    "temperature": 0,
+    "seed": 42
+  },
+  "initialization_seconds": 2.6925521979574114,
+  "cases": [
+    {
+      "case_id": "complete",
+      "source_planner_content": "",
+      "prompt_sha256": "b3c0e7a4580a999cc649cd5136e3cfa9914554d7843dbf378a708a808eda42f1",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "```json\n{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [],\n  \"concerns\": [\n    \"Missing evidence for how the vesc_package_lib package format revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f maps to the generated-entry revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f, specifically the linker script (.program_ptr) that defines the entry point for the native library.\"\n  ]\n}\n```",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 163,
+            "prompt_tokens": 715,
+            "total_tokens": 878,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 715,
+            "prompt_ms": 5349.067,
+            "prompt_per_token_ms": 7.481212587412587,
+            "prompt_per_second": 133.66817054263856,
+            "predicted_n": 163,
+            "predicted_ms": 6714.181,
+            "predicted_per_token_ms": 41.1912944785276,
+            "predicted_per_second": 24.27697436217463
+          },
+          "wall_seconds": 12.075106283999048,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_quality": false,
+            "concern_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "```json\n{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [],\n  \"concerns\": [\n    \"Missing evidence for how the vesc_package_lib package format revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f maps to the generated-entry revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f, specifically the linker script (.program_ptr) that defines the entry point for the native library.\"\n  ]\n}\n```",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 163,
+            "prompt_tokens": 715,
+            "total_tokens": 878,
+            "prompt_tokens_details": {
+              "cached_tokens": 711
+            }
+          },
+          "timings": {
+            "cache_n": 711,
+            "prompt_n": 4,
+            "prompt_ms": 179.752,
+            "prompt_per_token_ms": 44.938,
+            "prompt_per_second": 22.25288174818639,
+            "predicted_n": 163,
+            "predicted_ms": 6710.295,
+            "predicted_per_token_ms": 41.16745398773006,
+            "predicted_per_second": 24.291033404641674
+          },
+          "wall_seconds": 6.900274975982029,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_quality": false,
+            "concern_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "missing-chibios",
+      "source_planner_content": "",
+      "prompt_sha256": "866122c2ccbf344ff1a3e03feb1d3655ceb697342668464e8dfab2436a726667",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "```json\n{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"query\": \"vesc_firmware/runtime_module_loading exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\",\n      \"planner\": {\n        \"facet\": \"vesc_firmware/runtime_module_loading\",\n        \"revision\": \"c835e9f10989f217269efb4ec943dfea7d280dfd\"\n      }\n    }\n  ],\n  \"concerns\": [\n    \"Missing evidence for runtime-module-loading facet prevents verification of how the native library is loaded into the firmware runtime.\"\n  ]\n}\n```",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 199,
+            "prompt_tokens": 684,
+            "total_tokens": 883,
+            "prompt_tokens_details": {
+              "cached_tokens": 15
+            }
+          },
+          "timings": {
+            "cache_n": 15,
+            "prompt_n": 669,
+            "prompt_ms": 5038.68,
+            "prompt_per_token_ms": 7.531659192825113,
+            "prompt_per_second": 132.7728690847603,
+            "predicted_n": 199,
+            "predicted_ms": 8202.03,
+            "predicted_per_token_ms": 41.2162311557789,
+            "predicted_per_second": 24.26228628766293
+          },
+          "wall_seconds": 13.25095841602888,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_quality": false,
+            "concern_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "```json\n{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"query\": \"vesc_firmware/runtime_module_loading exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\",\n      \"planner\": {\n        \"facet\": \"vesc_firmware/runtime_module_loading\",\n        \"revision\": \"c835e9f10989f217269efb4ec943dfea7d280dfd\"\n      }\n    }\n  ],\n  \"concerns\": [\n    \"Missing evidence for runtime-module-loading facet prevents verification of how the native library is loaded into the firmware runtime.\"\n  ]\n}\n```",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 199,
+            "prompt_tokens": 684,
+            "total_tokens": 883,
+            "prompt_tokens_details": {
+              "cached_tokens": 680
+            }
+          },
+          "timings": {
+            "cache_n": 680,
+            "prompt_n": 4,
+            "prompt_ms": 170.403,
+            "prompt_per_token_ms": 42.60075,
+            "prompt_per_second": 23.47376513324296,
+            "predicted_n": 199,
+            "predicted_ms": 8197.937,
+            "predicted_per_token_ms": 41.195663316582916,
+            "predicted_per_second": 24.274399766673007
+          },
+          "wall_seconds": 8.378479966020677,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_quality": false,
+            "concern_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "wrong-era-loader",
+      "source_planner_content": "",
+      "prompt_sha256": "dd1de6728535e5e9a3a4da516dcac6eb6a93aec43151783ef1d87736068e8f15",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "```json\n{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"planner\": {\n        \"facet\": \"firmware-loader\",\n        \"exact_revision\": \"c835e9f10989f217269efb4ec943dfea7d280dfd\"\n      }\n    }\n  ],\n  \"concerns\": [\n    \"Missing firmware-loader evidence prevents verification of how the native library was loaded into firmware memory.\"\n  ]\n}\n```",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 142,
+            "prompt_tokens": 716,
+            "total_tokens": 858,
+            "prompt_tokens_details": {
+              "cached_tokens": 15
+            }
+          },
+          "timings": {
+            "cache_n": 15,
+            "prompt_n": 701,
+            "prompt_ms": 5059.056,
+            "prompt_per_token_ms": 7.216912981455064,
+            "prompt_per_second": 138.56339997027115,
+            "predicted_n": 142,
+            "predicted_ms": 5840.878,
+            "predicted_per_token_ms": 41.13294366197183,
+            "predicted_per_second": 24.311413455305864
+          },
+          "wall_seconds": 10.91020381700946,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_quality": false,
+            "concern_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "```json\n{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"planner\": {\n        \"facet\": \"firmware-loader\",\n        \"exact_revision\": \"c835e9f10989f217269efb4ec943dfea7d280dfd\"\n      }\n    }\n  ],\n  \"concerns\": [\n    \"Missing firmware-loader evidence prevents verification of how the native library was loaded into firmware memory.\"\n  ]\n}\n```",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 142,
+            "prompt_tokens": 716,
+            "total_tokens": 858,
+            "prompt_tokens_details": {
+              "cached_tokens": 712
+            }
+          },
+          "timings": {
+            "cache_n": 712,
+            "prompt_n": 4,
+            "prompt_ms": 170.442,
+            "prompt_per_token_ms": 42.6105,
+            "prompt_per_second": 23.468393940460683,
+            "predicted_n": 142,
+            "predicted_ms": 5845.312,
+            "predicted_per_token_ms": 41.16416901408451,
+            "predicted_per_second": 24.29297187216012
+          },
+          "wall_seconds": 6.026290773006622,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_quality": false,
+            "concern_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "schema_valid_rate": 0,
+    "query_quality_rate": 0,
+    "concern_quality_rate": 0,
+    "answer_leak_rate": 0,
+    "repeatability_rate": 1,
+    "cold_wall_p50_seconds": 12.075106283999048,
+    "warm_wall_p50_seconds": 6.900274975982029
+  }
+}

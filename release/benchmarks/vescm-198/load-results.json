@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "mainline_g64": {
+    "runtime_commit": "6f4f53f",
+    "exit_code": 1,
+    "result": "GGML type 42 is outside the supported range",
+    "log": "mainline-g64-load.log"
+  },
+  "prism_g64": {
+    "runtime_commit": "9fcaed763ccda38ea81068ad9d7f991aaddca451",
+    "exit_code": 1,
+    "result": "GGUF tensor offset mismatch for output_norm.weight",
+    "log": "prism-g64-load.log"
+  },
+  "prism_g128_fallback": {
+    "runtime_commit": "9fcaed763ccda38ea81068ad9d7f991aaddca451",
+    "result": "loaded and generated",
+    "gpu_layers": "37/37",
+    "vulkan_model_mib": 1918.05,
+    "vulkan_peak_self_mib": 3166
+  },
+  "prism_q1_27b": {
+    "runtime_commit": "9fcaed763ccda38ea81068ad9d7f991aaddca451",
+    "result": "loaded and generated",
+    "gpu_layers": "65/65",
+    "vulkan_model_mib": 3446.26,
+    "vulkan_peak_self_mib": 4250
+  }
+}

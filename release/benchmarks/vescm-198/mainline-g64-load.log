@@ -1,0 +1,11 @@
+
+Loading model... |0.00.044.996 I srv    load_model: loading model 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+0.00.044.998 I srv    load_model: local path 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+0.00.064.210 E gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 42. should be in [0, 42)
+0.00.064.216 E gguf_init_from_reader: failed to read tensor info
+ 0.00.065.783 E llama_model_load: error loading model: llama_model_loader: failed to load model from target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf
+0.00.065.786 E llama_model_load_from_file_impl: failed to load model
+0.00.065.788 E cmn  common_init_: failed to load model 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+0.00.065.790 E srv    load_model: failed to load model, 'target/bonsai-models/Ternary-Bonsai-8B-Q2_0_g64.gguf'
+
+Failed to load the model
