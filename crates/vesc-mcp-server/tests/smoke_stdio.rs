@@ -2,12 +2,24 @@
 
 use std::{path::PathBuf, process::Stdio};
 
-use rmcp::{
-    ServiceExt,
-    model::CallToolRequestParams,
-    transport::{ConfigureCommandExt, TokioChildProcess},
-};
+use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+fn isolated_server_command(server: PathBuf) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(server);
+    command.env_remove("RUST_LOG");
+    command.env(
+        "VESC_MCP_CONFIG",
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/.missing-config.toml"),
+    );
+    command.env_remove("STATE_DIRECTORY");
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("VESC_RAG_") {
+            command.env_remove(name);
+        }
+    }
+    command
+}
 
 #[tokio::test]
 async fn smoke_tools_list_count_at_least_seven() -> anyhow::Result<()> {
@@ -19,10 +31,7 @@ async fn smoke_tools_list_count_at_least_seven() -> anyhow::Result<()> {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(7);
 
-    let transport =
-        TokioChildProcess::new(tokio::process::Command::new(server).configure(|cmd| {
-            cmd.env_remove("RUST_LOG");
-        }))?;
+    let transport = TokioChildProcess::new(isolated_server_command(server))?;
 
     let client = ().serve(transport).await?;
     let tools = client.list_all_tools().await?;
@@ -41,10 +50,7 @@ async fn smoke_compact_search_rows_cross_stdio_boundary() -> anyhow::Result<()> 
     let server = std::env::var("CARGO_BIN_EXE_vesc-mcp-server")
         .map(PathBuf::from)
         .expect("CARGO_BIN_EXE_vesc-mcp-server");
-    let transport =
-        TokioChildProcess::new(tokio::process::Command::new(server).configure(|cmd| {
-            cmd.env_remove("RUST_LOG");
-        }))?;
+    let transport = TokioChildProcess::new(isolated_server_command(server))?;
     let client = ().serve(transport).await?;
     let arguments = serde_json::json!({"query":"lbm_add_extension"})
         .as_object()
@@ -92,7 +98,7 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
     let server = std::env::var("CARGO_BIN_EXE_vesc-mcp-server")
         .map(PathBuf::from)
         .expect("CARGO_BIN_EXE_vesc-mcp-server");
-    let mut child = tokio::process::Command::new(server)
+    let mut child = isolated_server_command(server)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
