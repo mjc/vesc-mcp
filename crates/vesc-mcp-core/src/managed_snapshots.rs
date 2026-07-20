@@ -252,12 +252,30 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
         prewarm: &[BTreeMap<RepositoryId, String>],
     ) -> Result<PreparedSnapshots, SnapshotError> {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, selection) in prewarm.iter().cloned().enumerate() {
+            let store = self.clone();
+            let repositories = repositories.clone();
+            tasks.spawn(async move {
+                store
+                    .prepare(&repositories, &selection)
+                    .await
+                    .map(|snapshot| (index, snapshot))
+            });
+        }
         let default = self.prepare_default(repositories).await?;
         let mut prewarmed = Vec::with_capacity(prewarm.len());
-        for selection in prewarm {
-            prewarmed.push(self.prepare(repositories, selection).await?);
+        while let Some(result) = tasks.join_next().await {
+            prewarmed.push(result??);
         }
-        Ok(PreparedSnapshots { default, prewarmed })
+        prewarmed.sort_by_key(|(index, _)| *index);
+        Ok(PreparedSnapshots {
+            default,
+            prewarmed: prewarmed
+                .into_iter()
+                .map(|(_, snapshot)| snapshot)
+                .collect(),
+        })
     }
 
     /// Prepare a snapshot, applying explicit selectors over configured defaults.
@@ -652,16 +670,35 @@ mod tests {
         let remote = root.join("remote.git");
         fs::create_dir(&work).expect("create work tree");
         run_git(&work, &["init", "-b", "main"]);
-        run_git(&work, &["config", "user.name", "Test Author"]);
-        run_git(&work, &["config", "user.email", "test@example.invalid"]);
         fs::write(work.join("README.md"), "alphaunique first revision\n").expect("first file");
         run_git(&work, &["add", "README.md"]);
-        run_git(&work, &["commit", "-m", "first"]);
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "first",
+            ],
+        );
         let first = run_git(&work, &["rev-parse", "HEAD"]);
         run_git(&work, &["tag", "v1"]);
         fs::write(work.join("README.md"), "betaunique second revision\n").expect("second file");
-        run_git(&work, &["add", "README.md"]);
-        run_git(&work, &["commit", "-m", "second"]);
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-am",
+                "second",
+            ],
+        );
         let second = run_git(&work, &["rev-parse", "HEAD"]);
         run_git(
             &work,
@@ -1011,8 +1048,18 @@ max_total_bytes = 10485760
             .expect("initial default snapshot");
 
         fs::write(work.join("README.md"), "gammaunique third revision\n").expect("third file");
-        run_git(&work, &["add", "README.md"]);
-        run_git(&work, &["commit", "-m", "third"]);
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-am",
+                "third",
+            ],
+        );
         run_git(
             &work,
             &["push", remote.to_str().expect("UTF-8 remote path"), "main"],

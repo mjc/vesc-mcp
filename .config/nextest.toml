@@ -9,3 +9,10 @@ test-threads = "num-cpus"
 [profile.ci]
 retries = { backoff = "fixed", count = 1, delay = "500ms" }
 fail-fast = true
+
+[test-groups.managed-snapshots]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'test(/managed_snapshots::tests/)'
+test-group = 'managed-snapshots'
