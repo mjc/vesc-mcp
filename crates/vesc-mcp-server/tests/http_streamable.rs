@@ -161,10 +161,22 @@ async fn two_http_clients_prepare_one_shared_snapshot_artifact() -> anyhow::Resu
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(responses[0]["snapshot_id"], responses[1]["snapshot_id"]);
-    assert!(
+    assert_eq!(
         responses
             .iter()
-            .any(|response| response["status"] == "built")
+            .filter(|response| response["status"] == "built")
+            .count(),
+        1
+    );
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|response| matches!(
+                response["status"].as_str(),
+                Some("reused" | "deduplicated")
+            ))
+            .count(),
+        1
     );
     assert_eq!(
         std::fs::read_dir(fixture.data_root().join("artifacts"))?.count(),
