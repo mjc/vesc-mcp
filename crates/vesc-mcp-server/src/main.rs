@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::future::Future;
 use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
@@ -37,16 +38,38 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    synchronize_managed_repositories(StartupPolicy::from_args(&args)).await?;
+    let startup_policy = StartupPolicy::from_args(&args);
     if args.iter().any(|arg| arg == "--refresh-repositories") {
+        synchronize_managed_repositories(startup_policy).await?;
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--http") {
-        vesc_mcp_server::http::run(vesc_mcp_server::http::HttpServerConfig::from_env()).await?;
+        run_http(
+            vesc_mcp_server::http::HttpServerConfig::from_env(),
+            synchronize_managed_repositories(startup_policy),
+        )
+        .await?;
         return Ok(());
     }
 
+    synchronize_managed_repositories(startup_policy).await?;
     vesc_mcp_core::server::run_stdio_server().await
+}
+
+async fn run_http<F>(
+    config: vesc_mcp_server::http::HttpServerConfig,
+    preparation: F,
+) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    let server = vesc_mcp_server::http::bind(config).await?;
+    tokio::spawn(async move {
+        if let Err(error) = preparation.await {
+            tracing::error!(%error, "managed repository preparation failed");
+        }
+    });
+    server.serve().await
 }
 
 async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Result<()> {
@@ -208,7 +231,12 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::StartupPolicy;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::{StartupPolicy, run_http};
 
     #[test]
     fn startup_policy_defaults_to_refresh_eager_and_offline_fallback() {
@@ -238,5 +266,34 @@ mod tests {
                 allow_offline_restart: false,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn http_binds_before_repository_preparation() {
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let bind = reservation.local_addr().expect("reserved address");
+        drop(reservation);
+        let started = Arc::new(AtomicBool::new(false));
+        let preparing = Arc::clone(&started);
+        let config = vesc_mcp_server::http::HttpServerConfig {
+            bind,
+            path: "/mcp".into(),
+            allowed_hosts: vec!["127.0.0.1".into()],
+            allowed_origins: Vec::new(),
+            auth_token: None,
+        };
+
+        let server = tokio::spawn(run_http(config, async move {
+            preparing.store(true, Ordering::Release);
+            std::future::pending::<anyhow::Result<()>>().await
+        }));
+        while !started.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+
+        tokio::net::TcpStream::connect(bind)
+            .await
+            .expect("HTTP listener is available while preparation is pending");
+        server.abort();
     }
 }

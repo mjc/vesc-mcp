@@ -31,6 +31,31 @@ pub struct HttpServerConfig {
     pub auth_token: Option<String>,
 }
 
+/// A bound HTTP listener that has not started serving yet.
+pub struct BoundHttpServer {
+    config: HttpServerConfig,
+    listener: TcpListener,
+}
+
+impl BoundHttpServer {
+    /// Serve MCP requests until cancellation or a transport failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP transport stops with a serving error.
+    pub async fn serve(self) -> anyhow::Result<()> {
+        let cancellation_token = CancellationToken::new();
+        let service = VescMcpService::new()
+            .http_service_with_authenticated_writes(self.config.auth_token.is_some());
+        let router = router(&self.config, service, &cancellation_token);
+        tracing::info!(bind = %self.config.bind, path = %self.config.path, "serving Streamable HTTP MCP");
+        axum::serve(self.listener, router)
+            .with_graceful_shutdown(cancellation_token.cancelled_owned())
+            .await?;
+        Ok(())
+    }
+}
+
 impl HttpServerConfig {
     #[must_use]
     pub fn from_env() -> Self {
@@ -83,16 +108,17 @@ pub fn router(
 /// Returns an error when the listen address cannot be bound or the HTTP
 /// transport stops with a serving error.
 pub async fn run(config: HttpServerConfig) -> anyhow::Result<()> {
-    let cancellation_token = CancellationToken::new();
-    let service =
-        VescMcpService::new().http_service_with_authenticated_writes(config.auth_token.is_some());
-    let router = router(&config, service, &cancellation_token);
+    bind(config).await?.serve().await
+}
+
+/// Bind the configured listen address without constructing the MCP service.
+///
+/// # Errors
+///
+/// Returns an error when the listen address cannot be bound.
+pub async fn bind(config: HttpServerConfig) -> anyhow::Result<BoundHttpServer> {
     let listener = TcpListener::bind(config.bind).await?;
-    tracing::info!(bind = %config.bind, path = %config.path, "serving Streamable HTTP MCP");
-    axum::serve(listener, router)
-        .with_graceful_shutdown(cancellation_token.cancelled_owned())
-        .await?;
-    Ok(())
+    Ok(BoundHttpServer { config, listener })
 }
 
 async fn require_auth(
