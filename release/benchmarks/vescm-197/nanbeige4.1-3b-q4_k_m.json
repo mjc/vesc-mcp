@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-197-planner-v1",
+  "candidate": {
+    "name": "nanbeige4.1-3b-q4_k_m",
+    "model_id": "Nanbeige/Nanbeige4.1-3B",
+    "model_revision": "9c4555c37921c0982af8fffeee1e0a6e6b953c4f",
+    "gguf_id": "Edge-Quant/Nanbeige4.1-3B-Q4_K_M-GGUF",
+    "gguf_revision": "e43eda3d0c718b51e989a318e58b0bd7383e290b",
+    "file": "nanbeige4.1-3b-q4_k_m.gguf",
+    "quantization": "Q4_K_M",
+    "sha256": "043246350c952877b38958a9e35c480419008b6b2d52bedaf2b805ed2447b4df",
+    "bytes": 2443112576,
+    "license": "Apache-2.0"
+  },
+  "runtime": {
+    "llama_cpp_commit": "6f4f53f",
+    "llama_cpp_package_version": 9842,
+    "provider": "llama.cpp Vulkan",
+    "device": "Vulkan0",
+    "gpu_layers": 999,
+    "context_size": 8192,
+    "threads": 6,
+    "temperature": 0,
+    "seed": 42,
+    "schema_grammar": "rejected by llama.cpp sampler; strict post-validation used",
+    "device_inventory": "Available devices:\n  Vulkan0: AMD Radeon RX 5700 XT 50th Anniversary (RADV NAVI10) (8176 MiB, 6463 MiB free)\n  Vulkan1: AMD Radeon 760M Graphics (RADV PHOENIX) (16113 MiB, 16016 MiB free)"
+  },
+  "initialization_seconds": 1.3700118209817447,
+  "cases": [
+    {
+      "case_id": "complete",
+      "expected_query_facets": [],
+      "prompt_sha256": "355027fc0a8c062d0571b6c572bf5b2a75da78abf07252fa817fe84b0e0fcdef",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "",
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 806,
+            "total_tokens": 1206,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 806,
+            "prompt_ms": 827.883,
+            "prompt_per_token_ms": 1.027150124069479,
+            "prompt_per_second": 973.5675210144428,
+            "predicted_n": 400,
+            "predicted_ms": 3659.634,
+            "predicted_per_token_ms": 9.149085,
+            "predicted_per_second": 109.30054754109291
+          },
+          "wall_seconds": 4.494306004024111,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "",
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 806,
+            "total_tokens": 1206,
+            "prompt_tokens_details": {
+              "cached_tokens": 805
+            }
+          },
+          "timings": {
+            "cache_n": 805,
+            "prompt_n": 1,
+            "prompt_ms": 11.804,
+            "prompt_per_token_ms": 11.804,
+            "prompt_per_second": 84.71704506946797,
+            "predicted_n": 400,
+            "predicted_ms": 3660.342,
+            "predicted_per_token_ms": 9.150855,
+            "predicted_per_second": 109.27940613199532
+          },
+          "wall_seconds": 3.678493587009143,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "missing-chibios",
+      "expected_query_facets": [
+        "runtime-module-loading"
+      ],
+      "prompt_sha256": "918084621242c85e7eea97238fca95a275b04e7900d8ddc2d034f80fa665d575",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "",
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 772,
+            "total_tokens": 1172,
+            "prompt_tokens_details": {
+              "cached_tokens": 603
+            }
+          },
+          "timings": {
+            "cache_n": 603,
+            "prompt_n": 169,
+            "prompt_ms": 202.702,
+            "prompt_per_token_ms": 1.1994201183431952,
+            "prompt_per_second": 833.7362236189085,
+            "predicted_n": 400,
+            "predicted_ms": 3666.103,
+            "predicted_per_token_ms": 9.165257500000001,
+            "predicted_per_second": 109.10768191728384
+          },
+          "wall_seconds": 3.875375012983568,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "",
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 772,
+            "total_tokens": 1172,
+            "prompt_tokens_details": {
+              "cached_tokens": 771
+            }
+          },
+          "timings": {
+            "cache_n": 771,
+            "prompt_n": 1,
+            "prompt_ms": 12.381,
+            "prompt_per_token_ms": 12.381,
+            "prompt_per_second": 80.768920119538,
+            "predicted_n": 400,
+            "predicted_ms": 3669.147,
+            "predicted_per_token_ms": 9.1728675,
+            "predicted_per_second": 109.01716393483281
+          },
+          "wall_seconds": 3.6879618379753083,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "wrong-era-loader",
+      "expected_query_facets": [
+        "firmware-loader"
+      ],
+      "prompt_sha256": "bd93caeb214859067fcfdbe6546c0169c365f6e177eac88f0c4bb2382a4b6402",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "",
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 807,
+            "total_tokens": 1207,
+            "prompt_tokens_details": {
+              "cached_tokens": 603
+            }
+          },
+          "timings": {
+            "cache_n": 603,
+            "prompt_n": 204,
+            "prompt_ms": 253.68,
+            "prompt_per_token_ms": 1.243529411764706,
+            "prompt_per_second": 804.162724692526,
+            "predicted_n": 400,
+            "predicted_ms": 3670.182,
+            "predicted_per_token_ms": 9.175455,
+            "predicted_per_second": 108.98642083689583
+          },
+          "wall_seconds": 3.9307066460023634,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "",
+          "finish_reason": "length",
+          "usage": {
+            "completion_tokens": 400,
+            "prompt_tokens": 807,
+            "total_tokens": 1207,
+            "prompt_tokens_details": {
+              "cached_tokens": 806
+            }
+          },
+          "timings": {
+            "cache_n": 806,
+            "prompt_n": 1,
+            "prompt_ms": 12.255,
+            "prompt_per_token_ms": 12.255,
+            "prompt_per_second": 81.59934720522236,
+            "predicted_n": 400,
+            "predicted_ms": 3669.797,
+            "predicted_per_token_ms": 9.1744925,
+            "predicted_per_second": 108.99785464972584
+          },
+          "wall_seconds": 3.6884327679872513,
+          "score": {
+            "schema_valid": false,
+            "error": "invalid JSON: Expecting value",
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": null,
+            "answer_leak": false
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "schema_valid_rate": 0,
+    "query_facets_exact_rate": 0,
+    "query_quality_rate": 0,
+    "false_requirement_output_rate": 0,
+    "answer_leak_rate": 0,
+    "repeatability_rate": 1,
+    "cold_wall_p50_seconds": 3.9307066460023634,
+    "warm_wall_p50_seconds": 3.6879618379753083,
+    "cached_prompt_tokens": [
+      805,
+      771,
+      806
+    ]
+  }
+}

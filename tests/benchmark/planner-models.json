@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "llama_cpp_commit": "6f4f53f",
+  "llama_cpp_package_version": 9842,
+  "candidates": [
+    {
+      "name": "granite-4.1-3b-q4_k_m",
+      "model_id": "ibm-granite/granite-4.1-3b",
+      "model_revision": "c0650403e44e78ec0262dab1c90914c65b196c4e",
+      "gguf_id": "ibm-granite/granite-4.1-3b-GGUF",
+      "gguf_revision": "ab4701481089b58a082ef63cc1cee738887293ff",
+      "file": "granite-4.1-3b-q4_k_m.gguf",
+      "quantization": "Q4_K_M",
+      "sha256": "662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29",
+      "bytes": 2099501664,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "nanbeige4.1-3b-q4_k_m",
+      "model_id": "Nanbeige/Nanbeige4.1-3B",
+      "model_revision": "9c4555c37921c0982af8fffeee1e0a6e6b953c4f",
+      "gguf_id": "Edge-Quant/Nanbeige4.1-3B-Q4_K_M-GGUF",
+      "gguf_revision": "e43eda3d0c718b51e989a318e58b0bd7383e290b",
+      "file": "nanbeige4.1-3b-q4_k_m.gguf",
+      "quantization": "Q4_K_M",
+      "sha256": "043246350c952877b38958a9e35c480419008b6b2d52bedaf2b805ed2447b4df",
+      "bytes": 2443112576,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "qwen3.5-4b-q4_k_m",
+      "model_id": "Qwen/Qwen3.5-4B",
+      "model_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+      "gguf_id": "unsloth/Qwen3.5-4B-GGUF",
+      "gguf_revision": "e87f176479d0855a907a41277aca2f8ee7a09523",
+      "file": "qwen3.5-4b-q4_k_m.gguf",
+      "quantization": "Q4_K_M",
+      "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
+      "bytes": 2740937888,
+      "license": "Apache-2.0"
+    }
+  ]
+}

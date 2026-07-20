@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "ticket": "VESCM-197",
+  "default": "hard-coded-contract-only",
+  "optional_model": null,
+  "decision": "No local planner model improves the locked suite over deterministic Rust rules.",
+  "candidate_conclusions": {
+    "granite-4.1-3b-q4_k_m": "Schema-valid and repeatable, but only one of three cases passes the query-quality gate.",
+    "nanbeige4.1-3b-q4_k_m": "Produces no bounded JSON before the 400-token decode limit.",
+    "qwen3.5-4b-q4_k_m": "Ties deterministic quality but adds roughly 2.27 seconds of warm latency and a model dependency."
+  },
+  "grammar_note": "llama.cpp commit 6f4f53f rejected the full planner JSON schema in its grammar sampler; unconstrained output was therefore subjected to the strict Rust-compatible post-validation boundary and invalid output was counted as failure.",
+  "selection_rule": "Nanbeige becomes the default only if it improves the locked suite without weakening completeness or determinism.",
+  "selection_rule_satisfied": false
+}

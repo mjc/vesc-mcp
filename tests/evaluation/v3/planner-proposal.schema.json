@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "facet_additions", "relationship_additions", "search_queries", "request_critic"],
+  "properties": {
+    "schema": {"const": 1},
+    "facet_additions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "repository", "stage", "era"],
+        "properties": {
+          "id": {"type": "string"},
+          "repository": {"enum": ["vesc_package_lib", "vesc_firmware", "chibi_os", "refloat"]},
+          "stage": {"enum": ["package_format", "generated_entry", "firmware_loader", "abi_dispatch", "runtime_module_loading", "consumer_invocation", "configuration"]},
+          "era": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "revision"],
+                "properties": {
+                  "kind": {"const": "exact"},
+                  "revision": {"type": "string"}
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind"],
+                "properties": {"kind": {"const": "any"}}
+              }
+            ]
+          }
+        }
+      }
+    },
+    "relationship_additions": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "from_facet", "to_facet", "kind"],
+        "properties": {
+          "id": {"type": "string"},
+          "from_facet": {"type": "string"},
+          "to_facet": {"type": "string"},
+          "kind": {"enum": ["produces", "loaded_by", "dispatches_to", "runs_in", "invoked_by"]}
+        }
+      }
+    },
+    "search_queries": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["facet_id", "query"],
+        "properties": {
+          "facet_id": {"type": "string"},
+          "query": {"type": "string"}
+        }
+      }
+    },
+    "request_critic": {"type": "boolean"}
+  }
+}

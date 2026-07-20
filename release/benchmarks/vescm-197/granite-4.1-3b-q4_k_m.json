@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-197-planner-v1",
+  "candidate": {
+    "name": "granite-4.1-3b-q4_k_m",
+    "model_id": "ibm-granite/granite-4.1-3b",
+    "model_revision": "c0650403e44e78ec0262dab1c90914c65b196c4e",
+    "gguf_id": "ibm-granite/granite-4.1-3b-GGUF",
+    "gguf_revision": "ab4701481089b58a082ef63cc1cee738887293ff",
+    "file": "granite-4.1-3b-q4_k_m.gguf",
+    "quantization": "Q4_K_M",
+    "sha256": "662b0626cd58f443baea23559b469df6576a81d349649c59413b36a9fb32eb29",
+    "bytes": 2099501664,
+    "license": "Apache-2.0"
+  },
+  "runtime": {
+    "llama_cpp_commit": "6f4f53f",
+    "llama_cpp_package_version": 9842,
+    "provider": "llama.cpp Vulkan",
+    "device": "Vulkan0",
+    "gpu_layers": 999,
+    "context_size": 8192,
+    "threads": 6,
+    "temperature": 0,
+    "seed": 42,
+    "schema_grammar": "rejected by llama.cpp sampler; strict post-validation used",
+    "device_inventory": "Available devices:\n  Vulkan0: AMD Radeon RX 5700 XT 50th Anniversary (RADV NAVI10) (8176 MiB, 6463 MiB free)\n  Vulkan1: AMD Radeon 760M Graphics (RADV PHOENIX) (16113 MiB, 16016 MiB free)"
+  },
+  "initialization_seconds": 1.3297398400027305,
+  "cases": [
+    {
+      "case_id": "complete",
+      "expected_query_facets": [],
+      "prompt_sha256": "355027fc0a8c062d0571b6c572bf5b2a75da78abf07252fa817fe84b0e0fcdef",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"package-format\",\n      \"query\": \"vesc_package_lib/package_format exact revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f\"\n    },\n    {\n      \"facet_id\": \"generated-entry\",\n      \"query\": \"vesc_package_lib/generated_entry exact revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f\"\n    },\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"vesc_firmware/firmware_loader exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    },\n    {\n      \"facet_id\": \"abi-dispatch\",\n      \"query\": \"vesc_firmware/abi_dispatch exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    },\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"chibi_os/runtime_module_loading exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    },\n    {\n      \"facet_id\": \"consumer-invocation\",\n      \"query\": \"refloat/consumer_invocation exact revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 346,
+            "prompt_tokens": 629,
+            "total_tokens": 975,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 629,
+            "prompt_ms": 706.507,
+            "prompt_per_token_ms": 1.1232225755166931,
+            "prompt_per_second": 890.2954960106554,
+            "predicted_n": 346,
+            "predicted_ms": 3369.657,
+            "predicted_per_token_ms": 9.738893063583815,
+            "predicted_per_second": 102.68107406777604
+          },
+          "wall_seconds": 4.0819528580177575,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"package-format\",\n      \"query\": \"vesc_package_lib/package_format exact revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f\"\n    },\n    {\n      \"facet_id\": \"generated-entry\",\n      \"query\": \"vesc_package_lib/generated_entry exact revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f\"\n    },\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"vesc_firmware/firmware_loader exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    },\n    {\n      \"facet_id\": \"abi-dispatch\",\n      \"query\": \"vesc_firmware/abi_dispatch exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    },\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"chibi_os/runtime_module_loading exact revision c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    },\n    {\n      \"facet_id\": \"consumer-invocation\",\n      \"query\": \"refloat/consumer_invocation exact revision 9a16b5c5dd0ca661b2bd856827c638115eb7df5f\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 346,
+            "prompt_tokens": 629,
+            "total_tokens": 975,
+            "prompt_tokens_details": {
+              "cached_tokens": 628
+            }
+          },
+          "timings": {
+            "cache_n": 628,
+            "prompt_n": 1,
+            "prompt_ms": 12.311,
+            "prompt_per_token_ms": 12.311,
+            "prompt_per_second": 81.22816992933149,
+            "predicted_n": 346,
+            "predicted_ms": 3368.863,
+            "predicted_per_token_ms": 9.736598265895953,
+            "predicted_per_second": 102.70527474699921
+          },
+          "wall_seconds": 3.3869428419857286,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": false,
+            "query_quality": false,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "missing-chibios",
+      "expected_query_facets": [
+        "runtime-module-loading"
+      ],
+      "prompt_sha256": "918084621242c85e7eea97238fca95a275b04e7900d8ddc2d034f80fa665d575",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"lispBM/lispif_c_lib.c:ext_load_native_lib\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 74,
+            "prompt_tokens": 600,
+            "total_tokens": 674,
+            "prompt_tokens_details": {
+              "cached_tokens": 472
+            }
+          },
+          "timings": {
+            "cache_n": 472,
+            "prompt_n": 128,
+            "prompt_ms": 155.597,
+            "prompt_per_token_ms": 1.2156015625,
+            "prompt_per_second": 822.6379685983662,
+            "predicted_n": 74,
+            "predicted_ms": 716.719,
+            "predicted_per_token_ms": 9.685391891891893,
+            "predicted_per_second": 103.24827442833244
+          },
+          "wall_seconds": 0.9352729480015114,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": false,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"runtime-module-loading\",\n      \"query\": \"lispBM/lispif_c_lib.c:ext_load_native_lib\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 74,
+            "prompt_tokens": 600,
+            "total_tokens": 674,
+            "prompt_tokens_details": {
+              "cached_tokens": 599
+            }
+          },
+          "timings": {
+            "cache_n": 599,
+            "prompt_n": 1,
+            "prompt_ms": 11.133,
+            "prompt_per_token_ms": 11.133,
+            "prompt_per_second": 89.8230485942693,
+            "predicted_n": 74,
+            "predicted_ms": 718.951,
+            "predicted_per_token_ms": 9.715554054054055,
+            "predicted_per_second": 102.92773777350611
+          },
+          "wall_seconds": 0.7358877109945752,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": false,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "wrong-era-loader",
+      "expected_query_facets": [
+        "firmware-loader"
+      ],
+      "prompt_sha256": "bd93caeb214859067fcfdbe6546c0169c365f6e177eac88f0c4bb2382a4b6402",
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"vesc_firmware/firmware_loader c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 88,
+            "prompt_tokens": 631,
+            "total_tokens": 719,
+            "prompt_tokens_details": {
+              "cached_tokens": 472
+            }
+          },
+          "timings": {
+            "cache_n": 472,
+            "prompt_n": 159,
+            "prompt_ms": 211.714,
+            "prompt_per_token_ms": 1.3315345911949685,
+            "prompt_per_second": 751.0131592620234,
+            "predicted_n": 88,
+            "predicted_ms": 854.645,
+            "predicted_per_token_ms": 9.711875,
+            "predicted_per_second": 102.96672887573202
+          },
+          "wall_seconds": 1.0717618640046567,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        },
+        {
+          "content": "{\n  \"schema\": 1,\n  \"facet_additions\": [],\n  \"relationship_additions\": [],\n  \"search_queries\": [\n    {\n      \"facet_id\": \"firmware-loader\",\n      \"query\": \"vesc_firmware/firmware_loader c835e9f10989f217269efb4ec943dfea7d280dfd\"\n    }\n  ],\n  \"request_critic\": false\n}",
+          "finish_reason": "stop",
+          "usage": {
+            "completion_tokens": 88,
+            "prompt_tokens": 631,
+            "total_tokens": 719,
+            "prompt_tokens_details": {
+              "cached_tokens": 630
+            }
+          },
+          "timings": {
+            "cache_n": 630,
+            "prompt_n": 1,
+            "prompt_ms": 10.976,
+            "prompt_per_token_ms": 10.976,
+            "prompt_per_second": 91.1078717201166,
+            "predicted_n": 88,
+            "predicted_ms": 851.817,
+            "predicted_per_token_ms": 9.679738636363636,
+            "predicted_per_second": 103.30857449428692
+          },
+          "wall_seconds": 0.868475541996304,
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "schema_valid_rate": 1,
+    "query_facets_exact_rate": 0.6666666666666666,
+    "query_quality_rate": 0.3333333333333333,
+    "false_requirement_output_rate": 0,
+    "answer_leak_rate": 0,
+    "repeatability_rate": 1,
+    "cold_wall_p50_seconds": 1.0717618640046567,
+    "warm_wall_p50_seconds": 0.868475541996304,
+    "cached_prompt_tokens": [
+      628,
+      599,
+      630
+    ]
+  }
+}

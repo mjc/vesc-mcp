@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-197-planner-v1",
+  "source_suite": "tests/evaluation/v3/loader_path.json",
+  "cases": [
+    {
+      "id": "complete",
+      "bundle_id": "complete",
+      "expected_query_facets": [],
+      "keywords": {}
+    },
+    {
+      "id": "missing-chibios",
+      "bundle_id": "missing-chibios",
+      "expected_query_facets": ["runtime-module-loading"],
+      "keywords": {
+        "runtime-module-loading": ["chibios", "chheapalloc", "runtime", "allocation", "c835e9f"]
+      }
+    },
+    {
+      "id": "wrong-era-loader",
+      "bundle_id": "wrong-era-loader",
+      "expected_query_facets": ["firmware-loader"],
+      "keywords": {
+        "firmware-loader": ["ext_load_native_lib", "firmware", "loader", "c835e9f"]
+      }
+    }
+  ]
+}

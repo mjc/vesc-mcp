@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-197-planner-v1",
+  "candidate": {
+    "name": "hard-coded-contract-only",
+    "model_id": null
+  },
+  "runtime": {
+    "provider": "deterministic Rust rules",
+    "model_calls": 0
+  },
+  "cases": [
+    {
+      "case_id": "complete",
+      "expected_query_facets": [],
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\"schema\":1,\"facet_additions\":[],\"relationship_additions\":[],\"search_queries\":[],\"request_critic\":false}",
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "missing-chibios",
+      "expected_query_facets": [
+        "runtime-module-loading"
+      ],
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\"schema\":1,\"facet_additions\":[],\"relationship_additions\":[],\"search_queries\":[{\"facet_id\":\"runtime-module-loading\",\"query\":\"chibi_os runtime_module_loading c835e9f10989f217269efb4ec943dfea7d280dfd\"}],\"request_critic\":false}",
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "wrong-era-loader",
+      "expected_query_facets": [
+        "firmware-loader"
+      ],
+      "repeatable": true,
+      "repeats": [
+        {
+          "content": "{\"schema\":1,\"facet_additions\":[],\"relationship_additions\":[],\"search_queries\":[{\"facet_id\":\"firmware-loader\",\"query\":\"vesc_firmware firmware_loader c835e9f10989f217269efb4ec943dfea7d280dfd\"}],\"request_critic\":false}",
+          "score": {
+            "schema_valid": true,
+            "error": null,
+            "query_facets_exact": true,
+            "query_quality": true,
+            "false_requirements": 0,
+            "answer_leak": false
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "schema_valid_rate": 1,
+    "query_facets_exact_rate": 1,
+    "query_quality_rate": 1,
+    "false_requirement_output_rate": 0,
+    "answer_leak_rate": 0,
+    "repeatability_rate": 1
+  }
+}
