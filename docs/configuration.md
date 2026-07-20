@@ -187,15 +187,21 @@ The internal layout is portable and derived only from validated IDs:
 
 ```text
 repositories/<id>.git/
+repositories/<id>.refs.json
 snapshots/<snapshot-id>.json
 artifacts/<snapshot-id>/
 tmp/
 ```
 
-`tmp/` is inside the data root so later provisioning can atomically rename
-staged data on the same filesystem. Git network operations and directory
-creation belong to the repository-store lifecycle; parsing this configuration
-does neither. Semantic model files remain independently configured with
+At server startup, enabled repositories are cloned or refreshed as bare stores;
+all configured heads and tags are recorded as immutable commit IDs. A failed
+refresh keeps the last complete catalog and reports it as stale. Run
+`vesc-mcp-server --refresh-repositories` to perform the same explicit refresh
+and exit. There is no background refresh scheduler.
+
+`tmp/` is inside the data root so clone staging can atomically rename on the
+same filesystem. Git network operations and directory creation belong to the
+repository-store lifecycle; parsing this configuration does neither. Semantic model files remain independently configured with
 `[knowledge.semantic] model_dir` and are never downloaded implicitly.
 
 On the measured Ryzen 5 8600G + RX 5700 XT development host only, the server

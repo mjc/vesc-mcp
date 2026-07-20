@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
+use vesc_mcp_core::managed_git::ManagedGitStore;
+use vesc_mcp_core::managed_repositories::{KnowledgeDataLayout, RepositoryPolicy};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -12,21 +14,63 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if args.iter().any(|arg| arg == "--http") {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_writer(std::io::stderr)
-            .init();
-        vesc_mcp_server::http::run(vesc_mcp_server::http::HttpServerConfig::from_env()).await?;
-        return Ok(());
-    }
-
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
+    synchronize_managed_repositories().await?;
+    if args.iter().any(|arg| arg == "--refresh-repositories") {
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--http") {
+        vesc_mcp_server::http::run(vesc_mcp_server::http::HttpServerConfig::from_env()).await?;
+        return Ok(());
+    }
+
     vesc_mcp_core::server::run_stdio_server().await
+}
+
+async fn synchronize_managed_repositories() -> anyhow::Result<()> {
+    let config = vesc_mcp_core::config::McpConfig::load();
+    if config.knowledge.repositories.is_empty() {
+        return Ok(());
+    }
+    let data_root = config
+        .knowledge
+        .data_root
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("managed repositories require a data root"))?;
+    let store = ManagedGitStore::new(KnowledgeDataLayout::new(data_root));
+    for (id, result) in store.startup_sync(&config.knowledge.repositories).await {
+        match result {
+            Ok(outcome) => {
+                if let Some(warning) = outcome.warning {
+                    tracing::warn!(repository = %id, %warning, "using stale managed repository catalog");
+                } else {
+                    tracing::info!(
+                        repository = %id,
+                        disposition = ?outcome.disposition,
+                        refs = outcome.catalog.refs.len(),
+                        "synchronized managed repository"
+                    );
+                }
+            }
+            Err(error) => {
+                let required = config
+                    .knowledge
+                    .repositories
+                    .iter()
+                    .find(|repository| repository.id() == &id)
+                    .is_some_and(|repository| repository.policy() == RepositoryPolicy::Required);
+                if required {
+                    return Err(anyhow::anyhow!("required repository {id} failed: {error}"));
+                }
+                tracing::warn!(repository = %id, %error, "optional managed repository unavailable");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
