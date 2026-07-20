@@ -5,6 +5,55 @@ use std::fs;
 use serde_json::{Value, json};
 use vesc_mcp_core::test_support::{McpTestHarness, VersionedKnowledgeFixture};
 
+async fn assert_default_snapshot_compatibility(
+    fixture: &VersionedKnowledgeFixture,
+    harness: &McpTestHarness,
+    old_uri: &str,
+) {
+    let layout = vesc_mcp_core::managed_repositories::KnowledgeDataLayout::new(
+        fixture
+            .knowledge()
+            .data_root
+            .clone()
+            .expect("managed data root"),
+    );
+    let default = vesc_mcp_core::managed_snapshots::KnowledgeSnapshotStore::new(layout)
+        .prepare_default(&fixture.knowledge().repositories)
+        .await
+        .expect("prepare default snapshot");
+    let unversioned: Value = serde_json::from_str(&harness.call_tool(
+        "search_vesc_knowledge",
+        json!({
+            "query": "betaunique",
+            "mode": "lexical",
+            "detail": "full",
+            "limit": 1
+        }),
+    ))
+    .expect("unversioned search response");
+
+    assert_eq!(
+        unversioned["index"]["snapshot_id"],
+        default.manifest.id.as_str()
+    );
+    assert_eq!(
+        unversioned["index"]["repositories"]["bldc"],
+        fixture.tagged_commit()
+    );
+    assert!(
+        unversioned["results"][0]["resource_uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("vesc://knowledge/chunk/"))
+    );
+    assert!(harness.read_resource(old_uri).contains("alphaunique"));
+    assert_eq!(
+        fs::read_dir(fixture.data_root().join("artifacts"))
+            .expect("artifact directory")
+            .count(),
+        2
+    );
+}
+
 #[tokio::test]
 async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
     let fixture = VersionedKnowledgeFixture::new().await;
@@ -65,7 +114,6 @@ async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
         .expect("versioned resource URI")
         .to_owned();
     assert!(harness.read_resource(&uri).contains("alphaunique"));
-
     assert_eq!(
         fs::read_dir(fixture.data_root().join("artifacts"))
             .expect("artifact directory")
@@ -73,47 +121,7 @@ async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
         1
     );
 
-    let layout = vesc_mcp_core::managed_repositories::KnowledgeDataLayout::new(
-        fixture
-            .knowledge()
-            .data_root
-            .clone()
-            .expect("managed data root"),
-    );
-    let default = vesc_mcp_core::managed_snapshots::KnowledgeSnapshotStore::new(layout)
-        .prepare_default(&fixture.knowledge().repositories)
-        .await
-        .expect("prepare default snapshot");
-    let unversioned: Value = serde_json::from_str(&harness.call_tool(
-        "search_vesc_knowledge",
-        json!({
-            "query": "betaunique",
-            "mode": "lexical",
-            "detail": "full",
-            "limit": 1
-        }),
-    ))
-    .expect("unversioned search response");
-    assert_eq!(
-        unversioned["index"]["snapshot_id"],
-        default.manifest.id.as_str()
-    );
-    assert_eq!(
-        unversioned["index"]["repositories"]["bldc"],
-        fixture.tagged_commit()
-    );
-    assert!(
-        unversioned["results"][0]["resource_uri"]
-            .as_str()
-            .is_some_and(|uri| uri.starts_with("vesc://knowledge/chunk/"))
-    );
-    assert!(harness.read_resource(&uri).contains("alphaunique"));
-    assert_eq!(
-        fs::read_dir(fixture.data_root().join("artifacts"))
-            .expect("artifact directory")
-            .count(),
-        2
-    );
+    assert_default_snapshot_compatibility(&fixture, &harness, &uri).await;
 }
 
 #[tokio::test]
