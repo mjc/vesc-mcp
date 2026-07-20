@@ -146,6 +146,12 @@ impl VescMcpService {
         Self::from_state(SharedMcpState::new())
     }
 
+    /// Create a service over an explicit knowledge configuration.
+    #[must_use]
+    pub fn with_knowledge_config(knowledge: KnowledgeConfig) -> Self {
+        Self::from_state(SharedMcpState::with_config(knowledge, None, false))
+    }
+
     /// Create a service with an explicit durable feedback store.
     #[must_use]
     pub fn with_feedback_store(path: &std::path::Path, writes_enabled: bool) -> Self {

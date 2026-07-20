@@ -86,6 +86,7 @@ pub fn asset_missing(root: &Path, relative: &Path) -> bool {
 #[derive(Debug, Clone)]
 pub struct McpTestHarness {
     service: crate::VescMcpService,
+    knowledge: crate::config::KnowledgeConfig,
     feedback: Option<crate::tools::knowledge_feedback::FeedbackStore>,
     feedback_writes_enabled: bool,
 }
@@ -93,8 +94,10 @@ pub struct McpTestHarness {
 impl McpTestHarness {
     #[must_use]
     pub fn new() -> Self {
+        let knowledge = crate::config::McpConfig::load().knowledge.clone();
         Self {
-            service: crate::VescMcpService::new(),
+            service: crate::VescMcpService::with_knowledge_config(knowledge.clone()),
+            knowledge,
             feedback: None,
             feedback_writes_enabled: false,
         }
@@ -106,9 +109,38 @@ impl McpTestHarness {
         let store = crate::tools::knowledge_feedback::FeedbackStore::new(root);
         Self {
             service: crate::VescMcpService::with_feedback_store(root, writes_enabled),
+            knowledge: crate::config::McpConfig::load().knowledge.clone(),
             feedback: Some(store),
             feedback_writes_enabled: writes_enabled,
         }
+    }
+
+    #[must_use]
+    pub fn with_knowledge_config(knowledge: crate::config::KnowledgeConfig) -> Self {
+        Self {
+            service: crate::VescMcpService::with_knowledge_config(knowledge.clone()),
+            knowledge,
+            feedback: None,
+            feedback_writes_enabled: false,
+        }
+    }
+
+    /// Seed one configured managed repository from a test fixture remote.
+    #[cfg(feature = "managed-git")]
+    pub async fn sync_managed_source(&self, id: &str, remote: &str) {
+        let repository = self
+            .knowledge
+            .repositories
+            .iter()
+            .find(|repository| repository.id().as_str() == id)
+            .unwrap_or_else(|| panic!("configured repository {id}"));
+        let root = self.knowledge.data_root.clone().expect("managed data root");
+        crate::managed_git::ManagedGitStore::new(
+            crate::managed_repositories::KnowledgeDataLayout::new(root),
+        )
+        .sync_source(repository.id(), remote, repository.default_ref())
+        .await
+        .expect("managed source sync");
     }
 
     #[must_use]
@@ -169,11 +201,7 @@ impl McpTestHarness {
                         "mark_covered requires enabled feedback writes".into(),
                     )
                 } else if let Some(store) = &self.feedback {
-                    replay_vesc_knowledge_correction(
-                        &params,
-                        &crate::config::McpConfig::load().knowledge,
-                        store,
-                    )
+                    replay_vesc_knowledge_correction(&params, &self.knowledge, store)
                 } else {
                     CorrectionReplayReport::failure(
                         &params.correction_id,
@@ -189,7 +217,7 @@ impl McpTestHarness {
     }
 
     #[cfg(feature = "managed-git")]
-    fn call_source_version_tool(name: &str, arguments: serde_json::Value) -> Option<String> {
+    fn call_source_version_tool(&self, name: &str, arguments: serde_json::Value) -> Option<String> {
         use crate::tools::list_source_versions::{
             ListVescSourceVersionsParams, list_vesc_source_versions_json,
         };
@@ -197,8 +225,22 @@ impl McpTestHarness {
         (name == "list_vesc_source_versions").then(|| {
             let params: ListVescSourceVersionsParams =
                 serde_json::from_value(arguments).expect("source version filters");
-            list_vesc_source_versions_json(&params, &crate::config::McpConfig::load().knowledge)
+            list_vesc_source_versions_json(&params, &self.knowledge)
         })
+    }
+
+    #[cfg(feature = "managed-git")]
+    /// Call a tool that may perform asynchronous snapshot preparation.
+    pub async fn call_tool_async(&self, name: &str, arguments: serde_json::Value) -> String {
+        if name == "prepare_vesc_knowledge" {
+            let params = serde_json::from_value(arguments).expect("knowledge source selection");
+            return crate::tools::prepare_knowledge::prepare_vesc_knowledge_json(
+                &params,
+                &self.knowledge,
+            )
+            .await;
+        }
+        self.call_tool(name, arguments)
     }
 
     /// Call a registered MCP tool and return the JSON text payload.
@@ -241,7 +283,7 @@ impl McpTestHarness {
             return response;
         }
         #[cfg(feature = "managed-git")]
-        if let Some(response) = Self::call_source_version_tool(name, arguments.clone()) {
+        if let Some(response) = self.call_source_version_tool(name, arguments.clone()) {
             return response;
         }
 
@@ -305,7 +347,7 @@ impl McpTestHarness {
                     .expect("search_vesc_knowledge requires { \"query\": \"...\" }");
                 search_vesc_knowledge_json_with_feedback(
                     &params,
-                    &crate::config::McpConfig::load().knowledge,
+                    &self.knowledge,
                     self.feedback.as_ref(),
                     self.service.resource_registry(),
                 )

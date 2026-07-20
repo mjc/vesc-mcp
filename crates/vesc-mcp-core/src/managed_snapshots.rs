@@ -320,7 +320,9 @@ impl KnowledgeSnapshotStore {
                         policy_digest: repository_policy_digest(repository)?,
                     });
                 }
-                Err(_) if repository.policy() == RepositoryPolicy::Optional => {}
+                Err(_)
+                    if repository.policy() == RepositoryPolicy::Optional
+                        && !selectors.contains_key(repository.id()) => {}
                 Err(error) => return Err(error.into()),
             }
         }
@@ -721,6 +723,15 @@ mod tests {
         default_ref: &str,
         include: &str,
     ) -> RepositoryRegistry {
+        fixture_registry_with_policy(data_root, default_ref, include, "required")
+    }
+
+    fn fixture_registry_with_policy(
+        data_root: &Path,
+        default_ref: &str,
+        include: &str,
+        policy: &str,
+    ) -> RepositoryRegistry {
         McpConfig::from_toml(
             &format!(
                 r#"
@@ -731,7 +742,7 @@ data_root = "{}"
 id = "fixture"
 remote_url = "https://example.invalid/fixture.git"
 default_ref = "{default_ref}"
-policy = "required"
+policy = "{policy}"
 include = ["{include}"]
 exclude = []
 trust_tier = "official"
@@ -748,6 +759,34 @@ max_total_bytes = 10485760
         .expect("fixture configuration")
         .knowledge
         .repositories
+    }
+
+    #[tokio::test]
+    async fn explicit_unknown_ref_is_not_ignored_for_an_optional_repository() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first, _second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories =
+            fixture_registry_with_policy(&data_root, "refs/heads/main", "**/*.md", "optional");
+        let id = RepositoryId::new("fixture").expect("repository ID");
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                &id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+        let selectors = BTreeMap::from([(id, String::from("refs/tags/missing"))]);
+
+        let error = KnowledgeSnapshotStore::new(layout)
+            .prepare(&repositories, &selectors)
+            .await
+            .expect_err("explicit missing ref must fail");
+
+        assert!(matches!(error, SnapshotError::ManagedGit(_)));
     }
 
     fn artifact_matches(root: &Path, query: &str) -> bool {
