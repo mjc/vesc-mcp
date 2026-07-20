@@ -14,7 +14,7 @@ def load(path: str):
 
 profile = load("release/benchmarks/vescm-199/profile.json")
 ryzen = load("release/benchmarks/vescm-195/modern-bounded.json")
-m1 = load("release/benchmarks/vescm-195/m1/granite-97m.json")
+m1 = load("release/benchmarks/vescm-199/m1-cpu-granite-97m.json")
 def granite(report):
     return next(
         candidate["benchmark"]
@@ -27,13 +27,26 @@ ryzen_bench = granite(ryzen)
 m1_bench = granite(m1)
 
 for field in ("corpus_digest", "query_count", "corpus_chunks", "outer_batch_size",
-              "effective_max_length", "warmup_iterations"):
+              "effective_max_length", "warmup_iterations", "repetitions"):
     assert ryzen_bench[field] == m1_bench[field], field
 assert ryzen_bench["model_id"] == m1_bench["model_id"]
 assert ryzen_bench["model_revision"] == m1_bench["model_revision"]
 assert ryzen_bench["query_count"] == 25 and ryzen_bench["corpus_chunks"] == 128
 assert ryzen["machine"]["arch"] == "x86_64"
 assert m1["machine"] == {"os": "macos", "arch": "aarch64", "rust_target": "aarch64-apple-darwin"}
+assert ryzen_bench["repetitions"] == m1_bench["repetitions"] == 10
+
+coreml = load("release/benchmarks/vescm-199/m1-coreml-failure.json")
+assert coreml["runtime"]["selected_provider"] == "CoreMLExecutionProvider"
+assert coreml["placement"]["cpu_fallback_detected"] is True
+assert coreml["placement"]["accelerator_result_valid"] is False
+assert coreml["failure"]["stage"] == "first provider execution"
+assert coreml["failure"]["code"] == -7
+assert coreml["budget"] == {
+    "corpus_digest": str(ryzen_bench["corpus_digest"]),
+    "chunks": 128, "queries": 25, "max_length": 512, "batch_size": 8,
+    "intra_threads": 3, "warmup": 2, "repetitions": 10,
+}
 
 ryzen_reranker = load("release/benchmarks/vescm-196/ettin-reranker-32m-v1-qint8-avx2.json")
 m1_reranker = load("release/benchmarks/vescm-196/m1/ettin-reranker-32m-v1-qint8-avx2.json")

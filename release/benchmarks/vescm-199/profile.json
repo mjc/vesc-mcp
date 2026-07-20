@@ -16,12 +16,13 @@
       "lexical_and_graph": "cpu",
       "query_embedding": "Granite 97M INT8 / CPUExecutionProvider",
       "reranker": "disabled; Ettin 32M INT8 / CPUExecutionProvider is the measured escalation",
-      "embedding_p50_ms": 3.007,
-      "embedding_p95_ms": 3.389,
+      "embedding_p50_ms": 2.975,
+      "embedding_p95_ms": 3.428,
       "reranker_p50_ms": 49.177,
       "reranker_p95_ms": 56.254,
-      "coreml": "pending proven node placement; registration alone is invalid",
-      "source": "../vescm-195/m1/granite-97m.json"
+      "coreml": "invalid: CPU fallback was detected and first Core ML execution failed with plan error -7",
+      "source": "m1-cpu-granite-97m.json",
+      "coreml_failure_source": "m1-coreml-failure.json"
     }
   },
   "ingestion": {

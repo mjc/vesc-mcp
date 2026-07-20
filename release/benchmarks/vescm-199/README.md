@@ -14,17 +14,17 @@ deterministic Rust. Critique remains disabled.
 | critic | disabled | disabled | Bonsai 27B Q1 measured but rejected |
 
 The Ryzen and M1 Granite reports use the same corpus digest, 128 chunks, 25
-queries, batch 8, 512-token lossless input, two warmups, and the same pinned
-model revision. Their query-embedding p50/p95 values are 3.40/7.64 ms and
-3.01/3.39 ms respectively. The Ettin 32M runs use the same nine candidates,
+queries, batch 8, 512-token lossless input, two warmups, ten repetitions, and
+the same pinned model revision. Their query-embedding p50/p95 values are
+3.40/7.64 ms and 2.98/3.43 ms respectively. The Ettin 32M runs use the same nine candidates,
 512-token limit, batch 8, and quality gate: Ryzen is 41.08/61.29 ms and M1 is
 49.18/56.25 ms per warm batch. Reranking stays disabled because it did not
 improve path completeness.
 
-Core ML is not labeled faster merely because its provider registered. The M1
-workflow enables verbose ORT placement and rejects a result if any graph node
-falls back to CPU. Until that proof passes, native ONNX CPU remains the M1
-recommendation.
+Core ML registered and partitioned the graph, but ORT assigned shape-related
+nodes to CPU and the first Core ML execution failed to build Apple's MLProgram
+execution plan with error `-7`. The attempted result is invalid, not a timing
+sample. Native ONNX CPU therefore remains the M1 recommendation.
 
 The RX ingestion result is scoped to the Ryzen 5 8600G + RX 5700 XT gfx1010
 host, pinned ROCm/MIGraphX runtime and Jina FP16 artifact. The bounded 128-chunk

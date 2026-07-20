@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "workflow_run": 29709952945,
+  "head_sha": "dae423c528f0f7b45d3b5a0cc42c184471b50c73",
+  "hardware": "Apple M1 (GitHub macos-14 arm64)",
+  "runtime": {
+    "onnxruntime": "1.26.0",
+    "build_type": "Release",
+    "requested_provider": "CoreMl",
+    "selected_provider": "CoreMLExecutionProvider",
+    "provider_available": true,
+    "coreml_version": 7,
+    "compute_units": "ALL",
+    "model_format": "MLProgram"
+  },
+  "model": {
+    "id": "ibm-granite/granite-embedding-97m-multilingual-r2",
+    "revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+    "quantization": "QInt8 AVX2"
+  },
+  "budget": {
+    "corpus_digest": "sha256:71342745041784d58f147b1cd99a7743377d3d9e0fa42ad4dab1f0aa280652ab",
+    "chunks": 128,
+    "queries": 25,
+    "max_length": 512,
+    "batch_size": 8,
+    "intra_threads": 3,
+    "warmup": 2,
+    "repetitions": 10
+  },
+  "placement": {
+    "cpu_fallback_detected": true,
+    "ort_warning": "Some nodes were not assigned to the preferred execution providers; ORT explicitly assigns shape-related ops to CPU.",
+    "accelerator_result_valid": false
+  },
+  "failure": {
+    "stage": "first provider execution",
+    "message": "CoreML failed to build the model execution plan from model.mil",
+    "code": -7,
+    "wall_seconds": 27.38,
+    "maximum_rss_bytes": 3159179264
+  },
+  "raw_stderr_sha256": "cf8a7c6232dbb6cd0a9d48a780d05ecee6d91e6344b8bcf5d5b8522068f512ef",
+  "decision": "Invalid Core ML benchmark. Keep native ONNX CPU as the Apple M1 lookup provider."
+}
