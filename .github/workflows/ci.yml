@@ -71,14 +71,14 @@ jobs:
       - name: Run coverage
         run: |
           IGNORE=$(grep -v '^#' .config/coverage-exclude.regex | head -1)
-          nix develop -c cargo llvm-cov nextest run \
+          nix develop -c cargo llvm-cov nextest \
             --workspace --profile ci \
             --features vesc-mcp-core/test-fixtures \
             --ignore-filename-regex "$IGNORE" \
             --lcov --output-path lcov.info
 
       - name: Per-crate summary
-        run: nix develop -c bash scripts/coverage-summary.sh || true
+        run: nix develop -c bash scripts/coverage-summary.sh --lcov lcov.info || true
 
       - uses: actions/upload-artifact@v4
         with:
