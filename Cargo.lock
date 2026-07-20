@@ -4743,6 +4743,7 @@ dependencies = [
  "axum",
  "rmcp",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

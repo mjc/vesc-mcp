@@ -7,6 +7,78 @@ use tracing_subscriber::EnvFilter;
 use vesc_mcp_core::managed_git::ManagedGitStore;
 use vesc_mcp_core::managed_repositories::{KnowledgeDataLayout, RepositoryPolicy};
 use vesc_mcp_core::managed_snapshots::{KnowledgeSnapshotStore, SnapshotDisposition};
+use vesc_mcp_core::preparation_status::{
+    KnowledgePreparationStatus, PreparationPhase, PreparationState, write_preparation_status,
+};
+
+struct PreparationReporter {
+    data_root: PathBuf,
+    repositories_total: usize,
+    repositories_completed: usize,
+    finished: bool,
+}
+
+impl PreparationReporter {
+    fn new(data_root: PathBuf, repositories_total: usize) -> Self {
+        let reporter = Self {
+            data_root,
+            repositories_total,
+            repositories_completed: 0,
+            finished: false,
+        };
+        reporter.publish(&KnowledgePreparationStatus::preparing(
+            PreparationPhase::Starting,
+            0,
+            repositories_total,
+        ));
+        reporter
+    }
+
+    fn repositories_synchronized(&mut self, completed: usize) {
+        self.repositories_completed = completed;
+        self.publish(&KnowledgePreparationStatus::preparing(
+            PreparationPhase::SynchronizingRepositories,
+            completed,
+            self.repositories_total,
+        ));
+    }
+
+    fn indexing(&mut self) {
+        self.repositories_completed = self.repositories_total;
+        self.publish(&KnowledgePreparationStatus::preparing(
+            PreparationPhase::Indexing,
+            self.repositories_completed,
+            self.repositories_total,
+        ));
+    }
+
+    fn finish(&mut self, state: PreparationState) {
+        self.publish(&KnowledgePreparationStatus::finished(
+            state,
+            self.repositories_completed,
+            self.repositories_total,
+        ));
+        self.finished = true;
+    }
+
+    fn publish(&self, status: &KnowledgePreparationStatus) {
+        if let Err(error) = write_preparation_status(&self.data_root, status) {
+            tracing::warn!(%error, "could not publish knowledge preparation status");
+        }
+    }
+}
+
+impl Drop for PreparationReporter {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.publish(&KnowledgePreparationStatus::finished(
+                PreparationState::Failed,
+                self.repositories_completed,
+                self.repositories_total,
+            ));
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StartupPolicy {
@@ -82,10 +154,19 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
         .data_root
         .clone()
         .ok_or_else(|| anyhow::anyhow!("managed repositories require a data root"))?;
+    let mut reporter = PreparationReporter::new(
+        data_root.as_path().to_owned(),
+        config.knowledge.repositories.iter().len(),
+    );
     let layout = KnowledgeDataLayout::new(data_root);
     if policy.refresh {
         let store = ManagedGitStore::new(layout.clone());
-        for (id, result) in store.startup_sync(&config.knowledge.repositories).await {
+        for (completed, (id, result)) in store
+            .startup_sync(&config.knowledge.repositories)
+            .await
+            .into_iter()
+            .enumerate()
+        {
             match result {
                 Ok(outcome) => {
                     if let Some(warning) = outcome.warning {
@@ -119,12 +200,15 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
                     tracing::warn!(repository = %id, %error, "optional managed repository unavailable");
                 }
             }
+            reporter.repositories_synchronized(completed.saturating_add(1));
         }
     }
     if !policy.eager_index {
+        reporter.finish(PreparationState::Stale);
         return Ok(());
     }
 
+    reporter.indexing();
     let prepared = KnowledgeSnapshotStore::new(layout)
         .prepare_configured(&config.knowledge.repositories, &config.knowledge.prewarm)
         .await?;
@@ -152,6 +236,13 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
             "prepared historical knowledge snapshot"
         );
     }
+    reporter.finish(
+        if prepared.default.disposition == SnapshotDisposition::Stale {
+            PreparationState::Stale
+        } else {
+            PreparationState::Ready
+        },
+    );
     Ok(())
 }
 
@@ -236,7 +327,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use super::{StartupPolicy, run_http};
+    use super::{PreparationReporter, StartupPolicy, run_http};
 
     #[test]
     fn startup_policy_defaults_to_refresh_eager_and_offline_fallback() {
@@ -295,5 +386,18 @@ mod tests {
             .await
             .expect("HTTP listener is available while preparation is pending");
         server.abort();
+    }
+
+    #[test]
+    fn unfinished_preparation_is_published_as_failed() {
+        let root = tempfile::tempdir().expect("data root");
+        drop(PreparationReporter::new(root.path().to_owned(), 3));
+
+        let status = vesc_mcp_core::preparation_status::read_preparation_status(root.path())
+            .expect("published status");
+        assert_eq!(
+            status.state,
+            vesc_mcp_core::preparation_status::PreparationState::Failed
+        );
     }
 }

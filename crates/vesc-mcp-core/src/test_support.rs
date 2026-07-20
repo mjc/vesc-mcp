@@ -418,6 +418,21 @@ impl McpTestHarness {
         self.call_tool(name, arguments)
     }
 
+    fn call_ping(&self, arguments: serde_json::Value) -> String {
+        use crate::server::{
+            PingParams, PingResponse, decide_ping_echo, knowledge_preparation_status,
+        };
+
+        let params: PingParams = serde_json::from_value(arguments).unwrap_or_default();
+        serde_json::to_string(&PingResponse {
+            ok: true,
+            echo: decide_ping_echo(params.message),
+            server: "vesc-mcp".into(),
+            knowledge: knowledge_preparation_status(&self.knowledge),
+        })
+        .expect("ping response json")
+    }
+
     /// Call a registered MCP tool and return the JSON text payload.
     ///
     /// Dispatches through the same tool handlers registered on [`crate::VescMcpService`].
@@ -427,7 +442,6 @@ impl McpTestHarness {
     /// Panics when the tool name is unknown or arguments fail to deserialize.
     #[must_use]
     pub fn call_tool(&self, name: &str, arguments: serde_json::Value) -> String {
-        use crate::server::{PingParams, PingResponse, decide_ping_echo};
         use crate::tools::build::{
             BuildVescpkgParams, RealVescToolRunner, build_vescpkg_tool_with_runner,
         };
@@ -463,15 +477,7 @@ impl McpTestHarness {
         }
 
         match name {
-            "ping" => {
-                let params: PingParams = serde_json::from_value(arguments).unwrap_or_default();
-                let payload = PingResponse {
-                    ok: true,
-                    echo: decide_ping_echo(params.message),
-                    server: "vesc-mcp".into(),
-                };
-                serde_json::to_string(&payload).expect("ping response json")
-            }
+            "ping" => self.call_ping(arguments),
             "list_vesc_packages" => {
                 let params: ListPackagesParams =
                     serde_json::from_value(arguments).unwrap_or_default();

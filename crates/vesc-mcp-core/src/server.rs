@@ -58,6 +58,7 @@ pub struct PingResponse {
     pub ok: bool,
     pub echo: String,
     pub server: String,
+    pub knowledge: Option<crate::preparation_status::KnowledgePreparationStatus>,
 }
 
 #[derive(Clone, Debug)]
@@ -248,7 +249,7 @@ impl VescMcpService {
     #[tool(description = "Health check — returns server identity and optional echo")]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
     fn ping(&self, Parameters(PingParams { message }): Parameters<PingParams>) -> String {
-        ping_json(message)
+        ping_json(message, &self.state.knowledge)
     }
 
     #[tool(
@@ -530,7 +531,7 @@ impl HttpMcpService {
     #[tool(description = "Health check — returns server identity and optional echo")]
     #[allow(clippy::unused_self)]
     fn ping(&self, Parameters(PingParams { message }): Parameters<PingParams>) -> String {
-        ping_json(message)
+        ping_json(message, &self.state.knowledge)
     }
 
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
@@ -732,15 +733,30 @@ impl ServerHandler for HttpMcpService {
     }
 }
 
-fn ping_json(message: Option<String>) -> String {
+fn ping_json(message: Option<String>, knowledge: &KnowledgeConfig) -> String {
     let payload = PingResponse {
         ok: true,
         echo: decide_ping_echo(message),
         server: "vesc-mcp".into(),
+        knowledge: knowledge_preparation_status(knowledge),
     };
     serde_json::to_string(&payload).unwrap_or_else(|_| {
         r#"{"ok":false,"echo":"serialization failed","server":"vesc-mcp"}"#.into()
     })
+}
+
+pub(crate) fn knowledge_preparation_status(
+    knowledge: &KnowledgeConfig,
+) -> Option<crate::preparation_status::KnowledgePreparationStatus> {
+    let repositories_total = knowledge.repositories.iter().len();
+    if repositories_total == 0 {
+        return None;
+    }
+    let data_root = knowledge.data_root.as_ref()?;
+    Some(crate::preparation_status::read_or_starting(
+        data_root.as_path(),
+        repositories_total,
+    ))
 }
 
 fn feedback_json(

@@ -32,5 +32,6 @@ vesc-mcp-core = { path = "../vesc-mcp-core", features = ["managed-git"] }
 
 [dev-dependencies]
 anyhow.workspace = true
+tempfile = "3"
 rmcp = { workspace = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tokio.workspace = true
