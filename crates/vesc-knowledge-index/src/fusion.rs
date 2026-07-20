@@ -204,6 +204,14 @@ pub fn fuse_candidates(
                     Ordering::Equal
                 }
             })
+            // Registered catalog evidence has stable public identifiers and
+            // should not be buried beneath anonymous source-code passages.
+            .then_with(|| {
+                left.chunk
+                    .legacy_ids
+                    .is_empty()
+                    .cmp(&right.chunk.legacy_ids.is_empty())
+            })
             .then_with(|| {
                 if config.lexical_floor {
                     let left_protected = left
@@ -460,6 +468,30 @@ mod tests {
             hits[1].chunk.identifiers.first().map(String::as_str),
             Some("second_id")
         );
+    }
+
+    #[test]
+    fn registered_evidence_precedes_anonymous_source_passages() {
+        let mut registered = chunk("registered", 0, "registered", "registered_id");
+        registered.legacy_ids.push("catalog.registered".into());
+        let source = chunk("source", 0, "source", "source_id");
+        let hits = fuse_candidates(
+            &[],
+            &[
+                SemanticHit {
+                    chunk_id: source.chunk_id.clone(),
+                    similarity: 1.0,
+                },
+                SemanticHit {
+                    chunk_id: registered.chunk_id.clone(),
+                    similarity: 0.9,
+                },
+            ],
+            &map(&[registered.clone(), source]),
+            FusionConfig::default(),
+        );
+
+        assert_eq!(hits[0].chunk.chunk_id, registered.chunk_id);
     }
 
     #[test]

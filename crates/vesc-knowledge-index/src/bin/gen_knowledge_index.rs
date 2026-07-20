@@ -25,7 +25,7 @@ use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::{
     BakeoffCandidateReport, BakeoffReport, SemanticBenchmarkMatrixReport, SemanticBenchmarkReport,
-    benchmark_semantic, benchmark_semantic_with_artifact,
+    benchmark_semantic, benchmark_semantic_queries, benchmark_semantic_with_artifact,
 };
 use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
 #[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
@@ -1190,7 +1190,6 @@ fn evaluate_semantic(
                 &chunks,
                 FusionConfig {
                     limit: 50,
-                    lexical_floor: true,
                     ..FusionConfig::default()
                 },
             )
@@ -1699,7 +1698,6 @@ fn evaluate_provider(
                 chunks,
                 FusionConfig {
                     limit: 50,
-                    lexical_floor: true,
                     ..FusionConfig::default()
                 },
             )
@@ -1757,6 +1755,17 @@ fn run_benchmark(args: &[String]) {
         .expect("--repetitions must be an integer");
     let artifact = argument_value(args, "--artifact").map(PathBuf::from);
     if argument_value(args, "--mode").as_deref() == Some("semantic") {
+        if args.iter().any(|arg| arg == "--semantic-query-only") {
+            run_semantic_query_benchmark(
+                args,
+                artifact.as_deref(),
+                &suite_path,
+                &format,
+                warmup,
+                repetitions,
+            );
+            return;
+        }
         run_semantic_benchmark(
             args,
             artifact.as_deref(),
@@ -1779,6 +1788,98 @@ fn run_benchmark(args: &[String]) {
         "text" => print_benchmark_report(&report),
         other => panic!("unsupported benchmark format {other:?}; use json, text, or markdown"),
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn run_semantic_query_benchmark(
+    args: &[String],
+    artifact_root: Option<&Path>,
+    suite_path: &Path,
+    format: &str,
+    warmup: usize,
+    repetitions: usize,
+) {
+    let artifact_root =
+        artifact_root.unwrap_or_else(|| panic!("--artifact is required for --semantic-query-only"));
+    let model_dir = argument_value(args, "--semantic-model-dir")
+        .map_or_else(|| panic!("--semantic-model-dir is required"), PathBuf::from);
+    let model_id = argument_value(args, "--semantic-model-id")
+        .unwrap_or_else(|| panic!("--semantic-model-id is required"));
+    let batch_size = argument_value(args, "--semantic-batch-size")
+        .as_deref()
+        .unwrap_or("8")
+        .parse::<usize>()
+        .expect("--semantic-batch-size must be a positive integer");
+    let intra_threads = argument_value(args, "--semantic-intra-threads").map(|value| {
+        value
+            .parse::<usize>()
+            .expect("--semantic-intra-threads must be a positive integer")
+    });
+    let limits = argument_value(args, "--limits")
+        .unwrap_or_else(|| "5,10,20,50".into())
+        .split(',')
+        .map(|value| value.parse::<usize>().expect("invalid exact-search limit"))
+        .collect::<Vec<_>>();
+    let queries = read_evaluation_queries(suite_path)
+        .into_iter()
+        .map(|query| query.text)
+        .collect::<Vec<_>>();
+    let vector_path = argument_value(args, "--semantic-vector-artifact").map_or_else(
+        || {
+            let manifest = inspect_manifest(&active_manifest_path(artifact_root))
+                .unwrap_or_else(|error| panic!("inspect semantic query artifact: {error}"));
+            artifact_root
+                .join("generations")
+                .join(manifest.corpus.content_digest.to_string())
+                .join("vectors.bin")
+        },
+        PathBuf::from,
+    );
+    let vector = VectorArtifact::open_artifact(&vector_path)
+        .unwrap_or_else(|error| panic!("open semantic query artifact: {error}"));
+    let initialization_started = std::time::Instant::now();
+    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
+        &model_dir,
+        Some(batch_size),
+        semantic_profile_with_args(&model_id, args),
+        intra_threads,
+        semantic_execution_provider(args),
+        semantic_graph_optimization_level(args),
+    )
+    .unwrap_or_else(|error| panic!("load semantic query model: {error}"));
+    let initialization = vesc_knowledge_index::benchmark::TimingDistribution::single(
+        u64::try_from(initialization_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+    );
+    let mut report = benchmark_semantic_queries(
+        &mut provider,
+        &vector,
+        &queries,
+        &limits,
+        warmup,
+        repetitions,
+    )
+    .unwrap_or_else(|error| panic!("run semantic query benchmark: {error}"));
+    report.cold_initialization = Some(initialization);
+    match format {
+        "json" => println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("serialize semantic query benchmark")
+        ),
+        "text" => println!("{report:#?}"),
+        other => panic!("unsupported query benchmark format {other:?}; use json or text"),
+    }
+}
+
+#[cfg(not(feature = "semantic-fastembed"))]
+fn run_semantic_query_benchmark(
+    _args: &[String],
+    _artifact_root: Option<&Path>,
+    _suite_path: &Path,
+    _format: &str,
+    _warmup: usize,
+    _repetitions: usize,
+) {
+    panic!("semantic query benchmarks require the semantic-fastembed feature");
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2137,22 +2238,24 @@ fn representative_chunk_sample(chunks: &[Chunk], limit: usize) -> Vec<Chunk> {
 
 fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {
     let hits = artifact.map_or_else(
-        || search_lexical_knowledge(query, None, 50).unwrap_or_default(),
+        || {
+            search_lexical_knowledge(query, None, 50)
+                .unwrap_or_else(|error| panic!("search embedded lexical artifact: {error}"))
+        },
         |root| {
             let path = if root.is_file() {
                 root.to_owned()
             } else {
-                let Ok(manifest) = inspect_manifest(&active_manifest_path(root)) else {
-                    return Vec::new();
-                };
+                let manifest = inspect_manifest(&active_manifest_path(root))
+                    .unwrap_or_else(|error| panic!("inspect lexical evaluation artifact: {error}"));
                 root.join("generations")
                     .join(manifest.corpus.content_digest.to_string())
                     .join("lexical.json")
             };
             LexicalIndex::open_artifact(&path)
-                .ok()
-                .and_then(|index| index.search(query, &LexicalFilters::default(), 50).ok())
-                .unwrap_or_default()
+                .unwrap_or_else(|error| panic!("open lexical evaluation artifact: {error}"))
+                .search(query, &LexicalFilters::default(), 50)
+                .unwrap_or_else(|error| panic!("search lexical evaluation artifact: {error}"))
         },
     );
     hits.into_iter()
@@ -2164,6 +2267,20 @@ fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "open lexical evaluation artifact")]
+    fn incompatible_lexical_artifact_is_an_explicit_error() {
+        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact");
+        fs::write(artifact.path(), b"legacy-format").expect("invalid artifact fixture");
+
+        let _ = lexical_result_ids("query", Some(artifact.path()));
+    }
 }
 
 fn read_evaluation_queries(path: &Path) -> Vec<EvaluationQuery> {

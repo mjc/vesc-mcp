@@ -180,6 +180,26 @@ pub struct SemanticBenchmarkReport {
     pub warnings: Vec<String>,
 }
 
+/// Query-only measurements against an existing immutable vector artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticQueryBenchmarkReport {
+    pub schema: u16,
+    #[serde(default)]
+    pub cold_initialization: Option<TimingDistribution>,
+    pub warmup_iterations: usize,
+    pub repetitions: usize,
+    pub query_count: usize,
+    pub vector_count: usize,
+    pub vector_dimension: usize,
+    pub first_query: TimingDistribution,
+    pub embedding: TimingDistribution,
+    pub exact_search: BTreeMap<usize, TimingDistribution>,
+    pub rss_before_queries_bytes: Option<u64>,
+    pub rss_after_queries_bytes: Option<u64>,
+    pub rss_retained_delta_bytes: Option<i64>,
+}
+
 /// A stable collection of semantic benchmark runs over different outer
 /// embedding batch sizes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -546,8 +566,86 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
         artifact = build()?;
     }
     let artifact_bytes = u64::try_from(artifact.encode()?.len()).unwrap_or(u64::MAX);
+    let queries = benchmark_semantic_queries(
+        provider,
+        &artifact,
+        queries,
+        search_limits,
+        warmup_iterations,
+        repetitions,
+    )?;
+    Ok((
+        SemanticBenchmarkReport {
+            schema: 2,
+            mode: EvaluationMode::Semantic,
+            model_id: model_id.into(),
+            model_revision: model_revision.into(),
+            corpus_digest: corpus_digest.clone(),
+            build_identity: format!(
+                "vesc-knowledge-index@{};{}",
+                env!("CARGO_PKG_VERSION"),
+                host_target()
+            ),
+            outer_batch_size: provider.embedding_batch_size().get(),
+            intra_threads: None,
+            length_bucketed: false,
+            effective_max_length: None,
+            cold_initialization: None,
+            warmup_iterations,
+            repetitions,
+            query_count: queries.query_count,
+            corpus_chunks: chunks.len(),
+            vector_count: artifact.ids.len(),
+            vector_dimension: artifact.dimension,
+            artifact_bytes,
+            first_query_after_build: queries.first_query,
+            build: TimingDistribution::from_samples(build_samples),
+            embedding_input: TimingDistribution::from_samples(embedding_input_samples),
+            provider_inference: TimingDistribution::from_samples(provider_samples),
+            vector_finalization: TimingDistribution::from_samples(vector_finalization_samples),
+            embedding_input_bytes,
+            token_statistics: None,
+            embedding: queries.embedding,
+            exact_search: queries.exact_search,
+            rss_before_queries_bytes: queries.rss_before_queries_bytes,
+            rss_after_queries_bytes: queries.rss_after_queries_bytes,
+            rss_retained_delta_bytes: queries.rss_retained_delta_bytes,
+            peak_rss_bytes: None,
+            vector_artifact_sha256: None,
+            machine: MachineProfile {
+                os: std::env::consts::OS.into(),
+                arch: std::env::consts::ARCH.into(),
+                rust_target: host_target().into(),
+            },
+            warnings: Vec::new(),
+        },
+        artifact,
+    ))
+}
 
-    let first_query_after_build = {
+/// Measure query embedding and exact search without rebuilding vectors.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] for empty inputs or provider/search failures.
+pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized>(
+    provider: &mut P,
+    artifact: &VectorArtifact,
+    queries: &[String],
+    search_limits: &[usize],
+    warmup_iterations: usize,
+    repetitions: usize,
+) -> Result<SemanticQueryBenchmarkReport, BenchmarkError> {
+    if queries.is_empty() {
+        return Err(BenchmarkError::EmptyQueries);
+    }
+    if search_limits.is_empty() {
+        return Err(BenchmarkError::EmptyLimits);
+    }
+    if repetitions == 0 {
+        return Err(BenchmarkError::InvalidRepetitions);
+    }
+    let first_query = {
         let started = Instant::now();
         let vector = provider.embed_query(&queries[0])?;
         let _ = artifact.search(&vector, search_limits[0])?;
@@ -574,71 +672,38 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
             for limit in search_limits {
                 let started = Instant::now();
                 let _ = artifact.search(&vector, *limit)?;
-                let Some(samples) = search_samples.get_mut(limit) else {
-                    return Err(BenchmarkError::EmptyLimits);
-                };
-                samples.push(elapsed_us(started));
+                search_samples
+                    .entry(*limit)
+                    .or_default()
+                    .push(elapsed_us(started));
             }
         }
     }
     let rss_after_queries_bytes = current_rss_bytes();
-    let exact_search = search_samples
-        .into_iter()
-        .map(|(limit, samples)| (limit, TimingDistribution::from_samples(samples)))
-        .collect();
-    Ok((
-        SemanticBenchmarkReport {
-            schema: 2,
-            mode: EvaluationMode::Semantic,
-            model_id: model_id.into(),
-            model_revision: model_revision.into(),
-            corpus_digest: corpus_digest.clone(),
-            build_identity: format!(
-                "vesc-knowledge-index@{};{}",
-                env!("CARGO_PKG_VERSION"),
-                host_target()
-            ),
-            outer_batch_size: provider.embedding_batch_size().get(),
-            intra_threads: None,
-            length_bucketed: false,
-            effective_max_length: None,
-            cold_initialization: None,
-            warmup_iterations,
-            repetitions,
-            query_count: queries.len(),
-            corpus_chunks: chunks.len(),
-            vector_count: artifact.ids.len(),
-            vector_dimension: artifact.dimension,
-            artifact_bytes,
-            first_query_after_build,
-            build: TimingDistribution::from_samples(build_samples),
-            embedding_input: TimingDistribution::from_samples(embedding_input_samples),
-            provider_inference: TimingDistribution::from_samples(provider_samples),
-            vector_finalization: TimingDistribution::from_samples(vector_finalization_samples),
-            embedding_input_bytes,
-            token_statistics: None,
-            embedding: TimingDistribution::from_samples(embedding_samples),
-            exact_search,
-            rss_before_queries_bytes,
-            rss_after_queries_bytes,
-            rss_retained_delta_bytes: rss_before_queries_bytes
-                .zip(rss_after_queries_bytes)
-                .and_then(|(before, after)| {
-                    i64::try_from(after)
-                        .ok()?
-                        .checked_sub(i64::try_from(before).ok()?)
-                }),
-            peak_rss_bytes: None,
-            vector_artifact_sha256: None,
-            machine: MachineProfile {
-                os: std::env::consts::OS.into(),
-                arch: std::env::consts::ARCH.into(),
-                rust_target: host_target().into(),
-            },
-            warnings: Vec::new(),
-        },
-        artifact,
-    ))
+    Ok(SemanticQueryBenchmarkReport {
+        schema: 1,
+        cold_initialization: None,
+        warmup_iterations,
+        repetitions,
+        query_count: queries.len(),
+        vector_count: artifact.ids.len(),
+        vector_dimension: artifact.dimension,
+        first_query,
+        embedding: TimingDistribution::from_samples(embedding_samples),
+        exact_search: search_samples
+            .into_iter()
+            .map(|(limit, samples)| (limit, TimingDistribution::from_samples(samples)))
+            .collect(),
+        rss_before_queries_bytes,
+        rss_after_queries_bytes,
+        rss_retained_delta_bytes: rss_before_queries_bytes
+            .zip(rss_after_queries_bytes)
+            .and_then(|(before, after)| {
+                i64::try_from(after)
+                    .ok()?
+                    .checked_sub(i64::try_from(before).ok()?)
+            }),
+    })
 }
 
 /// Measures the local lexical pipeline without network or wall-clock metadata.

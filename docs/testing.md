@@ -111,6 +111,12 @@ The v1 thresholds are Recall@5 ≥ 0.90, MRR@10 ≥ 0.80, nDCG@10 ≥ 0.80, and
 identifier top-1 = 1.0. A failed gate exits nonzero and reports affected query
 IDs.
 
+Artifact formats are strict. If evaluation reports an incompatible manifest,
+lexical, or vector schema, rebuild the artifact with the current binary; do not
+copy an old generation under a new manifest or interpret a mismatch as an empty
+result set. The evaluator exits with the decode/open error so migrations stay
+explicit.
+
 The in-process handler benchmark is:
 
 ```bash
@@ -165,6 +171,14 @@ Keep run-specific results in CI artifacts or the task tracker rather than
 committing workstation-specific reports. See
 [provider-profiling.md](provider-profiling.md) for the current provider
 recommendation.
+
+To benchmark an existing immutable vector artifact without rebuilding the
+corpus, add `--semantic-query-only` to the semantic benchmark command. This
+reports cold initialization, first query, warm embedding, and exact search at
+K=5/10/20/50; use at least three repetitions for published evidence.
+`--semantic-vector-artifact /path/to/vectors.bin` is the explicit escape hatch
+for benchmarking a historical vector file whose enclosing manifest is no
+longer decodable; it does not relax normal evaluation or server validation.
 
 ### Semantic diagnostics
 
