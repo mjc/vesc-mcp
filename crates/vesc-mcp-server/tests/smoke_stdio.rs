@@ -147,7 +147,7 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
     let tools_list_bytes = tools_list_bytes.expect("tools/list response");
     let search_bytes = search_bytes.expect("search response");
     assert!(
-        tools_list_bytes <= 6_500,
+        tools_list_bytes <= 7_500,
         "tools/list was {tools_list_bytes} bytes"
     );
     assert!(

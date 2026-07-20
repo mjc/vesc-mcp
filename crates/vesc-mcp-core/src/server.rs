@@ -275,7 +275,7 @@ impl VescMcpService {
 
     #[cfg(feature = "managed-git")]
     #[tool(
-        description = "List configured VESC repositories and locally cached branches/tags before selecting evidence. This read-only call never fetches."
+        description = "List cached source refs before prepare/search; never fetches."
     )]
     fn list_vesc_source_versions(
         &self,
@@ -489,7 +489,7 @@ impl HttpMcpService {
 
     #[cfg(feature = "managed-git")]
     #[tool(
-        description = "List configured VESC repositories and locally cached branches/tags before selecting evidence. This read-only call never fetches."
+        description = "List cached source refs before prepare/search; never fetches."
     )]
     fn list_vesc_source_versions(
         &self,
