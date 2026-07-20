@@ -294,15 +294,62 @@
               modules = [
                 nixosModule
                 ({ ... }: {
-                  services.vesc-mcp.enable = true;
-                  services.vesc-mcp.package = testPackage;
+                  services.vesc-mcp = {
+                    enable = true;
+                    package = testPackage;
+                    repositories = {
+                      bldc = {
+                        url = "https://github.com/vedderb/bldc.git";
+                        defaultRef = "refs/heads/master";
+                        include = [ "**/*.c" ];
+                        license = "GPL-3.0-or-later";
+                        attribution = "VESC Project";
+                      };
+                      vesc_tool = {
+                        url = "https://github.com/vedderb/vesc_tool.git";
+                        defaultRef = "refs/heads/master";
+                        include = [ "**/*.cpp" ];
+                        license = "GPL-3.0-or-later";
+                        attribution = "VESC Project";
+                      };
+                      refloat = {
+                        url = "https://github.com/vedderb/vesc_pkg.git";
+                        defaultRef = "refs/heads/main";
+                        required = false;
+                        include = [ "**/*.lisp" ];
+                        trustTier = "community";
+                        license = "GPL-3.0-or-later";
+                        attribution = "VESC contributors";
+                      };
+                    };
+                    defaultVersions.bldc = "refs/heads/release_6_06";
+                    prewarm = [
+                      {
+                        bldc = "refs/heads/release_6_05";
+                        vesc_tool = "refs/heads/release_6_05";
+                        refloat = "refs/tags/v1.2.3";
+                      }
+                    ];
+                    startup.timeoutSecs = 600;
+                  };
                 })
               ];
             };
+            service = evaluated.config.systemd.services.vesc-mcp;
           in
           pkgs.runCommand "vesc-mcp-nixos-module-smoke" { } ''
-            test "${evaluated.config.systemd.services.vesc-mcp.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http"
-            test "${nixpkgs.lib.boolToString evaluated.config.systemd.services.vesc-mcp.serviceConfig.DynamicUser}" = "true"
+            test "${service.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http"
+            test "${nixpkgs.lib.boolToString service.serviceConfig.DynamicUser}" = "true"
+            test "${service.serviceConfig.StateDirectory}" = "vesc-mcp"
+            test "${service.serviceConfig.CacheDirectory}" = "vesc-mcp"
+            test "${toString service.serviceConfig.TimeoutStartSec}" = "600"
+            config_file="${service.environment.VESC_MCP_CONFIG}"
+            grep -F 'data_root = "/var/lib/vesc-mcp"' "$config_file"
+            grep -F 'id = "bldc"' "$config_file"
+            grep -F 'id = "vesc_tool"' "$config_file"
+            grep -F 'id = "refloat"' "$config_file"
+            grep -F 'default_ref = "refs/heads/release_6_06"' "$config_file"
+            grep -F 'refloat = "refs/tags/v1.2.3"' "$config_file"
             touch "$out"
           '';
       }
