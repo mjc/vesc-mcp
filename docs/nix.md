@@ -72,3 +72,84 @@ services.vesc-mcp = {
 Before allowing remote clients, set `authTokenFile`, the intended bind
 address, accepted hosts, accepted origins, and a firewall rule. The token file
 is a systemd EnvironmentFile containing `VESC_MCP_HTTP_AUTH_TOKEN=...`.
+
+### Managed repository service
+
+Repositories are declared as a typed attribute set. Nix generates the runtime
+TOML in the immutable store, while systemd provides the writable data root at
+`/var/lib/vesc-mcp`. Operators do not maintain a second mutable configuration
+file.
+
+```nix
+services.vesc-mcp = {
+  enable = true;
+  retrievalMode = "lexical";
+
+  repositories = {
+    bldc = {
+      url = "https://github.com/vedderb/bldc.git";
+      defaultRef = "refs/heads/master";
+      include = [ "**/*.c" "**/*.h" "documentation/**" ];
+      exclude = [ "build/**" ];
+      license = "GPL-3.0-or-later";
+      attribution = "VESC Project";
+    };
+    vesc_tool = {
+      url = "https://github.com/vedderb/vesc_tool.git";
+      defaultRef = "refs/heads/master";
+      include = [ "**/*.cpp" "**/*.h" "**/*.qml" ];
+      exclude = [ "build/**" ];
+      license = "GPL-3.0-or-later";
+      attribution = "VESC Project";
+    };
+    refloat = {
+      url = "https://github.com/lukash/refloat.git";
+      defaultRef = "refs/heads/main";
+      required = false;
+      trustTier = "community";
+      include = [ "**/*.c" "**/*.h" "**/*.lisp" "doc/**" ];
+      exclude = [ "build/**" ];
+      license = "GPL-3.0-or-later";
+      attribution = "Refloat contributors";
+    };
+  };
+
+  # Optional explicit default and historical comparison set.
+  defaultVersions.bldc = "refs/heads/release_6_06";
+  prewarm = [
+    {
+      bldc = "refs/heads/release_6_05";
+      vesc_tool = "refs/heads/release_6_05";
+      refloat = "refs/tags/v1.2.3";
+    }
+  ];
+
+  startup = {
+    refresh = true;
+    eagerIndex = true;
+    allowOfflineRestart = true;
+    timeoutSecs = 900;
+  };
+};
+```
+
+The first start fetches three bare Git stores and builds the combined default
+history, so its network, disk, and CPU cost is materially higher than a normal
+restart. Later starts fetch incrementally with gix, reuse content-addressed
+passages, and advance the default alias only after the new snapshot validates.
+Changing one ref creates a new artifact without deleting older immutable
+snapshots.
+
+Bare repositories, manifests, indexes, and temporary same-filesystem staging
+live below `/var/lib/vesc-mcp`; disposable caches have the separate
+`/var/cache/vesc-mcp` lifecycle. The dynamic service user has no writable home
+and `ProtectSystem=strict` prevents writes to the Nix store or project checkout.
+With `allowOfflineRestart = true`, a failed refresh retains and serves the last
+valid default snapshot with a bounded stale warning. Set `refresh = false` for
+an intentionally offline cached restart, or `eagerIndex = false` to defer new
+snapshot preparation.
+
+Only credential-free HTTPS repository URLs are accepted in evaluated Nix
+configuration. Put bearer tokens or Git credential environment settings in a
+root-readable `authTokenFile`/systemd credential source; secrets referenced by
+ordinary Nix strings or store paths are world-readable and must not be used.
