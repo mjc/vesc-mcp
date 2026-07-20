@@ -129,6 +129,15 @@ impl ManagedGitStore {
         self.layout.repository(id)
     }
 
+    /// Read the last persisted ref catalog without performing network I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no valid catalog is available.
+    pub fn catalog(&self, id: &RepositoryId) -> Result<RefCatalog, ManagedGitError> {
+        read_catalog(&self.layout, id)
+    }
+
     /// Synchronize every enabled configured repository during explicit startup.
     pub async fn startup_sync(
         &self,
@@ -573,6 +582,35 @@ mod tests {
                 .expect("annotated tag")
                 .commit,
             first
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_catalog_is_readable_without_refresh() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, first) = fixture_remote(temp.path());
+        let data = temp.path().join("data");
+        let layout = KnowledgeDataLayout::new(DataRoot::new(data).expect("absolute data root"));
+        let store = ManagedGitStore::new(layout);
+        let id = RepositoryId::new("fixture").expect("valid repository id");
+        store
+            .sync_source(
+                &id,
+                remote.to_str().expect("UTF-8 fixture path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("initial sync succeeds");
+
+        fs::remove_dir_all(remote).expect("remove remote");
+        let catalog = store.catalog(&id).expect("read persisted catalog");
+
+        assert_eq!(catalog.repository, id);
+        assert!(
+            catalog
+                .refs
+                .iter()
+                .any(|entry| entry.kind == ManagedRefKind::Tag && entry.commit == first)
         );
     }
 
