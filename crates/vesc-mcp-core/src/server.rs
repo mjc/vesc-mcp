@@ -134,8 +134,23 @@ impl Default for VescMcpService {
     }
 }
 
-#[tool_router(router = tool_router)]
+#[tool_router(router = base_tool_router)]
 impl VescMcpService {
+    fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        let router = Self::base_tool_router();
+        #[cfg(feature = "managed-git")]
+        let router = router
+            .with_route((
+                Self::list_vesc_source_versions_tool_attr(),
+                Self::list_vesc_source_versions,
+            ))
+            .with_route((
+                Self::prepare_vesc_knowledge_tool_attr(),
+                Self::prepare_vesc_knowledge,
+            ));
+        router
+    }
+
     /// Create a new MCP service with default tools and resource registry.
     ///
     /// # Panics
@@ -281,24 +296,6 @@ impl VescMcpService {
         run_package_checks_json(&params)
     }
 
-    #[cfg(feature = "managed-git")]
-    #[tool(description = "List cached source refs before prepare/search; never fetches.")]
-    fn list_vesc_source_versions(
-        &self,
-        Parameters(params): Parameters<ListVescSourceVersionsParams>,
-    ) -> String {
-        list_vesc_source_versions_json(&params, &self.state.knowledge)
-    }
-
-    #[cfg(feature = "managed-git")]
-    #[tool(description = "Prepare one immutable source snapshot for search.")]
-    async fn prepare_vesc_knowledge(
-        &self,
-        Parameters(params): Parameters<PrepareVescKnowledgeParams>,
-    ) -> String {
-        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
-    }
-
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
@@ -357,6 +354,25 @@ impl VescMcpService {
             store,
         );
         replay_report_json(&report)
+    }
+}
+
+#[cfg(feature = "managed-git")]
+impl VescMcpService {
+    #[tool(description = "List cached source refs before prepare/search; never fetches.")]
+    fn list_vesc_source_versions(
+        &self,
+        Parameters(params): Parameters<ListVescSourceVersionsParams>,
+    ) -> String {
+        list_vesc_source_versions_json(&params, &self.state.knowledge)
+    }
+
+    #[tool(description = "Prepare one immutable source snapshot for search.")]
+    async fn prepare_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<PrepareVescKnowledgeParams>,
+    ) -> String {
+        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
     }
 }
 
@@ -484,8 +500,23 @@ impl ServerHandler for VescMcpService {
     }
 }
 
-#[tool_router(router = tool_router)]
+#[tool_router(router = base_tool_router)]
 impl HttpMcpService {
+    fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        let router = Self::base_tool_router();
+        #[cfg(feature = "managed-git")]
+        let router = router
+            .with_route((
+                Self::list_vesc_source_versions_tool_attr(),
+                Self::list_vesc_source_versions,
+            ))
+            .with_route((
+                Self::prepare_vesc_knowledge_tool_attr(),
+                Self::prepare_vesc_knowledge,
+            ));
+        router
+    }
+
     /// Tool names registered on the HTTP-safe service.
     #[must_use]
     pub fn list_tool_names(&self) -> Vec<String> {
@@ -500,24 +531,6 @@ impl HttpMcpService {
     #[allow(clippy::unused_self)]
     fn ping(&self, Parameters(PingParams { message }): Parameters<PingParams>) -> String {
         ping_json(message)
-    }
-
-    #[cfg(feature = "managed-git")]
-    #[tool(description = "List cached source refs before prepare/search; never fetches.")]
-    fn list_vesc_source_versions(
-        &self,
-        Parameters(params): Parameters<ListVescSourceVersionsParams>,
-    ) -> String {
-        list_vesc_source_versions_json(&params, &self.state.knowledge)
-    }
-
-    #[cfg(feature = "managed-git")]
-    #[tool(description = "Prepare one immutable source snapshot for search.")]
-    async fn prepare_vesc_knowledge(
-        &self,
-        Parameters(params): Parameters<PrepareVescKnowledgeParams>,
-    ) -> String {
-        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
     }
 
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
@@ -581,6 +594,25 @@ impl HttpMcpService {
             store,
         );
         replay_report_json(&report)
+    }
+}
+
+#[cfg(feature = "managed-git")]
+impl HttpMcpService {
+    #[tool(description = "List cached source refs before prepare/search; never fetches.")]
+    fn list_vesc_source_versions(
+        &self,
+        Parameters(params): Parameters<ListVescSourceVersionsParams>,
+    ) -> String {
+        list_vesc_source_versions_json(&params, &self.state.knowledge)
+    }
+
+    #[tool(description = "Prepare one immutable source snapshot for search.")]
+    async fn prepare_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<PrepareVescKnowledgeParams>,
+    ) -> String {
+        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
     }
 }
 
