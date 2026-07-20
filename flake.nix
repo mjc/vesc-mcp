@@ -256,7 +256,7 @@
             export VESC_GIT_BIN="${pkgs.git}/bin/git"
             export VESC_TIME_BIN="${pkgs.time}/bin/time"
             export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
-            echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)"
+            echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)" >&2
           '';
           };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
@@ -275,7 +275,7 @@
               export ORT_DYLIB_PATH="${rocmOnnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
               export ORT_MIGRAPHX_MODEL_CACHE_PATH="$PWD/target/provider-bench/migraphx-cache"
               mkdir -p "$ORT_MIGRAPHX_MODEL_CACHE_PATH"
-              echo "vesc-mcp AMD shell; build with --features semantic-fastembed,semantic-migraphx"
+              echo "vesc-mcp AMD shell; build with --features semantic-fastembed,semantic-migraphx" >&2
             '';
           };
         };
