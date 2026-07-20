@@ -53,6 +53,41 @@ commit ID, reads blobs without a checkout, and records repository, revision,
 path, media type, trust, license, digest, and source span. Repository acquisition
 and active-generation selection remain separate lifecycle steps.
 
+## Select and compare source versions
+
+Discover the configured branches and tags before selecting versions:
+
+```json
+{"repositories":["bldc","vesc_tool","refloat"],"ref_kinds":["branch","tag"],"limit":50}
+```
+
+Pass only configured repository IDs and returned refs or commits to
+`prepare_vesc_knowledge`; URLs and filesystem paths are not accepted:
+
+```json
+{"sources":{"bldc":"refs/heads/release_6_06","vesc_tool":"refs/heads/release_6_06","refloat":"refs/tags/v1.2.3"}}
+```
+
+The response discloses the resolved commit for every repository, an immutable
+`snapshot_id`, and whether the artifact was built, reused, or deduplicated.
+Search that exact artifact by passing the ID:
+
+```json
+{"query":"motor current limits","snapshot_id":"<snapshot-id>","mode":"lexical","detail":"full","limit":5}
+```
+
+Full results use
+`vesc://knowledge/snapshot/{snapshot}/chunk/{id}` and
+`vesc://knowledge/snapshot/{snapshot}/document/{id}` resources. Those URIs keep
+resolving to the selected immutable artifact after the configured default moves
+to a newer snapshot. Omitting `snapshot_id` remains compatible with existing
+clients: it searches the active default and reports that default's snapshot ID
+and resolved repository commits in the response.
+
+To compare versions, prepare two selections and run the same query once against
+each snapshot ID. Compare the two result sets and their commit provenance; do
+not combine passages from different snapshots into one unqualified search.
+
 ## Source read and citation
 
 1. Read `vesc://knowledge/chunk/{id}` from a returned `chunk_id` (compact mode)
