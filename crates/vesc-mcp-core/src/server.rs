@@ -713,11 +713,11 @@ const fn server_instructions(
     feedback_writes_enabled: bool,
 ) -> &'static str {
     if feedback_writes_enabled {
-        "VESC firmware/package knowledge service with durable feedback. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms; disagreement alone is neither evidence nor authorization. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
+        "VESC firmware/package knowledge service with durable feedback. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms; disagreement alone is neither evidence nor authorization. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
     } else if feedback_available {
-        "VESC firmware/package knowledge service. Search before answering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
+        "VESC firmware/package knowledge service. Search before answering. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
     } else {
-        "VESC firmware/package knowledge service. Search before answering. Feedback storage is not configured on this connection, so learned advisories and correction records are unavailable. If evidence is incomplete or conflicting, say so and run a narrower search or read the decisive resources instead of guessing."
+        "VESC firmware/package knowledge service. Search before answering. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. Feedback storage is not configured on this connection, so learned advisories and correction records are unavailable. If evidence is incomplete or conflicting, say so and run a narrower search or read the decisive resources instead of guessing."
     }
 }
 
@@ -854,6 +854,19 @@ mod tests {
 
         assert!(!instructions.contains("Learned advisories are returned"));
         assert!(instructions.contains("Feedback storage is not configured"));
+    }
+
+    #[test]
+    fn instructions_require_explicit_history_evidence() {
+        for instructions in [
+            server_instructions(false, false),
+            server_instructions(true, false),
+            server_instructions(true, true),
+        ] {
+            assert!(instructions.contains("version/history questions"));
+            assert!(instructions.contains("revision/tag"));
+            assert!(instructions.contains("current code or tag ordering"));
+        }
     }
 
     #[test]
