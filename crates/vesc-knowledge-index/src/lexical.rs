@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -149,16 +149,22 @@ impl LexicalIndex {
     /// Returns [`LexicalError::Writer`] or [`LexicalError::Commit`] when Tantivy
     /// cannot construct or commit the index.
     pub fn build(chunks: &[Chunk]) -> Result<Self, LexicalError> {
+        Self::build_owned(chunks.to_vec())
+    }
+
+    fn build_owned(chunks: Vec<Chunk>) -> Result<Self, LexicalError> {
         let (schema, fields) = schema();
         let index = Index::create_in_ram(schema);
         let mut writer = index.writer(15_000_000).map_err(LexicalError::Writer)?;
-        let mut chunk_map = BTreeMap::new();
-        for chunk in chunks {
+        for chunk in &chunks {
             add_chunk(&writer, fields, chunk);
-            chunk_map.insert(chunk.chunk_id.clone(), chunk.clone());
         }
         writer.commit().map_err(LexicalError::Commit)?;
         let reader = index.reader().map_err(LexicalError::Writer)?;
+        let chunk_map = chunks
+            .into_iter()
+            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+            .collect();
         Ok(Self {
             index,
             reader,
@@ -219,7 +225,7 @@ impl LexicalIndex {
     /// for malformed or incompatible JSON, or normal build errors.
     pub fn open_artifact(path: &Path) -> Result<Self, LexicalError> {
         let artifact = Self::read_artifact(path)?;
-        Self::build(&artifact.chunks)
+        Self::build_owned(artifact.chunks)
     }
 
     /// Reads the compact lexical source artifact without constructing Tantivy.
@@ -236,8 +242,8 @@ impl LexicalIndex {
     }
 
     fn read_artifact(path: &Path) -> Result<LexicalArtifact, LexicalError> {
-        let bytes = std::fs::read(path).map_err(|error| LexicalError::Io(error.to_string()))?;
-        let artifact: LexicalArtifact = serde_json::from_slice(&bytes)
+        let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        let artifact: LexicalArtifact = serde_json::from_reader(BufReader::new(file))
             .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         if artifact.schema != 1 {
             return Err(LexicalError::Artifact(format!(
