@@ -30,9 +30,11 @@ cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
 cargo doc --workspace --no-deps
 ```
 
-`make check` runs formatting, Clippy with warnings denied, the workspace test
-suite, and documentation generation. The default fixture suite is offline and
-does not require sibling source checkouts.
+`make check` runs formatting, Clippy with warnings denied, a no-default-features
+boundary check for `vesc-mcp-core`, the workspace test suite, and documentation
+generation with warnings denied. The default fixture suite is offline and does
+not require sibling source checkouts. Use `nix develop .#ci -c make check` to
+run the exact lean-shell command used by GitHub Actions.
 
 Nextest configuration lives in [`.config/nextest.toml`](../.config/nextest.toml).
 
@@ -248,5 +250,8 @@ make coverage-summary
 make coverage-html
 ```
 
-Coverage is report-only in CI. The server bootstrap, build scripts, binaries,
+`make coverage` runs the instrumented workspace suite once, writes `lcov.info`,
+and prints the per-crate summary. `make coverage-summary` only rereads that
+existing report; it does not rerun tests. Coverage runs in a separate,
+report-only workflow on `main`. The server bootstrap, build scripts, binaries,
 and vendored code are excluded from the per-crate floor.

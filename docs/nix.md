@@ -36,9 +36,14 @@ overriding only the model would correctly fail artifact compatibility checks.
 
 ```bash
 nix develop -c make check
+nix develop .#ci -c make check
 nix develop -c cargo nextest run --workspace
 nix build
 ```
+
+The default shell includes profiling, provider, audit, and editor tooling. The
+lean `.#ci` shell contains only the pinned Rust toolchain and commands needed by
+the required checks and coverage workflow.
 
 Knowledge and coverage commands use the same shell:
 
@@ -48,6 +53,9 @@ nix develop -c cargo run -p vesc-knowledge-index --bin gen-knowledge-index -- in
 nix develop -c make coverage
 nix develop -c make coverage-summary
 ```
+
+`make coverage` writes and summarizes `lcov.info`; `make coverage-summary`
+reprints that existing report without rerunning tests.
 
 ## NixOS service
 

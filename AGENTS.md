@@ -6,6 +6,7 @@ Guide for AI assistants working in this repo. Tool and resource names match `Ves
 
 ```bash
 nix develop -c make check
+nix develop .#ci -c make check
 nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(tool_)'
 nix develop -c make coverage
 nix develop -c bash scripts/coverage-summary.sh
