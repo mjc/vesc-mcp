@@ -18,19 +18,31 @@
           };
           rustToolchain = pkgs.rust-bin.stable.latest.default;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-          # The committed vector artifact records the repository model ID. The
-          # ONNX file is quantized, but the variant tag is not part of the
-          # artifact identity and caused runtime metadata validation to fail.
-          semanticModelId = "Xenova/bge-small-en-v1.5";
-          semanticModelRepository = "Xenova/bge-small-en-v1.5";
-          semanticModelRevision = "ea104dacec62c0de699686887e3f920caeb4f3e3";
+          semanticModelId = "jinaai/jina-embeddings-v2-base-code";
+          semanticModelRepository = semanticModelId;
+          semanticModelRevision = "516f4baf13dec4ddddda8631e019b5737c8bc250";
           semanticFeatures = "semantic-fastembed"
             + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ",semantic-coreml";
-          semanticModel = pkgs.linkFarm "bge-small-en-v1.5" (map
+          semanticModel = pkgs.linkFarm "jina-embeddings-v2-base-code-quantized" (map
             (file: {
               name = file.name;
               path = pkgs.fetchurl {
                 url = "https://huggingface.co/${semanticModelRepository}/resolve/${semanticModelRevision}/${file.source}";
+                inherit (file) hash;
+              };
+            })
+            [
+              { name = "model.onnx"; source = "onnx/model_quantized.onnx"; hash = "sha256-7UWHAlHJ8M9lbniqsNN6I0iQZt+KIiuxyMr4pF8ssW0="; }
+              { name = "tokenizer.json"; source = "tokenizer.json"; hash = "sha256-sBx4qQKqT6yy9H+VRJ9I4ve7/qXSRy7i9s6SMjxvhuU="; }
+              { name = "config.json"; source = "config.json"; hash = "sha256-5CaqaEx/mpXF8CCqhV+vk6JPBl9frQyeF7EkZwyr3qY="; }
+              { name = "special_tokens_map.json"; source = "special_tokens_map.json"; hash = "sha256-BuQFo23+S5YE9IT2oeYZrxp/fQnjSoVV6wt3tmMYBn8="; }
+              { name = "tokenizer_config.json"; source = "tokenizer_config.json"; hash = "sha256-9HeusV/59408Hd8jYdKwuLIM9VIg+DnymjfzoY793Yk="; }
+            ]);
+          legacySemanticModel = pkgs.linkFarm "bge-small-en-v1.5-quantized" (map
+            (file: {
+              name = file.name;
+              path = pkgs.fetchurl {
+                url = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3/${file.source}";
                 inherit (file) hash;
               };
             })
@@ -78,12 +90,17 @@
             done
             test -s "$knowledge/active.json"
             test -s "$knowledge/generations/"*/lexical.json
+            mkdir -p "$out/share/vesc-mcp/models"
+            ln -s ${./catalog} "$out/share/vesc-mcp/catalog"
+            ln -s ${legacySemanticModel} "$out/share/vesc-mcp/models/bge-small-en-v1.5-quantized"
             wrapProgram "$out/bin/vesc-mcp-server" \
+              --set-default VESC_MCP_WORKSPACE_ROOT "$out/share/vesc-mcp" \
               --set-default VESC_RAG_ARTIFACT "$knowledge" \
               --set-default VESC_RAG_MODE auto \
               --set-default VESC_RAG_SEMANTIC_MODEL_DIR "${semanticModel}" \
               --set-default VESC_RAG_SEMANTIC_MODEL_ID "${semanticModelId}" \
               --set-default VESC_RAG_SEMANTIC_MODEL_REVISION "${semanticModelRevision}" \
+              --set-default VESC_RAG_SEMANTIC_MAX_LENGTH 512 \
               --set-default VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS 300 \
               --set-default ORT_DYLIB_PATH "${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
           '';

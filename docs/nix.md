@@ -18,12 +18,19 @@ For Streamable HTTP:
 nix develop -c vesc-mcp-server --http
 ```
 
-The packaged build includes the generated knowledge artifact and optional
-semantic runtime:
+The packaged build includes the generated knowledge artifact and the pinned
+INT8 `jinaai/jina-embeddings-v2-base-code` query model. `auto` retrieval uses
+hybrid search when the semantic runtime is available and falls back to lexical
+search with a warning if it is not:
 
 ```bash
 nix run
 ```
+
+The previous BGE model remains at
+`share/vesc-mcp/models/bge-small-en-v1.5-quantized` inside the package for an
+explicit fallback. It must be paired with a compatible BGE vector artifact;
+overriding only the model would correctly fail artifact compatibility checks.
 
 ## Develop and test
 

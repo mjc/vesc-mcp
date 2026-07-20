@@ -5,29 +5,24 @@ which is offline, deterministic, and strongest for exact firmware symbols.
 
 ## Current recommendation
 
-- Use `lexical` unless conceptual queries materially benefit from a local
-  semantic model.
-- Use `Xenova/bge-small-en-v1.5` at revision
-  `ea104dacec62c0de699686887e3f920caeb4f3e3`, with
-  `onnx/model_quantized.onnx` provisioned locally as `model.onnx`. This pinned
-  bakeoff identity is recorded in
-  [`tests/benchmark/bakeoff-models.json`](../tests/benchmark/bakeoff-models.json).
+- The Nix package uses `jinaai/jina-embeddings-v2-base-code` at revision
+  `516f4baf13dec4ddddda8631e019b5737c8bc250`: FP16 for the measured RX 5700 XT
+  ingestion path and INT8 on CPU for queries. The package pins queries to the
+  validated 512-token contract.
+- Use `auto` so an unavailable semantic runtime degrades to lexical search with
+  a warning. Use explicit `hybrid` only when a capability error should stop the
+  request, or `lexical` when semantic search is unwanted.
 - Keep CPU as the default query execution provider. The RX 5700 XT exception
   below uses MIGraphX only for bulk ingestion.
-- Keep the semantic build batch size at 8 and enable stable length bucketing by
-  passing `--semantic-batch-size 8 --semantic-length-bucketed true` to
-  `gen-knowledge-index build`. These are build-time command options, not server
-  configuration keys. Larger batches provided small throughput gains at a
-  steep memory cost.
-- Use `auto` for graceful fallback to lexical results. Use explicit `hybrid`
-  only when a capability error should stop the request.
+- Keep `Xenova/bge-small-en-v1.5` at revision
+  `ea104dacec62c0de699686887e3f920caeb4f3e3` only as a legacy fallback with a
+  matching BGE vector artifact.
 
-## Why semantic search is not the default
+## Why lexical fallback remains required
 
-The evaluated semantic and hybrid artifacts improved some conceptual queries
-but did not pass all locked retrieval-quality thresholds. Exact identifier
-quality remains especially important for firmware and ABI work. Semantic
-artifacts are therefore opt-in rather than release defaults.
+Semantic and hybrid retrieval improve conceptual code queries, while lexical
+retrieval remains strongest for exact firmware symbols and continues to work
+without a model. The packaged `auto` mode retains both behaviors.
 
 The server never downloads a model at startup. A semantic setup must provide
 a local model directory, model ID, and exact revision matching the vector
@@ -52,8 +47,8 @@ reproducible exception for this exact combination:
 - AMD Ryzen 5 8600G plus AMD Radeon RX 5700 XT (`gfx1010`), device 0
 - `jinaai/jina-embeddings-v2-base-code` at revision
   `516f4baf13dec4ddddda8631e019b5737c8bc250`
-- FP16 MIGraphX ingestion at 512 tokens, batch 8, lossless windows, and stable
-  length bucketing
+- FP16 MIGraphX ingestion at 64 tokens, batch 64, lossless windows, and
+  token-weighted mean pooling
 - CPU INT8 queries at 512 tokens
 
 When that CPU and PCI device `0x731f` are present, both pinned local ONNX files
@@ -74,9 +69,11 @@ scripts/rx5700xt-jina-split.sh serve --http
 ```
 
 This is scoped to the measured RX 5700 XT and pinned Nix ROCm/MIGraphX stack;
-it is not a recommendation for RDNA1 generally. The 128-chunk ingestion probe
-measured 17.45 chunks/s (32.44 windows/s), projecting roughly 42--50 minutes
-for the full corpus. The projection is not a completed full ingestion result.
+it is not a recommendation for RDNA1 generally. The Refloat all-tags cold run
+processed 49 tags, 47 releases, 25,701 occurrences, and 3,506 unique embedding
+inputs in 1 minute 50.48 seconds, with 3.42 GiB peak RSS. An immediate warm
+repeat reused all 3,506 vectors without initializing ONNX and peaked at about
+420 MiB RSS.
 
 The Radeon 760M iGPU is not selected automatically. A July 19 retest of this
 exact FP16 model reset the iGPU at both batch 8 and isolated batch 1 before a
