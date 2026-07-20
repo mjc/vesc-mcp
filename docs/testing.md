@@ -130,6 +130,29 @@ Record the operating system, architecture, corpus digest, warmup and
 repetition counts, and memory measurement method with any performance claim.
 Never record user names, hostnames, or personal paths.
 
+## Pinned release repository cache
+
+`build-default` maintains bare clones of the pinned VESC firmware, VESC Tool,
+and Refloat revisions used by release evidence. A normal release build needs no
+repository path arguments:
+
+```bash
+nix develop -c cargo run --release -p vesc-knowledge-index \
+  --features git-corpus --bin gen-knowledge-index -- \
+  build-default --no-semantic \
+  --repository-cache target/release-repositories
+```
+
+Each run verifies the exact `origin` URL, fetches branches and tags with prune
+enabled, and checks that the pinned commit is present before ingestion. Set
+`VESC_BENCHMARK_REPOSITORY_CACHE` instead of passing `--repository-cache` to
+share the bare cache between runs. The Nix shells set `VESC_GIT_BIN` to their
+pinned Git package; `--git-bin` is available for an explicit executable.
+
+Passing any legacy `--vesc-path`, `--vesc-tool-path`, or `--refloat-path`
+argument selects explicit source mode, where all three paths and corresponding
+immutable `--*-revision` values remain required.
+
 ## Tagged history ingestion
 
 Build the version/change graph without running the embedding provider:

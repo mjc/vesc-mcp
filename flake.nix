@@ -240,7 +240,7 @@
           default = pkgs.mkShell {
           packages = with pkgs; [
             rustToolchain pkg-config openssl cargo-nextest cargo-llvm-cov cargo-deny
-            cargo-audit clippy rustfmt jq hyperfine time onnxruntime
+            cargo-audit clippy rustfmt git jq hyperfine time onnxruntime
             python3Packages.onnx python3Packages.onnxruntime
           ]
           ++ lib.optionals stdenv.isLinux [
@@ -253,6 +253,7 @@
           shellHook = ''
             export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
             export CARGO_TARGET_DIR="$PWD/target"
+            export VESC_GIT_BIN="${pkgs.git}/bin/git"
             export VESC_TIME_BIN="${pkgs.time}/bin/time"
             export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
             echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)"
@@ -261,7 +262,7 @@
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           rocm = pkgs.mkShell {
             packages = with pkgs; [
-              rustToolchain pkg-config openssl cargo-nextest clippy rustfmt jq hyperfine time
+              rustToolchain pkg-config openssl cargo-nextest clippy rustfmt git jq hyperfine time
               heaptrack
               python3Packages.onnx python3Packages.onnxruntime rocmOnnxruntime
               rocmPackages.rocm-runtime rocmPackages.rocminfo
@@ -269,6 +270,7 @@
             shellHook = ''
               export RUST_SRC_PATH="${rustToolchain}/lib/rustlib/src/rust/library"
               export CARGO_TARGET_DIR="$PWD/target"
+              export VESC_GIT_BIN="${pkgs.git}/bin/git"
               export VESC_TIME_BIN="${pkgs.time}/bin/time"
               export ORT_DYLIB_PATH="${rocmOnnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
               export ORT_MIGRAPHX_MODEL_CACHE_PATH="$PWD/target/provider-bench/migraphx-cache"
