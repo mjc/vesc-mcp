@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "epic": "VESCM-192",
+  "plan": "VESCM-PLAN-6",
+  "decision": "Ship the deterministic evidence-complete stack; keep every optional planner, reranker, and critic model disabled by default.",
+  "stages": [
+    {
+      "stage": "guardrails",
+      "tickets": ["VESCM-193", "VESCM-194"],
+      "decision": "Rust investigation contracts and the locked path/shortcut suite are authoritative.",
+      "evidence": "tests/evaluation/v3/loader_path.json"
+    },
+    {
+      "stage": "retrieval",
+      "tickets": ["VESCM-165", "VESCM-195"],
+      "decision": "Mandatory fielded lexical retrieval plus Granite Embedding 97M R2 INT8 CPU query embeddings.",
+      "evidence": "release/benchmarks/vescm-195/modern-bounded.json"
+    },
+    {
+      "stage": "reranking",
+      "tickets": ["VESCM-196"],
+      "decision": "No reranker by default; Ettin 32M INT8 is the measured bounded escalation but adds no path completion.",
+      "evidence": "release/benchmarks/vescm-196/decision.md"
+    },
+    {
+      "stage": "planning",
+      "tickets": ["VESCM-197"],
+      "decision": "Deterministic Rust rules; no planner model by default.",
+      "evidence": "release/benchmarks/vescm-197/decision.json"
+    },
+    {
+      "stage": "critique",
+      "tickets": ["VESCM-198"],
+      "decision": "Disabled; neither Bonsai operating point passes the locked gate.",
+      "evidence": "release/benchmarks/vescm-198/decision.json"
+    },
+    {
+      "stage": "graph_and_history",
+      "tickets": ["VESCM-179", "VESCM-191"],
+      "decision": "Use deterministic verifier-backed CodeGraphRAG relationships and immutable tagged-history occurrence/change evidence.",
+      "evidence": "docs/codegraphrag-design.md"
+    },
+    {
+      "stage": "answer_gate",
+      "tickets": ["VESCM-200"],
+      "decision": "The frontier answerer is reachable only after complete facet and relationship coverage; incomplete evidence returns insufficiency.",
+      "evidence": "release/benchmarks/vescm-200/report.json"
+    }
+  ],
+  "recommended_operating_points": {
+    "ryzen_5_8600g_lookup": {
+      "lexical": "mandatory CPU",
+      "embedding": "Granite 97M R2 INT8 CPUExecutionProvider",
+      "reranker": null,
+      "planner": "deterministic Rust",
+      "critic": null
+    },
+    "apple_m1_lookup": {
+      "lexical": "mandatory CPU",
+      "embedding": "Granite 97M R2 INT8 CPUExecutionProvider",
+      "reranker": null,
+      "planner": "deterministic Rust",
+      "critic": null,
+      "coreml": "rejected for this exact model/runtime after CPU fallback and execution-plan failure"
+    },
+    "rx_5700_xt_assisted": {
+      "ingestion": "Jina v2 base code FP16 MIGraphX at 512 tokens, batch 8, lossless mean pooling",
+      "query_lookup": "Ryzen CPU Granite 97M R2 INT8",
+      "planner": "deterministic Rust; Vulkan models measured but disabled",
+      "critic": null,
+      "scope": "Ryzen 5 8600G + RX 5700 XT gfx1010 with pinned runtime/model artifacts"
+    }
+  },
+  "release_gates": {
+    "complete_loader_facets": 6,
+    "complete_loader_relationships": 5,
+    "missing_facet_answered": false,
+    "frontier_shortcut_rate": 0.0,
+    "licenses": "Selected and measured model artifacts record Apache-2.0 compatibility.",
+    "upgrade_policy": "Model, quantization, runtime, provider, hardware, prompt, or budget changes require an explicit bounded rebenchmark."
+  }
+}
