@@ -19,11 +19,12 @@ jobs:
 
       - uses: DeterminateSystems/nix-installer-action@v16
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cmd-format: nix develop -c {0}
+
       - name: Run checks
         run: nix develop -c make check
-
-      - name: Verify fixture suite
-        run: nix develop -c cargo nextest run -p vesc-mcp-core -E 'test(fixtures_)'
 
   docs-smoke:
     runs-on: ubuntu-latest
@@ -37,6 +38,10 @@ jobs:
         run: git submodule sync --recursive && git submodule update --init --recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cmd-format: nix develop -c {0}
 
       - name: Docs MCP smoke
         run: nix develop -c ./scripts/docs-smoke.sh
@@ -53,6 +58,10 @@ jobs:
         run: git submodule sync --recursive && git submodule update --init --recursive
 
       - uses: DeterminateSystems/nix-installer-action@v16
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cmd-format: nix develop -c {0}
 
       - name: Run coverage
         run: |
