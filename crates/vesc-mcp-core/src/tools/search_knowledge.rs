@@ -55,6 +55,9 @@ pub enum SearchResponseDetail {
 pub struct SearchVescKnowledgeParams {
     /// Free-text query matched against entry names, keywords, and summaries.
     pub query: String,
+    /// Immutable snapshot returned by `prepare_vesc_knowledge`.
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
     /// Optional category filter (`firmware_api`, `lispbm`, `package_build`, etc.).
     #[serde(default)]
     pub category: Option<String>,
@@ -312,6 +315,10 @@ type CompactResultRow = (
 struct CompactSearchResponse {
     ok: bool,
     mode: SearchMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    repositories: BTreeMap<String, String>,
     fields: [&'static str; 7],
     sources: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -354,6 +361,15 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
     CompactSearchResponse {
         ok: response.ok,
         mode: response.mode,
+        snapshot_id: response
+            .index
+            .as_ref()
+            .and_then(|index| index.snapshot_id.clone()),
+        repositories: response
+            .index
+            .as_ref()
+            .map(|index| index.repositories.clone())
+            .unwrap_or_default(),
         fields: COMPACT_FIELDS,
         sources,
         corrections: response.corrections.clone(),
@@ -385,6 +401,11 @@ pub fn search_vesc_knowledge_tool_with_config(
     config: &KnowledgeConfig,
 ) -> SearchVescKnowledgeResponse {
     let mode = params.mode.unwrap_or_else(|| configured_mode(config));
+    let (selected, selected_config) = match selected_search_config(params, config) {
+        Ok(selected) => selected,
+        Err(error) => return error_response(mode, error),
+    };
+    let config = selected_config.as_ref().unwrap_or(config);
     let started = Instant::now();
     if params.query.len() > config.max_query_bytes {
         return error_response(
@@ -428,7 +449,13 @@ pub fn search_vesc_knowledge_tool_with_config(
     match parse_filters(params) {
         Ok((category, filters)) => {
             match search_mode(params, mode, category, &filters, limit, config) {
-                Ok((results, warnings)) => {
+                Ok((mut results, warnings)) => {
+                    if let Some(snapshot_id) = selected
+                        .as_ref()
+                        .and_then(|artifact| artifact.snapshot_id.as_ref())
+                    {
+                        qualify_snapshot_resources(&mut results, snapshot_id.as_str());
+                    }
                     let mut response = SearchVescKnowledgeResponse {
                         ok: true,
                         mode,
@@ -437,7 +464,7 @@ pub fn search_vesc_knowledge_tool_with_config(
                         results,
                         error: None,
                         warnings,
-                        index: index_metadata(config),
+                        index: index_metadata(config, selected.as_ref()),
                         timing: None,
                     };
                     response.timing = Some(SearchVescKnowledgeTiming {
@@ -458,12 +485,51 @@ pub fn search_vesc_knowledge_tool_with_config(
                     results: Vec::new(),
                     error: Some(error),
                     warnings: Vec::new(),
-                    index: index_metadata(config),
+                    index: index_metadata(config, selected.as_ref()),
                     timing: None,
                 },
             }
         }
         Err(error) => error_response(mode, error),
+    }
+}
+
+fn selected_search_config(
+    params: &SearchVescKnowledgeParams,
+    config: &KnowledgeConfig,
+) -> Result<
+    (
+        Option<crate::config::ResolvedKnowledgeArtifact>,
+        Option<KnowledgeConfig>,
+    ),
+    String,
+> {
+    let Some(snapshot_id) = params.snapshot_id.as_deref() else {
+        return Ok((None, None));
+    };
+    let resolved = config.resolved_snapshot(snapshot_id).ok_or_else(|| {
+        "snapshot is unknown or not ready; call list_vesc_source_versions then prepare_vesc_knowledge"
+            .to_owned()
+    })?;
+    let mut selected = config.clone();
+    selected.artifact_path = Some(resolved.path.clone());
+    Ok((Some(resolved), Some(selected)))
+}
+
+fn qualify_snapshot_resources(results: &mut [SearchVescKnowledgeResult], snapshot_id: &str) {
+    for result in results {
+        if let Some(chunk_id) = &result.chunk_id {
+            let uri = format!("vesc://knowledge/snapshot/{snapshot_id}/chunk/{chunk_id}");
+            result.resource_uri = Some(uri.clone());
+            if let Some(provenance) = &mut result.provenance {
+                provenance.resource_uri = Some(uri);
+            }
+        }
+        if let Some(document_id) = &result.document_id {
+            result.document_uri = Some(format!(
+                "vesc://knowledge/snapshot/{snapshot_id}/document/{document_id}"
+            ));
+        }
     }
 }
 
@@ -654,8 +720,11 @@ fn elapsed_us(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-fn index_metadata(config: &KnowledgeConfig) -> Option<SearchVescKnowledgeIndex> {
-    if let Some(resolved) = config.resolved_artifact() {
+fn index_metadata(
+    config: &KnowledgeConfig,
+    selected: Option<&crate::config::ResolvedKnowledgeArtifact>,
+) -> Option<SearchVescKnowledgeIndex> {
+    if let Some(resolved) = selected.cloned().or_else(|| config.resolved_artifact()) {
         let root = resolved.path;
         if root.is_file() {
             return None;
@@ -1548,6 +1617,7 @@ fn replay_search_params(
     }
     Ok(SearchVescKnowledgeParams {
         query: correction.retrieval_trace.query.clone(),
+        snapshot_id: None,
         category: None,
         limit: correction.retrieval_trace.limit,
         mode,
@@ -1736,6 +1806,7 @@ mod tests {
     fn invalid_category_returns_error_response() {
         let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "nvm".into(),
+            snapshot_id: None,
             category: Some("not_a_category".into()),
             limit: 10,
             mode: Some(SearchMode::Legacy),
@@ -1753,6 +1824,7 @@ mod tests {
     fn zero_limit_uses_default() {
         let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "pkg".into(),
+            snapshot_id: None,
             category: None,
             limit: 0,
             mode: Some(SearchMode::Legacy),
@@ -1786,6 +1858,7 @@ mod tests {
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {
                 query: "nvm".into(),
+                snapshot_id: None,
                 category: None,
                 limit: 1,
                 mode: None,
@@ -1806,6 +1879,7 @@ mod tests {
     fn explicit_hybrid_without_semantics_returns_structured_error() {
         let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "nvm".into(),
+            snapshot_id: None,
             category: None,
             limit: 1,
             mode: Some(SearchMode::Hybrid),
@@ -1829,6 +1903,7 @@ mod tests {
     fn auto_semantic_failure_returns_lexical_warning() {
         let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "nvm".into(),
+            snapshot_id: None,
             category: None,
             limit: 1,
             mode: Some(SearchMode::Auto),
@@ -1855,6 +1930,7 @@ mod tests {
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {
                 query: "lbm_add_extension".into(),
+                snapshot_id: None,
                 category: None,
                 limit: 1,
                 mode: Some(SearchMode::Lexical),
@@ -1886,6 +1962,97 @@ mod tests {
     }
 
     #[test]
+    fn unknown_explicit_snapshot_never_falls_back_to_default_knowledge() {
+        let params: SearchVescKnowledgeParams = serde_json::from_value(serde_json::json!({
+            "query": "lbm_add_extension",
+            "mode": "lexical",
+            "snapshot_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }))
+        .expect("search params");
+
+        let response = search_vesc_knowledge_tool_with_config(&params, &KnowledgeConfig::default());
+
+        assert!(!response.ok);
+        assert!(response.results.is_empty());
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("list_vesc_source_versions"))
+        );
+    }
+
+    #[test]
+    fn explicit_snapshot_discloses_provenance_and_qualifies_resource_uris() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let artifact = temp.path().join("artifacts").join(snapshot_id);
+        vesc_knowledge_index::build_embedded_artifacts(&artifact).expect("artifact build");
+        std::fs::create_dir_all(temp.path().join("snapshots")).expect("snapshot directory");
+        std::fs::write(
+            temp.path()
+                .join("snapshots")
+                .join(format!("{snapshot_id}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "id": snapshot_id,
+                "profile": "selected_trees",
+                "repositories": [{
+                    "repository": "fixture",
+                    "commit": "1111111111111111111111111111111111111111"
+                }]
+            }))
+            .expect("snapshot manifest"),
+        )
+        .expect("write snapshot manifest");
+        let params: SearchVescKnowledgeParams = serde_json::from_value(serde_json::json!({
+            "query": "lbm_add_extension",
+            "mode": "lexical",
+            "detail": "full",
+            "limit": 1,
+            "snapshot_id": snapshot_id
+        }))
+        .expect("search params");
+        let config = KnowledgeConfig {
+            data_root: Some(
+                crate::managed_repositories::DataRoot::new(temp.path().to_path_buf())
+                    .expect("data root"),
+            ),
+            ..KnowledgeConfig::default()
+        };
+
+        let response = search_vesc_knowledge_tool_with_config(&params, &config);
+
+        assert!(response.ok, "{:?}", response.error);
+        let index = response.index.as_ref().expect("index metadata");
+        assert_eq!(index.snapshot_id.as_deref(), Some(snapshot_id));
+        assert_eq!(
+            index.repositories.get("fixture").map(String::as_str),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert!(
+            response.results[0]
+                .resource_uri
+                .as_deref()
+                .is_some_and(|uri| uri
+                    .starts_with(&format!("vesc://knowledge/snapshot/{snapshot_id}/chunk/")))
+        );
+        assert!(
+            response.results[0]
+                .document_uri
+                .as_deref()
+                .is_some_and(|uri| uri.starts_with(&format!(
+                    "vesc://knowledge/snapshot/{snapshot_id}/document/"
+                )))
+        );
+        let compact = compact_response(&response);
+        assert_eq!(compact.snapshot_id.as_deref(), Some(snapshot_id));
+        assert_eq!(
+            compact.repositories.get("fixture").map(String::as_str),
+            Some("1111111111111111111111111111111111111111")
+        );
+    }
+
+    #[test]
     fn hybrid_results_fuse_fake_semantic_candidates_with_lexical_hits() {
         let temp = tempfile::tempdir().expect("tempdir");
         let mut build_provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
@@ -1906,6 +2073,7 @@ mod tests {
         };
         let params = SearchVescKnowledgeParams {
             query: "lbm_add_extension".into(),
+            snapshot_id: None,
             category: None,
             limit: 3,
             mode: Some(SearchMode::Hybrid),
@@ -1936,6 +2104,7 @@ mod tests {
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {
                 query: "lbm_add_extension".into(),
+                snapshot_id: None,
                 category: None,
                 limit: 1,
                 mode: Some(SearchMode::Lexical),
@@ -1973,6 +2142,7 @@ mod tests {
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {
                 query: "lbm".into(),
+                snapshot_id: None,
                 category: None,
                 limit: 10,
                 mode: Some(SearchMode::Lexical),

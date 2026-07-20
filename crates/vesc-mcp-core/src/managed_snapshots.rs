@@ -906,6 +906,7 @@ max_total_bytes = 10485760
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {
                 query: String::from("betaunique"),
+                snapshot_id: None,
                 category: None,
                 limit: 1,
                 mode: Some(SearchMode::Lexical),

@@ -233,6 +233,7 @@ fn feedback_search_respects_total_limit_and_updates_timing() {
     let json = search_vesc_knowledge_json_with_feedback(
         &SearchVescKnowledgeParams {
             query: "load-native-lib import tag".into(),
+            snapshot_id: None,
             category: None,
             limit: 1,
             mode: None,
@@ -337,6 +338,7 @@ fn correction_replay_measures_base_knowledge_without_advisory() {
     let baseline = vesc_mcp_core::tools::search_knowledge::search_vesc_knowledge_tool_with_config(
         &SearchVescKnowledgeParams {
             query: correction.retrieval_trace.query.clone(),
+            snapshot_id: None,
             category: None,
             limit: correction.retrieval_trace.limit,
             mode: Some(vesc_mcp_core::tools::search_knowledge::SearchMode::Lexical),
@@ -533,6 +535,7 @@ fn compact_related_search_compacts_correction_advisory() {
 
     let mut params = SearchVescKnowledgeParams {
         query: "native loader tag".into(),
+        snapshot_id: None,
         category: None,
         limit: 10,
         mode: None,
@@ -593,6 +596,7 @@ fn unrelated_search_does_not_surface_loader_advisory() {
     let json = search_vesc_knowledge_json_with_feedback(
         &SearchVescKnowledgeParams {
             query: "realtime data field identifiers".into(),
+            snapshot_id: None,
             category: None,
             limit: 10,
             mode: None,
@@ -621,6 +625,7 @@ fn affected_search_hit_references_the_correction() {
     let resources = ResourceRegistry::with_defaults().expect("resource registry");
     let params = SearchVescKnowledgeParams {
         query: "lisp imports load-native-lib".into(),
+        snapshot_id: None,
         category: None,
         limit: 10,
         mode: None,

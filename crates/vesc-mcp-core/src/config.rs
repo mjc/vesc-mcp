@@ -130,6 +130,27 @@ impl Default for KnowledgeConfig {
 }
 
 impl KnowledgeConfig {
+    pub(crate) fn resolved_snapshot(&self, value: &str) -> Option<ResolvedKnowledgeArtifact> {
+        let id = KnowledgeSnapshotId::new(value.to_owned()).ok()?;
+        let layout = KnowledgeDataLayout::new(self.data_root.clone()?);
+        let snapshot: StoredSnapshotManifest =
+            serde_json::from_slice(&std::fs::read(layout.snapshot(&id)).ok()?).ok()?;
+        if snapshot.id != id {
+            return None;
+        }
+        let path = layout.artifact(&id);
+        path.is_dir().then(|| ResolvedKnowledgeArtifact {
+            path,
+            snapshot_id: Some(snapshot.id),
+            snapshot_profile: snapshot.profile,
+            repositories: snapshot
+                .repositories
+                .into_iter()
+                .map(|repository| (repository.repository, repository.commit))
+                .collect(),
+        })
+    }
+
     pub(crate) fn resolved_artifact(&self) -> Option<ResolvedKnowledgeArtifact> {
         if let Some(path) = self.artifact_path.clone() {
             return Some(ResolvedKnowledgeArtifact {
@@ -172,6 +193,7 @@ impl KnowledgeConfig {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ResolvedKnowledgeArtifact {
     pub path: PathBuf,
     pub snapshot_id: Option<KnowledgeSnapshotId>,
