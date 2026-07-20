@@ -113,6 +113,29 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
 }
 
 #[test]
+fn binary_blobs_remain_in_history_without_becoming_search_chunks() {
+    let (_root, work) = fixture();
+    fs::write(work.join("firmware.rs"), [0_u8, 1, 2, 3]).expect("binary fixture");
+    git(&work, &["add", "firmware.rs"]);
+    git(&work, &["commit", "-qm", "binary"]);
+    let source = at_head(source(work.clone(), "fixture"), &work);
+
+    let (history, observations) =
+        ingest_git_history(&[source], None).expect("history with binary blob");
+
+    assert_eq!(observations.git.binary_rejection_count, 1);
+    assert!(history.occurrences.iter().any(|occurrence| {
+        occurrence.path == "firmware.rs" && occurrence.content_keys.is_empty()
+    }));
+    assert!(
+        history
+            .contents
+            .iter()
+            .all(|content| content.chunk.path.as_str() != "firmware.rs")
+    );
+}
+
+#[test]
 fn fast_forward_ingests_only_the_new_commit_and_matches_a_cold_rebuild() {
     let (_root, work) = fixture();
     let source = at_head(source(work.clone(), "fixture"), &work);

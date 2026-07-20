@@ -588,7 +588,13 @@ fn ingest_upsert(
     };
     let blob = load_git_blob(repo, &candidate, &mut observations.git)?;
     if matches!(blob, CachedGitBlob::Rejected { .. }) {
-        return Ok(None);
+        return Ok(Some(GitHistoryOccurrence {
+            repository: source.repository_id.clone(),
+            revision: commit.revision.clone(),
+            path,
+            kind,
+            content_keys: Vec::new(),
+        }));
     }
     observations.ingested_blobs = observations.ingested_blobs.saturating_add(1);
     let document = document_from_git_blob(
