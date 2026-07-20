@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-194-loader-path-v1",
+  "case_id": "historical-vescpkg-native-loader",
+  "operating_points": [
+    {
+      "operating_point": "hard_rules_only",
+      "complete_path_answered": true,
+      "complete_path_facets": 6,
+      "complete_path_relationships": 5,
+      "missing_facet_answered": false,
+      "missing_facets": [
+        "runtime-module-loading"
+      ],
+      "frontier_shortcut_rate": 0.0,
+      "complete_usage": {
+        "rounds": 1,
+        "candidates": 6,
+        "context_bytes": 1014,
+        "graph_hops": 5,
+        "max_graph_hops": 1,
+        "model_calls": 1
+      },
+      "incomplete_usage": {
+        "rounds": 4,
+        "candidates": 5,
+        "context_bytes": 830,
+        "graph_hops": 3,
+        "max_graph_hops": 1,
+        "model_calls": 0
+      }
+    },
+    {
+      "operating_point": "fast_planner",
+      "complete_path_answered": true,
+      "complete_path_facets": 6,
+      "complete_path_relationships": 5,
+      "missing_facet_answered": false,
+      "missing_facets": [
+        "runtime-module-loading"
+      ],
+      "frontier_shortcut_rate": 0.0,
+      "complete_usage": {
+        "rounds": 1,
+        "candidates": 6,
+        "context_bytes": 1014,
+        "graph_hops": 5,
+        "max_graph_hops": 1,
+        "model_calls": 2
+      },
+      "incomplete_usage": {
+        "rounds": 4,
+        "candidates": 5,
+        "context_bytes": 830,
+        "graph_hops": 3,
+        "max_graph_hops": 1,
+        "model_calls": 1
+      }
+    },
+    {
+      "operating_point": "planner_and_critic",
+      "complete_path_answered": true,
+      "complete_path_facets": 6,
+      "complete_path_relationships": 5,
+      "missing_facet_answered": false,
+      "missing_facets": [
+        "runtime-module-loading"
+      ],
+      "frontier_shortcut_rate": 0.0,
+      "complete_usage": {
+        "rounds": 1,
+        "candidates": 6,
+        "context_bytes": 1014,
+        "graph_hops": 5,
+        "max_graph_hops": 1,
+        "model_calls": 3
+      },
+      "incomplete_usage": {
+        "rounds": 4,
+        "candidates": 5,
+        "context_bytes": 830,
+        "graph_hops": 3,
+        "max_graph_hops": 1,
+        "model_calls": 2
+      }
+    }
+  ]
+}
