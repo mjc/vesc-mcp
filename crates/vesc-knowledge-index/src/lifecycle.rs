@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
 #[cfg(feature = "git-corpus")]
+use crate::corpus::full_history::{
+    GitHistory, GitHistoryError, GitHistoryRefreshObservations, ingest_git_history,
+};
+#[cfg(feature = "git-corpus")]
 use crate::corpus::git::{
     GitCorpusSource, GitIngestionError, GitIngestionObservations, ingest_git_commit,
 };
@@ -39,6 +43,9 @@ pub enum LifecycleError {
     #[cfg(feature = "git-corpus")]
     #[error("Git corpus ingestion failed: {0}")]
     Git(#[from] GitIngestionError),
+    #[cfg(feature = "git-corpus")]
+    #[error("Git history ingestion failed: {0}")]
+    GitHistory(#[from] GitHistoryError),
 }
 
 /// Non-identity phase names used by build observations.
@@ -137,6 +144,15 @@ pub struct BuildSummary {
     pub build_duration_us: u64,
     pub observations: BuildObservations,
     pub manifest: ArtifactManifest,
+}
+
+/// Summary for a combined complete-history build.
+#[cfg(feature = "git-corpus")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHistoryBuildSummary {
+    pub artifacts: BuildSummary,
+    pub history: GitHistory,
+    pub refresh: GitHistoryRefreshObservations,
 }
 
 /// Build and atomically activate the embedded corpus generation under `root`.
@@ -317,6 +333,53 @@ pub fn build_git_artifacts(
     build_git_artifacts_with_provider(root, sources, None)
 }
 
+/// Build one searchable artifact from every commit reachable in all sources.
+///
+/// `previous` enables commit/blob/chunk reuse. The resulting history and search
+/// artifacts are deterministic and independent of whether the build was cold
+/// or incremental.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when history ingestion, chunking, indexing,
+/// serialization, or staged activation fails.
+#[cfg(feature = "git-corpus")]
+pub fn build_git_history_artifacts(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    previous: Option<&GitHistory>,
+) -> Result<GitHistoryBuildSummary, LifecycleError> {
+    let started = Instant::now();
+    let ingestion_started = Instant::now();
+    let (history, refresh) = ingest_git_history(sources, previous)?;
+    let ingestion_us = elapsed_us(ingestion_started);
+    let mut chunks = legacy_chunks()?;
+    chunks.extend(history.chunks());
+    let mut observations = BuildObservations::default();
+    observations.record_duration(BuildPhase::Ingestion, ingestion_us);
+    observations.git_ingestion = Some(refresh.git.clone());
+    observations.accepted_files = u64::try_from(history.contents.len()).unwrap_or(u64::MAX);
+    observations.visited_files = observations.accepted_files;
+    let artifacts = stage_chunks(
+        root,
+        &chunks,
+        None,
+        "git-full-history-v1",
+        Vec::new(),
+        Vec::new(),
+        started,
+        observations,
+    )?;
+    let temporary = root.join(format!(".history.tmp-{}", std::process::id()));
+    history.write_artifact(&temporary)?;
+    fs::rename(temporary, root.join("history.json"))?;
+    Ok(GitHistoryBuildSummary {
+        artifacts,
+        history,
+        refresh,
+    })
+}
+
 /// Build an additive immutable Git-tree corpus with an optional embedding provider.
 ///
 /// # Errors
@@ -494,7 +557,7 @@ fn stage_chunks(
         schema: crate::corpus::ARTIFACT_SCHEMA_V1,
         corpus,
         chunking: ChunkingConfig::default(),
-        component_versions: component_versions(),
+        component_versions: artifact_component_versions(),
         sources,
         lexical_checksum: Some(lexical_checksum),
         vector_checksum,
@@ -554,7 +617,9 @@ fn stage_chunks(
     })
 }
 
-fn component_versions() -> BTreeMap<String, String> {
+/// Version inputs which affect persisted artifact compatibility and identity.
+#[must_use]
+pub fn artifact_component_versions() -> BTreeMap<String, String> {
     let versions = BTreeMap::from([
         (
             "vesc-knowledge-index".into(),

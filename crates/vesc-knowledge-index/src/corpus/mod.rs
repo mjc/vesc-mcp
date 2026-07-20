@@ -10,6 +10,8 @@ use crate::{Category, IndexEntry};
 
 pub mod chunking;
 #[cfg(feature = "git-corpus")]
+pub mod full_history;
+#[cfg(feature = "git-corpus")]
 pub mod git;
 #[cfg(feature = "git-corpus")]
 pub mod history;

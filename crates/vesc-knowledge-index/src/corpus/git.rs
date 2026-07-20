@@ -37,6 +37,8 @@ pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v1";
 pub struct GitCorpusPolicy {
     pub include_prefixes: Vec<String>,
     pub exclude_prefixes: Vec<String>,
+    pub include_patterns: Vec<String>,
+    pub exclude_patterns: Vec<String>,
     pub extensions: BTreeSet<String>,
     pub filenames: BTreeSet<String>,
 }
@@ -46,6 +48,8 @@ impl Default for GitCorpusPolicy {
         Self {
             include_prefixes: Vec::new(),
             exclude_prefixes: DEFAULT_EXCLUDES.iter().map(ToString::to_string).collect(),
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
             extensions: DEFAULT_EXTENSIONS.iter().map(ToString::to_string).collect(),
             filenames: DEFAULT_FILENAMES.iter().map(ToString::to_string).collect(),
         }
@@ -80,14 +84,14 @@ pub enum GitIngestionError {
 }
 
 #[derive(Debug)]
-struct Candidate {
-    path: String,
-    id: gix::ObjectId,
-    size: u64,
+pub(super) struct Candidate {
+    pub(super) path: String,
+    pub(super) id: gix::ObjectId,
+    pub(super) size: u64,
 }
 
 #[derive(Debug, Clone)]
-enum CachedGitBlob {
+pub(super) enum CachedGitBlob {
     Text {
         content: String,
         digest: ContentDigest,
@@ -268,14 +272,9 @@ fn ingest_git_commit_inner(
             }
             loaded
         };
-        let CachedGitBlob::Text {
-            content,
-            digest,
-            media_type,
-            identifiers,
-            line_count,
-        } = blob
-        else {
+        let digest = if let CachedGitBlob::Text { digest, .. } = &blob {
+            digest.clone()
+        } else {
             let CachedGitBlob::Rejected { code, message } = blob else {
                 unreachable!()
             };
@@ -285,27 +284,14 @@ fn ingest_git_commit_inner(
             continue;
         };
         let metadata_started = Instant::now();
-        let mut document = NormalizedDocument::new(
-            candidate.path.clone(),
-            SourceKind::GitBlob,
-            repository_id.clone(),
-            revision.clone(),
-            candidate.path.clone(),
-            media_type,
-            content,
+        let document = document_from_git_blob(
+            &candidate.path,
+            repository_id,
+            revision,
+            trust_tier,
+            license,
+            blob,
         )?;
-        document.trust_tier = trust_tier;
-        document.license = license.clone();
-        document.source_span = SourceSpan::new(
-            1,
-            line_count,
-            Some(0),
-            u64::try_from(document.content.len()).ok(),
-        )
-        .ok();
-        document.identifiers = identifiers;
-        document.canonical_uri =
-            Some(format!("vesc://knowledge/document/{}", document.document_id).try_into()?);
         report.sources.push(SourceInventory {
             relative_path: candidate.path.clone().into(),
             title: candidate.path,
@@ -330,7 +316,7 @@ fn ingest_git_commit_inner(
     Ok(report)
 }
 
-fn load_git_blob(
+pub(super) fn load_git_blob(
     repo: &gix::Repository,
     candidate: &Candidate,
     observations: &mut GitIngestionObservations,
@@ -379,21 +365,66 @@ fn load_git_blob(
     })
 }
 
-fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngestionError> {
+pub(super) fn document_from_git_blob(
+    path: &str,
+    repository_id: &RepositoryId,
+    revision: &Revision,
+    trust_tier: TrustTier,
+    license: &LicenseStatus,
+    blob: CachedGitBlob,
+) -> Result<NormalizedDocument, GitIngestionError> {
+    let CachedGitBlob::Text {
+        content,
+        media_type,
+        identifiers,
+        line_count,
+        ..
+    } = blob
+    else {
+        unreachable!("rejected blobs are filtered before document construction")
+    };
+    let mut document = NormalizedDocument::new(
+        path.to_owned(),
+        SourceKind::GitBlob,
+        repository_id.clone(),
+        revision.clone(),
+        path.to_owned(),
+        media_type,
+        content,
+    )?;
+    document.trust_tier = trust_tier;
+    document.license = license.clone();
+    document.source_span = SourceSpan::new(
+        1,
+        line_count,
+        Some(0),
+        u64::try_from(document.content.len()).ok(),
+    )
+    .ok();
+    document.identifiers = identifiers;
+    document.canonical_uri =
+        Some(format!("vesc://knowledge/document/{}", document.document_id).try_into()?);
+    Ok(document)
+}
+
+pub(super) fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngestionError> {
     for prefix in policy
         .include_prefixes
         .iter()
         .chain(&policy.exclude_prefixes)
+        .chain(&policy.include_patterns)
+        .chain(&policy.exclude_patterns)
     {
         let path = Path::new(prefix);
         if prefix.is_empty()
             || path.is_absolute()
+            || prefix.contains(['[', ']'])
             || path
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))
         {
             return Err(GitIngestionError::InvalidPolicy(format!(
-                "path prefix must be a relative normalized Git path: {prefix}"
+                "path selector must be a relative normalized Git path using only *, **, and ?: {prefix}"
             )));
         }
     }
@@ -463,13 +494,17 @@ fn collect_tree(
     Ok(())
 }
 
-fn is_selected(path: &str, policy: &GitCorpusPolicy) -> bool {
+pub(super) fn is_selected(path: &str, policy: &GitCorpusPolicy) -> bool {
     !is_excluded(path, policy)
-        && (policy.include_prefixes.is_empty()
+        && (policy.include_prefixes.is_empty() && policy.include_patterns.is_empty()
             || policy
                 .include_prefixes
                 .iter()
-                .any(|prefix| path_is_under(path, prefix)))
+                .any(|prefix| path_is_under(path, prefix))
+            || policy
+                .include_patterns
+                .iter()
+                .any(|pattern| glob_matches(pattern, path)))
         && Path::new(path)
             .file_name()
             .and_then(|name| name.to_str())
@@ -489,6 +524,10 @@ fn is_excluded(path: &str, policy: &GitCorpusPolicy) -> bool {
         .exclude_prefixes
         .iter()
         .any(|prefix| path_is_under(path, prefix))
+        || policy
+            .exclude_patterns
+            .iter()
+            .any(|pattern| glob_matches(pattern, path))
 }
 
 fn path_is_under(path: &str, prefix: &str) -> bool {
@@ -497,6 +536,62 @@ fn path_is_under(path: &str, prefix: &str) -> bool {
         || path
             .strip_prefix(prefix)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let path_match = glob_matches_bytes(pattern.as_bytes(), path.as_bytes());
+    path_match
+        || (!pattern.contains('/')
+            && Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| glob_matches_bytes(pattern.as_bytes(), name.as_bytes())))
+}
+
+fn glob_matches_bytes(pattern: &[u8], value: &[u8]) -> bool {
+    fn matches(
+        pattern: &[u8],
+        value: &[u8],
+        pattern_index: usize,
+        value_index: usize,
+        memo: &mut [Vec<Option<bool>>],
+    ) -> bool {
+        if let Some(result) = memo[pattern_index][value_index] {
+            return result;
+        }
+        let result = if pattern_index == pattern.len() {
+            value_index == value.len()
+        } else if pattern[pattern_index] == b'*' {
+            let double = pattern.get(pattern_index + 1) == Some(&b'*');
+            if double {
+                let mut next = pattern_index + 2;
+                while pattern.get(next) == Some(&b'*') {
+                    next += 1;
+                }
+                let skip_directory = pattern.get(next) == Some(&b'/')
+                    && matches(pattern, value, next + 1, value_index, memo);
+                skip_directory
+                    || matches(pattern, value, next, value_index, memo)
+                    || value_index < value.len()
+                        && matches(pattern, value, pattern_index, value_index + 1, memo)
+            } else {
+                matches(pattern, value, pattern_index + 1, value_index, memo)
+                    || value.get(value_index).is_some_and(|byte| *byte != b'/')
+                        && matches(pattern, value, pattern_index, value_index + 1, memo)
+            }
+        } else if pattern[pattern_index] == b'?' {
+            value.get(value_index).is_some_and(|byte| *byte != b'/')
+                && matches(pattern, value, pattern_index + 1, value_index + 1, memo)
+        } else {
+            value.get(value_index) == Some(&pattern[pattern_index])
+                && matches(pattern, value, pattern_index + 1, value_index + 1, memo)
+        };
+        memo[pattern_index][value_index] = Some(result);
+        result
+    }
+
+    let mut memo = vec![vec![None; value.len() + 1]; pattern.len() + 1];
+    matches(pattern, value, 0, 0, &mut memo)
 }
 
 fn media_type(path: &str) -> &'static str {
@@ -552,4 +647,20 @@ fn source_rejection(path: &str, code: &str, message: &str) -> SourceRejection {
 
 fn elapsed_us(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_matches;
+
+    #[test]
+    fn managed_repository_globs_match_paths_without_crossing_single_stars() {
+        assert!(glob_matches("**/*.md", "README.md"));
+        assert!(glob_matches("**/*.md", "docs/guide.md"));
+        assert!(glob_matches("src/**/*.rs", "src/lib.rs"));
+        assert!(glob_matches("src/**/*.rs", "src/nested/mod.rs"));
+        assert!(glob_matches("*.pro", "vesc_tool.pro"));
+        assert!(!glob_matches("src/*.rs", "src/nested/mod.rs"));
+        assert!(!glob_matches("**/*.md", "docs/guide.rs"));
+    }
 }

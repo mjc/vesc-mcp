@@ -30,7 +30,7 @@ fastembed = { version = "5.17.3", default-features = false }
 ort = { version = "=2.0.0-rc.12", default-features = false }
 pulldown-cmark = "0.13"
 tantivy = "0.26"
-gix = { version = "0.85", default-features = false, features = ["sha1"] }
+gix = { version = "0.85", default-features = false, features = ["sha1", "blob-diff"] }
 thiserror = "2"
 tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
 rayon = "1.11"

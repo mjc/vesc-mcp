@@ -22,6 +22,12 @@ pub mod semantic;
 pub use builder::IndexBuilder;
 pub use corpus::chunking::{ChunkingConfig, ChunkingError, chunk_document, chunk_markdown};
 #[cfg(feature = "git-corpus")]
+pub use corpus::full_history::{
+    GitHistory, GitHistoryChangeKind, GitHistoryCommit, GitHistoryContent, GitHistoryError,
+    GitHistoryOccurrence, GitHistoryRef, GitHistoryRefreshObservations, GitHistoryTip,
+    ingest_git_history,
+};
+#[cfg(feature = "git-corpus")]
 pub use corpus::git::GitIngestionObservations;
 #[cfg(feature = "git-corpus")]
 pub use corpus::history::{
@@ -52,12 +58,15 @@ pub use hardware::{
 pub use lexical::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{
     BuildObservations, BuildPhase, BuildSummary, LifecycleError,
-    PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_manifest_path, build_allowlisted_artifacts,
-    build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
-    build_embedded_artifacts_with_provider, inspect_manifest,
+    PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_manifest_path, artifact_component_versions,
+    build_allowlisted_artifacts, build_allowlisted_artifacts_with_provider,
+    build_embedded_artifacts, build_embedded_artifacts_with_provider, inspect_manifest,
 };
 #[cfg(feature = "git-corpus")]
-pub use lifecycle::{build_git_artifacts, build_git_artifacts_with_provider};
+pub use lifecycle::{
+    GitHistoryBuildSummary, build_git_artifacts, build_git_artifacts_with_provider,
+    build_git_history_artifacts,
+};
 pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;
 pub use parsers::refloat_commands::RefloatCommandsParseError;
