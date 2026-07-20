@@ -211,6 +211,16 @@ and reports it as stale. Run `vesc-mcp-server --refresh-repositories` from a
 deployment hook or timer to perform an incremental refresh and exit. There is
 no built-in background scheduler.
 
+Agents discover this local state with the read-only
+`list_vesc_source_versions` tool before choosing evidence. It accepts optional
+repository IDs, `default`/`branch`/`tag` kinds, a name/ref prefix, and a bounded
+cursor page. Results contain sanitized remote identities, full refs, peeled
+commit IDs, fresh/stale availability, and whether a commit is already present
+in the default or a prewarmed snapshot. Discovery never fetches and never
+returns repository paths or raw Git transport errors. The intended workflow is
+list versions, select or confirm exact refs, prepare the version set, then
+search that immutable snapshot.
+
 `tmp/` is inside the data root so clone staging can atomically rename on the
 same filesystem. Git network operations and directory creation belong to the
 repository-store lifecycle; parsing this configuration does neither. Semantic model files remain independently configured with

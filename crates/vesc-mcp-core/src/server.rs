@@ -18,7 +18,7 @@ use rmcp::{
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::McpConfig;
+use crate::config::{KnowledgeConfig, McpConfig};
 use crate::resources::{
     CatalogSourceWatcher, ResourceReadError, ResourceRegistry, ResourceSubscriptions,
 };
@@ -30,6 +30,10 @@ use crate::tools::inspect::{
     InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
 };
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+#[cfg(feature = "managed-git")]
+use crate::tools::list_source_versions::{
+    ListVescSourceVersionsParams, list_vesc_source_versions_json,
+};
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
 };
@@ -66,20 +70,34 @@ struct SharedMcpState {
     resource_subscriptions: Arc<ResourceSubscriptions>,
     catalog_watcher: Arc<CatalogSourceWatcher>,
     catalog_root: PathBuf,
+    knowledge: KnowledgeConfig,
     feedback: Option<FeedbackStore>,
     feedback_writes_enabled: bool,
 }
 
 impl SharedMcpState {
     fn new() -> Self {
-        let feedback = McpConfig::load().feedback.clone();
-        Self::with_feedback(
-            feedback.path.as_deref().map(FeedbackStore::new),
-            feedback.writes_enabled,
+        let config = McpConfig::load();
+        Self::with_config(
+            config.knowledge.clone(),
+            config.feedback.path.as_deref().map(FeedbackStore::new),
+            config.feedback.writes_enabled,
         )
     }
 
     fn with_feedback(feedback: Option<FeedbackStore>, writes_enabled: bool) -> Self {
+        Self::with_config(
+            McpConfig::load().knowledge.clone(),
+            feedback,
+            writes_enabled,
+        )
+    }
+
+    fn with_config(
+        knowledge: KnowledgeConfig,
+        feedback: Option<FeedbackStore>,
+        writes_enabled: bool,
+    ) -> Self {
         let mut resources =
             ResourceRegistry::with_defaults().expect("default MCP resource registry");
         if let Some(store) = feedback.clone() {
@@ -90,6 +108,7 @@ impl SharedMcpState {
             resource_subscriptions: Arc::new(ResourceSubscriptions::new()),
             catalog_watcher: Arc::new(CatalogSourceWatcher::new()),
             catalog_root: crate::workspace::catalog_root(),
+            knowledge,
             feedback_writes_enabled: writes_enabled && feedback.is_some(),
             feedback,
         }
@@ -254,6 +273,17 @@ impl VescMcpService {
         run_package_checks_json(&params)
     }
 
+    #[cfg(feature = "managed-git")]
+    #[tool(
+        description = "List configured VESC repositories and locally cached branches/tags before selecting evidence. This read-only call never fetches."
+    )]
+    fn list_vesc_source_versions(
+        &self,
+        Parameters(params): Parameters<ListVescSourceVersionsParams>,
+    ) -> String {
+        list_vesc_source_versions_json(&params, &self.state.knowledge)
+    }
+
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
@@ -261,7 +291,7 @@ impl VescMcpService {
     ) -> String {
         search_vesc_knowledge_json_with_feedback(
             &params,
-            &McpConfig::load().knowledge,
+            &self.state.knowledge,
             self.state.feedback.as_ref(),
             &self.state.resources,
         )
@@ -308,7 +338,7 @@ impl VescMcpService {
         };
         let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
             &params,
-            &McpConfig::load().knowledge,
+            &self.state.knowledge,
             store,
         );
         replay_report_json(&report)
@@ -457,6 +487,17 @@ impl HttpMcpService {
         ping_json(message)
     }
 
+    #[cfg(feature = "managed-git")]
+    #[tool(
+        description = "List configured VESC repositories and locally cached branches/tags before selecting evidence. This read-only call never fetches."
+    )]
+    fn list_vesc_source_versions(
+        &self,
+        Parameters(params): Parameters<ListVescSourceVersionsParams>,
+    ) -> String {
+        list_vesc_source_versions_json(&params, &self.state.knowledge)
+    }
+
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
@@ -464,7 +505,7 @@ impl HttpMcpService {
     ) -> String {
         search_vesc_knowledge_json_with_feedback(
             &params,
-            &McpConfig::load().knowledge,
+            &self.state.knowledge,
             self.state.feedback.as_ref(),
             &self.state.resources,
         )
@@ -514,7 +555,7 @@ impl HttpMcpService {
         };
         let report = crate::tools::search_knowledge::replay_vesc_knowledge_correction(
             &params,
-            &McpConfig::load().knowledge,
+            &self.state.knowledge,
             store,
         );
         replay_report_json(&report)
@@ -832,6 +873,26 @@ mod tests {
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "search_vesc_knowledge"));
+    }
+
+    #[cfg(feature = "managed-git")]
+    #[test]
+    fn source_version_discovery_is_shared_by_stdio_and_http() {
+        let service = VescMcpService::new();
+
+        assert!(
+            service
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "list_vesc_source_versions")
+        );
+        assert!(
+            service
+                .http_service()
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "list_vesc_source_versions")
+        );
     }
 
     #[test]

@@ -188,6 +188,19 @@ impl McpTestHarness {
         Some(response)
     }
 
+    #[cfg(feature = "managed-git")]
+    fn call_source_version_tool(name: &str, arguments: serde_json::Value) -> Option<String> {
+        use crate::tools::list_source_versions::{
+            ListVescSourceVersionsParams, list_vesc_source_versions_json,
+        };
+
+        (name == "list_vesc_source_versions").then(|| {
+            let params: ListVescSourceVersionsParams =
+                serde_json::from_value(arguments).expect("source version filters");
+            list_vesc_source_versions_json(&params, &crate::config::McpConfig::load().knowledge)
+        })
+    }
+
     /// Call a registered MCP tool and return the JSON text payload.
     ///
     /// Dispatches through the same tool handlers registered on [`crate::VescMcpService`].
@@ -225,6 +238,10 @@ impl McpTestHarness {
         );
 
         if let Some(response) = self.call_feedback_tool(name, arguments.clone()) {
+            return response;
+        }
+        #[cfg(feature = "managed-git")]
+        if let Some(response) = Self::call_source_version_tool(name, arguments.clone()) {
             return response;
         }
 

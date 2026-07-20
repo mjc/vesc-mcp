@@ -9,6 +9,7 @@ fn http_service_exposes_only_safe_shared_tools() {
     assert_eq!(
         names,
         [
+            "list_vesc_source_versions",
             "ping",
             "replay_vesc_knowledge_correction",
             "search_vesc_knowledge"

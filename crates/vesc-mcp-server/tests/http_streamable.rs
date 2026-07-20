@@ -51,6 +51,7 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "list_vesc_source_versions",
             "ping",
             "replay_vesc_knowledge_correction",
             "search_vesc_knowledge",
@@ -75,6 +76,21 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
         .call_tool(CallToolRequestParams::new("ping").with_arguments(arguments))
         .await?;
     assert_eq!(response.is_error, Some(false));
+
+    let discovery_arguments = serde_json::Map::new();
+    let first_catalog = first
+        .call_tool(
+            CallToolRequestParams::new("list_vesc_source_versions")
+                .with_arguments(discovery_arguments.clone()),
+        )
+        .await?;
+    let second_catalog = second
+        .call_tool(
+            CallToolRequestParams::new("list_vesc_source_versions")
+                .with_arguments(discovery_arguments),
+        )
+        .await?;
+    assert_eq!(first_catalog.content, second_catalog.content);
 
     first.cancel().await?;
     second.cancel().await?;
