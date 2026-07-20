@@ -27,7 +27,7 @@ jobs:
             curl -fsSL --retry 3 "$base/$file" -o "$model/$file"
           done
       - name: Build release benchmark
-        run: nix develop -c cargo build --release -p vesc-knowledge-index --bin gen-knowledge-index --features semantic-fastembed
+        run: nix develop -c cargo build --release -p vesc-knowledge-index --bin gen-knowledge-index --features semantic-coreml
       - name: Run bounded native ONNX CPU benchmark
         run: |
           nix develop -c /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
@@ -42,7 +42,7 @@ jobs:
             --semantic-length-bucketed true \
             --semantic-max-length 512 \
             --semantic-lossless-windows \
-            --execution-provider cpu \
+            --semantic-provider cpu \
             --warmup 2 \
             --repetitions 3 \
             --format json \
@@ -50,6 +50,31 @@ jobs:
             --markdown-out target/vescm195-m1/granite-97m.md \
             > target/vescm195-m1/stdout \
             2> target/vescm195-m1/stderr
+      - name: Run bounded Core ML benchmark with placement logging
+        run: |
+          nix develop -c /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
+            --artifact target/vescm195-artifacts \
+            --model-root target/models \
+            --suite tests/evaluation/v2/queries.json \
+            --config tests/benchmark/modern-embedding-models.json \
+            --candidate granite-embedding-97m-multilingual-r2-qint8-avx2 \
+            --semantic-quality-chunks 128 \
+            --semantic-batch-size 8 \
+            --semantic-intra-threads 3 \
+            --semantic-length-bucketed true \
+            --semantic-max-length 512 \
+            --semantic-lossless-windows \
+            --semantic-provider coreml \
+            --semantic-verbose-ort \
+            --warmup 2 \
+            --repetitions 3 \
+            --format json \
+            --json-out target/vescm195-m1/granite-97m-coreml.json \
+            --markdown-out target/vescm195-m1/granite-97m-coreml.md \
+            > target/vescm195-m1/coreml.stdout \
+            2> target/vescm195-m1/coreml.stderr
+      - name: Reject mislabeled Core ML fallback
+        run: python3 scripts/verify-ort-provider.py target/vescm195-m1/coreml.stderr --provider CoreMLExecutionProvider
       - uses: actions/upload-artifact@v4
         if: always()
         with:
