@@ -39,6 +39,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 
 [patch.crates-io]
 fastembed = { path = "vendor/fastembed" }

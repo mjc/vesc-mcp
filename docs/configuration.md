@@ -52,6 +52,12 @@ The repository also includes [`config.example.toml`](../config.example.toml).
 `package_roots` lists the directories the stdio server may scan, inspect,
 check, and build. Paths outside these directories are rejected.
 
+When the connected MCP client advertises filesystem roots, package tools also
+use its local `file://` roots for that connection. This lets a persistent
+launchd/systemd server access the active Codex or Claude project checkout
+without putting that project path in the daemon configuration. Clients that
+do not advertise roots continue to use only `package_roots`.
+
 | Setting | Environment variable | Default |
 |---------|----------------------|---------|
 | `[paths] package_roots` | `VESC_PACKAGE_ROOTS` | no allowed package directories |
@@ -66,7 +72,9 @@ export VESC_PACKAGE_ROOTS="/path/to/packages,/another/package-root"
 On Windows, use `package_roots` in `config.toml`; a drive-letter colon is
 ambiguous in `VESC_PACKAGE_ROOTS`.
 
-HTTP clients cannot use package tools even when package roots are configured.
+Authenticated HTTP clients can use package tools. They are sandboxed to the
+configured roots plus that client's advertised local `file://` roots; an
+unauthenticated HTTP connection does not expose package tools.
 
 ## Building packages
 
@@ -162,6 +170,20 @@ default_ref = "refs/heads/master"
 policy = "required"
 include = ["**/*.cpp", "**/*.h", "*.pro"]
 exclude = ["build/**"]
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+
+[[knowledge.repositories]]
+id = "vesc-pkg"
+remote_url = "https://github.com/vedderb/vesc_pkg.git"
+default_ref = "refs/heads/main"
+policy = "optional"
+include = ["**/*.lisp", "**/*.md", "**/*.qml"]
+exclude = [".git/**"]
 trust_tier = "official"
 license = "GPL-3.0-or-later"
 attribution = "VESC Project"

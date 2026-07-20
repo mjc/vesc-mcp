@@ -154,7 +154,7 @@ paths.
 | Sandboxed path access | Default-on flash/upload |
 | `vesc_tool` subprocess builds | Loading `vesc-ffi` / BLE protocol in MCP host |
 | Read-only wire parsing in `vesc-domain` | In-repo `.vescpkg` packers |
-| Shared HTTP knowledge search/resources | Package-tree tools over shared HTTP |
+| Shared HTTP knowledge search/resources | Unauthenticated HTTP package access |
 
 ## Running the service
 

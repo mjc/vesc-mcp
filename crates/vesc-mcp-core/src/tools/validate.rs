@@ -122,6 +122,17 @@ pub fn validate_package_layout_json(params: &ValidatePackageLayoutParams) -> Str
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }
 
+/// Serialize package validation with an explicit sandbox.
+#[must_use]
+pub fn validate_package_layout_json_with_sandbox(
+    params: &ValidatePackageLayoutParams,
+    allowed_roots: &[PathBuf],
+) -> String {
+    let response = validate_package_layout_tool_with_sandbox(&params.root, Some(allowed_roots));
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

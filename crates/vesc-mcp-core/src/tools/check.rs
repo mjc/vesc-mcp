@@ -168,6 +168,21 @@ pub fn run_package_checks_json(params: &RunPackageChecksParams) -> String {
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }
 
+/// Serialize package checks with an explicit sandbox.
+#[must_use]
+pub fn run_package_checks_json_with_sandbox(
+    params: &RunPackageChecksParams,
+    allowed_roots: &[PathBuf],
+) -> String {
+    let response = run_package_checks_tool_with_runner(
+        &params.root,
+        &RealPackageCheckRunner,
+        Some(allowed_roots),
+    );
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

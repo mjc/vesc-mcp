@@ -10,7 +10,7 @@ use crate::config::{McpConfig, resolve_package_roots};
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct ListPackagesParams {
-    /// Package roots to scan. Defaults to `VESC_PACKAGE_ROOTS` (`:`-separated paths).
+    /// Package roots to scan. Defaults to client roots plus `VESC_PACKAGE_ROOTS`.
     #[serde(default)]
     pub roots: Vec<String>,
 }
@@ -38,6 +38,17 @@ pub fn resolve_roots(roots: &[String]) -> Vec<PathBuf> {
     resolve_package_roots(roots, McpConfig::load())
 }
 
+/// Resolve explicit roots, or configured plus client-provided project roots.
+#[must_use]
+pub fn resolve_roots_with_client_roots(roots: &[String], client_roots: &[PathBuf]) -> Vec<PathBuf> {
+    if !roots.is_empty() {
+        return roots.iter().map(PathBuf::from).collect();
+    }
+    let mut resolved = resolve_roots(roots);
+    resolved.extend(client_roots.iter().cloned());
+    resolved
+}
+
 #[must_use]
 pub const fn dialect_label(dialect: PkgDescDialect) -> &'static str {
     match dialect {
@@ -48,22 +59,7 @@ pub const fn dialect_label(dialect: PkgDescDialect) -> &'static str {
 /// Walk roots and collect pkgdesc entries.
 #[must_use]
 pub fn list_vesc_packages(roots: &[String]) -> ListPackagesResponse {
-    let search_roots = resolve_roots(roots);
-    let mut packages = Vec::new();
-
-    for root in search_roots {
-        if root.is_dir() {
-            walk_for_pkgdesc(&root, &mut packages);
-        }
-    }
-
-    packages.sort_by(|left, right| left.pkgdesc_path.cmp(&right.pkgdesc_path));
-
-    ListPackagesResponse {
-        ok: true,
-        packages,
-        error: None,
-    }
+    list_vesc_packages_from_roots(&resolve_roots(roots))
 }
 
 /// Serialize a tool response as JSON text for rmcp handlers.
@@ -72,6 +68,35 @@ pub fn list_vesc_packages_json(params: &ListPackagesParams) -> String {
     let response = list_vesc_packages(&params.roots);
     serde_json::to_string(&response)
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
+/// Serialize package discovery using MCP client roots as an additional default.
+#[must_use]
+pub fn list_vesc_packages_json_with_client_roots(
+    params: &ListPackagesParams,
+    client_roots: &[PathBuf],
+) -> String {
+    let response = list_vesc_packages_from_roots(&resolve_roots_with_client_roots(
+        &params.roots,
+        client_roots,
+    ));
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
+fn list_vesc_packages_from_roots(search_roots: &[PathBuf]) -> ListPackagesResponse {
+    let mut packages = Vec::new();
+    for root in search_roots {
+        if root.is_dir() {
+            walk_for_pkgdesc(root, &mut packages);
+        }
+    }
+    packages.sort_by(|left, right| left.pkgdesc_path.cmp(&right.pkgdesc_path));
+    ListPackagesResponse {
+        ok: true,
+        packages,
+        error: None,
+    }
 }
 
 fn walk_for_pkgdesc(dir: &Path, out: &mut Vec<PackageEntry>) {

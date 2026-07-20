@@ -1,7 +1,7 @@
 //! Integration test for the `search_vesc_knowledge` MCP tool.
 
 use serde_json::Value;
-use vesc_mcp_core::{VescMcpService, test_support::McpTestHarness};
+use vesc_mcp_core::test_support::McpTestHarness;
 
 #[test]
 fn compact_search_default_uses_bounded_field_rows() {
@@ -43,10 +43,7 @@ fn compact_search_default_uses_bounded_field_rows() {
     assert_eq!(row[5], serde_json::json!([]));
     assert!(row[6].is_null(), "curated result has no feedback origin");
     let chunk_uri = format!("vesc://knowledge/chunk/{chunk_id}");
-    let chunk = VescMcpService::new()
-        .resource_registry()
-        .read(&chunk_uri)
-        .expect("compact chunk ID resolves through the resource template");
+    let chunk = harness.read_resource(&chunk_uri);
     let chunk: Value = serde_json::from_str(&chunk).expect("chunk resource is JSON");
     assert_eq!(chunk["chunk_id"], chunk_id);
 }
@@ -125,10 +122,7 @@ fn lexical_mode_returns_readable_provenance_resource() {
     let uri = body["results"][0]["provenance"]["resource_uri"]
         .as_str()
         .expect("lexical result has a resource URI");
-    let chunk = VescMcpService::new()
-        .resource_registry()
-        .read(uri)
-        .expect("search provenance resource is readable");
+    let chunk = harness.read_resource(uri);
     let chunk: Value = serde_json::from_str(&chunk).expect("chunk resource is JSON");
     assert_eq!(
         chunk["text"],
@@ -138,10 +132,7 @@ fn lexical_mode_returns_readable_provenance_resource() {
     let document_uri = body["results"][0]["document_uri"]
         .as_str()
         .expect("lexical result has a document URI");
-    let document = VescMcpService::new()
-        .resource_registry()
-        .read(document_uri)
-        .expect("search document resource is readable");
+    let document = harness.read_resource(document_uri);
     let document: Value = serde_json::from_str(&document).expect("document resource is JSON");
     assert_eq!(document["document_id"], body["results"][0]["document_id"]);
     assert!(

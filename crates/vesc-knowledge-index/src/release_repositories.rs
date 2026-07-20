@@ -9,7 +9,7 @@ use crate::{RepositoryId, Revision};
 const MAX_GIT_DIAGNOSTIC_CHARS: usize = 1_024;
 
 /// Revisions used by the published release-corpus evidence.
-pub const PINNED_RELEASE_REPOSITORIES: [PinnedRepository<'static>; 3] = [
+pub const PINNED_RELEASE_REPOSITORIES: [PinnedRepository<'static>; 4] = [
     PinnedRepository {
         id: "vesc",
         remote_url: "https://github.com/vedderb/bldc.git",
@@ -24,6 +24,11 @@ pub const PINNED_RELEASE_REPOSITORIES: [PinnedRepository<'static>; 3] = [
         id: "refloat",
         remote_url: "https://github.com/lukash/refloat.git",
         revision: "0ef6e99d8701886feeb7fe6c07cc4ec53fb3d97a",
+    },
+    PinnedRepository {
+        id: "vesc-pkg",
+        remote_url: "https://github.com/vedderb/vesc_pkg.git",
+        revision: "10825f313fd35a798db5ec1f5c9aef2b41f947d3",
     },
 ];
 

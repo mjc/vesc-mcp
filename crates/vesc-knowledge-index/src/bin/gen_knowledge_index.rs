@@ -596,7 +596,7 @@ fn run_build_default(args: &[String]) {
 
 #[cfg(feature = "git-corpus")]
 fn default_corpus_sources(args: &[String]) -> Vec<GitCorpusSource> {
-    const IDS: [&str; 3] = ["vesc", "vesc-tool", "refloat"];
+    const IDS: [&str; 4] = ["vesc", "vesc-tool", "refloat", "vesc-pkg"];
     let explicit = IDS.iter().any(|id| {
         argument_value(args, &format!("--{id}-path")).is_some()
             || argument_value(args, &format!("--{id}-revision")).is_some()

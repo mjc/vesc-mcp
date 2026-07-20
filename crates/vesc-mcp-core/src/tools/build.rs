@@ -286,6 +286,20 @@ pub fn build_vescpkg_json(params: &BuildVescpkgParams) -> String {
     })
 }
 
+/// Serialize package build with an explicit sandbox.
+#[must_use]
+pub fn build_vescpkg_json_with_sandbox(
+    params: &BuildVescpkgParams,
+    allowed_roots: &[PathBuf],
+) -> String {
+    let response =
+        build_vescpkg_tool_with_runner(params, &RealVescToolRunner, None, Some(allowed_roots));
+    serde_json::to_string(&response).unwrap_or_else(|_| {
+        r#"{"ok":false,"error":{"code":"SERIALIZATION_FAILED","message":"serialization failed"}}"#
+            .into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

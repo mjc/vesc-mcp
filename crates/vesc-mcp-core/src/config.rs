@@ -680,6 +680,14 @@ pub fn allowed_package_roots(override_roots: Option<&[PathBuf]>) -> Vec<PathBuf>
     )
 }
 
+/// Add roots supplied by the connected MCP client to the configured sandbox.
+#[must_use]
+pub fn allowed_package_roots_with_client_roots(client_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = allowed_package_roots(None);
+    roots.extend(client_roots.iter().cloned());
+    roots
+}
+
 /// Validate that `path` is a directory under one of the configured package roots.
 ///
 /// # Errors

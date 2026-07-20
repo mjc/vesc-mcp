@@ -122,6 +122,17 @@ pub fn inspect_pkgdesc_json(params: &InspectPkgdescParams) -> String {
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }
 
+/// Serialize pkgdesc inspection with an explicit sandbox.
+#[must_use]
+pub fn inspect_pkgdesc_json_with_sandbox(
+    params: &InspectPkgdescParams,
+    allowed_roots: &[PathBuf],
+) -> String {
+    let response = inspect_pkgdesc_with_sandbox(&params.path, Some(allowed_roots));
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct InspectVescpkgParams {
     /// Absolute or relative path to a `.vescpkg` file.
@@ -198,6 +209,17 @@ impl From<PackageInspection> for VescpkgInspectionJson {
 #[must_use]
 pub fn inspect_vescpkg_json(params: &InspectVescpkgParams) -> String {
     let response = inspect_vescpkg(&params.path);
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
+/// Serialize `.vescpkg` inspection with an explicit sandbox.
+#[must_use]
+pub fn inspect_vescpkg_json_with_sandbox(
+    params: &InspectVescpkgParams,
+    allowed_roots: &[PathBuf],
+) -> String {
+    let response = inspect_vescpkg_with_sandbox(&params.path, Some(allowed_roots));
     serde_json::to_string(&response)
         .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
 }

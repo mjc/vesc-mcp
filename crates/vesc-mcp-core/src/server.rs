@@ -18,18 +18,19 @@ use rmcp::{
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::{KnowledgeConfig, McpConfig};
+use crate::config::{KnowledgeConfig, McpConfig, allowed_package_roots_with_client_roots};
 use crate::resources::{
     CatalogSourceWatcher, ResourceReadError, ResourceRegistry, ResourceSubscriptions,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json};
-use crate::tools::check::{RunPackageChecksParams, run_package_checks_json};
+use crate::tools::build::{BuildVescpkgParams, build_vescpkg_json_with_sandbox};
+use crate::tools::check::{RunPackageChecksParams, run_package_checks_json_with_sandbox};
 use crate::tools::inspect::{
-    InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json, inspect_vescpkg_json,
+    InspectPkgdescParams, InspectVescpkgParams, inspect_pkgdesc_json_with_sandbox,
+    inspect_vescpkg_json_with_sandbox,
 };
-use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
+use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json_with_client_roots};
 #[cfg(feature = "managed-git")]
 use crate::tools::list_source_versions::{
     ListVescSourceVersionsParams, list_vesc_source_versions_json,
@@ -39,7 +40,9 @@ use crate::tools::prepare_knowledge::{PrepareVescKnowledgeParams, prepare_vesc_k
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
 };
-use crate::tools::validate::{ValidatePackageLayoutParams, validate_package_layout_json};
+use crate::tools::validate::{
+    ValidatePackageLayoutParams, validate_package_layout_json_with_sandbox,
+};
 
 use crate::resources::FeedbackResourceHandler;
 use crate::tools::knowledge_feedback::{
@@ -88,14 +91,6 @@ impl SharedMcpState {
         )
     }
 
-    fn with_feedback(feedback: Option<FeedbackStore>, writes_enabled: bool) -> Self {
-        Self::with_config(
-            McpConfig::load().knowledge.clone(),
-            feedback,
-            writes_enabled,
-        )
-    }
-
     fn with_config(
         knowledge: KnowledgeConfig,
         feedback: Option<FeedbackStore>,
@@ -118,16 +113,22 @@ impl SharedMcpState {
     }
 }
 
-/// HTTP-safe MCP service exposing shared knowledge and health operations.
-///
-/// Package-tree tools stay on stdio until HTTP clients have an authenticated,
-/// per-client root policy instead of inheriting process-global roots.
+/// HTTP MCP service exposing shared knowledge and authenticated package tools.
 #[derive(Clone, Debug)]
 pub struct HttpMcpService {
     tool_router: ToolRouter<Self>,
     state: Arc<SharedMcpState>,
     feedback_writes_enabled: bool,
 }
+
+const PACKAGE_TOOL_NAMES: [&str; 6] = [
+    "list_vesc_packages",
+    "inspect_pkgdesc",
+    "inspect_vescpkg",
+    "validate_package_layout",
+    "build_vescpkg",
+    "run_package_checks",
+];
 
 impl Default for VescMcpService {
     fn default() -> Self {
@@ -171,7 +172,20 @@ impl VescMcpService {
     /// Create a service with an explicit durable feedback store.
     #[must_use]
     pub fn with_feedback_store(path: &std::path::Path, writes_enabled: bool) -> Self {
-        Self::from_state(SharedMcpState::with_feedback(
+        Self::with_knowledge_config_and_feedback_store(
+            McpConfig::load().knowledge.clone(),
+            path,
+            writes_enabled,
+        )
+    }
+
+    pub(crate) fn with_knowledge_config_and_feedback_store(
+        knowledge: KnowledgeConfig,
+        path: &std::path::Path,
+        writes_enabled: bool,
+    ) -> Self {
+        Self::from_state(SharedMcpState::with_config(
+            knowledge,
             Some(FeedbackStore::new(path)),
             writes_enabled,
         ))
@@ -195,11 +209,16 @@ impl VescMcpService {
         self.http_service_with_authenticated_writes(false)
     }
 
-    /// Create the HTTP service, exposing feedback writes only for authenticated clients.
+    /// Create the HTTP service, exposing package tools and feedback writes only for authenticated clients.
     #[must_use]
     pub fn http_service_with_authenticated_writes(&self, authenticated: bool) -> HttpMcpService {
         let feedback_writes_enabled = authenticated && self.state.feedback_writes_enabled;
         let mut tool_router = HttpMcpService::tool_router();
+        if !authenticated {
+            for name in PACKAGE_TOOL_NAMES {
+                tool_router.disable_route(name);
+            }
+        }
         if !feedback_writes_enabled {
             tool_router.disable_route("submit_vesc_knowledge_feedback");
             tool_router.disable_route("correct_vesc_knowledge");
@@ -253,48 +272,75 @@ impl VescMcpService {
     }
 
     #[tool(
-        description = "Discover vescpkg package roots by scanning for pkgdesc.qml under configured paths"
+        description = "Discover vescpkg package roots by scanning for pkgdesc.qml under configured or client project paths"
     )]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
-    fn list_vesc_packages(&self, Parameters(params): Parameters<ListPackagesParams>) -> String {
-        list_vesc_packages_json(&params)
+    async fn list_vesc_packages(
+        &self,
+        Parameters(params): Parameters<ListPackagesParams>,
+        context: rmcp::service::RequestContext<RoleServer>,
+    ) -> String {
+        let client_roots = client_package_roots(&context).await;
+        list_vesc_packages_json_with_client_roots(&params, &client_roots)
     }
 
     #[tool(description = "Parse a pkgdesc.qml file and return structured descriptor fields")]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
-    fn inspect_pkgdesc(&self, Parameters(params): Parameters<InspectPkgdescParams>) -> String {
-        inspect_pkgdesc_json(&params)
+    async fn inspect_pkgdesc(
+        &self,
+        Parameters(params): Parameters<InspectPkgdescParams>,
+        context: rmcp::service::RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        inspect_pkgdesc_json_with_sandbox(&params, &allowed_roots)
     }
 
     #[tool(description = "Read a .vescpkg wire artifact and return structured package fields")]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
-    fn inspect_vescpkg(&self, Parameters(params): Parameters<InspectVescpkgParams>) -> String {
-        inspect_vescpkg_json(&params)
+    async fn inspect_vescpkg(
+        &self,
+        Parameters(params): Parameters<InspectVescpkgParams>,
+        context: rmcp::service::RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        inspect_vescpkg_json_with_sandbox(&params, &allowed_roots)
     }
 
     #[tool(
         description = "Validate that all assets referenced by pkgdesc.qml exist under a package root"
     )]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
-    fn validate_package_layout(
+    async fn validate_package_layout(
         &self,
         Parameters(params): Parameters<ValidatePackageLayoutParams>,
+        context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        validate_package_layout_json(&params)
+        let allowed_roots = package_roots_for_client(&context).await;
+        validate_package_layout_json_with_sandbox(&params, &allowed_roots)
     }
 
     #[tool(
         description = "Build a .vescpkg wire artifact from a package root (rust in-tree adapter or vesc_tool CLI subprocess)"
     )]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
-    fn build_vescpkg(&self, Parameters(params): Parameters<BuildVescpkgParams>) -> String {
-        build_vescpkg_json(&params)
+    async fn build_vescpkg(
+        &self,
+        Parameters(params): Parameters<BuildVescpkgParams>,
+        context: rmcp::service::RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        build_vescpkg_json_with_sandbox(&params, &allowed_roots)
     }
 
     #[tool(description = "Run cargo fmt/clippy/test checks in a sandboxed vescpkg package root")]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
-    fn run_package_checks(&self, Parameters(params): Parameters<RunPackageChecksParams>) -> String {
-        run_package_checks_json(&params)
+    async fn run_package_checks(
+        &self,
+        Parameters(params): Parameters<RunPackageChecksParams>,
+        context: rmcp::service::RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        run_package_checks_json_with_sandbox(&params, &allowed_roots)
     }
 
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
@@ -534,6 +580,78 @@ impl HttpMcpService {
         ping_json(message, &self.state.knowledge)
     }
 
+    #[tool(
+        description = "Discover vescpkg package roots under configured or authenticated client project paths"
+    )]
+    async fn list_vesc_packages(
+        &self,
+        Parameters(params): Parameters<ListPackagesParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let client_roots = client_package_roots(&context).await;
+        list_vesc_packages_json_with_client_roots(&params, &client_roots)
+    }
+
+    #[tool(
+        description = "Parse a pkgdesc.qml file under configured or authenticated client project roots"
+    )]
+    async fn inspect_pkgdesc(
+        &self,
+        Parameters(params): Parameters<InspectPkgdescParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        inspect_pkgdesc_json_with_sandbox(&params, &allowed_roots)
+    }
+
+    #[tool(
+        description = "Read a .vescpkg wire artifact under configured or authenticated client project roots"
+    )]
+    async fn inspect_vescpkg(
+        &self,
+        Parameters(params): Parameters<InspectVescpkgParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        inspect_vescpkg_json_with_sandbox(&params, &allowed_roots)
+    }
+
+    #[tool(
+        description = "Validate a package layout under configured or authenticated client project roots"
+    )]
+    async fn validate_package_layout(
+        &self,
+        Parameters(params): Parameters<ValidatePackageLayoutParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        validate_package_layout_json_with_sandbox(&params, &allowed_roots)
+    }
+
+    #[tool(
+        description = "Build a .vescpkg artifact under configured or authenticated client project roots"
+    )]
+    async fn build_vescpkg(
+        &self,
+        Parameters(params): Parameters<BuildVescpkgParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        build_vescpkg_json_with_sandbox(&params, &allowed_roots)
+    }
+
+    #[tool(
+        description = "Run package checks under configured or authenticated client project roots"
+    )]
+    async fn run_package_checks(
+        &self,
+        Parameters(params): Parameters<RunPackageChecksParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots = package_roots_for_client(&context).await;
+        run_package_checks_json_with_sandbox(&params, &allowed_roots)
+    }
+
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
@@ -621,7 +739,7 @@ impl HttpMcpService {
     router = self.tool_router,
     name = "vesc-mcp-http",
     version = "0.1.0",
-    instructions = "Shared HTTP MCP service for VESC knowledge search. Package-tree tools remain on stdio until an authenticated root policy is configured."
+    instructions = "Shared HTTP MCP service for VESC knowledge search. Authenticated clients may use package-tree tools, sandboxed to configured roots plus that client's MCP roots."
 )]
 impl ServerHandler for HttpMcpService {
     async fn list_resources(
@@ -802,6 +920,37 @@ fn replay_error_json(
 fn replay_report_json(report: &crate::tools::search_knowledge::CorrectionReplayReport) -> String {
     serde_json::to_string(report)
         .expect("CorrectionReplayReport contains only infallibly serializable fields")
+}
+
+#[allow(deprecated)]
+async fn client_package_roots(context: &rmcp::service::RequestContext<RoleServer>) -> Vec<PathBuf> {
+    let supports_roots = context
+        .peer
+        .peer_info()
+        .is_some_and(|info| info.capabilities.roots.is_some());
+    if !supports_roots {
+        return Vec::new();
+    }
+
+    let Ok(result) = context.peer.list_roots().await else {
+        return Vec::new();
+    };
+    result
+        .roots
+        .into_iter()
+        .filter_map(|root| {
+            let uri = url::Url::parse(&root.uri).ok()?;
+            (uri.scheme() == "file" && uri.host_str().is_none())
+                .then(|| uri.to_file_path().ok())
+                .flatten()
+        })
+        .collect()
+}
+
+async fn package_roots_for_client(
+    context: &rmcp::service::RequestContext<RoleServer>,
+) -> Vec<PathBuf> {
+    allowed_package_roots_with_client_roots(&client_package_roots(context).await)
 }
 
 fn http_server_info(feedback_available: bool, feedback_writes_enabled: bool) -> ServerInfo {
@@ -1056,6 +1205,18 @@ mod tests {
                 .list_tool_names()
                 .iter()
                 .any(|name| name == "correct_vesc_knowledge")
+        );
+        assert!(
+            authenticated
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "list_vesc_packages")
+        );
+        assert!(
+            !read_only
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "list_vesc_packages")
         );
     }
 
