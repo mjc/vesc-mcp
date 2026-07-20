@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
@@ -301,7 +300,7 @@ fn ingest_one(
     let content = read_source(root, spec, &source)?;
     let content_digest = ContentDigest::of(content.as_bytes());
     let byte_count = content.len() as u64;
-    let (source_repository, source_revision) = source_identity(root, repository, revision, spec);
+    let (source_repository, source_revision) = source_identity(repository, revision, spec);
     let documents = if is_structured_source(spec) {
         structured_documents(
             &source_repository,
@@ -339,7 +338,6 @@ struct IngestedSource {
 }
 
 fn source_identity(
-    root: &Path,
     repository: &RepositoryId,
     revision: &Revision,
     spec: &SourceSpec,
@@ -348,26 +346,11 @@ fn source_identity(
         .source_repository
         .clone()
         .unwrap_or_else(|| repository.clone());
-    let source_revision = spec.source_revision.clone().or_else(|| {
-        let source_root = root.join("vendor").join(source_repository.as_str());
-        git_revision(&source_root)
-    });
+    let source_revision = spec.source_revision.clone();
     (
         source_repository,
         source_revision.unwrap_or_else(|| revision.clone()),
     )
-}
-
-fn git_revision(root: &Path) -> Option<Revision> {
-    let output = Command::new("git")
-        .args(["-C", root.to_str()?, "rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let revision = String::from_utf8(output.stdout).ok()?;
-    Revision::try_from(revision.trim()).ok()
 }
 
 fn read_source(root: &Path, spec: &SourceSpec, source: &str) -> Result<String, SourceRejection> {
