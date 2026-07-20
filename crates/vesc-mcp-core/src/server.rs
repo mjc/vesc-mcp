@@ -274,9 +274,7 @@ impl VescMcpService {
     }
 
     #[cfg(feature = "managed-git")]
-    #[tool(
-        description = "List cached source refs before prepare/search; never fetches."
-    )]
+    #[tool(description = "List cached source refs before prepare/search; never fetches.")]
     fn list_vesc_source_versions(
         &self,
         Parameters(params): Parameters<ListVescSourceVersionsParams>,
@@ -488,9 +486,7 @@ impl HttpMcpService {
     }
 
     #[cfg(feature = "managed-git")]
-    #[tool(
-        description = "List cached source refs before prepare/search; never fetches."
-    )]
+    #[tool(description = "List cached source refs before prepare/search; never fetches.")]
     fn list_vesc_source_versions(
         &self,
         Parameters(params): Parameters<ListVescSourceVersionsParams>,
