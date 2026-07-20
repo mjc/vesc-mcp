@@ -1,7 +1,8 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -86,7 +87,9 @@ impl GitHistory {
     /// Returns [`GitHistoryError`] when serialization or writing fails.
     pub fn write_artifact(&self, path: &Path) -> Result<(), GitHistoryError> {
         self.validate()?;
-        fs::write(path, serde_json::to_vec(self)?)?;
+        let mut writer = BufWriter::new(File::create(path)?);
+        serde_json::to_writer(&mut writer, self)?;
+        writer.flush()?;
         Ok(())
     }
 
@@ -258,29 +261,33 @@ struct HistoryAccumulator {
 }
 
 impl HistoryAccumulator {
-    fn new(previous: Option<&GitHistory>, source_count: usize) -> Self {
-        let previous = previous.filter(|history| history.schema == HISTORY_SCHEMA);
+    fn new(previous: Option<GitHistory>, source_count: usize) -> Self {
+        let (commits, contents, occurrences) = previous
+            .filter(|history| history.schema == HISTORY_SCHEMA)
+            .map_or_else(
+                || (BTreeMap::new(), BTreeMap::new(), Vec::new()),
+                |history| {
+                    (
+                        history
+                            .commits
+                            .into_iter()
+                            .map(|commit| {
+                                ((commit.repository.clone(), commit.revision.clone()), commit)
+                            })
+                            .collect(),
+                        history
+                            .contents
+                            .into_iter()
+                            .map(|content| (content.key.clone(), content))
+                            .collect(),
+                        history.occurrences,
+                    )
+                },
+            );
         Self {
-            commits: previous.map_or_else(BTreeMap::new, |history| {
-                history
-                    .commits
-                    .iter()
-                    .map(|commit| {
-                        (
-                            (commit.repository.clone(), commit.revision.clone()),
-                            commit.clone(),
-                        )
-                    })
-                    .collect()
-            }),
-            contents: previous.map_or_else(BTreeMap::new, |history| {
-                history
-                    .contents
-                    .iter()
-                    .map(|content| (content.key.clone(), content.clone()))
-                    .collect()
-            }),
-            occurrences: previous.map_or_else(Vec::new, |history| history.occurrences.clone()),
+            commits,
+            contents,
+            occurrences,
             tips: Vec::with_capacity(source_count),
             refs: Vec::new(),
             reachable_keys: BTreeSet::new(),
@@ -405,6 +412,13 @@ impl HistoryAccumulator {
 pub fn ingest_git_history(
     sources: &[GitCorpusSource],
     previous: Option<&GitHistory>,
+) -> Result<(GitHistory, GitHistoryRefreshObservations), GitHistoryError> {
+    ingest_git_history_owned(sources, previous.cloned())
+}
+
+pub(crate) fn ingest_git_history_owned(
+    sources: &[GitCorpusSource],
+    previous: Option<GitHistory>,
 ) -> Result<(GitHistory, GitHistoryRefreshObservations), GitHistoryError> {
     let mut ordered_sources = sources.iter().collect::<Vec<_>>();
     ordered_sources.sort_by(|left, right| left.repository_id.cmp(&right.repository_id));

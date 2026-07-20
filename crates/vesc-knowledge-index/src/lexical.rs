@@ -190,9 +190,29 @@ impl LexicalIndex {
         &self,
         path: &Path,
     ) -> Result<(ContentDigest, u64), LexicalError> {
+        Self::write_chunk_refs_artifact_with_digest(self.chunks.values(), path)
+    }
+
+    /// Writes chunks as a deterministic lexical source artifact without
+    /// constructing the transient Tantivy index used for queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when serialization or writing fails.
+    pub(crate) fn write_chunks_artifact_with_digest(
+        chunks: &[Chunk],
+        path: &Path,
+    ) -> Result<(ContentDigest, u64), LexicalError> {
+        Self::write_chunk_refs_artifact_with_digest(chunks, path)
+    }
+
+    pub(crate) fn write_chunk_refs_artifact_with_digest<'a>(
+        chunks: impl IntoIterator<Item = &'a Chunk>,
+        path: &Path,
+    ) -> Result<(ContentDigest, u64), LexicalError> {
         let artifact = LexicalArtifactRef {
             schema: 1,
-            chunks: self.chunks.values().collect(),
+            chunks: chunks.into_iter().collect(),
         };
         let file = File::create(path).map_err(|error| LexicalError::Io(error.to_string()))?;
         let mut writer = DigestingWriter::new(BufWriter::new(file));
@@ -723,5 +743,21 @@ mod tests {
             LexicalIndex::open_artifact(&path),
             Err(LexicalError::Artifact(_))
         ));
+    }
+
+    #[test]
+    fn source_artifact_can_be_written_without_building_an_index() {
+        let chunks = vec![chunk("alpha", "body", "alpha")];
+        let root = tempfile::tempdir().expect("artifact root");
+        let path = root.path().join("lexical.json");
+
+        let (_, bytes) = LexicalIndex::write_chunks_artifact_with_digest(&chunks, &path)
+            .expect("write source artifact");
+
+        assert!(bytes > 0);
+        assert_eq!(
+            LexicalIndex::read_artifact_chunks(&path).expect("read source artifact"),
+            chunks
+        );
     }
 }

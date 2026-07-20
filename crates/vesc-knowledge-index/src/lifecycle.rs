@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
 #[cfg(feature = "git-corpus")]
 use crate::corpus::full_history::{
-    GitHistory, GitHistoryError, GitHistoryRefreshObservations, ingest_git_history,
+    GitHistory, GitHistoryError, GitHistoryRefreshObservations, ingest_git_history_owned,
 };
 #[cfg(feature = "git-corpus")]
 use crate::corpus::git::{
@@ -347,22 +347,26 @@ pub fn build_git_artifacts(
 pub fn build_git_history_artifacts(
     root: &Path,
     sources: &[GitCorpusSource],
-    previous: Option<&GitHistory>,
+    previous: Option<GitHistory>,
 ) -> Result<GitHistoryBuildSummary, LifecycleError> {
     let started = Instant::now();
     let ingestion_started = Instant::now();
-    let (history, refresh) = ingest_git_history(sources, previous)?;
+    let (history, refresh) = ingest_git_history_owned(sources, previous)?;
     let ingestion_us = elapsed_us(ingestion_started);
-    let mut chunks = legacy_chunks()?;
-    chunks.extend(history.chunks());
+    let legacy = legacy_chunks()?;
+    let chunks = legacy
+        .iter()
+        .chain(history.contents.iter().map(|content| &content.chunk))
+        .collect::<Vec<_>>();
     let mut observations = BuildObservations::default();
     observations.record_duration(BuildPhase::Ingestion, ingestion_us);
     observations.git_ingestion = Some(refresh.git.clone());
     observations.accepted_files = u64::try_from(history.contents.len()).unwrap_or(u64::MAX);
     observations.visited_files = observations.accepted_files;
-    let artifacts = stage_chunks(
+    let artifacts = stage_chunk_refs(
         root,
         &chunks,
+        None,
         None,
         "git-full-history-v1",
         Vec::new(),
@@ -476,6 +480,32 @@ fn stage_chunks(
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
     started: Instant,
+    observations: BuildObservations,
+) -> Result<BuildSummary, LifecycleError> {
+    let chunk_refs = chunks.iter().collect::<Vec<_>>();
+    stage_chunk_refs(
+        root,
+        &chunk_refs,
+        semantic,
+        Some(chunks),
+        corpus_version,
+        diagnostics,
+        sources,
+        started,
+        observations,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn stage_chunk_refs(
+    root: &Path,
+    chunks: &[&crate::Chunk],
+    semantic: Option<SemanticBuild<'_>>,
+    semantic_chunks: Option<&[crate::Chunk]>,
+    corpus_version: &str,
+    diagnostics: Vec<SourceRejection>,
+    sources: Vec<SourceInventory>,
+    started: Instant,
     mut observations: BuildObservations,
 ) -> Result<BuildSummary, LifecycleError> {
     observations.documents = chunks
@@ -513,18 +543,19 @@ fn stage_chunks(
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
     observations.record(BuildPhase::Corpus, corpus_started);
 
-    let lexical_started = Instant::now();
-    let lexical = LexicalIndex::build(chunks)?;
-    observations.record(BuildPhase::Lexical, lexical_started);
     fs::create_dir_all(root)?;
     let temp_root = unique_temp_root(root)?;
     let generation_root = root.join("generations");
     fs::create_dir_all(&generation_root)?;
     let lexical_path = temp_root.join("lexical.json");
     let encoding_started = Instant::now();
-    let (lexical_checksum, lexical_bytes) = lexical.write_artifact_with_digest(&lexical_path)?;
+    let (lexical_checksum, lexical_bytes) =
+        LexicalIndex::write_chunk_refs_artifact_with_digest(chunks.iter().copied(), &lexical_path)?;
     observations.record(BuildPhase::Encoding, encoding_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
+        let chunks = semantic_chunks.ok_or_else(|| {
+            LifecycleError::Contract("semantic build requires contiguous chunks".into())
+        })?;
         let inference_order = semantic.provider.inference_order(chunks)?;
         let (vector, vector_build) = VectorArtifact::from_provider_with_observations_and_order(
             semantic.provider,

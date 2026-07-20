@@ -484,12 +484,8 @@ fn build_or_reuse(
         }
         SnapshotProfile::CompleteHistory => {
             let previous = previous_history(layout, &manifest.id);
-            vesc_knowledge_index::build_git_history_artifacts(
-                &artifact_path,
-                &sources,
-                previous.as_ref(),
-            )
-            .map_err(|error| SnapshotError::Build(error.to_string()))?;
+            vesc_knowledge_index::build_git_history_artifacts(&artifact_path, &sources, previous)
+                .map_err(|error| SnapshotError::Build(error.to_string()))?;
         }
     }
     validate_snapshot_artifact(&artifact_path, manifest.profile)?;
