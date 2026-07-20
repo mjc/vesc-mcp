@@ -38,7 +38,7 @@ let
         include = [ "**/*.cpp" ];
       };
       refloat = repository // {
-        url = "https://github.com/vedderb/vesc_pkg.git";
+        url = "https://github.com/lukash/refloat.git";
         defaultRef = "refs/heads/main";
         required = false;
         include = [ "**/*.lisp" ];
