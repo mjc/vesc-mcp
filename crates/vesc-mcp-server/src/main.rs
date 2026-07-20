@@ -7,6 +7,23 @@ use vesc_mcp_core::managed_git::ManagedGitStore;
 use vesc_mcp_core::managed_repositories::{KnowledgeDataLayout, RepositoryPolicy};
 use vesc_mcp_core::managed_snapshots::{KnowledgeSnapshotStore, SnapshotDisposition};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartupPolicy {
+    refresh: bool,
+    eager_index: bool,
+    allow_offline_restart: bool,
+}
+
+impl StartupPolicy {
+    fn from_args(args: &[String]) -> Self {
+        Self {
+            refresh: !args.iter().any(|arg| arg == "--skip-repository-refresh"),
+            eager_index: !args.iter().any(|arg| arg == "--skip-eager-index"),
+            allow_offline_restart: !args.iter().any(|arg| arg == "--require-fresh-repositories"),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
@@ -20,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    synchronize_managed_repositories().await?;
+    synchronize_managed_repositories(StartupPolicy::from_args(&args)).await?;
     if args.iter().any(|arg| arg == "--refresh-repositories") {
         return Ok(());
     }
@@ -32,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     vesc_mcp_core::server::run_stdio_server().await
 }
 
-async fn synchronize_managed_repositories() -> anyhow::Result<()> {
+async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Result<()> {
     let config = vesc_mcp_core::config::McpConfig::load();
     if config.knowledge.repositories.is_empty() {
         return Ok(());
@@ -43,39 +60,57 @@ async fn synchronize_managed_repositories() -> anyhow::Result<()> {
         .clone()
         .ok_or_else(|| anyhow::anyhow!("managed repositories require a data root"))?;
     let layout = KnowledgeDataLayout::new(data_root);
-    let store = ManagedGitStore::new(layout.clone());
-    for (id, result) in store.startup_sync(&config.knowledge.repositories).await {
-        match result {
-            Ok(outcome) => {
-                if let Some(warning) = outcome.warning {
-                    tracing::warn!(repository = %id, %warning, "using stale managed repository catalog");
-                } else {
-                    tracing::info!(
-                        repository = %id,
-                        disposition = ?outcome.disposition,
-                        refs = outcome.catalog.refs.len(),
-                        "synchronized managed repository"
-                    );
+    if policy.refresh {
+        let store = ManagedGitStore::new(layout.clone());
+        for (id, result) in store.startup_sync(&config.knowledge.repositories).await {
+            match result {
+                Ok(outcome) => {
+                    if let Some(warning) = outcome.warning {
+                        if !policy.allow_offline_restart {
+                            return Err(anyhow::anyhow!(
+                                "repository {id} refresh failed and offline restart is disabled: {warning}"
+                            ));
+                        }
+                        tracing::warn!(repository = %id, %warning, "using stale managed repository catalog");
+                    } else {
+                        tracing::info!(
+                            repository = %id,
+                            disposition = ?outcome.disposition,
+                            refs = outcome.catalog.refs.len(),
+                            "synchronized managed repository"
+                        );
+                    }
                 }
-            }
-            Err(error) => {
-                let required = config
-                    .knowledge
-                    .repositories
-                    .iter()
-                    .find(|repository| repository.id() == &id)
-                    .is_some_and(|repository| repository.policy() == RepositoryPolicy::Required);
-                if required {
-                    return Err(anyhow::anyhow!("required repository {id} failed: {error}"));
+                Err(error) => {
+                    let required = config
+                        .knowledge
+                        .repositories
+                        .iter()
+                        .find(|repository| repository.id() == &id)
+                        .is_some_and(|repository| {
+                            repository.policy() == RepositoryPolicy::Required
+                        });
+                    if required {
+                        return Err(anyhow::anyhow!("required repository {id} failed: {error}"));
+                    }
+                    tracing::warn!(repository = %id, %error, "optional managed repository unavailable");
                 }
-                tracing::warn!(repository = %id, %error, "optional managed repository unavailable");
             }
         }
     }
+    if !policy.eager_index {
+        return Ok(());
+    }
+
     let prepared = KnowledgeSnapshotStore::new(layout)
         .prepare_configured(&config.knowledge.repositories, &config.knowledge.prewarm)
         .await?;
     if prepared.default.disposition == SnapshotDisposition::Stale {
+        if !policy.allow_offline_restart {
+            return Err(anyhow::anyhow!(
+                "default knowledge snapshot is stale and offline restart is disabled"
+            ));
+        }
         tracing::warn!(
             snapshot = %prepared.default.manifest.id.as_str(),
             "using stale default knowledge snapshot"
@@ -169,4 +204,39 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StartupPolicy;
+
+    #[test]
+    fn startup_policy_defaults_to_refresh_eager_and_offline_fallback() {
+        assert_eq!(
+            StartupPolicy::from_args(&[]),
+            StartupPolicy {
+                refresh: true,
+                eager_index: true,
+                allow_offline_restart: true,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_policy_flags_disable_work_or_require_fresh_sources() {
+        let args = [
+            "--skip-repository-refresh".to_owned(),
+            "--skip-eager-index".to_owned(),
+            "--require-fresh-repositories".to_owned(),
+        ];
+
+        assert_eq!(
+            StartupPolicy::from_args(&args),
+            StartupPolicy {
+                refresh: false,
+                eager_index: false,
+                allow_offline_restart: false,
+            }
+        );
+    }
 }

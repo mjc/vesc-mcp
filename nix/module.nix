@@ -10,6 +10,10 @@ let
   inherit (lib) types;
   package = if cfg.package != null then cfg.package else defaultPackage pkgs;
   httpBind = "${cfg.bind}:${toString cfg.port}";
+  startupArgs = [ "--http" ]
+    ++ lib.optional (!cfg.startup.refresh) "--skip-repository-refresh"
+    ++ lib.optional (!cfg.startup.eagerIndex) "--skip-eager-index"
+    ++ lib.optional (!cfg.startup.allowOfflineRestart) "--require-fresh-repositories";
   validRepositoryId = id: builtins.match "[a-z0-9][a-z0-9_-]*" id != null;
   validHttpsUrl = url:
     builtins.match "https://[^[:space:]]+" url != null
@@ -266,7 +270,7 @@ in
       after = [ "network-online.target" ];
       inherit environment;
       serviceConfig = {
-        ExecStart = "${package}/bin/vesc-mcp-server --http";
+        ExecStart = "${package}/bin/vesc-mcp-server ${lib.concatStringsSep " " startupArgs}";
         Restart = "on-failure";
         RestartSec = 2;
         DynamicUser = true;
