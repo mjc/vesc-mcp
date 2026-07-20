@@ -71,7 +71,14 @@ let
       };
     };
   };
-  repositoryIds = builtins.attrNames cfg.repositories;
+  repositoryIds =
+    let
+      ids = builtins.attrNames cfg.repositories;
+    in
+    if builtins.all validRepositoryId ids then
+      ids
+    else
+      throw "services.vesc-mcp.repositories contains an invalid repository ID";
   selectionType = types.attrsOf (types.addCheck types.str validSelector);
   selectedRef = id: repository:
     cfg.defaultVersions.${id} or repository.defaultRef;
