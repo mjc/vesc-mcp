@@ -15,6 +15,8 @@ pub mod parsers;
 pub mod path_evaluation;
 pub mod pipeline;
 pub mod planning;
+#[cfg(feature = "git-corpus")]
+pub mod release_repositories;
 pub mod reranking;
 mod search;
 pub mod semantic;

@@ -47,6 +47,7 @@ use vesc_knowledge_index::{
     ChunkingConfig, LicenseStatus, TaggedHistorySource, TrustTier, build_git_artifacts,
     corpus::git::{GitCorpusPolicy, GitCorpusSource, GitIngestionObservations},
     ingest_tagged_history,
+    release_repositories::{PINNED_RELEASE_REPOSITORIES, ReleaseRepositoryCache},
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
@@ -474,23 +475,7 @@ fn run_build_default(args: &[String]) {
         || PathBuf::from("target/default-knowledge-artifacts"),
         PathBuf::from,
     );
-    let source = |name: &str| {
-        let path = argument_value(args, &format!("--{name}-path"))
-            .unwrap_or_else(|| panic!("--{name}-path is required"));
-        let revision = argument_value(args, &format!("--{name}-revision"))
-            .unwrap_or_else(|| panic!("--{name}-revision is required"));
-        let mut policy = GitCorpusPolicy::default();
-        policy.extensions.remove("md");
-        GitCorpusSource {
-            repository_path: PathBuf::from(path),
-            repository_id: RepositoryId::try_from(name).expect("valid repository identifier"),
-            revision: Revision::try_from(revision).expect("valid immutable revision"),
-            trust_tier: TrustTier::CuratedUpstream,
-            license: LicenseStatus::ReferenceOnly,
-            policy,
-        }
-    };
-    let sources = [source("vesc"), source("vesc-tool"), source("refloat")];
+    let sources = default_corpus_sources(args);
     if staging.exists() {
         fs::remove_dir_all(&staging)
             .unwrap_or_else(|error| panic!("remove staging {}: {error}", staging.display()));
@@ -607,6 +592,93 @@ fn run_build_default(args: &[String]) {
         println!("semantic-batch-size: {batch}");
     }
     println!("generated-dir: {}", generated.display());
+}
+
+#[cfg(feature = "git-corpus")]
+fn default_corpus_sources(args: &[String]) -> Vec<GitCorpusSource> {
+    const IDS: [&str; 3] = ["vesc", "vesc-tool", "refloat"];
+    let explicit = IDS.iter().any(|id| {
+        argument_value(args, &format!("--{id}-path")).is_some()
+            || argument_value(args, &format!("--{id}-revision")).is_some()
+    });
+    if explicit {
+        return IDS
+            .into_iter()
+            .map(|id| {
+                let path = argument_value(args, &format!("--{id}-path"))
+                    .unwrap_or_else(|| panic!("--{id}-path is required in explicit source mode"));
+                let revision =
+                    argument_value(args, &format!("--{id}-revision")).unwrap_or_else(|| {
+                        panic!("--{id}-revision is required in explicit source mode")
+                    });
+                corpus_source(
+                    RepositoryId::try_from(id).expect("valid repository identifier"),
+                    PathBuf::from(path),
+                    Revision::try_from(revision).expect("valid immutable revision"),
+                )
+            })
+            .collect();
+    }
+
+    let root = repository_cache_root(args).unwrap_or_else(|message| panic!("{message}"));
+    let git = argument_value(args, "--git-bin")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("VESC_GIT_BIN").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("git"));
+    ReleaseRepositoryCache::new(root.clone(), git)
+        .maintain(&PINNED_RELEASE_REPOSITORIES)
+        .unwrap_or_else(|error| {
+            panic!(
+                "prepare pinned release repositories in {}: {error}",
+                root.display()
+            )
+        })
+        .into_iter()
+        .map(|repository| corpus_source(repository.id, repository.path, repository.revision))
+        .collect()
+}
+
+#[cfg(feature = "git-corpus")]
+fn corpus_source(
+    repository_id: RepositoryId,
+    repository_path: PathBuf,
+    revision: Revision,
+) -> GitCorpusSource {
+    let mut policy = GitCorpusPolicy::default();
+    policy.extensions.remove("md");
+    GitCorpusSource {
+        repository_path,
+        repository_id,
+        revision,
+        trust_tier: TrustTier::CuratedUpstream,
+        license: LicenseStatus::ReferenceOnly,
+        policy,
+    }
+}
+
+#[cfg(feature = "git-corpus")]
+fn repository_cache_root(args: &[String]) -> Result<PathBuf, &'static str> {
+    select_repository_cache_root(
+        argument_value(args, "--repository-cache").map(PathBuf::from),
+        env::var_os("VESC_BENCHMARK_REPOSITORY_CACHE").map(PathBuf::from),
+        env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+        env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+#[cfg(feature = "git-corpus")]
+fn select_repository_cache_root(
+    cli: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    xdg: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, &'static str> {
+    cli.or(configured)
+        .or_else(|| xdg.map(|root| root.join("vesc-mcp/release-repositories")))
+        .or_else(|| home.map(|root| root.join(".cache/vesc-mcp/release-repositories")))
+        .ok_or(
+            "release repository cache root is unknown; pass --repository-cache or set VESC_BENCHMARK_REPOSITORY_CACHE",
+        )
 }
 
 #[cfg(not(feature = "git-corpus"))]
@@ -2280,6 +2352,34 @@ mod tests {
         fs::write(artifact.path(), b"legacy-format").expect("invalid artifact fixture");
 
         let _ = lexical_result_ids("query", Some(artifact.path()));
+    }
+
+    #[cfg(feature = "git-corpus")]
+    #[test]
+    fn release_repository_cache_root_has_explicit_stable_precedence() {
+        assert_eq!(
+            select_repository_cache_root(
+                Some("cli".into()),
+                Some("configured".into()),
+                Some("xdg".into()),
+                Some("home".into()),
+            ),
+            Ok(PathBuf::from("cli"))
+        );
+        assert_eq!(
+            select_repository_cache_root(
+                None,
+                Some("configured".into()),
+                Some("xdg".into()),
+                Some("home".into()),
+            ),
+            Ok(PathBuf::from("configured"))
+        );
+        assert_eq!(
+            select_repository_cache_root(None, None, Some("xdg".into()), Some("home".into())),
+            Ok(PathBuf::from("xdg/vesc-mcp/release-repositories"))
+        );
+        assert!(select_repository_cache_root(None, None, None, None).is_err());
     }
 }
 
