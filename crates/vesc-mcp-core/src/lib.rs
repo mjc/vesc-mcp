@@ -4,6 +4,7 @@ pub mod benchmark;
 pub mod catalog;
 pub mod config;
 pub mod error;
+pub mod managed_repositories;
 pub mod resources;
 pub mod server;
 pub mod tools;

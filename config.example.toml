@@ -27,10 +27,29 @@ enable_flash = false
 [knowledge]
 # Rollout modes: lexical, legacy, auto, hybrid.
 mode = "lexical"
+# Persistent managed-source state. Must be absolute. When omitted, systemd's
+# STATE_DIRECTORY, then the platform/XDG per-user data directory is used.
+# data_root = "/var/lib/vesc-mcp"
 max_limit = 50
 max_query_bytes = 4096
 max_response_bytes = 65536
 max_passage_bytes = 8192
+
+# Managed source repositories are optional. They are configuration only here;
+# VESCM-158 never performs network access or downloads semantic models.
+# [[knowledge.repositories]]
+# id = "vesc-tool"
+# remote_url = "https://github.com/vedderb/vesc_tool.git"
+# default_ref = "refs/heads/master"
+# policy = "required" # disabled, optional, or required
+# include = ["**/*.cpp", "**/*.h", "*.pro"]
+# exclude = ["build/**"]
+# trust_tier = "official" # official, community, or untrusted
+# license = "GPL-3.0-or-later"
+# attribution = "VESC Project"
+# max_file_bytes = 1048576
+# max_files = 100000
+# max_total_bytes = 1073741824
 
 [feedback]
 # Optional durable directory. The server stores a bounded feedback.json here.

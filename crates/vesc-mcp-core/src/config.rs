@@ -8,6 +8,10 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::CatalogRepo;
+use crate::managed_repositories::{
+    DataRoot, DataRootInputs, ManagedRepositoryError, RepositoryRegistry, RepositoryWire,
+    resolve_data_root, validate_repository_config,
+};
 use crate::workspace;
 
 /// Environment variable for comma- or colon-separated package sandbox roots.
@@ -36,6 +40,16 @@ pub const VESC_RAG_SEMANTIC_MODEL_REVISION_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_
 pub const VESC_RAG_SEMANTIC_MAX_LENGTH_ENV: &str = "VESC_RAG_SEMANTIC_MAX_LENGTH";
 /// Environment variable controlling how long an idle semantic model remains loaded.
 pub const VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV: &str = "VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS";
+
+/// Typed configuration loading and validation failures.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConfigError {
+    #[error("invalid configuration TOML")]
+    Toml,
+    #[error(transparent)]
+    ManagedRepository(#[from] ManagedRepositoryError),
+}
 
 /// Knowledge retrieval rollout mode.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +88,8 @@ pub struct FeedbackConfig {
 pub struct KnowledgeConfig {
     pub mode: RetrievalMode,
     pub artifact_path: Option<PathBuf>,
+    pub data_root: Option<DataRoot>,
+    pub repositories: RepositoryRegistry,
     pub semantic_model_dir: Option<PathBuf>,
     pub semantic_model_id: Option<String>,
     pub semantic_model_revision: Option<String>,
@@ -90,6 +106,8 @@ impl Default for KnowledgeConfig {
         Self {
             mode: RetrievalMode::Lexical,
             artifact_path: None,
+            data_root: None,
+            repositories: RepositoryRegistry::default(),
             semantic_model_dir: None,
             semantic_model_id: None,
             semantic_model_revision: None,
@@ -127,20 +145,35 @@ impl McpConfig {
     }
 
     fn from_sources() -> Self {
-        let file = read_config_file(&config_file_path());
+        Self::try_from_sources().unwrap_or_else(|error| panic!("vesc-mcp configuration: {error}"))
+    }
+
+    fn try_from_sources() -> Result<Self, ConfigError> {
+        let file = read_config_file(&config_file_path())?;
         let env = read_env_overrides();
-        let mut config = merge_config(&file, &env);
+        let mut config = try_merge_config(&file, &env, &DataRootInputs::from_env())?;
         apply_jina_code_query_defaults(&mut config, &file, &env);
         if config.package_roots.is_empty() {
             #[cfg(any(test, feature = "test-fixtures"))]
             {
-                return Self {
+                return Ok(Self {
                     package_roots: vec![crate::workspace::fixtures_root()],
                     ..config
-                };
+                });
             }
         }
-        config
+        Ok(config)
+    }
+
+    /// Parse and validate a complete TOML configuration without touching disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for malformed TOML, repository policy violations,
+    /// duplicate IDs, unsafe paths, or an unavailable application data root.
+    pub fn from_toml(content: &str, data_roots: &DataRootInputs) -> Result<Self, ConfigError> {
+        let file = toml::from_str(content).map_err(|_| ConfigError::Toml)?;
+        try_merge_config(&file, &EnvOverrides::default(), data_roots)
     }
 }
 
@@ -207,6 +240,9 @@ struct FeaturesSection {
 struct KnowledgeSection {
     mode: Option<RetrievalMode>,
     artifact_path: Option<String>,
+    data_root: Option<String>,
+    #[serde(default)]
+    repositories: Vec<RepositoryWire>,
     semantic: Option<SemanticSection>,
     max_limit: Option<usize>,
     max_query_bytes: Option<usize>,
@@ -269,11 +305,11 @@ fn resolve_config_file_path(env_override: Option<&str>) -> PathBuf {
     env_override.map_or_else(default_config_path, workspace::expand_path)
 }
 
-fn read_config_file(path: &Path) -> ConfigFile {
+fn read_config_file(path: &Path) -> Result<ConfigFile, ConfigError> {
     let Ok(content) = std::fs::read_to_string(path) else {
-        return ConfigFile::default();
+        return Ok(ConfigFile::default());
     };
-    toml::from_str(&content).unwrap_or_default()
+    toml::from_str(&content).map_err(|_| ConfigError::Toml)
 }
 
 fn read_env_overrides() -> EnvOverrides {
@@ -324,7 +360,11 @@ fn read_env_overrides() -> EnvOverrides {
 }
 
 #[allow(clippy::too_many_lines)]
-fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
+fn try_merge_config(
+    file: &ConfigFile,
+    env: &EnvOverrides,
+    data_roots: &DataRootInputs,
+) -> Result<McpConfig, ConfigError> {
     let paths = file.paths.as_ref();
     let features = file.features.as_ref();
     let knowledge = file.knowledge.as_ref();
@@ -346,7 +386,16 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
         .unwrap_or_default();
 
     let defaults = KnowledgeConfig::default();
-    McpConfig {
+    let data_root = resolve_data_root(
+        knowledge
+            .and_then(|section| section.data_root.as_deref())
+            .map(Path::new),
+        data_roots,
+    )?;
+    let repositories = validate_repository_config(
+        knowledge.map_or_else(Vec::new, |section| section.repositories.clone()),
+    )?;
+    Ok(McpConfig {
         package_roots,
         refloat_root: env.refloat_root.clone().unwrap_or_else(|| {
             paths
@@ -393,6 +442,8 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
                     .and_then(|section| section.artifact_path.as_deref())
                     .map(workspace::expand_path)
             }),
+            data_root: Some(data_root),
+            repositories,
             semantic_model_dir: env.semantic_model_dir.clone().or_else(|| {
                 knowledge
                     .and_then(|section| section.semantic.as_ref())
@@ -446,7 +497,12 @@ fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
                 .or_else(|| feedback.and_then(|section| section.writes_enabled))
                 .unwrap_or(false),
         },
-    }
+    })
+}
+
+#[cfg(test)]
+fn merge_config(file: &ConfigFile, env: &EnvOverrides) -> McpConfig {
+    try_merge_config(file, env, &DataRootInputs::from_env()).expect("valid test configuration")
 }
 
 /// Resolve package roots from explicit tool params or loaded config.
@@ -733,6 +789,151 @@ idle_timeout_secs = 60
     }
 
     #[test]
+    fn managed_repositories_parse_without_checkout_and_sort_deterministically() {
+        let config = McpConfig::from_toml(
+            r#"
+[knowledge]
+data_root = "/var/lib/vesc-mcp-empty"
+
+[[knowledge.repositories]]
+id = "vesc-tool"
+remote_url = "https://github.com/vedderb/vesc_tool.git"
+default_ref = "refs/heads/master"
+policy = "required"
+include = ["**/*.cpp"]
+exclude = ["build/**"]
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+
+[[knowledge.repositories]]
+id = "refloat"
+remote_url = "https://github.com/vedderb/vesc_pkg.git"
+default_ref = "refs/heads/main"
+policy = "optional"
+include = ["**/*.lisp"]
+exclude = []
+trust_tier = "community"
+license = "GPL-3.0-or-later"
+attribution = "VESC contributors"
+max_file_bytes = 524288
+max_files = 10000
+max_total_bytes = 268435456
+"#,
+            &DataRootInputs::default(),
+        )
+        .expect("managed repositories");
+
+        assert_eq!(
+            config
+                .knowledge
+                .repositories
+                .iter()
+                .map(|repository| repository.id().as_str())
+                .collect::<Vec<_>>(),
+            ["refloat", "vesc-tool"]
+        );
+        assert_eq!(
+            config
+                .knowledge
+                .data_root
+                .expect("resolved data root")
+                .as_path(),
+            Path::new("/var/lib/vesc-mcp-empty")
+        );
+    }
+
+    #[test]
+    fn duplicate_managed_repository_ids_return_typed_error() {
+        let error = McpConfig::from_toml(
+            r#"
+[knowledge]
+data_root = "/var/lib/vesc-mcp"
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "https://example.com/one.git"
+default_ref = "refs/heads/main"
+policy = "optional"
+trust_tier = "community"
+license = "MIT"
+attribution = "Example"
+max_file_bytes = 1
+max_files = 1
+max_total_bytes = 1
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "https://example.com/two.git"
+default_ref = "refs/heads/main"
+policy = "optional"
+trust_tier = "community"
+license = "MIT"
+attribution = "Example"
+max_file_bytes = 1
+max_files = 1
+max_total_bytes = 1
+"#,
+            &DataRootInputs::default(),
+        )
+        .expect_err("duplicate IDs");
+
+        assert!(matches!(
+            error,
+            ConfigError::ManagedRepository(ManagedRepositoryError::DuplicateRepositoryId(_))
+        ));
+    }
+
+    #[test]
+    fn unsafe_managed_repository_url_returns_typed_error() {
+        let error = McpConfig::from_toml(
+            r#"
+[knowledge]
+data_root = "/var/lib/vesc-mcp"
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "file:///private/source"
+default_ref = "refs/heads/main"
+policy = "optional"
+trust_tier = "community"
+license = "MIT"
+attribution = "Example"
+max_file_bytes = 1
+max_files = 1
+max_total_bytes = 1
+"#,
+            &DataRootInputs::default(),
+        )
+        .expect_err("unsafe URL");
+
+        assert!(matches!(
+            error,
+            ConfigError::ManagedRepository(ManagedRepositoryError::InvalidRemoteUrl)
+        ));
+        assert!(!error.to_string().contains("/private/source"));
+    }
+
+    #[test]
+    fn empty_repository_configuration_preserves_existing_retrieval_defaults() {
+        let config = McpConfig::from_toml(
+            "",
+            &DataRootInputs {
+                home: Some(PathBuf::from("/home/user")),
+                ..DataRootInputs::default()
+            },
+        )
+        .expect("default config");
+
+        assert!(config.knowledge.repositories.is_empty());
+        assert_eq!(config.knowledge.mode, RetrievalMode::Lexical);
+        assert_eq!(config.knowledge.artifact_path, None);
+    }
+
+    #[test]
     fn jina_code_profile_selects_int8_queries_on_any_cpu() {
         let mut merged = merge_config(&ConfigFile::default(), &EnvOverrides::default());
         apply_jina_code_query_profile(
@@ -817,7 +1018,7 @@ package_roots = ["/custom/from/file"]
         )
         .expect("write custom config");
 
-        let file = read_config_file(&config_path);
+        let file = read_config_file(&config_path).expect("read custom config");
         let merged = merge_config(&file, &EnvOverrides::default());
         assert_eq!(
             merged.package_roots,

@@ -1763,16 +1763,11 @@ mod tests {
     fn omitted_mode_and_limits_use_resolved_knowledge_config() {
         let config = KnowledgeConfig {
             mode: RetrievalMode::Lexical,
-            artifact_path: None,
-            semantic_model_dir: None,
-            semantic_model_id: None,
-            semantic_model_revision: None,
-            semantic_max_length: None,
-            semantic_idle_timeout_secs: 300,
             max_limit: 1,
             max_query_bytes: 32,
             max_response_bytes: 1024,
             max_passage_bytes: 128,
+            ..KnowledgeConfig::default()
         };
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {

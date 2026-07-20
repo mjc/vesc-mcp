@@ -117,6 +117,7 @@ The default `lexical` mode is local and does not download a model.
 |---------|----------------------|---------|---------|
 | `[knowledge] mode` | `VESC_RAG_MODE` | `lexical` | Retrieval mode |
 | `[knowledge] artifact_path` | `VESC_RAG_ARTIFACT` | bundled or embedded corpus | Generated artifact directory |
+| `[knowledge] data_root` | `STATE_DIRECTORY` fallback | platform application-data directory | Persistent repository, snapshot, and artifact state |
 | `[knowledge.semantic] model_dir` | `VESC_RAG_SEMANTIC_MODEL_DIR` | unset | Pinned local model directory |
 | `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
 | `[knowledge.semantic] model_revision` | `VESC_RAG_SEMANTIC_MODEL_REVISION` | unset | Pinned model revision |
@@ -140,6 +141,62 @@ Supported modes:
 
 The server never downloads a semantic model at startup. Model directory,
 identity, and revision must match the vector artifact manifest.
+
+### Managed knowledge repositories
+
+`[[knowledge.repositories]]` declares approved Git sources without requiring a
+source checkout beside the executable. Configuration is validated before any
+filesystem access. Repository IDs are stable lowercase path-safe identifiers;
+remotes must be credential-free HTTPS URLs; refs must be full `refs/...`
+names; and include/exclude rules must be relative patterns without `..` path
+components. Duplicate IDs and zero or inconsistent source limits are rejected.
+
+```toml
+[knowledge]
+data_root = "/var/lib/vesc-mcp"
+
+[[knowledge.repositories]]
+id = "vesc-tool"
+remote_url = "https://github.com/vedderb/vesc_tool.git"
+default_ref = "refs/heads/master"
+policy = "required"
+include = ["**/*.cpp", "**/*.h", "*.pro"]
+exclude = ["build/**"]
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+```
+
+Repository order in runtime configuration is deterministic by `id`. An empty
+repository list remains valid and preserves embedded or explicitly configured
+artifact retrieval.
+
+The application data root resolves in this order:
+
+1. absolute `[knowledge] data_root`;
+2. systemd `STATE_DIRECTORY`;
+3. `XDG_DATA_HOME/vesc-mcp`;
+4. the platform user-data location (`~/.local/share/vesc-mcp` on Linux,
+   `~/Library/Application Support/vesc-mcp` on macOS, or
+   `%LOCALAPPDATA%/vesc-mcp` on Windows).
+
+The internal layout is portable and derived only from validated IDs:
+
+```text
+repositories/<id>.git/
+snapshots/<snapshot-id>.json
+artifacts/<snapshot-id>/
+tmp/
+```
+
+`tmp/` is inside the data root so later provisioning can atomically rename
+staged data on the same filesystem. Git network operations and directory
+creation belong to the repository-store lifecycle; parsing this configuration
+does neither. Semantic model files remain independently configured with
+`[knowledge.semantic] model_dir` and are never downloaded implicitly.
 
 On the measured Ryzen 5 8600G + RX 5700 XT development host only, the server
 selects the pinned Jina code INT8 query model automatically after the matching
