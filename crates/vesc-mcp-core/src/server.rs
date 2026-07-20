@@ -100,8 +100,8 @@ impl SharedMcpState {
         feedback: Option<FeedbackStore>,
         writes_enabled: bool,
     ) -> Self {
-        let mut resources =
-            ResourceRegistry::with_defaults().expect("default MCP resource registry");
+        let mut resources = ResourceRegistry::with_knowledge_config(&knowledge)
+            .expect("default MCP resource registry");
         if let Some(store) = feedback.clone() {
             resources.register_handler(FeedbackResourceHandler::new(store));
         }

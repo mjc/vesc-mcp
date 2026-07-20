@@ -45,7 +45,8 @@ pub use subscriptions::ResourceSubscriptions;
 pub use uri::{
     CatalogResourceUri, FixtureManifestUri, KnowledgeChunkUri, KnowledgeDocumentUri,
     ManifestResourceUri, ParsedResourceUri, RefloatCommandUri, ResourceUriError,
-    decode_manifest_path, encode_manifest_path, parse_resource_uri,
+    SnapshotKnowledgeChunkUri, SnapshotKnowledgeDocumentUri, decode_manifest_path,
+    encode_manifest_path, parse_resource_uri,
 };
 
 use std::collections::BTreeMap;
@@ -260,6 +261,32 @@ impl ResourceRegistry {
             templates.push(Self::knowledge_document_template());
         }
 
+        let snapshot_chunk_probe =
+            ParsedResourceUri::SnapshotKnowledgeChunk(SnapshotKnowledgeChunkUri {
+                snapshot: "0".repeat(64),
+                id: "_".into(),
+            });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&snapshot_chunk_probe))
+        {
+            templates.push(Self::snapshot_knowledge_chunk_template());
+        }
+
+        let snapshot_document_probe =
+            ParsedResourceUri::SnapshotKnowledgeDocument(SnapshotKnowledgeDocumentUri {
+                snapshot: "0".repeat(64),
+                id: "_".into(),
+            });
+        if self
+            .handlers
+            .iter()
+            .any(|handler| handler.matches(&snapshot_document_probe))
+        {
+            templates.push(Self::snapshot_knowledge_document_template());
+        }
+
         let feedback_probe =
             ParsedResourceUri::KnowledgeFeedback(uri::KnowledgeFeedbackUri { id: "_".into() });
         if self
@@ -279,6 +306,12 @@ impl ResourceRegistry {
     ///
     /// Returns [`ResourceRegistryError`] when static resource registration fails.
     pub fn with_defaults() -> Result<Self, ResourceRegistryError> {
+        Self::with_knowledge_config(&crate::config::McpConfig::load().knowledge)
+    }
+
+    pub(crate) fn with_knowledge_config(
+        knowledge: &crate::config::KnowledgeConfig,
+    ) -> Result<Self, ResourceRegistryError> {
         let mut registry = Self::new();
         let catalog_root = crate::workspace::catalog_root();
         register_build_recipe_resources(&mut registry)?;
@@ -291,8 +324,12 @@ impl ResourceRegistry {
         registry.register_handler(AbiResourceHandler::new());
         registry.register_handler(RefloatCommandResourceHandler::new());
         registry.register_handler(ManifestResourceHandler::from_config());
-        registry.register_handler(ConfiguredKnowledgeChunkResourceHandler::from_config());
-        registry.register_handler(ConfiguredKnowledgeDocumentResourceHandler::from_config());
+        registry.register_handler(ConfiguredKnowledgeChunkResourceHandler::with_config(
+            knowledge.clone(),
+        ));
+        registry.register_handler(ConfiguredKnowledgeDocumentResourceHandler::with_config(
+            knowledge.clone(),
+        ));
         Ok(registry)
     }
 
@@ -331,6 +368,26 @@ impl ResourceRegistry {
         McpResourceTemplate::new("vesc://knowledge/document/{id}", "knowledge document")
             .with_description("Full normalized document assembled from a stable knowledge corpus")
             .with_mime_type("application/json")
+    }
+
+    #[must_use]
+    pub fn snapshot_knowledge_chunk_template() -> McpResourceTemplate {
+        McpResourceTemplate::new(
+            "vesc://knowledge/snapshot/{snapshot}/chunk/{id}",
+            "snapshot knowledge chunk",
+        )
+        .with_description("Normalized passage from one immutable knowledge snapshot")
+        .with_mime_type("application/json")
+    }
+
+    #[must_use]
+    pub fn snapshot_knowledge_document_template() -> McpResourceTemplate {
+        McpResourceTemplate::new(
+            "vesc://knowledge/snapshot/{snapshot}/document/{id}",
+            "snapshot knowledge document",
+        )
+        .with_description("Normalized document from one immutable knowledge snapshot")
+        .with_mime_type("application/json")
     }
 
     /// MCP resource template for persisted model notes and corrections.

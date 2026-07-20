@@ -181,24 +181,30 @@ pub struct KnowledgeDocumentResourceHandler;
 /// Handler for normalized knowledge documents, optionally backed by an artifact.
 #[derive(Debug, Clone, Default)]
 pub struct ConfiguredKnowledgeDocumentResourceHandler {
-    artifact_root: Option<PathBuf>,
+    knowledge: crate::config::KnowledgeConfig,
 }
 
 impl ConfiguredKnowledgeDocumentResourceHandler {
     #[must_use]
     pub fn new(artifact_root: impl Into<PathBuf>) -> Self {
         Self {
-            artifact_root: Some(artifact_root.into()),
+            knowledge: crate::config::KnowledgeConfig {
+                artifact_path: Some(artifact_root.into()),
+                ..crate::config::KnowledgeConfig::default()
+            },
         }
     }
 
     #[must_use]
     pub fn from_config() -> Self {
         Self {
-            artifact_root: crate::config::McpConfig::load()
-                .knowledge
-                .resolved_artifact_path(),
+            knowledge: crate::config::McpConfig::load().knowledge.clone(),
         }
+    }
+
+    #[must_use]
+    pub const fn with_config(knowledge: crate::config::KnowledgeConfig) -> Self {
+        Self { knowledge }
     }
 }
 
@@ -217,17 +223,35 @@ impl ResourceReadHandler for KnowledgeDocumentResourceHandler {
 
 impl ResourceReadHandler for ConfiguredKnowledgeDocumentResourceHandler {
     fn matches(&self, uri: &ParsedResourceUri) -> bool {
-        matches!(uri, ParsedResourceUri::KnowledgeDocument(_))
+        matches!(
+            uri,
+            ParsedResourceUri::KnowledgeDocument(_)
+                | ParsedResourceUri::SnapshotKnowledgeDocument(_)
+        )
     }
 
     fn read(&self, uri: &ParsedResourceUri) -> Result<String, ResourceReadError> {
-        let ParsedResourceUri::KnowledgeDocument(document) = uri else {
-            return Err(ResourceReadError::NotFound { uri: uri.to_uri() });
-        };
-        self.artifact_root.as_ref().map_or_else(
-            || read_knowledge_document(&uri.to_uri(), document),
-            |root| read_knowledge_document_from_artifact(&uri.to_uri(), document, root),
-        )
+        match uri {
+            ParsedResourceUri::KnowledgeDocument(document) => self
+                .knowledge
+                .resolved_artifact_path()
+                .as_ref()
+                .map_or_else(
+                    || read_knowledge_document(&uri.to_uri(), document),
+                    |root| read_knowledge_document_from_artifact(&uri.to_uri(), document, root),
+                ),
+            ParsedResourceUri::SnapshotKnowledgeDocument(document) => {
+                let root = snapshot_artifact(&self.knowledge, &document.snapshot, &uri.to_uri())?;
+                read_knowledge_document_from_artifact(
+                    &uri.to_uri(),
+                    &KnowledgeDocumentUri {
+                        id: document.id.clone(),
+                    },
+                    &root,
+                )
+            }
+            _ => Err(ResourceReadError::NotFound { uri: uri.to_uri() }),
+        }
     }
 }
 
@@ -238,24 +262,30 @@ pub struct KnowledgeChunkResourceHandler;
 /// Handler for normalized knowledge passages, optionally backed by a staged artifact.
 #[derive(Debug, Clone, Default)]
 pub struct ConfiguredKnowledgeChunkResourceHandler {
-    artifact_root: Option<PathBuf>,
+    knowledge: crate::config::KnowledgeConfig,
 }
 
 impl ConfiguredKnowledgeChunkResourceHandler {
     #[must_use]
     pub fn new(artifact_root: impl Into<PathBuf>) -> Self {
         Self {
-            artifact_root: Some(artifact_root.into()),
+            knowledge: crate::config::KnowledgeConfig {
+                artifact_path: Some(artifact_root.into()),
+                ..crate::config::KnowledgeConfig::default()
+            },
         }
     }
 
     #[must_use]
     pub fn from_config() -> Self {
         Self {
-            artifact_root: crate::config::McpConfig::load()
-                .knowledge
-                .resolved_artifact_path(),
+            knowledge: crate::config::McpConfig::load().knowledge.clone(),
         }
+    }
+
+    #[must_use]
+    pub const fn with_config(knowledge: crate::config::KnowledgeConfig) -> Self {
+        Self { knowledge }
     }
 }
 
@@ -274,18 +304,46 @@ impl ResourceReadHandler for KnowledgeChunkResourceHandler {
 
 impl ResourceReadHandler for ConfiguredKnowledgeChunkResourceHandler {
     fn matches(&self, uri: &ParsedResourceUri) -> bool {
-        matches!(uri, ParsedResourceUri::KnowledgeChunk(_))
+        matches!(
+            uri,
+            ParsedResourceUri::KnowledgeChunk(_) | ParsedResourceUri::SnapshotKnowledgeChunk(_)
+        )
     }
 
     fn read(&self, uri: &ParsedResourceUri) -> Result<String, ResourceReadError> {
-        let ParsedResourceUri::KnowledgeChunk(chunk) = uri else {
-            return Err(ResourceReadError::NotFound { uri: uri.to_uri() });
-        };
-        self.artifact_root.as_ref().map_or_else(
-            || read_knowledge_chunk(&uri.to_uri(), chunk),
-            |root| read_knowledge_chunk_from_artifact(&uri.to_uri(), chunk, root),
-        )
+        match uri {
+            ParsedResourceUri::KnowledgeChunk(chunk) => self
+                .knowledge
+                .resolved_artifact_path()
+                .as_ref()
+                .map_or_else(
+                    || read_knowledge_chunk(&uri.to_uri(), chunk),
+                    |root| read_knowledge_chunk_from_artifact(&uri.to_uri(), chunk, root),
+                ),
+            ParsedResourceUri::SnapshotKnowledgeChunk(chunk) => {
+                let root = snapshot_artifact(&self.knowledge, &chunk.snapshot, &uri.to_uri())?;
+                read_knowledge_chunk_from_artifact(
+                    &uri.to_uri(),
+                    &KnowledgeChunkUri {
+                        id: chunk.id.clone(),
+                    },
+                    &root,
+                )
+            }
+            _ => Err(ResourceReadError::NotFound { uri: uri.to_uri() }),
+        }
     }
+}
+
+fn snapshot_artifact(
+    knowledge: &crate::config::KnowledgeConfig,
+    snapshot: &str,
+    uri: &str,
+) -> Result<PathBuf, ResourceReadError> {
+    knowledge
+        .resolved_snapshot(snapshot)
+        .map(|resolved| resolved.path)
+        .ok_or_else(|| ResourceReadError::NotFound { uri: uri.into() })
 }
 
 #[cfg(test)]
@@ -329,5 +387,44 @@ mod tests {
         assert!(body.contains("document_id"));
         assert!(body.contains("\"chunks\""));
         assert!(body.contains("\"text\""));
+    }
+
+    #[test]
+    fn configured_handler_reads_an_immutable_snapshot_uri() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let snapshot = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let artifact = temp.path().join("artifacts").join(snapshot);
+        let summary = build_embedded_artifacts(&artifact).expect("build artifact");
+        std::fs::create_dir_all(temp.path().join("snapshots")).expect("snapshot directory");
+        std::fs::write(
+            temp.path()
+                .join("snapshots")
+                .join(format!("{snapshot}.json")),
+            serde_json::to_vec(&serde_json::json!({
+                "id": snapshot,
+                "profile": "selected_trees",
+                "repositories": []
+            }))
+            .expect("snapshot manifest"),
+        )
+        .expect("write snapshot");
+        let chunk_id = summary.manifest.corpus.chunks[0].to_string();
+        let parsed = crate::resources::parse_resource_uri(&format!(
+            "vesc://knowledge/snapshot/{snapshot}/chunk/{chunk_id}"
+        ))
+        .expect("snapshot URI");
+        let config = crate::config::KnowledgeConfig {
+            data_root: Some(
+                crate::managed_repositories::DataRoot::new(temp.path().to_path_buf())
+                    .expect("data root"),
+            ),
+            ..crate::config::KnowledgeConfig::default()
+        };
+
+        let body = ConfiguredKnowledgeChunkResourceHandler::with_config(config)
+            .read(&parsed)
+            .expect("read versioned chunk");
+
+        assert!(body.contains("chunk_id"));
     }
 }

@@ -8,6 +8,8 @@ pub enum ParsedResourceUri {
     Catalog(CatalogResourceUri),
     KnowledgeChunk(KnowledgeChunkUri),
     KnowledgeDocument(KnowledgeDocumentUri),
+    SnapshotKnowledgeChunk(SnapshotKnowledgeChunkUri),
+    SnapshotKnowledgeDocument(SnapshotKnowledgeDocumentUri),
     KnowledgeFeedback(KnowledgeFeedbackUri),
     RefloatCommand(RefloatCommandUri),
     FixtureManifest(FixtureManifestUri),
@@ -31,6 +33,38 @@ impl KnowledgeChunkUri {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnowledgeDocumentUri {
     pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotKnowledgeChunkUri {
+    pub snapshot: String,
+    pub id: String,
+}
+
+impl SnapshotKnowledgeChunkUri {
+    #[must_use]
+    pub fn to_uri(&self) -> String {
+        format!(
+            "vesc://knowledge/snapshot/{}/chunk/{}",
+            self.snapshot, self.id
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotKnowledgeDocumentUri {
+    pub snapshot: String,
+    pub id: String,
+}
+
+impl SnapshotKnowledgeDocumentUri {
+    #[must_use]
+    pub fn to_uri(&self) -> String {
+        format!(
+            "vesc://knowledge/snapshot/{}/document/{}",
+            self.snapshot, self.id
+        )
+    }
 }
 
 impl KnowledgeDocumentUri {
@@ -137,6 +171,8 @@ impl ParsedResourceUri {
             Self::Catalog(catalog) => catalog.to_uri(),
             Self::KnowledgeChunk(chunk) => chunk.to_uri(),
             Self::KnowledgeDocument(document) => document.to_uri(),
+            Self::SnapshotKnowledgeChunk(chunk) => chunk.to_uri(),
+            Self::SnapshotKnowledgeDocument(document) => document.to_uri(),
             Self::KnowledgeFeedback(feedback) => feedback.to_uri(),
             Self::RefloatCommand(command) => command.to_uri(),
             Self::FixtureManifest(fixture) => fixture.to_uri(),
@@ -182,6 +218,35 @@ fn parse_vesc_uri(full: &str, rest: &str) -> Result<ParsedResourceUri, ResourceU
     };
 
     if authority == "knowledge" {
+        if let Some(versioned) = path.strip_prefix("snapshot/") {
+            let segments = versioned.split('/').collect::<Vec<_>>();
+            if let [snapshot, kind @ ("chunk" | "document"), id] = segments.as_slice()
+                && snapshot.len() == 64
+                && snapshot.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && !id.is_empty()
+                && !id.chars().any(char::is_whitespace)
+            {
+                return Ok(match *kind {
+                    "chunk" => {
+                        ParsedResourceUri::SnapshotKnowledgeChunk(SnapshotKnowledgeChunkUri {
+                            snapshot: (*snapshot).into(),
+                            id: (*id).into(),
+                        })
+                    }
+                    "document" => {
+                        ParsedResourceUri::SnapshotKnowledgeDocument(SnapshotKnowledgeDocumentUri {
+                            snapshot: (*snapshot).into(),
+                            id: (*id).into(),
+                        })
+                    }
+                    _ => unreachable!("versioned knowledge kind was validated"),
+                });
+            }
+            return Err(ResourceUriError::malformed(
+                full,
+                "snapshot knowledge URI must match snapshot/<64-hex-id>/{chunk|document}/<id>",
+            ));
+        }
         let (kind, id) = path.split_once('/').unwrap_or(("", ""));
         if !matches!(kind, "chunk" | "document" | "feedback") {
             return Err(ResourceUriError::malformed(
@@ -409,6 +474,18 @@ mod tests {
             })
         );
         assert_eq!(parsed.to_uri(), "vesc://knowledge/chunk/chunk-123");
+    }
+
+    #[test]
+    fn snapshot_knowledge_uris_round_trip() {
+        let snapshot = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for uri in [
+            format!("vesc://knowledge/snapshot/{snapshot}/chunk/chunk-123"),
+            format!("vesc://knowledge/snapshot/{snapshot}/document/document-123"),
+        ] {
+            let parsed = parse_resource_uri(&uri).expect("versioned knowledge URI");
+            assert_eq!(parsed.to_uri(), uri);
+        }
     }
 
     #[test]
