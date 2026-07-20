@@ -19,6 +19,7 @@ jobs:
     continue-on-error: true
     env:
       CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,7 +30,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          cache-workspace-crates: true
           cmd-format: nix develop .#ci -c {0}
+          env-vars: CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
 
       - name: Build coverage report
         run: nix develop .#ci -c make coverage

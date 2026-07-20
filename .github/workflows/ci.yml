@@ -15,10 +15,17 @@ concurrency:
 
 jobs:
   check:
+    name: check (${{ matrix.task }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [lint, feature-boundaries, test]
     env:
       CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,10 +36,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          cache-workspace-crates: true
           cmd-format: nix develop .#ci -c {0}
+          env-vars: CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+          shared-key: ${{ matrix.task }}
 
       - name: Check flake
+        if: matrix.task == 'lint'
         run: nix flake check --print-build-logs
 
-      - name: Check workspace
-        run: nix develop .#ci -c make check
+      - name: Run ${{ matrix.task }} checks
+        run: nix develop .#ci -c make ${{ matrix.task }}
