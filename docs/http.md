@@ -147,7 +147,11 @@ Host and origin lists accept commas or semicolons.
 ## Verify the connection
 
 Connect through an MCP client and call `ping` with an optional message. A
-healthy server responds with `ok: true`. Then call
+healthy server responds with `ok: true`. When managed repositories are
+configured, `knowledge.state` is `preparing`, `ready`, `stale`, or `failed`;
+`knowledge.phase` and the completed/total repository counts show background
+startup progress. The HTTP listener is available while this preparation runs.
+Then call
 `search_vesc_knowledge` with a small query such as:
 
 ```json

@@ -191,16 +191,20 @@ repositories/<id>.refs.json
 snapshots/<snapshot-id>.json
 artifacts/<snapshot-id>/
 artifacts/<snapshot-id>/history.json
+preparation-status.json
 tmp/
 ```
 
-At server startup, enabled repositories are cloned or refreshed as bare stores;
-all configured heads and tags are recorded as immutable commit IDs. The default
-artifact is one combined history containing every commit reachable from each
-configured default branch. It stores changed path occurrences separately from
-content-addressed passages, so unchanged blobs and chunks are not duplicated
-for every commit. Tags and branches are retained as named aliases into the
-commit graph.
+In HTTP mode the server binds first, then clones or refreshes enabled bare
+repositories and prepares the default artifact in the background. The `ping`
+response exposes the bounded `knowledge` state and phase plus completed/total
+repository counts; the same state is atomically shared through
+`preparation-status.json`. The default artifact is one combined history
+containing every commit reachable from each configured default branch. It
+stores changed path occurrences separately from content-addressed passages, so
+unchanged blobs and chunks are not duplicated for every commit. Binary changes
+remain history occurrences but do not become searchable text chunks. Tags and
+branches are retained as named aliases into the commit graph.
 
 A later refresh walks the current graph with `gix`, reuses commits and passages
 from the previous immutable generation, ingests only newly reachable changed

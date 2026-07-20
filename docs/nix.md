@@ -133,12 +133,12 @@ services.vesc-mcp = {
 };
 ```
 
-The first start fetches three bare Git stores and builds the combined default
-history, so its network, disk, and CPU cost is materially higher than a normal
-restart. Later starts fetch incrementally with gix, reuse content-addressed
-passages, and advance the default alias only after the new snapshot validates.
-Changing one ref creates a new artifact without deleting older immutable
-snapshots.
+The first start binds HTTP before fetching three bare Git stores and building
+the combined default history in the background, so clients can observe
+`ping.knowledge` progress throughout the expensive first preparation. Later
+starts fetch incrementally with gix, reuse content-addressed passages, and
+advance the default alias only after the new snapshot validates. Changing one
+ref creates a new artifact without deleting older immutable snapshots.
 
 Bare repositories, manifests, indexes, and temporary same-filesystem staging
 live below `/var/lib/vesc-mcp`; disposable caches have the separate
