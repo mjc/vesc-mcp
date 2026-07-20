@@ -34,6 +34,8 @@ use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
 use crate::tools::list_source_versions::{
     ListVescSourceVersionsParams, list_vesc_source_versions_json,
 };
+#[cfg(feature = "managed-git")]
+use crate::tools::prepare_knowledge::{PrepareVescKnowledgeParams, prepare_vesc_knowledge_json};
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
 };
@@ -282,6 +284,15 @@ impl VescMcpService {
         list_vesc_source_versions_json(&params, &self.state.knowledge)
     }
 
+    #[cfg(feature = "managed-git")]
+    #[tool(description = "Prepare one immutable source snapshot for search.")]
+    async fn prepare_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<PrepareVescKnowledgeParams>,
+    ) -> String {
+        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
+    }
+
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
     fn search_vesc_knowledge(
         &self,
@@ -492,6 +503,15 @@ impl HttpMcpService {
         Parameters(params): Parameters<ListVescSourceVersionsParams>,
     ) -> String {
         list_vesc_source_versions_json(&params, &self.state.knowledge)
+    }
+
+    #[cfg(feature = "managed-git")]
+    #[tool(description = "Prepare one immutable source snapshot for search.")]
+    async fn prepare_vesc_knowledge(
+        &self,
+        Parameters(params): Parameters<PrepareVescKnowledgeParams>,
+    ) -> String {
+        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
     }
 
     #[tool(description = "Search VESC knowledge; corrections first, notes unverified.")]
@@ -873,22 +893,19 @@ mod tests {
 
     #[cfg(feature = "managed-git")]
     #[test]
-    fn source_version_discovery_is_shared_by_stdio_and_http() {
+    fn source_version_tools_are_shared_by_stdio_and_http() {
         let service = VescMcpService::new();
 
-        assert!(
-            service
-                .list_tool_names()
-                .iter()
-                .any(|name| name == "list_vesc_source_versions")
-        );
-        assert!(
-            service
-                .http_service()
-                .list_tool_names()
-                .iter()
-                .any(|name| name == "list_vesc_source_versions")
-        );
+        for name in ["list_vesc_source_versions", "prepare_vesc_knowledge"] {
+            assert!(service.list_tool_names().iter().any(|tool| tool == name));
+            assert!(
+                service
+                    .http_service()
+                    .list_tool_names()
+                    .iter()
+                    .any(|tool| tool == name)
+            );
+        }
     }
 
     #[test]

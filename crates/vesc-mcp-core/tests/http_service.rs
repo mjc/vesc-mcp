@@ -11,6 +11,7 @@ fn http_service_exposes_only_safe_shared_tools() {
         [
             "list_vesc_source_versions",
             "ping",
+            "prepare_vesc_knowledge",
             "replay_vesc_knowledge_correction",
             "search_vesc_knowledge"
         ]

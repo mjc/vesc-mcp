@@ -53,6 +53,7 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
         vec![
             "list_vesc_source_versions",
             "ping",
+            "prepare_vesc_knowledge",
             "replay_vesc_knowledge_correction",
             "search_vesc_knowledge",
         ]
