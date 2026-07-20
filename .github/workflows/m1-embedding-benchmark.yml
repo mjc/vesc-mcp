@@ -44,7 +44,7 @@ jobs:
             --semantic-lossless-windows \
             --semantic-provider cpu \
             --warmup 2 \
-            --repetitions 3 \
+            --repetitions 10 \
             --format json \
             --json-out target/vescm195-m1/granite-97m.json \
             --markdown-out target/vescm195-m1/granite-97m.md \
@@ -67,7 +67,7 @@ jobs:
             --semantic-provider coreml \
             --semantic-verbose-ort \
             --warmup 2 \
-            --repetitions 3 \
+            --repetitions 10 \
             --format json \
             --json-out target/vescm195-m1/granite-97m-coreml.json \
             --markdown-out target/vescm195-m1/granite-97m-coreml.md \

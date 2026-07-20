@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "ticket": "VESCM-199",
+  "lookup": {
+    "ryzen_5_8600g": {
+      "lexical_and_graph": "cpu",
+      "query_embedding": "Granite 97M INT8 / CPUExecutionProvider",
+      "reranker": "disabled; Ettin 32M INT8 / CPUExecutionProvider is the measured escalation",
+      "embedding_p50_ms": 3.401,
+      "embedding_p95_ms": 7.641,
+      "reranker_p50_ms": 41.079,
+      "reranker_p95_ms": 61.292,
+      "source": "../vescm-195/modern-bounded.json"
+    },
+    "apple_m1": {
+      "lexical_and_graph": "cpu",
+      "query_embedding": "Granite 97M INT8 / CPUExecutionProvider",
+      "reranker": "disabled; Ettin 32M INT8 / CPUExecutionProvider is the measured escalation",
+      "embedding_p50_ms": 3.007,
+      "embedding_p95_ms": 3.389,
+      "reranker_p50_ms": 49.177,
+      "reranker_p95_ms": 56.254,
+      "coreml": "pending proven node placement; registration alone is invalid",
+      "source": "../vescm-195/m1/granite-97m.json"
+    }
+  },
+  "ingestion": {
+    "ryzen_5_8600g_plus_rx_5700_xt": {
+      "placement": "RX 5700 XT gfx1010 / MIGraphX / FP16 Jina v2 base code",
+      "max_length": 512,
+      "batch_size": 8,
+      "length_bucketed": true,
+      "lossless_windows": true,
+      "window_aggregation": "mean",
+      "measured_chunks_per_second": 17.45,
+      "measured_windows_per_second": 32.44,
+      "source": "../../../docs/provider-profiling.md"
+    }
+  },
+  "planner": {
+    "default": "deterministic Rust contract; no model call",
+    "optional_measured_gpu": "RX 5700 XT Vulkan0 / llama.cpp 6f4f53f / Nanbeige 4.1 3B Q4_K_M",
+    "decision_source": "../vescm-197/decision.json"
+  },
+  "critic": {
+    "default": "disabled; no model call",
+    "measured_gpu": "RX 5700 XT Vulkan0 / Prism llama.cpp 9fcaed763ccda38ea81068ad9d7f991aaddca451 / Bonsai 27B Q1_0",
+    "decision_source": "../vescm-198/decision.json"
+  },
+  "pins": {
+    "upgrade_policy": "Any runtime, model revision, quantization, provider, GPU architecture, sequence length, batch size, pooling, or fixture change requires an explicit bounded rebenchmark."
+  }
+}
