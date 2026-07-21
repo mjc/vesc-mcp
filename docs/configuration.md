@@ -144,7 +144,7 @@ Supported modes:
 |------|----------|
 | `lexical` | Offline keyword and identifier search; recommended default |
 | `legacy` | Compatibility search for older results |
-| `auto` | Uses hybrid search when configured; otherwise returns lexical results with a warning |
+| `auto` | Uses hybrid search and reports an error with an explicit lexical retry when semantic retrieval fails |
 | `hybrid` | Requires a compatible local vector artifact and model; reports an error if unavailable |
 
 The server never downloads a semantic model at startup. Model directory,

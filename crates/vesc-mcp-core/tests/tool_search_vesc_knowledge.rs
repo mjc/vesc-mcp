@@ -148,7 +148,7 @@ fn documented_search_examples_are_behaviorally_supported() {
         serde_json::json!({ "query": "lbm_add_extension", "mode": "lexical" }),
         serde_json::json!({
             "query": "package lifecycle from descriptor to load",
-            "mode": "auto"
+            "mode": "lexical"
         }),
         serde_json::json!({
             "query": "NVM",
@@ -165,6 +165,23 @@ fn documented_search_examples_are_behaviorally_supported() {
                 .is_some_and(|results| !results.is_empty())
         );
     }
+}
+
+#[test]
+fn unknown_category_is_ignored_at_the_mcp_boundary() {
+    let harness = McpTestHarness::new();
+    let response = harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({
+            "query": "lbm_add_extension",
+            "category": "unknown",
+            "mode": "lexical"
+        }),
+    );
+
+    let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
+    assert_eq!(body["ok"], true, "response: {body}");
+    assert!(!body["results"].as_array().is_some_and(Vec::is_empty));
 }
 
 #[test]

@@ -27,8 +27,8 @@ additive `resource_uri` and `document_uri` fields.
 {"query":"package lifecycle from descriptor to load","mode":"auto"}
 ```
 
-With no semantic artifact, `auto` returns lexical evidence and a bounded
-degradation warning. It never downloads a model.
+With no semantic artifact, `auto` returns an error recommending an explicit
+`lexical` retry. It never downloads a model.
 
 ## Filtered query
 

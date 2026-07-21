@@ -9,9 +9,9 @@ which is offline, deterministic, and strongest for exact firmware symbols.
   `516f4baf13dec4ddddda8631e019b5737c8bc250`: FP16 for the measured RX 5700 XT
   ingestion path and INT8 on CPU for queries. The package pins queries to the
   validated 512-token contract.
-- Use `auto` so an unavailable semantic runtime degrades to lexical search with
-  a warning. Use explicit `hybrid` only when a capability error should stop the
-  request, or `lexical` when semantic search is unwanted.
+- Use `auto` or `hybrid` when semantic retrieval is required. Both stop with a
+  capability error and recommend an explicit `lexical` retry when the semantic
+  runtime is unavailable.
 - Keep CPU as the default query execution provider. The RX 5700 XT exception
   below uses MIGraphX only for bulk ingestion.
 - Keep `Xenova/bge-small-en-v1.5` at revision

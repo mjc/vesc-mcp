@@ -32,7 +32,7 @@ pub enum SearchMode {
     Legacy,
     /// Use Tantivy over normalized chunks.
     Lexical,
-    /// Use all enabled retrieval backends; semantic retrieval is optional.
+    /// Require semantic retrieval and fuse it with lexical evidence.
     Hybrid,
     /// Select the staged default configured by the server.
     Auto,
@@ -58,14 +58,14 @@ pub struct SearchVescKnowledgeParams {
     /// Immutable snapshot returned by `prepare_vesc_knowledge`.
     #[serde(default)]
     pub snapshot_id: Option<String>,
-    /// Optional category filter (`firmware_api`, `lispbm`, `package_build`, etc.).
+    /// Optional category filter. Unrecognized values are ignored.
     #[serde(default)]
     pub category: Option<String>,
     /// Maximum number of hits to return (default 10).
     #[serde(default = "default_search_limit")]
     pub limit: usize,
-    /// Retrieval mode. Defaults to offline `lexical`; `legacy` remains explicit
-    /// compatibility mode.
+    /// Retrieval mode. Omit to use the server default; retry with `lexical` only
+    /// when a semantic failure explicitly recommends it.
     #[serde(default)]
     pub mode: Option<SearchMode>,
     /// Additive filters for lexical/hybrid retrieval.
@@ -85,7 +85,7 @@ pub struct SearchVescKnowledgeParams {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchVescKnowledgeFilters {
-    /// Category filter; conflicts with the legacy top-level category when both differ.
+    /// Category filter. Unrecognized values are ignored.
     #[serde(default)]
     pub category: Option<String>,
     #[serde(default)]
@@ -379,12 +379,8 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
     }
 }
 
-fn parse_category(raw: Option<&str>) -> Result<Option<Category>, String> {
-    raw.map(|name| {
-        let value = serde_json::Value::String(name.to_string());
-        serde_json::from_value(value).map_err(|_| format!("unsupported category {name:?}"))
-    })
-    .transpose()
+fn parse_category(raw: Option<&str>) -> Option<Category> {
+    raw.and_then(|name| serde_json::from_value(serde_json::Value::String(name.to_string())).ok())
 }
 
 #[must_use]
@@ -459,7 +455,7 @@ pub fn search_vesc_knowledge_tool_with_config(
                     let mut response = SearchVescKnowledgeResponse {
                         ok: true,
                         mode,
-                        capabilities: capabilities_for_result(mode, &warnings),
+                        capabilities: capabilities_for_mode(mode),
                         corrections: Vec::new(),
                         results,
                         error: None,
@@ -551,14 +547,7 @@ fn capabilities_for_mode(mode: SearchMode) -> Vec<String> {
             "knowledge-chunk-resource".into(),
             "knowledge-document-resource".into(),
         ],
-        SearchMode::Auto => vec![
-            "lexical-index".into(),
-            "auto-fallback".into(),
-            "provenance".into(),
-            "knowledge-chunk-resource".into(),
-            "knowledge-document-resource".into(),
-        ],
-        SearchMode::Hybrid => vec![
+        SearchMode::Auto | SearchMode::Hybrid => vec![
             "lexical-index".into(),
             "semantic-index".into(),
             "hybrid-fusion".into(),
@@ -567,14 +556,6 @@ fn capabilities_for_mode(mode: SearchMode) -> Vec<String> {
             "knowledge-document-resource".into(),
         ],
     }
-}
-
-fn capabilities_for_result(mode: SearchMode, warnings: &[String]) -> Vec<String> {
-    let mut capabilities = capabilities_for_mode(mode);
-    if mode == SearchMode::Auto && warnings.is_empty() {
-        capabilities.extend(["semantic-index".into(), "hybrid-fusion".into()]);
-    }
-    capabilities
 }
 
 const fn error_response(mode: SearchMode, error: String) -> SearchVescKnowledgeResponse {
@@ -770,8 +751,8 @@ fn index_metadata(
 fn parse_filters(
     params: &SearchVescKnowledgeParams,
 ) -> Result<(Option<Category>, vesc_knowledge_index::LexicalFilters), String> {
-    let category = parse_category(params.category.as_deref())?;
-    let filter_category = parse_category(params.filters.category.as_deref())?;
+    let category = parse_category(params.category.as_deref());
+    let filter_category = parse_category(params.filters.category.as_deref());
     if category.is_some() && filter_category.is_some() && category != filter_category {
         return Err("category and filters.category conflict".into());
     }
@@ -850,42 +831,18 @@ fn search_mode(
             Vec::new(),
         )),
         SearchMode::Lexical => Ok((
-                lexical_results(&params.query, filters, limit, config)?
-                    .into_iter()
-                    .enumerate()
-                    .map(|(rank, hit)| lexical_result(hit, rank, filters))
+            lexical_results(&params.query, filters, limit, config)?
+                .into_iter()
+                .enumerate()
+                .map(|(rank, hit)| lexical_result(hit, rank, filters))
                 .collect(),
             Vec::new(),
         )),
-        SearchMode::Auto => match hybrid_results(params, filters, limit, config) {
-            Ok(results) => Ok((results, Vec::new())),
-            Err(semantic_error) => match lexical_results(&params.query, filters, limit, config) {
-                Ok(results) => Ok((
-                    results
-                        .into_iter()
-                        .enumerate()
-                        .map(|(rank, hit)| lexical_result(hit, rank, filters))
-                        .collect(),
-                    vec![format!(
-                        "semantic retrieval unavailable; lexical results returned: {semantic_error}"
-                    )],
-                )),
-                Err(_) => Ok((
-                    embedded_lexical_results(&params.query, filters, limit)?,
-                    vec![
-                        "configured lexical artifact unavailable; embedded lexical results returned"
-                            .into(),
-                        format!(
-                            "semantic retrieval unavailable; lexical results returned: {semantic_error}"
-                        ),
-                    ],
-                )),
-            },
-        },
-        SearchMode::Hybrid => Ok((
-            hybrid_results(params, filters, limit, config)?,
-            Vec::new(),
-        )),
+        SearchMode::Auto | SearchMode::Hybrid => hybrid_results(params, filters, limit, config)
+            .map(|results| (results, Vec::new()))
+            .map_err(|error| {
+                format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
+            }),
     }
 }
 
@@ -1349,23 +1306,6 @@ fn fused_result(
     }
 }
 
-fn embedded_lexical_results(
-    query: &str,
-    filters: &vesc_knowledge_index::LexicalFilters,
-    limit: usize,
-) -> Result<Vec<SearchVescKnowledgeResult>, String> {
-    vesc_knowledge_index::lexical_index()
-        .search(query, filters, limit)
-        .map_err(|error| error.to_string())
-        .map(|results| {
-            results
-                .into_iter()
-                .enumerate()
-                .map(|(rank, hit)| lexical_result(hit, rank, filters))
-                .collect()
-        })
-}
-
 fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
     if root.is_file() {
         return Ok(root.to_owned());
@@ -1803,21 +1743,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn invalid_category_returns_error_response() {
-        let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
-            query: "nvm".into(),
-            snapshot_id: None,
-            category: Some("not_a_category".into()),
-            limit: 10,
-            mode: Some(SearchMode::Legacy),
-            filters: SearchVescKnowledgeFilters::default(),
-            max_response_bytes: None,
-            max_context_bytes: None,
-            detail: SearchResponseDetail::Full,
-        });
-        assert!(!resp.ok);
-        assert!(resp.error.is_some());
-        assert!(resp.results.is_empty());
+    fn invalid_category_is_ignored() {
+        for (category, filter_category) in [
+            (Some("not_a_category".into()), None),
+            (None, Some("also_not_a_category".into())),
+        ] {
+            let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
+                query: "nvm".into(),
+                snapshot_id: None,
+                category,
+                limit: 10,
+                mode: Some(SearchMode::Legacy),
+                filters: SearchVescKnowledgeFilters {
+                    category: filter_category,
+                    ..SearchVescKnowledgeFilters::default()
+                },
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
+            });
+            assert!(resp.ok);
+            assert!(resp.error.is_none());
+            assert!(!resp.results.is_empty());
+        }
     }
 
     #[test]
@@ -1891,16 +1839,13 @@ mod tests {
 
         assert!(!response.ok);
         assert_eq!(response.mode, SearchMode::Hybrid);
-        assert!(
-            response
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("vector artifact"))
-        );
+        assert!(response.error.as_deref().is_some_and(|error| {
+            error.contains("vector artifact") && error.contains("retry with mode \"lexical\"")
+        }));
     }
 
     #[test]
-    fn auto_semantic_failure_returns_lexical_warning() {
+    fn auto_semantic_failure_recommends_explicit_lexical_retry() {
         let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "nvm".into(),
             snapshot_id: None,
@@ -1913,13 +1858,13 @@ mod tests {
             detail: SearchResponseDetail::Full,
         });
 
-        assert!(response.ok);
-        assert!(!response.results.is_empty());
+        assert!(!response.ok);
+        assert!(response.results.is_empty());
         assert!(
             response
-                .warnings
-                .iter()
-                .any(|warning| { warning.contains("semantic retrieval unavailable") })
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("retry with mode \"lexical\""))
         );
     }
 

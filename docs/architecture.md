@@ -132,8 +132,8 @@ flowchart LR
 `legacy` remains the explicit compatibility mode. The lexical path uses the
 normalized in-memory Tantivy index. Hybrid fusion uses RRF with a lexical floor
 and bounded adjacent context, so an uncalibrated semantic model cannot displace
-trusted lexical evidence; `auto` degrades to lexical when no semantic
-capability is active. Artifact writes are staged and the active manifest
+trusted lexical evidence; `auto` reports an error when semantic capability is
+unavailable. Artifact writes are staged and the active manifest
 selector is replaced only after checksum validation. The selector in
 `active.json` points to the full generation manifest and carries its checksum;
 readers should use the lifecycle inspection API, which also accepts legacy

@@ -125,9 +125,9 @@ Explicit `hybrid` mode requires all of these to match:
 - the model ID recorded in the artifact;
 - the model revision recorded in the artifact.
 
-Use `lexical` if you do not need semantic search. Use `auto` if you want the
-server to fall back to lexical results with a warning when semantic search is
-unavailable. The server never downloads a missing model at startup.
+Use `lexical` if you do not need semantic search. `auto` fails closed when
+semantic search is unavailable and recommends an explicit lexical retry. The
+server never downloads a missing model at startup.
 
 ## A search result looks like an instruction
 
