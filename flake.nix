@@ -24,7 +24,7 @@
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
-          rustToolchain = pkgs.rust-bin.stable.latest.default;
+          rustToolchain = pkgs.rust-bin.stable."1.97.1".default;
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
           semanticModelId = "jinaai/jina-embeddings-v2-base-code";
           semanticModelRepository = semanticModelId;
@@ -176,14 +176,14 @@
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
           extensions = [
             "rust-src"
             "rust-analyzer"
             "llvm-tools-preview"
           ];
         };
-        ciRustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        ciRustToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
           extensions = [
             "clippy"
             "rustfmt"
@@ -250,7 +250,7 @@
               ];
             shellHook = rustShellHook rustToolchain + ''
               export ORT_DYLIB_PATH="${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
-              echo "vesc-mcp dev shell (stable Rust; provider benchmark tools available)" >&2
+              echo "vesc-mcp dev shell (Rust 1.97.1; provider benchmark tools available)" >&2
             '';
           };
         }
