@@ -78,7 +78,7 @@ pub struct SetCurrentRepositoryParams {
 pub struct CurrentRepository {
     pub repository: String,
     pub root: Option<String>,
-    pub knowledge_available: bool,
+    pub knowledge_repository: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -318,9 +318,7 @@ impl VescMcpService {
         ping_json(message, &self.state.knowledge, &self.session)
     }
 
-    #[tool(
-        description = "Set this chat's repository for its MCP session."
-    )]
+    #[tool(description = "Set this chat's repository for its MCP session.")]
     async fn set_current_repository(
         &self,
         Parameters(params): Parameters<SetCurrentRepositoryParams>,
@@ -657,9 +655,7 @@ impl HttpMcpService {
         ping_json(message, &self.state.knowledge, &self.session)
     }
 
-    #[tool(
-        description = "Set this chat's repository for its MCP session."
-    )]
+    #[tool(description = "Set this chat's repository for its MCP session.")]
     async fn set_current_repository(
         &self,
         Parameters(params): Parameters<SetCurrentRepositoryParams>,
@@ -986,10 +982,7 @@ fn set_current_repository_json(
                 let selection = CurrentRepository {
                     repository: repository.to_string(),
                     root: root.map(|path| path.to_string_lossy().into_owned()),
-                    knowledge_available: knowledge
-                        .repositories
-                        .iter()
-                        .any(|candidate| candidate.id().as_str() == repository),
+                    knowledge_repository: knowledge_repository(knowledge, repository),
                 };
                 session.set_current_repository(selection.clone())?;
                 Ok(selection)
@@ -1018,11 +1011,22 @@ fn search_params_for_session(
     if params.filters.repository.is_none()
         && let Some(repository) = session
             .current_repository()
-            .filter(|repository| repository.knowledge_available)
+            .and_then(|repository| repository.knowledge_repository)
     {
-        params.filters.repository = Some(repository.repository);
+        params.filters.repository = Some(repository);
     }
     params
+}
+
+fn knowledge_repository(knowledge: &KnowledgeConfig, repository: &str) -> Option<String> {
+    if matches!(repository, "bldc" | "vesc") {
+        return Some("vesc".into());
+    }
+    knowledge
+        .repositories
+        .iter()
+        .any(|candidate| candidate.id().as_str() == repository)
+        .then(|| repository.to_string())
 }
 
 pub(crate) fn knowledge_preparation_status(
@@ -1199,9 +1203,9 @@ mod tests {
         let session = SessionContext::default();
         session
             .set_current_repository(CurrentRepository {
-                repository: "vesc".into(),
+                repository: "bldc".into(),
                 root: None,
-                knowledge_available: true,
+                knowledge_repository: Some("vesc".into()),
             })
             .expect("set repository");
 
