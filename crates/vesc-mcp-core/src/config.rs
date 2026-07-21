@@ -152,14 +152,19 @@ impl KnowledgeConfig {
     }
 
     pub(crate) fn resolved_artifact(&self) -> Option<ResolvedKnowledgeArtifact> {
-        if let Some(path) = self.artifact_path.clone() {
-            return Some(ResolvedKnowledgeArtifact {
-                path,
-                snapshot_id: None,
-                snapshot_profile: None,
-                repositories: BTreeMap::new(),
-            });
-        }
+        self.resolved_managed_artifact().or_else(|| {
+            self.artifact_path
+                .clone()
+                .map(|path| ResolvedKnowledgeArtifact {
+                    path,
+                    snapshot_id: None,
+                    snapshot_profile: None,
+                    repositories: BTreeMap::new(),
+                })
+        })
+    }
+
+    fn resolved_managed_artifact(&self) -> Option<ResolvedKnowledgeArtifact> {
         if self.repositories.is_empty() {
             return None;
         }
@@ -1045,7 +1050,7 @@ max_total_bytes = 268435456
     #[test]
     fn managed_default_snapshot_resolves_as_the_active_artifact() {
         let temp = tempfile::tempdir().expect("temporary directory");
-        let config = McpConfig::from_toml(
+        let mut config = McpConfig::from_toml(
             &format!(
                 r#"
 [knowledge]
@@ -1070,6 +1075,7 @@ max_total_bytes = 1073741824
             &DataRootInputs::default(),
         )
         .expect("managed configuration");
+        config.knowledge.artifact_path = Some(temp.path().join("bundled-fallback"));
         let id = "a".repeat(64);
         std::fs::write(
             temp.path().join("default-snapshot.json"),
