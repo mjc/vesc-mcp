@@ -567,7 +567,7 @@ fn validate_snapshot_artifact(path: &Path, profile: SnapshotProfile) -> Result<(
         .join(manifest.corpus.content_digest.to_string())
         .join("lexical.json");
     drop(
-        vesc_knowledge_index::LexicalIndex::read_artifact_chunks(&lexical)
+        vesc_knowledge_index::LexicalIndex::open_search_artifact(&lexical)
             .map_err(|error| SnapshotError::Build(error.to_string()))?,
     );
     if profile == SnapshotProfile::CompleteHistory {

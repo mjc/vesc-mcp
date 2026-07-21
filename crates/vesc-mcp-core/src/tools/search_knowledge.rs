@@ -969,13 +969,7 @@ fn lexical_hits_and_chunks(
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-) -> Result<
-    (
-        Vec<LexicalHit>,
-        BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
-    ),
-    String,
-> {
+) -> Result<(Vec<LexicalHit>, Arc<ChunkMap>), String> {
     if let Some(path) = config.resolved_artifact_path() {
         let lexical_path = active_lexical_path(&path)?;
         return with_cached_lexical_index(&lexical_path, |index| {
@@ -984,18 +978,22 @@ fn lexical_hits_and_chunks(
                 .map_err(|error| error.to_string())?;
             let chunks = if index.chunks().is_empty() {
                 if configured_vector_artifact_exists(config) {
-                    LexicalIndex::read_artifact_chunks(&lexical_path)
-                        .map_err(|error| error.to_string())?
-                        .into_iter()
-                        .map(|chunk| (chunk.chunk_id.clone(), chunk))
-                        .collect()
+                    cached_artifact(&FULL_CHUNK_CACHE, &lexical_path, || {
+                        Ok(LexicalIndex::read_artifact_chunks(&lexical_path)
+                            .map_err(|error| error.to_string())?
+                            .into_iter()
+                            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+                            .collect())
+                    })?
                 } else {
-                    hits.iter()
-                        .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
-                        .collect()
+                    Arc::new(
+                        hits.iter()
+                            .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
+                            .collect(),
+                    )
                 }
             } else {
-                index.chunks().clone()
+                Arc::new(index.chunks().clone())
             };
             Ok((hits, chunks))
         });
@@ -1004,10 +1002,42 @@ fn lexical_hits_and_chunks(
     let hits = index
         .search(query, filters, limit)
         .map_err(|error| error.to_string())?;
-    Ok((hits, index.chunks().clone()))
+    Ok((hits, Arc::new(index.chunks().clone())))
 }
 
 static LEXICAL_ARTIFACT_CACHE: OnceLock<Mutex<Option<CachedLexicalArtifact>>> = OnceLock::new();
+type ChunkMap = BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>;
+type ArtifactCache<T> = OnceLock<Mutex<Option<(PathBuf, Arc<T>)>>>;
+
+static FULL_CHUNK_CACHE: ArtifactCache<ChunkMap> = OnceLock::new();
+#[cfg(any(feature = "semantic-fastembed", test))]
+static VECTOR_ARTIFACT_CACHE: ArtifactCache<VectorArtifact> = OnceLock::new();
+
+fn cached_artifact<T>(
+    cache: &'static ArtifactCache<T>,
+    path: &Path,
+    load: impl FnOnce() -> Result<T, String>,
+) -> Result<Arc<T>, String> {
+    let cache = cache.get_or_init(|| Mutex::new(None));
+    let cached = {
+        let cache = cache
+            .lock()
+            .map_err(|_| "artifact cache is poisoned".to_string())?;
+        cache
+            .as_ref()
+            .filter(|(key, _)| key == path)
+            .map(|(_, value)| Arc::clone(value))
+    };
+    if let Some(value) = cached {
+        return Ok(value);
+    }
+    let value = Arc::new(load()?);
+    *cache
+        .lock()
+        .map_err(|_| "artifact cache is poisoned".to_string())? =
+        Some((path.to_owned(), Arc::clone(&value)));
+    Ok(value)
+}
 
 struct CachedLexicalArtifact {
     key: PathBuf,
@@ -1246,7 +1276,7 @@ fn reap_idle_semantic_model() {
 fn load_vector_artifact(
     config: &KnowledgeConfig,
     chunks: &BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
-) -> Result<VectorArtifact, String> {
+) -> Result<Arc<VectorArtifact>, String> {
     let root = config
         .resolved_artifact_path()
         .ok_or_else(|| "vector artifact is not configured".to_string())?;
@@ -1257,8 +1287,10 @@ fn load_vector_artifact(
         .join("generations")
         .join(manifest.corpus.content_digest.to_string())
         .join("vectors.bin");
-    let vector = VectorArtifact::open_artifact(&vector_path)
-        .map_err(|_| "configured vector artifact unavailable".to_string())?;
+    let vector = cached_artifact(&VECTOR_ARTIFACT_CACHE, &vector_path, || {
+        VectorArtifact::open_artifact(&vector_path)
+            .map_err(|_| "configured vector artifact unavailable".to_string())
+    })?;
     let model_id = config
         .semantic_model_id
         .as_deref()
