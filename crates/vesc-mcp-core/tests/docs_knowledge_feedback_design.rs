@@ -120,7 +120,9 @@ fn knowledge_feedback_design_doc_declares_implemented_status_with_tracking_id() 
         "missing status line with tracking IDs:\n{body}"
     );
     assert!(
-        body.contains("The correction is both a durable advisory and a reproducible knowledge-gap\nrecord."),
+        body.contains(
+            "The correction is both a durable advisory and a reproducible knowledge-gap\nrecord."
+        ),
         "missing implemented correction contract:\n{body}"
     );
 }
