@@ -18,8 +18,8 @@ use crate::corpus::git::{
 };
 use crate::corpus::ingest::{SourceInventory, SourceRejection, SourceSpec, ingest_allowlisted};
 use crate::corpus::{
-    ArtifactManifest, ContentDigest, CorpusManifest, CorpusVersion, NormalizedDocument,
-    RepositoryId, Revision,
+    ARTIFACT_SCHEMA_V1, ArtifactManifest, ContentDigest, CorpusManifest, CorpusVersion,
+    NormalizedDocument, RepositoryId, Revision, SchemaVersion,
 };
 use crate::{
     EmbeddingError, EmbeddingProvider, LexicalError, LexicalIndex, VectorArtifact,
@@ -101,6 +101,36 @@ pub struct BuildObservations {
     pub git_ingestion: Option<GitIngestionObservations>,
 }
 
+/// The small atomic selector stored at an artifact root.
+///
+/// The generation manifest remains the complete inspectable provenance record;
+/// this pointer avoids storing that record a second time in `active.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActiveManifestPointer {
+    schema: SchemaVersion,
+    generation: ContentDigest,
+    manifest_checksum: ContentDigest,
+}
+
+impl ActiveManifestPointer {
+    fn new(generation: &str, manifest_bytes: &[u8]) -> Result<Self, LifecycleError> {
+        Ok(Self {
+            schema: ARTIFACT_SCHEMA_V1,
+            generation: ContentDigest::try_from(generation)
+                .map_err(|error| LifecycleError::Contract(error.to_string()))?,
+            manifest_checksum: ContentDigest::of(manifest_bytes),
+        })
+    }
+
+    fn validate(&self) -> Result<(), LifecycleError> {
+        self.schema
+            .ensure_major(ARTIFACT_SCHEMA_V1, "active manifest")
+            .map(|_| ())
+            .map_err(|error| LifecycleError::Contract(error.to_string()))
+    }
+}
+
 impl BuildObservations {
     #[must_use]
     pub const fn provenance_bytes(&self) -> u64 {
@@ -157,8 +187,9 @@ pub struct GitHistoryBuildSummary {
 
 /// Build and atomically activate the embedded corpus generation under `root`.
 ///
-/// The serialized manifest contains only portable IDs and checksums. Files are
-/// written beneath a same-filesystem temporary directory before activation.
+/// The generation manifest contains portable IDs, provenance, and checksums;
+/// `active.json` is a small checksum-verified selector for that manifest. Files
+/// are written beneath a same-filesystem temporary directory before activation.
 ///
 /// # Errors
 ///
@@ -629,10 +660,13 @@ fn stage_chunk_refs(
         fs::rename(&temp_root, &final_root)?;
     }
     let activation_started = Instant::now();
+    let active_pointer = ActiveManifestPointer::new(&generation, &manifest_bytes)?;
+    let active_bytes = serde_json::to_vec(&active_pointer)?;
     let active_tmp = root.join(format!(".active.tmp-{}", std::process::id()));
-    fs::write(&active_tmp, &manifest_bytes)?;
+    fs::write(&active_tmp, &active_bytes)?;
     fs::rename(active_tmp, root.join("active.json"))?;
     observations.record(BuildPhase::Activation, activation_started);
+    observations.active_manifest_bytes = u64::try_from(active_bytes.len()).unwrap_or(u64::MAX);
     observations.artifact_bytes = lexical_bytes + vector_bytes.unwrap_or(0);
     observations.total_duration_us = elapsed_us(started);
 
@@ -763,14 +797,45 @@ fn validate_written_generation(
 ///
 /// Returns [`LifecycleError`] when the file is absent, malformed, or invalid.
 pub fn inspect_manifest(path: &Path) -> Result<ArtifactManifest, LifecycleError> {
-    let manifest: ArtifactManifest = serde_json::from_slice(&fs::read(path)?)?;
+    let bytes = fs::read(path)?;
+    let manifest = match serde_json::from_slice::<ArtifactManifest>(&bytes) {
+        Ok(manifest) => manifest,
+        Err(legacy_error) => {
+            let pointer = serde_json::from_slice::<ActiveManifestPointer>(&bytes)
+                .map_err(|_| legacy_error)?;
+            pointer.validate()?;
+            let root = path
+                .parent()
+                .ok_or_else(|| LifecycleError::Contract("active manifest has no root".into()))?;
+            let generation_path = root
+                .join("generations")
+                .join(pointer.generation.as_str())
+                .join("manifest.json");
+            let generation_bytes = fs::read(generation_path)?;
+            if ContentDigest::of(&generation_bytes) != pointer.manifest_checksum {
+                return Err(LifecycleError::Contract(
+                    "active manifest checksum mismatch".into(),
+                ));
+            }
+            let manifest: ArtifactManifest = serde_json::from_slice(&generation_bytes)?;
+            if manifest.corpus.content_digest != pointer.generation {
+                return Err(LifecycleError::Contract(
+                    "active manifest generation mismatch".into(),
+                ));
+            }
+            manifest
+        }
+    };
     manifest
         .validate()
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
     Ok(manifest)
 }
 
-/// Return the conventional active manifest path for an artifact root.
+/// Return the conventional active manifest selector path for an artifact root.
+///
+/// [`inspect_manifest`] accepts both the current checksum-verified selector and
+/// legacy full-manifest files at this path.
 #[must_use]
 pub fn active_manifest_path(root: &Path) -> PathBuf {
     root.join("active.json")
@@ -790,10 +855,8 @@ mod tests {
         assert!(summary.chunk_count > 0);
         assert!(summary.build_duration_us > 0);
         assert!(summary.observations.manifest_bytes > 0);
-        assert_eq!(
-            summary.observations.active_manifest_bytes,
-            summary.observations.manifest_bytes
-        );
+        assert!(summary.observations.active_manifest_bytes > 0);
+        assert!(summary.observations.active_manifest_bytes < summary.observations.manifest_bytes);
         assert!(summary.observations.corpus_bytes > 0);
         assert_eq!(
             summary.observations.provenance_bytes(),
@@ -827,6 +890,71 @@ mod tests {
         assert!(summary.vector_bytes.is_none());
         let text = fs::read_to_string(active_manifest_path(temp.path())).expect("manifest");
         assert!(!text.contains(temp.path().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn active_pointer_is_deterministic_and_checksums_generation_manifest() {
+        let first_root = tempfile::tempdir().expect("first artifact root");
+        let second_root = tempfile::tempdir().expect("second artifact root");
+        let first = build_embedded_artifacts(first_root.path()).expect("first build");
+        let second = build_embedded_artifacts(second_root.path()).expect("second build");
+        let first_bytes = fs::read(active_manifest_path(first_root.path())).expect("first active");
+        let second_bytes =
+            fs::read(active_manifest_path(second_root.path())).expect("second active");
+        assert_eq!(first_bytes, second_bytes);
+        assert!(first_bytes.len() <= 256);
+
+        let pointer: ActiveManifestPointer =
+            serde_json::from_slice(&first_bytes).expect("active pointer");
+        assert_eq!(pointer.generation.as_str(), first.generation);
+        let generation_manifest = first_root
+            .path()
+            .join("generations")
+            .join(&first.generation)
+            .join("manifest.json");
+        assert_eq!(
+            pointer.manifest_checksum,
+            ContentDigest::of(&fs::read(generation_manifest).expect("generation manifest"))
+        );
+        assert_eq!(first.generation, second.generation);
+        assert_eq!(first.manifest, second.manifest);
+        assert_eq!(first.lexical_bytes, second.lexical_bytes);
+    }
+
+    #[test]
+    fn inspect_manifest_accepts_legacy_full_active_manifest() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let summary = build_embedded_artifacts(temp.path()).expect("build");
+        fs::write(
+            active_manifest_path(temp.path()),
+            serde_json::to_vec(&summary.manifest).expect("legacy manifest"),
+        )
+        .expect("write legacy active manifest");
+
+        assert_eq!(
+            inspect_manifest(&active_manifest_path(temp.path())).expect("inspect legacy"),
+            summary.manifest
+        );
+    }
+
+    #[test]
+    fn inspect_manifest_rejects_corrupt_active_pointer_checksum() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let summary = build_embedded_artifacts(temp.path()).expect("build");
+        let active_path = active_manifest_path(temp.path());
+        let mut pointer: ActiveManifestPointer =
+            serde_json::from_slice(&fs::read(&active_path).expect("active pointer"))
+                .expect("pointer");
+        pointer.manifest_checksum = ContentDigest::of(b"corrupt");
+        fs::write(
+            &active_path,
+            serde_json::to_vec(&pointer).expect("corrupt pointer"),
+        )
+        .expect("write corrupt pointer");
+
+        let error = inspect_manifest(&active_path).expect_err("corrupt pointer rejected");
+        assert!(error.to_string().contains("checksum"));
+        assert!(summary.observations.active_manifest_bytes > 0);
     }
 
     #[test]

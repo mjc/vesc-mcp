@@ -547,6 +547,16 @@ fn run_build_default(args: &[String]) {
     fs::create_dir_all(&generated_generation)
         .unwrap_or_else(|error| panic!("create {}: {error}", generated_generation.display()));
     fs::copy(
+        generation.join("corpus.json"),
+        generated_generation.join("corpus.json"),
+    )
+    .unwrap_or_else(|error| panic!("copy default corpus manifest: {error}"));
+    fs::copy(
+        generation.join("manifest.json"),
+        generated_generation.join("manifest.json"),
+    )
+    .unwrap_or_else(|error| panic!("copy default generation manifest: {error}"));
+    fs::copy(
         generation.join("lexical.json"),
         generated_generation.join("lexical.json"),
     )

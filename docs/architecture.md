@@ -133,8 +133,11 @@ flowchart LR
 normalized in-memory Tantivy index. Hybrid fusion uses RRF with a lexical floor
 and bounded adjacent context, so an uncalibrated semantic model cannot displace
 trusted lexical evidence; `auto` degrades to lexical when no semantic
-capability is active. Artifact writes are staged and the active manifest is
-replaced only after checksum validation.
+capability is active. Artifact writes are staged and the active manifest
+selector is replaced only after checksum validation. The selector in
+`active.json` points to the full generation manifest and carries its checksum;
+readers should use the lifecycle inspection API, which also accepts legacy
+full-manifest `active.json` files.
 
 The lexical MCP path caches the validated index by immutable generation path,
 so a rebuilt generation naturally invalidates the cache. Search responses expose
