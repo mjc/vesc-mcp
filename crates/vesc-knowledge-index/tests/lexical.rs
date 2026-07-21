@@ -79,3 +79,39 @@ fn source_kind_and_tag_filters_are_conjunctive() {
         .expect("search");
     assert_eq!(hits.len(), 1);
 }
+
+#[test]
+fn path_filter_matches_only_the_requested_source() {
+    let matching = chunk(
+        "repo",
+        "native extension registration",
+        vesc_knowledge_index::Category::FirmwareApi,
+    );
+    let index = LexicalIndex::build(&[matching]).expect("index");
+
+    let hits = index
+        .search(
+            "native extension",
+            &LexicalFilters {
+                paths: vec!["docs/api.md".into()],
+                ..LexicalFilters::default()
+            },
+            10,
+        )
+        .expect("search");
+
+    assert_eq!(hits.len(), 1);
+    assert!(
+        index
+            .search(
+                "native extension",
+                &LexicalFilters {
+                    paths: vec!["src/other.c".into()],
+                    ..LexicalFilters::default()
+                },
+                10,
+            )
+            .expect("search")
+            .is_empty()
+    );
+}

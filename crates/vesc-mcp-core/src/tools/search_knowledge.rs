@@ -90,6 +90,12 @@ pub struct SearchVescKnowledgeFilters {
     pub category: Option<String>,
     #[serde(default)]
     pub repository: Option<String>,
+    /// Compatibility form accepted from callers that use list-style filters.
+    #[serde(default)]
+    pub repository_ids: Vec<String>,
+    /// Exact source paths. Multiple paths are additive alternatives.
+    #[serde(default)]
+    pub paths: Vec<String>,
     /// Exact immutable source revision filter.
     #[serde(default)]
     pub revision: Option<String>,
@@ -761,6 +767,7 @@ fn parse_filters(
         .filters
         .repository
         .as_deref()
+        .or_else(|| params.filters.repository_ids.first().map(String::as_str))
         .map(vesc_knowledge_index::RepositoryId::try_from)
         .transpose()
         .map_err(|_| "repository filter must be non-empty".to_string())?;
@@ -806,6 +813,13 @@ fn parse_filters(
         vesc_knowledge_index::LexicalFilters {
             category,
             repository,
+            paths: params
+                .filters
+                .paths
+                .iter()
+                .filter(|path| !path.trim().is_empty())
+                .cloned()
+                .collect(),
             revision,
             source_kind,
             trust_tier,
@@ -1431,6 +1445,7 @@ fn filter_effects(filters: &vesc_knowledge_index::LexicalFilters) -> Vec<String>
     if let Some(repository) = &filters.repository {
         effects.push(format!("repository={repository}"));
     }
+    effects.extend(filters.paths.iter().map(|path| format!("path={path}")));
     if let Some(revision) = &filters.revision {
         effects.push(format!("revision={revision}"));
     }
@@ -1766,6 +1781,25 @@ mod tests {
             assert!(resp.error.is_none());
             assert!(!resp.results.is_empty());
         }
+    }
+
+    #[test]
+    fn list_style_repository_and_path_filters_are_accepted() {
+        let params: SearchVescKnowledgeParams = serde_json::from_value(serde_json::json!({
+            "query": "bms_update",
+            "filters": {
+                "repository_ids": ["refloat"],
+                "paths": ["src/bms.c"]
+            }
+        }))
+        .expect("compatibility filters");
+
+        let (_, filters) = parse_filters(&params).expect("parsed filters");
+        assert_eq!(
+            filters.repository.as_ref().map(ToString::to_string),
+            Some("refloat".into())
+        );
+        assert_eq!(filters.paths, vec!["src/bms.c"]);
     }
 
     #[test]

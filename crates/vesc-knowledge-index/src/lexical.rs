@@ -22,6 +22,7 @@ use crate::{Category, RepositoryId, Revision};
 pub struct LexicalFilters {
     pub category: Option<Category>,
     pub repository: Option<RepositoryId>,
+    pub paths: Vec<String>,
     pub revision: Option<Revision>,
     pub source_kind: Option<SourceKind>,
     pub trust_tier: Option<TrustTier>,
@@ -558,6 +559,7 @@ fn matches_filters(chunk: &Chunk, filters: &LexicalFilters) -> bool {
             .repository
             .as_ref()
             .is_none_or(|repository| &chunk.repository == repository)
+        && (filters.paths.is_empty() || filters.paths.contains(&chunk.path))
         && filters
             .revision
             .as_ref()
