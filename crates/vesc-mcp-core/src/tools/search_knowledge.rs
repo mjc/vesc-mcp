@@ -1002,11 +1002,17 @@ fn lexical_hits_and_chunks(
                 .search(query, filters, limit)
                 .map_err(|error| error.to_string())?;
             let chunks = if index.chunks().is_empty() {
-                LexicalIndex::read_artifact_chunks(&lexical_path)
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .map(|chunk| (chunk.chunk_id.clone(), chunk))
-                    .collect()
+                if configured_vector_artifact_exists(config) {
+                    LexicalIndex::read_artifact_chunks(&lexical_path)
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .map(|chunk| (chunk.chunk_id.clone(), chunk))
+                        .collect()
+                } else {
+                    hits.iter()
+                        .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
+                        .collect()
+                }
             } else {
                 index.chunks().clone()
             };
@@ -1068,6 +1074,21 @@ fn with_cached_lexical_index<T>(
         Ok::<_, String>,
     )?;
     operation(&index)
+}
+
+fn configured_vector_artifact_exists(config: &KnowledgeConfig) -> bool {
+    let Some(root) = config.resolved_artifact_path() else {
+        return false;
+    };
+    let Ok(manifest) =
+        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(&root))
+    else {
+        return false;
+    };
+    root.join("generations")
+        .join(manifest.corpus.content_digest.to_string())
+        .join("vectors.bin")
+        .is_file()
 }
 
 #[allow(clippy::significant_drop_tightening)]
@@ -2199,6 +2220,9 @@ mod tests {
     fn hybrid_uses_local_model_when_snapshot_has_no_vector_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
         vesc_knowledge_index::build_embedded_artifacts(temp.path()).expect("lexical artifact");
+        let lexical_path = active_lexical_path(temp.path()).expect("active lexical artifact");
+        std::fs::write(&lexical_path, b"broken after sidecar creation")
+            .expect("corrupt source JSON");
         let config = KnowledgeConfig {
             mode: RetrievalMode::Hybrid,
             artifact_path: Some(temp.path().into()),
