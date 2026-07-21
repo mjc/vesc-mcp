@@ -561,6 +561,21 @@ fn run_build_default(args: &[String]) {
         generated_generation.join("lexical.json"),
     )
     .unwrap_or_else(|error| panic!("copy default lexical artifact: {error}"));
+    let lexical_index = generation.join("lexical.tantivy");
+    let generated_lexical_index = generated_generation.join("lexical.tantivy");
+    fs::create_dir_all(&generated_lexical_index)
+        .unwrap_or_else(|error| panic!("create default lexical index: {error}"));
+    for entry in fs::read_dir(&lexical_index)
+        .unwrap_or_else(|error| panic!("read default lexical index: {error}"))
+    {
+        let entry =
+            entry.unwrap_or_else(|error| panic!("read default lexical index entry: {error}"));
+        fs::copy(
+            entry.path(),
+            generated_lexical_index.join(entry.file_name()),
+        )
+        .unwrap_or_else(|error| panic!("copy default lexical index entry: {error}"));
+    }
     if summary.vector_bytes.is_some() {
         fs::copy(
             generation.join("vectors.bin"),

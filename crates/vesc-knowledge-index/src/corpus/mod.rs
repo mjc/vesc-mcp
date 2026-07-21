@@ -707,7 +707,10 @@ fn default_component_versions() -> BTreeMap<String, String> {
             env!("CARGO_PKG_VERSION").into(),
         ),
         ("corpus-schema".into(), "1.0".into()),
-        ("lexical-format".into(), "tantivy-0.26".into()),
+        (
+            "lexical-format".into(),
+            crate::lexical::LEXICAL_FORMAT_VERSION.into(),
+        ),
         ("markdown-parser".into(), "pulldown-cmark-0.13".into()),
         ("vector-format".into(), "dense-cosine-v2".into()),
     ])

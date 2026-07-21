@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,8 @@ use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
 use crate::corpus::{Chunk, ChunkId, ContentDigest, SourceKind, TrustTier};
 use crate::{Category, RepositoryId, Revision};
+
+pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-stored-chunks-v2";
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -140,6 +142,7 @@ struct LexicalFields {
     category: Field,
     repository: Field,
     trust_tier: Field,
+    chunk_json: Field,
 }
 
 impl LexicalIndex {
@@ -235,23 +238,45 @@ impl LexicalIndex {
     /// for malformed or incompatible JSON, or normal build errors.
     pub fn open_artifact(path: &Path) -> Result<Self, LexicalError> {
         let artifact = Self::read_artifact(path)?;
-        let index_path = path.with_extension("tantivy");
+        let index_path = persisted_index_path(path);
         if !index_path.exists() {
             return Self::build_owned(artifact.chunks);
         }
+        let chunks = artifact
+            .chunks
+            .into_iter()
+            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+            .collect();
+        Self::open_persisted_index(path, chunks)
+    }
+
+    /// Opens the query-ready Tantivy sidecar without reading the chunk JSON.
+    ///
+    /// Legacy artifacts without a sidecar fall back to [`Self::open_artifact`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when the sidecar or its stored chunks are invalid.
+    pub fn open_search_artifact(path: &Path) -> Result<Self, LexicalError> {
+        if persisted_index_path(path).exists() {
+            Self::open_persisted_index(path, BTreeMap::new())
+        } else {
+            Self::open_artifact(path)
+        }
+    }
+
+    fn open_persisted_index(
+        path: &Path,
+        chunks: BTreeMap<ChunkId, Chunk>,
+    ) -> Result<Self, LexicalError> {
         let (schema, fields) = schema();
-        let index = Index::open_in_dir(index_path).map_err(LexicalError::Writer)?;
+        let index = Index::open_in_dir(persisted_index_path(path)).map_err(LexicalError::Writer)?;
         if index.schema() != schema {
             return Err(LexicalError::Artifact(
                 "persisted lexical index schema does not match".into(),
             ));
         }
         let reader = index.reader().map_err(LexicalError::Writer)?;
-        let chunks = artifact
-            .chunks
-            .into_iter()
-            .map(|chunk| (chunk.chunk_id.clone(), chunk))
-            .collect();
         Ok(Self {
             index,
             reader,
@@ -264,7 +289,7 @@ impl LexicalIndex {
         chunks: impl IntoIterator<Item = &'a Chunk>,
         path: &Path,
     ) -> Result<(), LexicalError> {
-        let index_path = path.with_extension("tantivy");
+        let index_path = persisted_index_path(path);
         if index_path.exists() {
             fs::remove_dir_all(&index_path).map_err(|error| LexicalError::Io(error.to_string()))?;
         }
@@ -391,10 +416,20 @@ impl LexicalIndex {
                 return Err(LexicalError::MissingChunkId);
             };
             let id = ChunkId::try_from(id).map_err(|_| LexicalError::MissingChunkId)?;
-            let Some(chunk) = self.chunks.get(&id) else {
-                continue;
-            };
-            if !matches_filters(chunk, filters) {
+            let chunk = self.chunks.get(&id).cloned().map_or_else(
+                || {
+                    document
+                        .get_first(self.fields.chunk_json)
+                        .and_then(|value| value.as_str())
+                        .ok_or(LexicalError::MissingChunkId)
+                        .and_then(|json| {
+                            serde_json::from_str(json)
+                                .map_err(|error| LexicalError::Artifact(error.to_string()))
+                        })
+                },
+                Ok,
+            )?;
+            if !matches_filters(&chunk, filters) {
                 continue;
             }
             hits.push(LexicalHit {
@@ -402,7 +437,7 @@ impl LexicalIndex {
                     .identifiers
                     .iter()
                     .any(|identifier| identifier.eq_ignore_ascii_case(&exact)),
-                chunk: chunk.clone(),
+                chunk,
                 score,
             });
         }
@@ -485,6 +520,7 @@ fn schema() -> (Schema, LexicalFields) {
     let category = builder.add_text_field("category", STRING | STORED);
     let repository = builder.add_text_field("repository", STRING | STORED);
     let trust_tier = builder.add_text_field("trust_tier", STRING | STORED);
+    let chunk_json = builder.add_text_field("chunk_json", STORED);
     let schema = builder.build();
     (
         schema,
@@ -499,6 +535,7 @@ fn schema() -> (Schema, LexicalFields) {
             category,
             repository,
             trust_tier,
+            chunk_json,
         },
     )
 }
@@ -526,9 +563,17 @@ fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk) {
     );
     document.add_text(fields.repository, chunk.repository.as_str());
     document.add_text(fields.trust_tier, trust_label(chunk.trust_tier));
+    document.add_text(
+        fields.chunk_json,
+        serde_json::to_string(chunk).expect("validated chunk serializes"),
+    );
     writer
         .add_document(document)
         .expect("in-memory lexical document is valid");
+}
+
+fn persisted_index_path(path: &Path) -> PathBuf {
+    path.with_extension("tantivy")
 }
 
 fn morphology_aliases(text: &str) -> String {
@@ -815,6 +860,25 @@ mod tests {
         .expect("rewrite artifact");
 
         let reopened = LexicalIndex::open_artifact(&path).expect("open artifact");
+        assert_eq!(
+            reopened
+                .search("write_nvm", &LexicalFilters::default(), 1)
+                .expect("search")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn search_artifact_opens_without_reading_chunk_json() {
+        let index =
+            LexicalIndex::build(&[chunk("NVM", "persistent bytes", "write_nvm")]).expect("index");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("lexical.json");
+        index.write_artifact(&path).expect("write artifact");
+        std::fs::remove_file(&path).expect("remove chunk JSON");
+
+        let reopened = LexicalIndex::open_search_artifact(&path).expect("open search artifact");
         assert_eq!(
             reopened
                 .search("write_nvm", &LexicalFilters::default(), 1)

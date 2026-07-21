@@ -1001,7 +1001,16 @@ fn lexical_hits_and_chunks(
             let hits = index
                 .search(query, filters, limit)
                 .map_err(|error| error.to_string())?;
-            Ok((hits, index.chunks().clone()))
+            let chunks = if index.chunks().is_empty() {
+                LexicalIndex::read_artifact_chunks(&lexical_path)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|chunk| (chunk.chunk_id.clone(), chunk))
+                    .collect()
+            } else {
+                index.chunks().clone()
+            };
+            Ok((hits, chunks))
         });
     }
     let index = vesc_knowledge_index::lexical_index();
@@ -1036,7 +1045,7 @@ fn with_cached_lexical_index<T>(
     let index = index.map_or_else(
         || {
             let loaded = Arc::new(
-                LexicalIndex::open_artifact(path)
+                LexicalIndex::open_search_artifact(path)
                     .map_err(|_| "configured lexical artifact unavailable".to_string())?,
             );
             let mut cache = cache
