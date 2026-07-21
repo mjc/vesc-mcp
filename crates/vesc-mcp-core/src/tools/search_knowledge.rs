@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 #[cfg(any(feature = "semantic-fastembed", test))]
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "semantic-fastembed")]
 use std::sync::{Condvar, MutexGuard, Once};
-use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "semantic-fastembed")]
 use std::time::Duration;
 use std::time::Instant;
@@ -1015,34 +1015,50 @@ static LEXICAL_ARTIFACT_CACHE: OnceLock<Mutex<Option<CachedLexicalArtifact>>> = 
 
 struct CachedLexicalArtifact {
     key: PathBuf,
-    index: LexicalIndex,
+    index: Arc<LexicalIndex>,
 }
 
 /// Reuse the active generation's Tantivy index between MCP requests.
 ///
-/// ponytail: one global lock is enough for the small embedded corpus; split
-/// per-generation caches only if measured concurrent throughput requires it.
-#[allow(clippy::significant_drop_tightening)]
+/// ponytail: retain one index until snapshot-switch latency justifies a bounded
+/// cache; the mutex protects only the pointer and never artifact I/O or search.
 fn with_cached_lexical_index<T>(
     path: &Path,
     operation: impl FnOnce(&LexicalIndex) -> Result<T, String>,
 ) -> Result<T, String> {
     let cache = LEXICAL_ARTIFACT_CACHE.get_or_init(|| Mutex::new(None));
-    let mut cache = cache
+    let index = cache
         .lock()
-        .map_err(|_| "lexical artifact cache is poisoned".to_string())?;
-    if cache.as_ref().is_none_or(|entry| entry.key != path) {
-        let index = LexicalIndex::open_artifact(path)
-            .map_err(|_| "configured lexical artifact unavailable".to_string())?;
-        *cache = Some(CachedLexicalArtifact {
-            key: path.to_owned(),
-            index,
-        });
-    }
-    let entry = cache
+        .map_err(|_| "lexical artifact cache is poisoned".to_string())?
         .as_ref()
-        .ok_or_else(|| "lexical artifact cache is empty".to_string())?;
-    operation(&entry.index)
+        .filter(|entry| entry.key == path)
+        .map(|entry| Arc::clone(&entry.index));
+    let index = index.map_or_else(
+        || {
+            let loaded = Arc::new(
+                LexicalIndex::open_artifact(path)
+                    .map_err(|_| "configured lexical artifact unavailable".to_string())?,
+            );
+            let mut cache = cache
+                .lock()
+                .map_err(|_| "lexical artifact cache is poisoned".to_string())?;
+            let current = cache
+                .as_ref()
+                .filter(|entry| entry.key == path)
+                .map(|entry| Arc::clone(&entry.index));
+            let index = current.unwrap_or_else(|| {
+                *cache = Some(CachedLexicalArtifact {
+                    key: path.to_owned(),
+                    index: Arc::clone(&loaded),
+                });
+                loaded
+            });
+            drop(cache);
+            Ok::<_, String>(index)
+        },
+        Ok::<_, String>,
+    )?;
+    operation(&index)
 }
 
 #[allow(clippy::significant_drop_tightening)]
