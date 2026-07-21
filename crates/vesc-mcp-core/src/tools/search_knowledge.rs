@@ -889,14 +889,8 @@ fn hybrid_results(
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
     let (lexical, chunks) =
         lexical_hits_and_chunks(&params.query, filters, candidate_limit, config)?;
-    let (semantic, live_rerank) = semantic_hits(
-        &params.query,
-        filters,
-        candidate_limit,
-        config,
-        &chunks,
-        &lexical,
-    )?;
+    let (semantic, live_rerank) =
+        semantic_hits(&params.query, filters, candidate_limit, config, &chunks)?;
     let context_budget = params
         .max_context_bytes
         .unwrap_or(config.max_passage_bytes)
@@ -938,28 +932,15 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
     let (lexical, chunks) =
         lexical_hits_and_chunks(&params.query, filters, candidate_limit, config)?;
-    let (semantic, live_rerank) = match load_vector_artifact(config, &chunks) {
-        Ok(vector) => (
-            semantic_hits_with_provider(
-                &params.query,
-                filters,
-                candidate_limit,
-                &vector,
-                &chunks,
-                provider,
-            )?,
-            false,
-        ),
-        Err(_) => (
-            semantic_hits_for_candidates_with_provider(
-                &params.query,
-                candidate_limit,
-                &lexical,
-                provider,
-            )?,
-            true,
-        ),
-    };
+    let vector = load_vector_artifact(config, &chunks)?;
+    let semantic = semantic_hits_with_provider(
+        &params.query,
+        filters,
+        candidate_limit,
+        &vector,
+        &chunks,
+        provider,
+    )?;
     let context_budget = params
         .max_context_bytes
         .unwrap_or(config.max_passage_bytes)
@@ -980,7 +961,7 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
         fused_result(hit, &context, filters)
     })
     .collect();
-    Ok((results, live_rerank))
+    Ok((results, false))
 }
 
 fn lexical_hits_and_chunks(
@@ -1098,23 +1079,24 @@ fn semantic_hits(
     limit: usize,
     config: &KnowledgeConfig,
     chunks: &BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
-    lexical: &[LexicalHit],
 ) -> Result<(Vec<SemanticHit>, bool), String> {
     #[cfg(feature = "semantic-fastembed")]
     {
+        let vector = load_vector_artifact(config, chunks)?;
         let mut state = initialize_semantic_model(config)?;
         let entry = state
             .entry
             .as_mut()
             .ok_or_else(|| "semantic provider cache is empty".to_string())?;
-        let result = if let Ok(vector) = load_vector_artifact(config, chunks) {
-            semantic_hits_with_provider(query, filters, limit, &vector, chunks, &mut entry.provider)
-                .map(|hits| (hits, false))
-        } else {
-            entry.provider.set_lossless_windowing(true);
-            semantic_hits_for_candidates_with_provider(query, limit, lexical, &mut entry.provider)
-                .map(|hits| (hits, true))
-        };
+        let result = semantic_hits_with_provider(
+            query,
+            filters,
+            limit,
+            &vector,
+            chunks,
+            &mut entry.provider,
+        )
+        .map(|hits| (hits, false));
         entry.last_used = Instant::now();
         semantic_model_cache().wake.notify_one();
         result
@@ -1122,71 +1104,9 @@ fn semantic_hits(
 
     #[cfg(not(feature = "semantic-fastembed"))]
     {
-        let _ = (query, filters, limit, config, chunks, lexical);
+        let _ = (query, filters, limit, config, chunks);
         Err("semantic-fastembed feature is disabled".into())
     }
-}
-
-#[cfg(any(feature = "semantic-fastembed", test))]
-fn semantic_hits_for_candidates_with_provider<P: EmbeddingProvider + ?Sized>(
-    query: &str,
-    limit: usize,
-    lexical: &[LexicalHit],
-    provider: &mut P,
-) -> Result<Vec<SemanticHit>, String> {
-    if lexical.is_empty() {
-        return Err("snapshot has no lexical candidates to rerank with the local model".into());
-    }
-    let texts = lexical
-        .iter()
-        .map(|hit| vesc_knowledge_index::embedding_text(&hit.chunk))
-        .collect::<Vec<_>>();
-    let documents = provider
-        .embed_documents(&texts)
-        .map_err(|error| format!("candidate embedding failed: {error}"))?;
-    if documents.len() != lexical.len() {
-        return Err("candidate embedding returned the wrong number of vectors".into());
-    }
-    let query = provider
-        .embed_query(&semantic_query_text(query))
-        .map_err(|error| format!("query embedding failed: {error}"))?;
-    let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if !query_norm.is_finite() || query_norm == 0.0 {
-        return Err("query embedding is not a finite non-zero vector".into());
-    }
-    let mut hits = lexical
-        .iter()
-        .zip(documents)
-        .map(|(hit, document)| {
-            if document.len() != query.len() {
-                return Err("candidate embedding dimension does not match the query".to_string());
-            }
-            let document_norm = document
-                .iter()
-                .map(|value| value * value)
-                .sum::<f32>()
-                .sqrt();
-            if !document_norm.is_finite() || document_norm == 0.0 {
-                return Err("candidate embedding is not a finite non-zero vector".to_string());
-            }
-            let similarity = query
-                .iter()
-                .zip(document)
-                .map(|(left, right)| left * right)
-                .sum::<f32>()
-                / (query_norm * document_norm);
-            if !similarity.is_finite() {
-                return Err("candidate similarity is not finite".to_string());
-            }
-            Ok(SemanticHit {
-                chunk_id: hit.chunk.chunk_id.clone(),
-                similarity,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    hits.sort_by(|left, right| right.similarity.total_cmp(&left.similarity));
-    hits.truncate(limit);
-    Ok(hits)
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2217,12 +2137,9 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_uses_local_model_when_snapshot_has_no_vector_artifact() {
+    fn hybrid_without_vector_artifact_recommends_lexical() {
         let temp = tempfile::tempdir().expect("tempdir");
         vesc_knowledge_index::build_embedded_artifacts(temp.path()).expect("lexical artifact");
-        let lexical_path = active_lexical_path(temp.path()).expect("active lexical artifact");
-        std::fs::write(&lexical_path, b"broken after sidecar creation")
-            .expect("corrupt source JSON");
         let config = KnowledgeConfig {
             mode: RetrievalMode::Hybrid,
             artifact_path: Some(temp.path().into()),
@@ -2243,23 +2160,16 @@ mod tests {
         };
         let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
 
-        let (results, live_rerank) = hybrid_results_with_provider(
+        let error = hybrid_results_with_provider(
             &params,
             &vesc_knowledge_index::LexicalFilters::default(),
             3,
             &config,
             &mut provider,
         )
-        .expect("live semantic fallback");
+        .expect_err("missing vector artifact");
 
-        assert!(live_rerank);
-        assert!(!results.is_empty());
-        assert!(results.iter().any(|result| {
-            result
-                .explanation
-                .as_ref()
-                .is_some_and(|explanation| explanation.semantic_rank.is_some())
-        }));
+        assert!(error.contains("vector artifact"), "{error}");
     }
 
     #[test]
