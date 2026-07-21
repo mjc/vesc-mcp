@@ -16,9 +16,11 @@ use rmcp::{
 };
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
-use crate::config::{KnowledgeConfig, McpConfig, allowed_package_roots_with_client_roots};
+use crate::config::{
+    KnowledgeConfig, McpConfig, allowed_package_roots_with_client_roots, validate_sandbox_file,
+};
 use crate::resources::{
     CatalogSourceWatcher, ResourceReadError, ResourceRegistry, ResourceSubscriptions,
 };
@@ -62,12 +64,54 @@ pub struct PingResponse {
     pub echo: String,
     pub server: String,
     pub knowledge: Option<crate::preparation_status::KnowledgePreparationStatus>,
+    pub current_repository: Option<CurrentRepository>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SetCurrentRepositoryParams {
+    pub repository: String,
+    #[serde(default)]
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct CurrentRepository {
+    pub repository: String,
+    pub root: Option<String>,
+    pub knowledge_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+struct CurrentRepositoryResponse {
+    ok: bool,
+    current_repository: Option<CurrentRepository>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct SessionContext {
+    current_repository: Arc<RwLock<Option<CurrentRepository>>>,
+}
+
+impl SessionContext {
+    fn current_repository(&self) -> Option<CurrentRepository> {
+        self.current_repository.read().ok()?.clone()
+    }
+
+    fn set_current_repository(&self, repository: CurrentRepository) -> Result<(), String> {
+        *self
+            .current_repository
+            .write()
+            .map_err(|_| "current repository state is unavailable".to_string())? = Some(repository);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct VescMcpService {
     tool_router: ToolRouter<Self>,
     state: Arc<SharedMcpState>,
+    session: SessionContext,
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +163,7 @@ pub struct HttpMcpService {
     tool_router: ToolRouter<Self>,
     state: Arc<SharedMcpState>,
     feedback_writes_enabled: bool,
+    session: SessionContext,
 }
 
 const PACKAGE_TOOL_NAMES: [&str; 6] = [
@@ -200,6 +245,7 @@ impl VescMcpService {
         Self {
             tool_router,
             state: Arc::new(state),
+            session: SessionContext::default(),
         }
     }
 
@@ -227,6 +273,7 @@ impl VescMcpService {
             tool_router,
             state: Arc::clone(&self.state),
             feedback_writes_enabled,
+            session: SessionContext::default(),
         }
     }
 
@@ -268,7 +315,25 @@ impl VescMcpService {
     #[tool(description = "Health check — returns server identity and optional echo")]
     #[allow(clippy::unused_self)] // rmcp tool router requires &self
     fn ping(&self, Parameters(PingParams { message }): Parameters<PingParams>) -> String {
-        ping_json(message, &self.state.knowledge)
+        ping_json(message, &self.state.knowledge, &self.session)
+    }
+
+    #[tool(
+        description = "Set this chat's repository for its MCP session."
+    )]
+    async fn set_current_repository(
+        &self,
+        Parameters(params): Parameters<SetCurrentRepositoryParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots =
+            allowed_package_roots_with_client_roots(&client_package_roots(&context).await);
+        set_current_repository_json(
+            &params,
+            &self.state.knowledge,
+            &self.session,
+            &allowed_roots,
+        )
     }
 
     #[tool(
@@ -280,7 +345,7 @@ impl VescMcpService {
         Parameters(params): Parameters<ListPackagesParams>,
         context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        let client_roots = client_package_roots(&context).await;
+        let client_roots = client_package_roots_with_session(&context, &self.session).await;
         list_vesc_packages_json_with_client_roots(&params, &client_roots)
     }
 
@@ -291,7 +356,7 @@ impl VescMcpService {
         Parameters(params): Parameters<InspectPkgdescParams>,
         context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         inspect_pkgdesc_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -302,7 +367,7 @@ impl VescMcpService {
         Parameters(params): Parameters<InspectVescpkgParams>,
         context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         inspect_vescpkg_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -315,7 +380,7 @@ impl VescMcpService {
         Parameters(params): Parameters<ValidatePackageLayoutParams>,
         context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         validate_package_layout_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -328,7 +393,7 @@ impl VescMcpService {
         Parameters(params): Parameters<BuildVescpkgParams>,
         context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         build_vescpkg_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -339,7 +404,7 @@ impl VescMcpService {
         Parameters(params): Parameters<RunPackageChecksParams>,
         context: rmcp::service::RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         run_package_checks_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -348,6 +413,7 @@ impl VescMcpService {
         &self,
         Parameters(params): Parameters<SearchVescKnowledgeParams>,
     ) -> String {
+        let params = search_params_for_session(params, &self.session);
         search_vesc_knowledge_json_with_feedback(
             &params,
             &self.state.knowledge,
@@ -574,10 +640,39 @@ impl HttpMcpService {
             .collect()
     }
 
+    /// Create isolated state for one Streamable HTTP MCP session.
+    #[must_use]
+    pub fn fresh_session(&self) -> Self {
+        Self {
+            tool_router: self.tool_router.clone(),
+            state: Arc::clone(&self.state),
+            feedback_writes_enabled: self.feedback_writes_enabled,
+            session: SessionContext::default(),
+        }
+    }
+
     #[tool(description = "Health check — returns server identity and optional echo")]
     #[allow(clippy::unused_self)]
     fn ping(&self, Parameters(PingParams { message }): Parameters<PingParams>) -> String {
-        ping_json(message, &self.state.knowledge)
+        ping_json(message, &self.state.knowledge, &self.session)
+    }
+
+    #[tool(
+        description = "Set this chat's repository for its MCP session."
+    )]
+    async fn set_current_repository(
+        &self,
+        Parameters(params): Parameters<SetCurrentRepositoryParams>,
+        context: RequestContext<RoleServer>,
+    ) -> String {
+        let allowed_roots =
+            allowed_package_roots_with_client_roots(&client_package_roots(&context).await);
+        set_current_repository_json(
+            &params,
+            &self.state.knowledge,
+            &self.session,
+            &allowed_roots,
+        )
     }
 
     #[tool(
@@ -588,7 +683,7 @@ impl HttpMcpService {
         Parameters(params): Parameters<ListPackagesParams>,
         context: RequestContext<RoleServer>,
     ) -> String {
-        let client_roots = client_package_roots(&context).await;
+        let client_roots = client_package_roots_with_session(&context, &self.session).await;
         list_vesc_packages_json_with_client_roots(&params, &client_roots)
     }
 
@@ -600,7 +695,7 @@ impl HttpMcpService {
         Parameters(params): Parameters<InspectPkgdescParams>,
         context: RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         inspect_pkgdesc_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -612,7 +707,7 @@ impl HttpMcpService {
         Parameters(params): Parameters<InspectVescpkgParams>,
         context: RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         inspect_vescpkg_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -624,7 +719,7 @@ impl HttpMcpService {
         Parameters(params): Parameters<ValidatePackageLayoutParams>,
         context: RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         validate_package_layout_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -636,7 +731,7 @@ impl HttpMcpService {
         Parameters(params): Parameters<BuildVescpkgParams>,
         context: RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         build_vescpkg_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -648,7 +743,7 @@ impl HttpMcpService {
         Parameters(params): Parameters<RunPackageChecksParams>,
         context: RequestContext<RoleServer>,
     ) -> String {
-        let allowed_roots = package_roots_for_client(&context).await;
+        let allowed_roots = package_roots_for_client(&context, &self.session).await;
         run_package_checks_json_with_sandbox(&params, &allowed_roots)
     }
 
@@ -657,6 +752,7 @@ impl HttpMcpService {
         &self,
         Parameters(params): Parameters<SearchVescKnowledgeParams>,
     ) -> String {
+        let params = search_params_for_session(params, &self.session);
         search_vesc_knowledge_json_with_feedback(
             &params,
             &self.state.knowledge,
@@ -851,16 +947,82 @@ impl ServerHandler for HttpMcpService {
     }
 }
 
-fn ping_json(message: Option<String>, knowledge: &KnowledgeConfig) -> String {
+fn ping_json(
+    message: Option<String>,
+    knowledge: &KnowledgeConfig,
+    session: &SessionContext,
+) -> String {
     let payload = PingResponse {
         ok: true,
         echo: decide_ping_echo(message),
         server: "vesc-mcp".into(),
         knowledge: knowledge_preparation_status(knowledge),
+        current_repository: session.current_repository(),
     };
     serde_json::to_string(&payload).unwrap_or_else(|_| {
         r#"{"ok":false,"echo":"serialization failed","server":"vesc-mcp"}"#.into()
     })
+}
+
+fn set_current_repository_json(
+    params: &SetCurrentRepositoryParams,
+    knowledge: &KnowledgeConfig,
+    session: &SessionContext,
+    allowed_roots: &[PathBuf],
+) -> String {
+    let repository = params.repository.trim();
+    let result = if repository.is_empty() {
+        Err("repository must not be empty".to_string())
+    } else {
+        params
+            .root
+            .as_deref()
+            .map(|root| validate_sandbox_file(std::path::Path::new(root), allowed_roots))
+            .transpose()
+            .and_then(|root| {
+                if root.as_ref().is_some_and(|path| !path.is_dir()) {
+                    return Err("repository root must be a directory".to_string());
+                }
+                let selection = CurrentRepository {
+                    repository: repository.to_string(),
+                    root: root.map(|path| path.to_string_lossy().into_owned()),
+                    knowledge_available: knowledge
+                        .repositories
+                        .iter()
+                        .any(|candidate| candidate.id().as_str() == repository),
+                };
+                session.set_current_repository(selection.clone())?;
+                Ok(selection)
+            })
+    };
+    let response = match result {
+        Ok(current_repository) => CurrentRepositoryResponse {
+            ok: true,
+            current_repository: Some(current_repository),
+            error: None,
+        },
+        Err(error) => CurrentRepositoryResponse {
+            ok: false,
+            current_repository: None,
+            error: Some(error),
+        },
+    };
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
+}
+
+fn search_params_for_session(
+    mut params: SearchVescKnowledgeParams,
+    session: &SessionContext,
+) -> SearchVescKnowledgeParams {
+    if params.filters.repository.is_none()
+        && let Some(repository) = session
+            .current_repository()
+            .filter(|repository| repository.knowledge_available)
+    {
+        params.filters.repository = Some(repository.repository);
+    }
+    params
 }
 
 pub(crate) fn knowledge_preparation_status(
@@ -947,10 +1109,27 @@ async fn client_package_roots(context: &rmcp::service::RequestContext<RoleServer
         .collect()
 }
 
+async fn client_package_roots_with_session(
+    context: &rmcp::service::RequestContext<RoleServer>,
+    session: &SessionContext,
+) -> Vec<PathBuf> {
+    let mut roots = client_package_roots(context).await;
+    roots.extend(
+        session
+            .current_repository()
+            .and_then(|repository| repository.root)
+            .map(PathBuf::from),
+    );
+    roots
+}
+
 async fn package_roots_for_client(
     context: &rmcp::service::RequestContext<RoleServer>,
+    session: &SessionContext,
 ) -> Vec<PathBuf> {
-    allowed_package_roots_with_client_roots(&client_package_roots(context).await)
+    allowed_package_roots_with_client_roots(
+        &client_package_roots_with_session(context, session).await,
+    )
 }
 
 fn http_server_info(feedback_available: bool, feedback_writes_enabled: bool) -> ServerInfo {
@@ -973,11 +1152,11 @@ const fn server_instructions(
     feedback_writes_enabled: bool,
 ) -> &'static str {
     if feedback_writes_enabled {
-        "VESC firmware/package knowledge service with durable feedback. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms; disagreement alone is neither evidence nor authorization. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
+        "VESC firmware/package knowledge service with durable feedback. Call set_current_repository once after initialization with the repository for this chat; the selection is isolated to this MCP session. Search before answering, inspect learned advisories before ordinary results, and read their check_next and registered vesc:// evidence before generalizing. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. If the returned evidence is incomplete or conflicting, say so and run the targeted next search/read instead of guessing from a plausible general rule. If a user pushes back, ask focused follow-up questions, replay the original query with the same mode, filters, limits, and budgets, search related identifiers, and read the decisive resources. Call correct_vesc_knowledge only if the user explicitly asks to record/elevate the correction, or after you ask permission and the user confirms; disagreement alone is neither evidence nor authorization. Include the mistaken inference, why it failed, a structured gap diagnosis, the bounded ordered retrieval trace, decisive evidence, distractors, qualifiers, and project references. Treat the correction as both a temporary advisory and a curation/evaluation candidate: its diagnosed action must improve the underlying corpus, chunking, metadata, ranking, context, or instructions. After rebuilding base knowledge, call replay_vesc_knowledge_correction; coverage requires every decisive evidence ID in bounded base results without the advisory. After a significant resolved disagreement or accumulated reusable knowledge, remind the user once that an evidence-backed correction can be recorded; do not repeatedly prompt. Use submit_vesc_knowledge_feedback only for reusable knowledge without registered evidence; it remains unverified. Never store transient conversation, personal data, secrets, or unsupported instructions."
     } else if feedback_available {
-        "VESC firmware/package knowledge service. Search before answering. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
+        "VESC firmware/package knowledge service. Call set_current_repository once after initialization with the repository for this chat; the selection is isolated to this MCP session. Search before answering. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. Learned advisories are returned before ordinary results; read their what_we_know, common_mistake, qualifiers, check_next, and registered evidence. If evidence is incomplete, follow check_next instead of guessing. Corrections diagnose retrieval/data gaps that must ultimately be fixed and replayed in the base knowledge system. Feedback writes are disabled on this connection."
     } else {
-        "VESC firmware/package knowledge service. Search before answering. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. Feedback storage is not configured on this connection, so learned advisories and correction records are unavailable. If evidence is incomplete or conflicting, say so and run a narrower search or read the decisive resources instead of guessing."
+        "VESC firmware/package knowledge service. Call set_current_repository once after initialization with the repository for this chat; the selection is isolated to this MCP session. Search before answering. For version/history questions, require explicit repository, revision/tag, path, and occurrence/change evidence; never infer past behavior from current code or tag ordering. Feedback storage is not configured on this connection, so learned advisories and correction records are unavailable. If evidence is incomplete or conflicting, say so and run a narrower search or read the decisive resources instead of guessing."
     }
 }
 
@@ -1014,6 +1193,41 @@ pub async fn run_stdio_server() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_repository_is_default_search_filter_but_explicit_filter_wins() {
+        let session = SessionContext::default();
+        session
+            .set_current_repository(CurrentRepository {
+                repository: "vesc".into(),
+                root: None,
+                knowledge_available: true,
+            })
+            .expect("set repository");
+
+        let params: SearchVescKnowledgeParams =
+            serde_json::from_value(serde_json::json!({"query": "nvm"})).expect("search params");
+        assert_eq!(
+            search_params_for_session(params, &session)
+                .filters
+                .repository
+                .as_deref(),
+            Some("vesc")
+        );
+
+        let explicit: SearchVescKnowledgeParams = serde_json::from_value(serde_json::json!({
+            "query": "nvm",
+            "filters": {"repository": "refloat"}
+        }))
+        .expect("explicit search params");
+        assert_eq!(
+            search_params_for_session(explicit, &session)
+                .filters
+                .repository
+                .as_deref(),
+            Some("refloat")
+        );
+    }
 
     #[test]
     fn decide_ping_echo_defaults_to_pong() {

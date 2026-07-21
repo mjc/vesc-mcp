@@ -14,6 +14,7 @@ use vesc_mcp_core::{VescMcpService, resources::VESC_C_IF_URI};
 use vesc_mcp_server::http::{HttpServerConfig, router};
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> anyhow::Result<()> {
     let cancellation = CancellationToken::new();
     let config = HttpServerConfig {
@@ -57,6 +58,7 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             "prepare_vesc_knowledge",
             "replay_vesc_knowledge_correction",
             "search_vesc_knowledge",
+            "set_current_repository",
         ]
     );
     let resources = first.list_all_resources().await?;
@@ -78,6 +80,31 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
         .call_tool(CallToolRequestParams::new("ping").with_arguments(arguments))
         .await?;
     assert_eq!(response.is_error, Some(false));
+
+    for (client, repository) in [(&first, "vesc"), (&second, "refloat")] {
+        let arguments = serde_json::json!({"repository": repository})
+            .as_object()
+            .cloned()
+            .expect("repository arguments");
+        client
+            .call_tool(
+                CallToolRequestParams::new("set_current_repository").with_arguments(arguments),
+            )
+            .await?;
+    }
+    for (client, repository) in [(&first, "vesc"), (&second, "refloat")] {
+        let response = client.call_tool(CallToolRequestParams::new("ping")).await?;
+        let body: serde_json::Value = serde_json::from_str(
+            response
+                .content
+                .first()
+                .and_then(|content| content.as_text())
+                .expect("ping text response")
+                .text
+                .as_str(),
+        )?;
+        assert_eq!(body["current_repository"]["repository"], repository);
+    }
 
     let discovery_arguments = serde_json::Map::new();
     let first_catalog = first

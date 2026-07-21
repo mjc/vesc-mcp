@@ -108,9 +108,10 @@ Static resources are registered at startup from `catalog/` and fixture metadata.
 - `vesc://knowledge/chunk/{id}` — read the bounded normalized passage returned by retrieval
 - `vesc://knowledge/document/{id}` — read the complete normalized document assembled from its chunks
 
-Both transports expose the resource registry, including subscriptions. HTTP
-does not expose package-tree tools because package roots are process-global;
-the full sandboxed package tool surface remains on stdio.
+Both transports expose the resource registry, including subscriptions. Each
+Streamable HTTP MCP session has an isolated current-repository selection, so
+many chats can share one server without leaking repository context. HTTP
+package-tree tools still require authentication and sandboxed roots.
 
 ## Retrieval flow
 

@@ -26,6 +26,7 @@ to configured roots plus the connected client's advertised local roots.
 | Tool | Purpose | Key params |
 |------|---------|------------|
 | `ping` | Health check | `message` (optional echo) |
+| `set_current_repository` | Select the repository for this chat's MCP session | `repository`, optional sandboxed `root` |
 | `list_vesc_packages` | Discover package roots (`pkgdesc.qml`) | `roots` (optional; defaults to `VESC_PACKAGE_ROOTS`) |
 | `inspect_pkgdesc` | Parse `pkgdesc.qml` | `path` — file path |
 | `inspect_vescpkg` | Read `.vescpkg` wire artifact | `path` — file path |
@@ -62,7 +63,7 @@ advisory but preserves its audit record.
 
 ### Path sandbox
 
-Tools that read or write package trees require paths under **`VESC_PACKAGE_ROOTS`** (comma- or colon-separated) or a local `file://` root advertised by the connected MCP client. In tests, fixtures under `tests/fixtures/` are allowed automatically via the `test-fixtures` feature.
+Tools that read or write package trees require paths under **`VESC_PACKAGE_ROOTS`** (comma- or colon-separated) or a local `file://` root advertised by the connected MCP client. `set_current_repository` stores the chat's selection in its MCP session; its optional `root` must pass the same sandbox and becomes the default root for authenticated package tools in that session. In tests, fixtures under `tests/fixtures/` are allowed automatically via the `test-fixtures` feature.
 
 ### Offline fixture examples
 

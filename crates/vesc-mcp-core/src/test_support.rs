@@ -436,6 +436,7 @@ impl McpTestHarness {
             echo: decide_ping_echo(params.message),
             server: "vesc-mcp".into(),
             knowledge: knowledge_preparation_status(&self.knowledge),
+            current_repository: None,
         })
         .expect("ping response json")
     }

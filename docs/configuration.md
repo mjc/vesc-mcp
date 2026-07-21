@@ -117,6 +117,12 @@ See [http.md](http.md) for complete local and remote examples. Remote access
 requires a TLS boundary, authentication, explicit host/origin policy, and a
 firewall rule.
 
+After initializing each chat's HTTP session, call `set_current_repository`
+with its repository identifier and, when package-tree tools need it, its local
+checkout root. The selection follows the `Mcp-Session-Id` across requests and
+is discarded with that session; it is never process-global. A supplied root
+must be inside `VESC_PACKAGE_ROOTS` or a local root advertised by that client.
+
 ## Knowledge search
 
 The default `lexical` mode is local and does not download a model.

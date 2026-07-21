@@ -90,7 +90,8 @@ pub fn router(
         .with_allowed_origins(config.allowed_origins.clone())
         .with_cancellation_token(cancellation_token.child_token());
     let sessions = Arc::new(LocalSessionManager::default());
-    let transport = StreamableHttpService::new(move || Ok(service.clone()), sessions, http_config);
+    let transport =
+        StreamableHttpService::new(move || Ok(service.fresh_session()), sessions, http_config);
     Router::new()
         .nest_service(&config.path, transport)
         .layer(middleware::from_fn_with_state(
