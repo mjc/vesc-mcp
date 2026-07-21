@@ -581,7 +581,7 @@ fn stage_chunk_refs(
     let lexical_path = temp_root.join("lexical.json");
     let encoding_started = Instant::now();
     let (lexical_checksum, lexical_bytes) =
-        LexicalIndex::write_chunk_refs_artifact_with_digest(chunks.iter().copied(), &lexical_path)?;
+        LexicalIndex::write_search_artifact_with_digest(chunks.iter().copied(), &lexical_path)?;
     observations.record(BuildPhase::Encoding, encoding_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
         let chunks = semantic_chunks.ok_or_else(|| {

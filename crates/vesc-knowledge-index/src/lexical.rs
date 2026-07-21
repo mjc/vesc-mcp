@@ -1,7 +1,7 @@
 //! Fielded lexical retrieval over normalized chunks.
 
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
@@ -120,7 +120,7 @@ impl<W: Write> Write for DigestingWriter<W> {
     }
 }
 
-/// In-memory fielded lexical index. Artifact persistence is added by the lifecycle phase.
+/// Fielded lexical index backed by memory for ad hoc builds or a persisted artifact for search.
 pub struct LexicalIndex {
     index: Index,
     reader: IndexReader,
@@ -174,10 +174,7 @@ impl LexicalIndex {
         })
     }
 
-    /// Writes a deterministic, versioned lexical source artifact.
-    ///
-    /// Tantivy remains an implementation detail and is rebuilt in memory on
-    /// load; the compact source artifact makes cache invalidation explicit.
+    /// Writes deterministic chunk data and a query-ready Tantivy sidecar.
     ///
     /// # Errors
     ///
@@ -197,7 +194,17 @@ impl LexicalIndex {
         &self,
         path: &Path,
     ) -> Result<(ContentDigest, u64), LexicalError> {
-        Self::write_chunk_refs_artifact_with_digest(self.chunks.values(), path)
+        Self::write_search_artifact_with_digest(self.chunks.values(), path)
+    }
+
+    pub(crate) fn write_search_artifact_with_digest<'a>(
+        chunks: impl IntoIterator<Item = &'a Chunk>,
+        path: &Path,
+    ) -> Result<(ContentDigest, u64), LexicalError> {
+        let chunks = chunks.into_iter().collect::<Vec<_>>();
+        let result = Self::write_chunk_refs_artifact_with_digest(chunks.iter().copied(), path)?;
+        Self::write_persisted_index(chunks.iter().copied(), path)?;
+        Ok(result)
     }
 
     pub(crate) fn write_chunk_refs_artifact_with_digest<'a>(
@@ -218,7 +225,9 @@ impl LexicalIndex {
         Ok(writer.finish())
     }
 
-    /// Loads and validates a deterministic lexical source artifact.
+    /// Loads chunk data and opens its persisted Tantivy sidecar.
+    ///
+    /// Legacy artifacts without a sidecar are rebuilt in memory.
     ///
     /// # Errors
     ///
@@ -226,7 +235,48 @@ impl LexicalIndex {
     /// for malformed or incompatible JSON, or normal build errors.
     pub fn open_artifact(path: &Path) -> Result<Self, LexicalError> {
         let artifact = Self::read_artifact(path)?;
-        Self::build_owned(artifact.chunks)
+        let index_path = path.with_extension("tantivy");
+        if !index_path.exists() {
+            return Self::build_owned(artifact.chunks);
+        }
+        let (schema, fields) = schema();
+        let index = Index::open_in_dir(index_path).map_err(LexicalError::Writer)?;
+        if index.schema() != schema {
+            return Err(LexicalError::Artifact(
+                "persisted lexical index schema does not match".into(),
+            ));
+        }
+        let reader = index.reader().map_err(LexicalError::Writer)?;
+        let chunks = artifact
+            .chunks
+            .into_iter()
+            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+            .collect();
+        Ok(Self {
+            index,
+            reader,
+            fields,
+            chunks,
+        })
+    }
+
+    fn write_persisted_index<'a>(
+        chunks: impl IntoIterator<Item = &'a Chunk>,
+        path: &Path,
+    ) -> Result<(), LexicalError> {
+        let index_path = path.with_extension("tantivy");
+        if index_path.exists() {
+            fs::remove_dir_all(&index_path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        }
+        fs::create_dir_all(&index_path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        let (schema, fields) = schema();
+        let index = Index::create_in_dir(index_path, schema).map_err(LexicalError::Writer)?;
+        let mut writer = index.writer(15_000_000).map_err(LexicalError::Writer)?;
+        for chunk in chunks {
+            add_chunk(&writer, fields, chunk);
+        }
+        writer.commit().map_err(LexicalError::Commit)?;
+        Ok(())
     }
 
     /// Reads the compact lexical source artifact without constructing Tantivy.
@@ -738,6 +788,40 @@ mod tests {
             LexicalIndex::open_artifact(&path),
             Err(LexicalError::Artifact(_))
         ));
+    }
+
+    #[test]
+    fn written_artifact_opens_persisted_index_without_rebuilding() {
+        let index =
+            LexicalIndex::build(&[chunk("NVM", "persistent bytes", "write_nvm")]).expect("index");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("lexical.json");
+        index.write_artifact(&path).expect("write artifact");
+
+        let mut artifact: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read artifact"))
+                .expect("parse artifact");
+        let chunk = &mut artifact["chunks"][0];
+        chunk["title"] = "changed".into();
+        chunk["path"] = "changed".into();
+        chunk["heading_path"] = serde_json::json!([]);
+        chunk["text"] = "changed".into();
+        chunk["tags"] = serde_json::json!([]);
+        chunk["identifiers"] = serde_json::json!([]);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&artifact).expect("serialize artifact"),
+        )
+        .expect("rewrite artifact");
+
+        let reopened = LexicalIndex::open_artifact(&path).expect("open artifact");
+        assert_eq!(
+            reopened
+                .search("write_nvm", &LexicalFilters::default(), 1)
+                .expect("search")
+                .len(),
+            1
+        );
     }
 
     #[test]
