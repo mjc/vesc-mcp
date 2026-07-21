@@ -191,7 +191,9 @@ fn knowledge_feedback_design_doc_describes_correction_loop_steps() {
         );
     }
     assert!(
-        body.contains("It does not rewrite upstream files or\nthe immutable curated knowledge artifact."),
+        body.contains(
+            "It does not rewrite upstream files or\nthe immutable curated knowledge artifact."
+        ),
         "missing durability/non-destructive clarification:\n{body}"
     );
 }
@@ -228,9 +230,7 @@ fn knowledge_feedback_design_doc_tool_selection_table_covers_key_situations() {
 fn knowledge_feedback_design_doc_describes_input_resolution_safety() {
     let body = read_knowledge_feedback_design_doc();
     assert!(
-        body.contains(
-            "The server resolves every evidence URI through its resource registry and"
-        ),
+        body.contains("The server resolves every evidence URI through its resource registry and"),
         "missing evidence resolution description:\n{body}"
     );
     assert!(
@@ -247,8 +247,7 @@ fn knowledge_feedback_design_doc_distinguishes_provenance_from_entailment() {
         "missing provenance vs. entailment distinction:\n{body}"
     );
     assert!(
-        body.contains("resource-backed correction")
-            && body.contains("verified fact"),
+        body.contains("resource-backed correction") && body.contains("verified fact"),
         "missing wording guardrail distinguishing 'resource-backed correction' from 'verified fact':\n{body}"
     );
 }
@@ -327,7 +326,9 @@ fn knowledge_feedback_design_doc_lists_delivery_tickets_in_order() {
 fn knowledge_feedback_design_doc_final_test_requirement_covers_both_transports() {
     let body = read_knowledge_feedback_design_doc();
     assert!(
-        body.contains("Tests must cover enabled and disabled initialization instructions on both\ntransports"),
+        body.contains(
+            "Tests must cover enabled and disabled initialization instructions on both\ntransports"
+        ),
         "missing final testing requirement paragraph:\n{body}"
     );
     assert!(
