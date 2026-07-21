@@ -547,6 +547,16 @@ fn run_build_default(args: &[String]) {
     fs::create_dir_all(&generated_generation)
         .unwrap_or_else(|error| panic!("create {}: {error}", generated_generation.display()));
     fs::copy(
+        generation.join("corpus.json"),
+        generated_generation.join("corpus.json"),
+    )
+    .unwrap_or_else(|error| panic!("copy default corpus manifest: {error}"));
+    fs::copy(
+        generation.join("manifest.json"),
+        generated_generation.join("manifest.json"),
+    )
+    .unwrap_or_else(|error| panic!("copy default generation manifest: {error}"));
+    fs::copy(
         generation.join("lexical.json"),
         generated_generation.join("lexical.json"),
     )
@@ -596,7 +606,7 @@ fn run_build_default(args: &[String]) {
 
 #[cfg(feature = "git-corpus")]
 fn default_corpus_sources(args: &[String]) -> Vec<GitCorpusSource> {
-    const IDS: [&str; 3] = ["vesc", "vesc-tool", "refloat"];
+    const IDS: [&str; 4] = ["vesc", "vesc-tool", "refloat", "vesc-pkg"];
     let explicit = IDS.iter().any(|id| {
         argument_value(args, &format!("--{id}-path")).is_some()
             || argument_value(args, &format!("--{id}-revision")).is_some()

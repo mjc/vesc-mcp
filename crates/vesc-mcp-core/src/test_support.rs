@@ -269,7 +269,9 @@ pub struct McpTestHarness {
 impl McpTestHarness {
     #[must_use]
     pub fn new() -> Self {
-        let knowledge = crate::config::McpConfig::load().knowledge.clone();
+        // Keep integration tests independent of the user's daemon config and
+        // any large managed-repository artifacts in the user data root.
+        let knowledge = crate::config::KnowledgeConfig::default();
         Self {
             service: crate::VescMcpService::with_knowledge_config(knowledge.clone()),
             knowledge,
@@ -282,9 +284,14 @@ impl McpTestHarness {
     pub fn with_feedback_store(root: impl AsRef<Path>, writes_enabled: bool) -> Self {
         let root = root.as_ref();
         let store = crate::tools::knowledge_feedback::FeedbackStore::new(root);
+        let knowledge = crate::config::KnowledgeConfig::default();
         Self {
-            service: crate::VescMcpService::with_feedback_store(root, writes_enabled),
-            knowledge: crate::config::McpConfig::load().knowledge.clone(),
+            service: crate::VescMcpService::with_knowledge_config_and_feedback_store(
+                knowledge.clone(),
+                root,
+                writes_enabled,
+            ),
+            knowledge,
             feedback: Some(store),
             feedback_writes_enabled: writes_enabled,
         }

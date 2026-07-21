@@ -24,10 +24,11 @@ vesc-mcp supports two MCP connections:
 | Connection | Best for | Available tools |
 |------------|----------|-----------------|
 | stdio | One local assistant that needs package files | All configured tools |
-| Streamable HTTP | Multiple clients sharing knowledge search | `ping`, `search_vesc_knowledge`, `replay_vesc_knowledge_correction`, resources, and authenticated feedback writes when configured |
+| Streamable HTTP | Multiple clients sharing knowledge search and package work | Knowledge tools, resources, and authenticated package tools plus feedback writes when configured |
 
-Package inspection, validation, checks, and builds are stdio-only because they
-access local files. Streamable HTTP intentionally does not expose them.
+Unauthenticated Streamable HTTP remains read-only for knowledge and resources.
+Authenticated HTTP clients can use package tools, sandboxed to configured roots
+plus the client's advertised local `file://` roots.
 
 ### Streamable HTTP quick start
 

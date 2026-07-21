@@ -38,8 +38,9 @@ Check these in order:
 5. A browser Origin is in `VESC_MCP_HTTP_ALLOWED_ORIGINS`.
 6. If authentication is enabled, the client sends the exact bearer token.
 
-A successful HTTP connection lists only `ping` and
-`search_vesc_knowledge`. Package tools are stdio-only by design.
+A successful unauthenticated HTTP connection lists only knowledge tools and
+resources. Package tools appear only for authenticated connections and use the
+client's advertised local `file://` roots in addition to configured roots.
 
 ## HTTP returns 401 Unauthorized
 
@@ -74,7 +75,8 @@ package_roots = ["/path/to/vesc-packages"]
 ```
 
 Paths are canonicalized, so symbolic links cannot be used to escape the
-allowed roots. Package roots do not enable package tools over HTTP.
+allowed roots. Authenticated HTTP package tools use configured roots and the
+connected client's advertised local `file://` roots.
 
 ## Windows package paths are split incorrectly
 

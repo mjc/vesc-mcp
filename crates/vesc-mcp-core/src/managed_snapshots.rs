@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,14 @@ use crate::managed_repositories::{
 };
 
 const SNAPSHOT_SCHEMA: u16 = 1;
+
+// Keep the process inside one indexing working set. Different MCP requests can
+// ask for different snapshots, so per-snapshot locks are not enough here.
+static SNAPSHOT_BUILD_GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+fn snapshot_build_gate() -> Arc<tokio::sync::Semaphore> {
+    Arc::clone(SNAPSHOT_BUILD_GATE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))))
+}
 
 /// Corpus profile represented by one immutable snapshot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +252,10 @@ impl KnowledgeSnapshotStore {
 
     /// Prepare the configured default and only the explicitly selected historical snapshots.
     ///
+    /// Snapshot builds run in order so startup never holds multiple indexing
+    /// working sets at once; the process-wide gate also covers independent
+    /// stores created by concurrent MCP requests.
+    ///
     /// # Errors
     ///
     /// Returns the first resolution, storage, or build failure.
@@ -252,30 +264,12 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
         prewarm: &[BTreeMap<RepositoryId, String>],
     ) -> Result<PreparedSnapshots, SnapshotError> {
-        let mut tasks = tokio::task::JoinSet::new();
-        for (index, selection) in prewarm.iter().cloned().enumerate() {
-            let store = self.clone();
-            let repositories = repositories.clone();
-            tasks.spawn(async move {
-                store
-                    .prepare(&repositories, &selection)
-                    .await
-                    .map(|snapshot| (index, snapshot))
-            });
-        }
         let default = self.prepare_default(repositories).await?;
         let mut prewarmed = Vec::with_capacity(prewarm.len());
-        while let Some(result) = tasks.join_next().await {
-            prewarmed.push(result??);
+        for selection in prewarm {
+            prewarmed.push(self.prepare(repositories, selection).await?);
         }
-        prewarmed.sort_by_key(|(index, _)| *index);
-        Ok(PreparedSnapshots {
-            default,
-            prewarmed: prewarmed
-                .into_iter()
-                .map(|(_, snapshot)| snapshot)
-                .collect(),
-        })
+        Ok(PreparedSnapshots { default, prewarmed })
     }
 
     /// Prepare a snapshot, applying explicit selectors over configured defaults.
@@ -394,6 +388,10 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
         manifest: KnowledgeSnapshotManifest,
     ) -> Result<PreparedSnapshot, SnapshotError> {
+        let build_permit = snapshot_build_gate()
+            .acquire_owned()
+            .await
+            .map_err(|_| SnapshotError::Build("snapshot build gate closed".into()))?;
         let slot = {
             let mut slots = self.slots.lock().expect("snapshot slots mutex poisoned");
             Arc::clone(slots.entry(manifest.id.clone()).or_default())
@@ -405,6 +403,7 @@ impl KnowledgeSnapshotStore {
         let layout = self.layout.clone();
         let repositories = repositories.iter().cloned().collect::<Vec<_>>();
         tokio::task::spawn_blocking(move || {
+            let _build_permit = build_permit;
             *slot.state.lock().expect("snapshot state mutex poisoned") = SnapshotState::Building;
             let mut generation = slot
                 .generation
@@ -988,6 +987,54 @@ max_total_bytes = 10485760
                     .is_some_and(|extension| extension == "json"))
                 .count(),
             3
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_build_gate_allows_one_working_set() {
+        let first = snapshot_build_gate()
+            .acquire_owned()
+            .await
+            .expect("snapshot build gate");
+        assert!(snapshot_build_gate().try_acquire_owned().is_err());
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn snapshot_build_waits_for_global_working_set() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first, _second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let id = RepositoryId::new("fixture").expect("repository id");
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                &id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+        let store = KnowledgeSnapshotStore::new(layout);
+        let held = snapshot_build_gate()
+            .acquire_owned()
+            .await
+            .expect("snapshot build gate");
+        let build = tokio::spawn(async move {
+            store
+                .prepare(&repositories, &BTreeMap::new())
+                .await
+                .expect("snapshot build")
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!build.is_finished());
+        drop(held);
+        assert_eq!(
+            build.await.expect("snapshot task").disposition,
+            SnapshotDisposition::Built
         );
     }
 

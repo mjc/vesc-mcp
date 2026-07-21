@@ -51,6 +51,21 @@ max_passage_bytes = 8192
 # max_files = 100000
 # max_total_bytes = 1073741824
 
+# Official VESC packages repository.
+# [[knowledge.repositories]]
+# id = "vesc-pkg"
+# remote_url = "https://github.com/vedderb/vesc_pkg.git"
+# default_ref = "refs/heads/main"
+# policy = "optional"
+# include = ["**/*.lisp", "**/*.md", "**/*.qml"]
+# exclude = [".git/**"]
+# trust_tier = "official"
+# license = "GPL-3.0-or-later"
+# attribution = "VESC Project"
+# max_file_bytes = 1048576
+# max_files = 100000
+# max_total_bytes = 1073741824
+
 [feedback]
 # Optional durable directory. The server stores a bounded feedback.json here.
 # path = ".vesc-mcp-feedback"

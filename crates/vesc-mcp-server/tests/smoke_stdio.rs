@@ -2,8 +2,35 @@
 
 use std::{path::PathBuf, process::Stdio};
 
-use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+#[allow(deprecated)]
+use rmcp::{
+    ClientHandler, ServiceExt,
+    model::{CallToolRequestParams, ClientCapabilities, ClientInfo, ListRootsResult, Root},
+    service::RequestContext,
+    transport::TokioChildProcess,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+#[derive(Clone)]
+struct ProjectRootClient {
+    root_uri: String,
+}
+
+#[allow(deprecated)]
+impl ClientHandler for ProjectRootClient {
+    fn get_info(&self) -> ClientInfo {
+        let mut info = ClientInfo::default();
+        info.capabilities = ClientCapabilities::builder().enable_roots().build();
+        info
+    }
+
+    async fn list_roots(
+        &self,
+        _context: RequestContext<rmcp::RoleClient>,
+    ) -> Result<ListRootsResult, rmcp::ErrorData> {
+        Ok(ListRootsResult::new(vec![Root::new(self.root_uri.clone())]))
+    }
+}
 
 fn isolated_server_command(server: PathBuf) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(server);
@@ -41,6 +68,40 @@ async fn smoke_tools_list_count_at_least_seven() -> anyhow::Result<()> {
         tools.len(),
         tools.iter().map(|tool| &tool.name).collect::<Vec<_>>()
     );
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn package_tools_use_the_connected_client_project_root() -> anyhow::Result<()> {
+    let server = std::env::var("CARGO_BIN_EXE_vesc-mcp-server")
+        .map(PathBuf::from)
+        .expect("CARGO_BIN_EXE_vesc-mcp-server");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/refloat-minimal")
+        .canonicalize()?;
+    let transport = TokioChildProcess::new(isolated_server_command(server))?;
+    let client = ProjectRootClient {
+        root_uri: format!("file://{}", root.display()),
+    }
+    .serve(transport)
+    .await?;
+
+    let response = client
+        .call_tool(CallToolRequestParams::new("list_vesc_packages"))
+        .await?;
+    let text = response
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .expect("package discovery returns text content")
+        .text
+        .as_str();
+    let body: serde_json::Value = serde_json::from_str(text)?;
+    assert_eq!(body["ok"], true);
+    assert!(!body["packages"].as_array().is_none_or(Vec::is_empty));
+
     client.cancel().await?;
     Ok(())
 }

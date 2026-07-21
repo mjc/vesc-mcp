@@ -19,9 +19,9 @@ See [docs/testing.md](docs/testing.md) for the red → green → refactor workfl
 All tools return JSON text payloads.
 
 The default stdio transport exposes the full tool set below. Streamable HTTP
-exposes `ping`, `search_vesc_knowledge`, and base-knowledge correction replay
-(read-only unless authenticated writes authorize `mark_covered`); both
-transports expose the resource registry.
+exposes knowledge tools and resources; authenticated HTTP additionally exposes
+package-tree tools and authorized feedback writes. Package access is sandboxed
+to configured roots plus the connected client's advertised local roots.
 
 | Tool | Purpose | Key params |
 |------|---------|------------|
@@ -62,7 +62,7 @@ advisory but preserves its audit record.
 
 ### Path sandbox
 
-Tools that read or write package trees require paths under **`VESC_PACKAGE_ROOTS`** (comma- or colon-separated). In tests, fixtures under `tests/fixtures/` are allowed automatically via the `test-fixtures` feature.
+Tools that read or write package trees require paths under **`VESC_PACKAGE_ROOTS`** (comma- or colon-separated) or a local `file://` root advertised by the connected MCP client. In tests, fixtures under `tests/fixtures/` are allowed automatically via the `test-fixtures` feature.
 
 ### Offline fixture examples
 
