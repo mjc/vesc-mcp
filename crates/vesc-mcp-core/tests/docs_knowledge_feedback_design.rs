@@ -38,7 +38,7 @@ fn readme_links_to_knowledge_feedback_design_doc() {
     let readme = read_readme();
     assert!(
         readme.contains(
-            "[Proposed knowledge feedback and correction design](docs/knowledge-feedback-design.md)"
+            "[Knowledge feedback and correction mechanism](docs/knowledge-feedback-design.md)"
         ),
         "README.md should link to the new design doc under contributor documentation:\n{readme}"
     );
@@ -109,19 +109,19 @@ fn readme_doc_links_all_resolve_to_existing_files() {
 }
 
 #[test]
-fn knowledge_feedback_design_doc_declares_proposed_status_with_tracking_ids() {
+fn knowledge_feedback_design_doc_declares_implemented_status_with_tracking_id() {
     let body = read_knowledge_feedback_design_doc();
     assert!(
         body.starts_with("# Knowledge feedback and correction design"),
         "missing expected top-level heading:\n{body}"
     );
     assert!(
-        body.contains("Status: proposed in VESCM-183 and VESCM-PLAN-5."),
+        body.contains("Status: implemented by VESCM-183 and its child implementation issues."),
         "missing status line with tracking IDs:\n{body}"
     );
     assert!(
-        body.contains("The tools described here do\nnot ship yet."),
-        "missing explicit not-yet-shipped disclaimer:\n{body}"
+        body.contains("The correction is both a durable advisory and a reproducible knowledge-gap\nrecord."),
+        "missing implemented correction contract:\n{body}"
     );
 }
 
@@ -182,8 +182,8 @@ fn knowledge_feedback_design_doc_describes_correction_loop_steps() {
         "The user challenges X.",
         "reads the returned\n   VESC resources.",
         "Those resources support a corrected or more qualified conclusion Y.",
-        "with X, Y, affected result IDs,",
-        "show the correction before ordinary results",
+        "with the authorization path, X, Y,",
+        "show a learned advisory before ordinary\n   results",
     ] {
         assert!(
             body.contains(step_fragment),
@@ -191,9 +191,7 @@ fn knowledge_feedback_design_doc_describes_correction_loop_steps() {
         );
     }
     assert!(
-        body.contains(
-            "It does not rewrite upstream files or\nthe immutable curated knowledge artifact."
-        ),
+        body.contains("Model-authored text never rewrites curated data automatically"),
         "missing durability/non-destructive clarification:\n{body}"
     );
 }
@@ -295,8 +293,8 @@ fn knowledge_feedback_design_doc_lists_safety_and_non_goals() {
 fn knowledge_feedback_design_doc_lists_delivery_tickets_in_order() {
     let body = read_knowledge_feedback_design_doc();
     assert!(
-        body.contains("The durable implementation plan is VESCM-PLAN-5:"),
-        "missing delivery plan reference:\n{body}"
+        body.contains("The implementation work is tracked by VESCM-183 and these child issues:"),
+        "missing delivery tracking reference:\n{body}"
     );
 
     let tickets = [
