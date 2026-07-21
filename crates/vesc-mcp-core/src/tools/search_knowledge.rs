@@ -1061,23 +1061,13 @@ fn semantic_hits(
             .entry
             .as_mut()
             .ok_or_else(|| "semantic provider cache is empty".to_string())?;
-        let result = match load_vector_artifact(config, chunks) {
-            Ok(vector) => semantic_hits_with_provider(
-                query,
-                filters,
-                limit,
-                &vector,
-                chunks,
-                &mut entry.provider,
-            )
-            .map(|hits| (hits, false)),
-            Err(_) => semantic_hits_for_candidates_with_provider(
-                query,
-                limit,
-                lexical,
-                &mut entry.provider,
-            )
-            .map(|hits| (hits, true)),
+        let result = if let Ok(vector) = load_vector_artifact(config, chunks) {
+            semantic_hits_with_provider(query, filters, limit, &vector, chunks, &mut entry.provider)
+                .map(|hits| (hits, false))
+        } else {
+            entry.provider.set_lossless_windowing(true);
+            semantic_hits_for_candidates_with_provider(query, limit, lexical, &mut entry.provider)
+                .map(|hits| (hits, true))
         };
         entry.last_used = Instant::now();
         semantic_model_cache().wake.notify_one();
