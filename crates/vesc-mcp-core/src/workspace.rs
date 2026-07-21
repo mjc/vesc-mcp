@@ -79,17 +79,17 @@ pub fn vendor_vesc_tool() -> Option<PathBuf> {
 /// Expand `~/…` and workspace-relative paths (e.g. `vendor/vesc`).
 #[must_use]
 pub fn expand_path(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
 
     let candidate = PathBuf::from(path);
-    if candidate.is_relative() {
-        if let Some(root) = workspace_root() {
-            return root.join(path);
-        }
+    if candidate.is_relative()
+        && let Some(root) = workspace_root()
+    {
+        return root.join(path);
     }
     candidate
 }

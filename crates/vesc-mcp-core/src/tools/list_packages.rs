@@ -111,10 +111,10 @@ fn walk_for_pkgdesc(dir: &Path, out: &mut Vec<PackageEntry>) {
                 continue;
             }
             walk_for_pkgdesc(&path, out);
-        } else if path.file_name().is_some_and(|name| name == "pkgdesc.qml") {
-            if let Some(package) = package_entry_from_pkgdesc(&path) {
-                out.push(package);
-            }
+        } else if path.file_name().is_some_and(|name| name == "pkgdesc.qml")
+            && let Some(package) = package_entry_from_pkgdesc(&path)
+        {
+            out.push(package);
         }
     }
 }

@@ -293,15 +293,14 @@ fn parse_vesc_uri(full: &str, rest: &str) -> Result<ParsedResourceUri, ResourceU
         ));
     }
 
-    if kind == "commands" {
-        if let Some(command) = id
+    if kind == "commands"
+        && let Some(command) = id
             .strip_prefix("refloat/")
             .filter(|name| !name.is_empty() && !name.contains('/'))
-        {
-            return Ok(ParsedResourceUri::RefloatCommand(RefloatCommandUri {
-                command: command.into(),
-            }));
-        }
+    {
+        return Ok(ParsedResourceUri::RefloatCommand(RefloatCommandUri {
+            command: command.into(),
+        }));
     }
 
     Ok(ParsedResourceUri::Catalog(CatalogResourceUri {

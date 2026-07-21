@@ -987,12 +987,12 @@ impl HistoryVectorIndex {
     }
 
     #[must_use]
-    pub fn unique_vector_count(&self) -> usize {
+    pub const fn unique_vector_count(&self) -> usize {
         self.keys.len()
     }
 
     #[must_use]
-    pub fn occurrence_count(&self) -> usize {
+    pub const fn occurrence_count(&self) -> usize {
         self.occurrences.len()
     }
 

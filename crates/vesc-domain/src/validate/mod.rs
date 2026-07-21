@@ -31,7 +31,7 @@ pub struct LayoutValidationReport {
 
 impl LayoutValidationReport {
     #[must_use]
-    pub fn is_ok(&self) -> bool {
+    pub const fn is_ok(&self) -> bool {
         self.issues.is_empty()
     }
 

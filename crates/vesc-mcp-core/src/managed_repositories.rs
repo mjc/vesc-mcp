@@ -320,7 +320,7 @@ impl RepositoryRegistry {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.repositories.is_empty()
     }
 }

@@ -181,6 +181,8 @@
             "rust-src"
             "rust-analyzer"
             "llvm-tools-preview"
+            "clippy"
+            "rustfmt"
           ];
         };
         ciRustToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
@@ -231,8 +233,6 @@
                 cargo-llvm-cov
                 cargo-deny
                 cargo-audit
-                clippy
-                rustfmt
                 git
                 jq
                 hyperfine
@@ -261,8 +261,6 @@
               pkg-config
               openssl
               cargo-nextest
-              clippy
-              rustfmt
               git
               jq
               hyperfine
@@ -282,7 +280,7 @@
             '';
           };
         };
-        formatter = pkgs.rustfmt;
+        formatter = rustToolchain;
         checks.nixos-module = import ./nix/module-test.nix {
           inherit
             nixpkgs

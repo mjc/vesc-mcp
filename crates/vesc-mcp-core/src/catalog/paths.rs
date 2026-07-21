@@ -80,16 +80,15 @@ fn collect_paths_from_value(
     match value {
         Value::Mapping(map) => {
             for (key, val) in map {
-                if key.as_str() == Some("path") {
-                    if let Some(path_str) = val.as_str() {
-                        if is_repo_relative_path(path_str) {
-                            out.insert(CatalogPathRef {
-                                repo,
-                                path: path_str.to_string(),
-                                catalog_file: catalog_file.to_path_buf(),
-                            });
-                        }
-                    }
+                if key.as_str() == Some("path")
+                    && let Some(path_str) = val.as_str()
+                    && is_repo_relative_path(path_str)
+                {
+                    out.insert(CatalogPathRef {
+                        repo,
+                        path: path_str.to_string(),
+                        catalog_file: catalog_file.to_path_buf(),
+                    });
                 }
                 collect_paths_from_value(val, repo, catalog_file, out);
             }
@@ -123,10 +122,10 @@ pub fn find_duplicate_catalog_ids(catalog_root: &Path) -> Result<Vec<String>, St
             fs::read_to_string(&entry).map_err(|e| format!("read {}: {e}", entry.display()))?;
         let value: Value = serde_yaml::from_str(&content)
             .map_err(|e| format!("parse {}: {e}", entry.display()))?;
-        if let Some(id) = value.get("id").and_then(Value::as_str) {
-            if let Some(first) = seen.insert(id.to_string(), entry.clone()) {
-                duplicates.push(format!("{id}: {} and {}", first.display(), entry.display()));
-            }
+        if let Some(id) = value.get("id").and_then(Value::as_str)
+            && let Some(first) = seen.insert(id.to_string(), entry.clone())
+        {
+            duplicates.push(format!("{id}: {} and {}", first.display(), entry.display()));
         }
     }
     duplicates.sort();

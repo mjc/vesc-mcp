@@ -57,10 +57,10 @@ impl CatalogRepo {
         if let Ok(path) = env::var(self.env_var()) {
             return PathBuf::from(path);
         }
-        if let Some(subdir) = self.vendor_subdir() {
-            if let Some(vendor) = workspace::vendor_checkout(subdir) {
-                return vendor;
-            }
+        if let Some(subdir) = self.vendor_subdir()
+            && let Some(vendor) = workspace::vendor_checkout(subdir)
+        {
+            return vendor;
         }
         expand_path(self.sibling_default())
     }

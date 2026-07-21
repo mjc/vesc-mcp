@@ -1612,38 +1612,38 @@ pub fn search_vesc_knowledge_json_with_feedback(
     resources: &ResourceRegistry,
 ) -> String {
     let mut response = search_vesc_knowledge_tool_with_config(params, config);
-    if response.ok {
-        if let Some(store) = feedback {
-            let limit = if params.limit == 0 {
-                default_search_limit()
-            } else {
-                params.limit
-            };
-            let feedback = parse_filters(params)
-                .map_err(|error| format!("feedback filters unavailable: {error}"))
-                .and_then(|(_, filters)| {
-                    search_feedback(&params.query, store, resources, &filters, limit)
-                        .map_err(|error| error.to_string())
-                });
-            match feedback {
-                Ok(matches) => {
-                    response.corrections = matches.corrections;
-                    annotate_affected_results(&mut response.results, &response.corrections);
-                    let notes = matches
-                        .notes
-                        .into_iter()
-                        .take(limit)
-                        .map(feedback_note_result)
-                        .collect::<Vec<_>>();
-                    response.results.truncate(limit.saturating_sub(notes.len()));
-                    response.results.extend(notes);
-                }
-                Err(error) => response
-                    .warnings
-                    .push(format!("feedback retrieval unavailable: {error}")),
+    if response.ok
+        && let Some(store) = feedback
+    {
+        let limit = if params.limit == 0 {
+            default_search_limit()
+        } else {
+            params.limit
+        };
+        let feedback = parse_filters(params)
+            .map_err(|error| format!("feedback filters unavailable: {error}"))
+            .and_then(|(_, filters)| {
+                search_feedback(&params.query, store, resources, &filters, limit)
+                    .map_err(|error| error.to_string())
+            });
+        match feedback {
+            Ok(matches) => {
+                response.corrections = matches.corrections;
+                annotate_affected_results(&mut response.results, &response.corrections);
+                let notes = matches
+                    .notes
+                    .into_iter()
+                    .take(limit)
+                    .map(feedback_note_result)
+                    .collect::<Vec<_>>();
+                response.results.truncate(limit.saturating_sub(notes.len()));
+                response.results.extend(notes);
             }
-            response = response.bounded(params, config, params.detail);
+            Err(error) => response
+                .warnings
+                .push(format!("feedback retrieval unavailable: {error}")),
         }
+        response = response.bounded(params, config, params.detail);
     }
     serialize_search_response(&response, params.detail)
 }
