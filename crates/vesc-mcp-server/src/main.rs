@@ -144,6 +144,7 @@ where
     server.serve().await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Result<()> {
     let config = vesc_mcp_core::config::McpConfig::load();
     if config.knowledge.repositories.is_empty() {
@@ -210,6 +211,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
 
     reporter.indexing();
     let prepared = KnowledgeSnapshotStore::new(layout)
+        .with_semantic_config(&config.knowledge)?
         .prepare_configured(&config.knowledge.repositories, &config.knowledge.prewarm)
         .await?;
     if prepared.default.disposition == SnapshotDisposition::Stale {

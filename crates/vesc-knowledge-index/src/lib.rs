@@ -27,7 +27,7 @@ pub use corpus::chunking::{ChunkingConfig, ChunkingError, chunk_document, chunk_
 pub use corpus::full_history::{
     GitHistory, GitHistoryChangeKind, GitHistoryCommit, GitHistoryContent, GitHistoryError,
     GitHistoryOccurrence, GitHistoryRef, GitHistoryRefreshObservations, GitHistoryTip,
-    ingest_git_history,
+    ingest_git_history, ingest_git_history_fast_forward,
 };
 #[cfg(feature = "git-corpus")]
 pub use corpus::git::GitIngestionObservations;
@@ -66,8 +66,10 @@ pub use lifecycle::{
 };
 #[cfg(feature = "git-corpus")]
 pub use lifecycle::{
-    GitHistoryBuildSummary, build_git_artifacts, build_git_artifacts_with_provider,
-    build_git_history_artifacts,
+    GitHistoryBuildSummary, IncrementalGitHistoryBuildSummary, build_git_artifacts,
+    build_git_artifacts_with_provider, build_git_history_artifacts,
+    build_git_history_artifacts_incrementally, build_git_history_artifacts_reusing_vectors,
+    build_git_history_artifacts_with_provider,
 };
 pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;

@@ -62,7 +62,12 @@ pub async fn prepare_vesc_knowledge_tool(
         };
         selectors.insert(id, selector.clone());
     }
-    let store = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(root));
+    let store = match KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(root))
+        .with_semantic_config(config)
+    {
+        Ok(store) => store,
+        Err(error) => return snapshot_failure(&error),
+    };
     let timeout_secs = params.timeout_secs.unwrap_or(120);
     if timeout_secs > 600 {
         return failure("invalid_selection", "timeout exceeds 600 seconds");

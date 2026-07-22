@@ -13,6 +13,7 @@ use vesc_knowledge_index::corpus::{
     LicenseStatus, RepositoryId as CorpusRepositoryId, Revision, TrustTier as CorpusTrustTier,
 };
 
+use crate::config::KnowledgeConfig;
 use crate::managed_git::{ManagedGitError, ManagedGitStore};
 pub use crate::managed_repositories::KnowledgeSnapshotId;
 use crate::managed_repositories::{
@@ -44,6 +45,13 @@ pub enum SnapshotProfile {
 pub struct SnapshotSemanticModel {
     pub model_id: String,
     pub model_revision: String,
+    pub max_length: usize,
+}
+
+#[derive(Clone)]
+struct SnapshotSemanticConfig {
+    model_dir: PathBuf,
+    model: SnapshotSemanticModel,
 }
 
 /// One immutable repository selection in a snapshot.
@@ -206,6 +214,7 @@ pub struct KnowledgeSnapshotStore {
     layout: KnowledgeDataLayout,
     git: ManagedGitStore,
     slots: Arc<Mutex<HashMap<KnowledgeSnapshotId, Arc<BuildSlot>>>>,
+    semantic: Option<SnapshotSemanticConfig>,
 }
 
 impl KnowledgeSnapshotStore {
@@ -215,7 +224,53 @@ impl KnowledgeSnapshotStore {
             git: ManagedGitStore::new(layout.clone()),
             layout,
             slots: Arc::new(Mutex::new(HashMap::new())),
+            semantic: None,
         }
+    }
+
+    /// Configure semantic vectors for newly built snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when only part of the semantic model contract is configured.
+    pub fn with_semantic_config(mut self, config: &KnowledgeConfig) -> Result<Self, SnapshotError> {
+        self.semantic = match (
+            config.semantic_model_dir.clone(),
+            config.semantic_model_id.clone(),
+            config.semantic_model_revision.clone(),
+        ) {
+            (None, None, None) if config.semantic_max_length.is_none() => None,
+            (Some(model_dir), Some(model_id), Some(model_revision)) => {
+                let profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(&model_id)
+                    .ok_or_else(|| {
+                        SnapshotError::Build(format!(
+                            "no embedding profile is registered for {model_id}"
+                        ))
+                    })?;
+                let max_length = config.semantic_max_length.unwrap_or(profile.max_length);
+                if max_length == 0 || max_length > profile.max_length {
+                    return Err(SnapshotError::Build(format!(
+                        "semantic max length must be between 1 and {} for {model_id}",
+                        profile.max_length
+                    )));
+                }
+                Some(SnapshotSemanticConfig {
+                    model_dir,
+                    model: SnapshotSemanticModel {
+                        model_id,
+                        model_revision,
+                        max_length,
+                    },
+                })
+            }
+            _ => {
+                return Err(SnapshotError::Build(
+                    "semantic model directory, identity, and revision must be configured together"
+                        .into(),
+                ));
+            }
+        };
+        Ok(self)
     }
 
     /// Resolve configured defaults, prepare their immutable snapshot, and atomically activate it.
@@ -320,7 +375,13 @@ impl KnowledgeSnapshotStore {
                 Err(error) => return Err(error.into()),
             }
         }
-        let manifest = KnowledgeSnapshotManifest::with_profile(selected, None, profile)?;
+        let manifest = KnowledgeSnapshotManifest::with_profile(
+            selected,
+            self.semantic
+                .as_ref()
+                .map(|semantic| semantic.model.clone()),
+            profile,
+        )?;
         self.prepare_resolved(repositories, manifest).await
     }
 
@@ -367,7 +428,7 @@ impl KnowledgeSnapshotStore {
     ) -> Result<PreparedSnapshot, SnapshotError> {
         let manifest = self.default_manifest()?;
         let artifact_path = self.layout.artifact(&manifest.id);
-        validate_snapshot_artifact(&artifact_path, manifest.profile)?;
+        validate_snapshot_artifact(&artifact_path, &manifest)?;
         Ok(PreparedSnapshot {
             manifest,
             artifact_path,
@@ -402,6 +463,7 @@ impl KnowledgeSnapshotStore {
             .expect("snapshot generation mutex poisoned");
         let layout = self.layout.clone();
         let repositories = repositories.iter().cloned().collect::<Vec<_>>();
+        let semantic = self.semantic.clone();
         tokio::task::spawn_blocking(move || {
             let _build_permit = build_permit;
             *slot.state.lock().expect("snapshot state mutex poisoned") = SnapshotState::Building;
@@ -418,7 +480,7 @@ impl KnowledgeSnapshotStore {
                     .map_or(SnapshotState::Failed, |_| SnapshotState::Ready);
                 return result;
             }
-            let result = build_or_reuse(&layout, &repositories, &manifest);
+            let result = build_or_reuse(&layout, &repositories, &manifest, semantic.as_ref());
             if result.is_ok() {
                 *generation += 1;
             }
@@ -436,6 +498,7 @@ fn build_or_reuse(
     layout: &KnowledgeDataLayout,
     repositories: &[KnowledgeRepository],
     manifest: &KnowledgeSnapshotManifest,
+    semantic: Option<&SnapshotSemanticConfig>,
 ) -> Result<PreparedSnapshot, SnapshotError> {
     let snapshots = layout.root().as_path().join("snapshots");
     fs::create_dir_all(&snapshots)?;
@@ -456,7 +519,7 @@ fn build_or_reuse(
         if cached != *manifest {
             return Err(SnapshotError::IdentityMismatch);
         }
-        validate_snapshot_artifact(&artifact_path, cached.profile)?;
+        validate_snapshot_artifact(&artifact_path, &cached)?;
         FileExt::unlock(&lock)?;
         return Ok(PreparedSnapshot {
             manifest: cached,
@@ -476,24 +539,131 @@ fn build_or_reuse(
             corpus_source(layout, repository, &selected.commit)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut provider = semantic.map(semantic_provider).transpose()?;
     match manifest.profile {
         SnapshotProfile::SelectedTrees => {
-            vesc_knowledge_index::build_git_artifacts(&artifact_path, &sources)
-                .map_err(|error| SnapshotError::Build(error.to_string()))?;
+            let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
+                (
+                    provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
+                    semantic.model.model_id.as_str(),
+                    semantic.model.model_revision.as_str(),
+                )
+            });
+            vesc_knowledge_index::build_git_artifacts_with_provider(
+                &artifact_path,
+                &sources,
+                semantic_build,
+            )
+            .map_err(|error| SnapshotError::Build(error.to_string()))?;
         }
         SnapshotProfile::CompleteHistory => {
-            let previous = previous_history(layout, &manifest.id);
-            vesc_knowledge_index::build_git_history_artifacts(&artifact_path, &sources, previous)
-                .map_err(|error| SnapshotError::Build(error.to_string()))?;
+            let previous = load_previous_snapshot(layout, manifest);
+            let (previous_tips, previous_chunks, previous_vectors) = previous
+                .map_or((None, None, None), |previous| {
+                    (Some(previous.tips), Some(previous.chunks), previous.vectors)
+                });
+            let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
+                (
+                    provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
+                    semantic.model.model_id.as_str(),
+                    semantic.model.model_revision.as_str(),
+                )
+            });
+            let summary = vesc_knowledge_index::build_git_history_artifacts_incrementally(
+                &artifact_path,
+                &sources,
+                previous_tips,
+                previous_chunks,
+                semantic_build,
+                previous_vectors,
+            )
+            .map_err(|error| SnapshotError::Build(error.to_string()))?;
+            tracing::info!(
+                reused_snapshot = summary.reused_snapshot,
+                reused_commits = summary.refresh.reused_commits,
+                ingested_commits = summary.refresh.ingested_commits,
+                "prepared managed Git history snapshot"
+            );
+            if let Some(vectors) = summary.artifacts.observations.vector_build {
+                tracing::info!(
+                    reused_vectors = vectors.reused_vectors,
+                    embedded_vectors = vectors.embedded_vectors,
+                    "prepared managed semantic snapshot"
+                );
+            }
         }
     }
-    validate_snapshot_artifact(&artifact_path, manifest.profile)?;
+    validate_snapshot_artifact(&artifact_path, manifest)?;
     write_json_atomic(&snapshot_path, manifest)?;
     FileExt::unlock(&lock)?;
     Ok(PreparedSnapshot {
         manifest: manifest.clone(),
         artifact_path,
         disposition: SnapshotDisposition::Built,
+    })
+}
+
+struct PreviousSnapshotArtifacts {
+    tips: Vec<vesc_knowledge_index::GitHistoryTip>,
+    chunks: Vec<vesc_knowledge_index::Chunk>,
+    vectors: Option<vesc_knowledge_index::VectorArtifact>,
+}
+
+fn load_previous_snapshot(
+    layout: &KnowledgeDataLayout,
+    current: &KnowledgeSnapshotManifest,
+) -> Option<PreviousSnapshotArtifacts> {
+    let previous =
+        read_and_validate_manifest(&layout.root().as_path().join("default-snapshot.json")).ok()?;
+    if previous.profile != SnapshotProfile::CompleteHistory
+        || previous.component_versions != current.component_versions
+        || previous.repositories.len() != current.repositories.len()
+        || previous.repositories.iter().any(|repository| {
+            current.repositories.iter().all(|candidate| {
+                candidate.repository != repository.repository
+                    || candidate.policy_digest != repository.policy_digest
+            })
+        })
+    {
+        return None;
+    }
+
+    let artifact_root = layout.artifact(&previous.id);
+    let artifact = vesc_knowledge_index::inspect_manifest(
+        &vesc_knowledge_index::active_manifest_path(&artifact_root),
+    )
+    .ok()?;
+    let lexical = artifact_root
+        .join("generations")
+        .join(artifact.corpus.content_digest.to_string())
+        .join("lexical.json");
+    let chunks = vesc_knowledge_index::LexicalIndex::open_artifact(&lexical)
+        .ok()?
+        .into_chunks();
+    let vectors = (previous.semantic == current.semantic)
+        .then(|| {
+            artifact.vector_checksum.as_ref()?;
+            let vectors = vesc_knowledge_index::VectorArtifact::open_artifact(
+                &lexical.with_file_name("vectors.bin"),
+            )
+            .ok()?;
+            (vectors.corpus_digest == artifact.corpus.content_digest).then_some(vectors)
+        })
+        .flatten();
+    let tips = previous
+        .repositories
+        .iter()
+        .map(|repository| {
+            Some(vesc_knowledge_index::GitHistoryTip {
+                repository: CorpusRepositoryId::try_from(repository.repository.as_str()).ok()?,
+                revision: Revision::try_from(repository.commit.clone()).ok()?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(PreviousSnapshotArtifacts {
+        tips,
+        chunks,
+        vectors,
     })
 }
 
@@ -505,7 +675,7 @@ fn load_prepared(
     let path = layout.snapshot(id);
     let manifest = read_and_validate_manifest(&path)?;
     let artifact_path = layout.artifact(id);
-    validate_snapshot_artifact(&artifact_path, manifest.profile)?;
+    validate_snapshot_artifact(&artifact_path, &manifest)?;
     Ok(PreparedSnapshot {
         manifest,
         artifact_path,
@@ -543,38 +713,67 @@ fn corpus_source(
     })
 }
 
-fn previous_history(
-    layout: &KnowledgeDataLayout,
-    current: &KnowledgeSnapshotId,
-) -> Option<vesc_knowledge_index::GitHistory> {
-    let alias = layout.root().as_path().join("default-snapshot.json");
-    let manifest = read_and_validate_manifest(&alias).ok()?;
-    if manifest.profile != SnapshotProfile::CompleteHistory || &manifest.id == current {
-        return None;
-    }
-    vesc_knowledge_index::GitHistory::read_artifact(
-        &layout.artifact(&manifest.id).join("history.json"),
-    )
-    .ok()
-}
-
-fn validate_snapshot_artifact(path: &Path, profile: SnapshotProfile) -> Result<(), SnapshotError> {
-    let manifest =
+fn validate_snapshot_artifact(
+    path: &Path,
+    snapshot: &KnowledgeSnapshotManifest,
+) -> Result<(), SnapshotError> {
+    let artifact =
         vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(path))
             .map_err(|error| SnapshotError::Build(error.to_string()))?;
     let lexical = path
         .join("generations")
-        .join(manifest.corpus.content_digest.to_string())
+        .join(artifact.corpus.content_digest.to_string())
         .join("lexical.json");
     drop(
         vesc_knowledge_index::LexicalIndex::open_search_artifact(&lexical)
             .map_err(|error| SnapshotError::Build(error.to_string()))?,
     );
-    if profile == SnapshotProfile::CompleteHistory {
-        vesc_knowledge_index::GitHistory::read_artifact(&path.join("history.json"))
-            .map_err(|error| SnapshotError::Build(error.to_string()))?;
+    if snapshot.semantic.is_some() {
+        let vectors = lexical.with_file_name("vectors.bin");
+        if artifact.vector_checksum.is_none() || !vectors.is_file() {
+            return Err(SnapshotError::Build(
+                "semantic snapshot vector artifact is unavailable".into(),
+            ));
+        }
     }
     Ok(())
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn semantic_provider(
+    semantic: &SnapshotSemanticConfig,
+) -> Result<Box<dyn vesc_knowledge_index::EmbeddingProvider>, SnapshotError> {
+    let mut profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(
+        &semantic.model.model_id,
+    )
+    .ok_or_else(|| {
+        SnapshotError::Build(format!(
+            "no embedding profile is registered for {}",
+            semantic.model.model_id
+        ))
+    })?;
+    profile.max_length = semantic.model.max_length;
+    vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile_and_threads(
+        &semantic.model_dir,
+        None,
+        profile,
+        Some(vesc_knowledge_index::default_semantic_intra_threads()),
+    )
+    .map(|mut provider| {
+        provider.set_lossless_windowing(true);
+        Box::new(provider) as Box<dyn vesc_knowledge_index::EmbeddingProvider>
+    })
+    .map_err(|error| SnapshotError::Build(format!("semantic provider unavailable: {error}")))
+}
+
+#[cfg(not(feature = "semantic-fastembed"))]
+fn semantic_provider(
+    semantic: &SnapshotSemanticConfig,
+) -> Result<Box<dyn vesc_knowledge_index::EmbeddingProvider>, SnapshotError> {
+    let _ = &semantic.model_dir;
+    Err(SnapshotError::Build(
+        "semantic-fastembed feature is disabled".into(),
+    ))
 }
 
 fn read_and_validate_manifest(path: &Path) -> Result<KnowledgeSnapshotManifest, SnapshotError> {
@@ -815,13 +1014,7 @@ max_total_bytes = 10485760
                 .iter()
                 .all(|snapshot| snapshot.manifest.profile == SnapshotProfile::SelectedTrees)
         );
-        assert!(
-            prepared
-                .default
-                .artifact_path
-                .join("history.json")
-                .is_file()
-        );
+        assert!(!prepared.default.artifact_path.join("history.json").exists());
         assert!(
             prepared
                 .prewarmed
@@ -873,12 +1066,51 @@ max_total_bytes = 10485760
             SnapshotProfile::CompleteHistory,
         )
         .expect("history manifest");
+        let semantic = KnowledgeSnapshotManifest::new(
+            same.repositories.clone(),
+            Some(SnapshotSemanticModel {
+                model_id: "fake".into(),
+                model_revision: "test".into(),
+                max_length: 512,
+            }),
+        )
+        .expect("semantic manifest");
+        let shorter_semantic = KnowledgeSnapshotManifest::new(
+            same.repositories.clone(),
+            Some(SnapshotSemanticModel {
+                model_id: "fake".into(),
+                model_revision: "test".into(),
+                max_length: 256,
+            }),
+        )
+        .expect("semantic manifest with shorter inputs");
 
         assert_eq!(left, same);
         assert_ne!(left.id, moved.id);
         assert_ne!(left.id, policy_changed.id);
         assert_ne!(left.id, complete_history.id);
+        assert_ne!(left.id, semantic.id);
+        assert_ne!(semantic.id, shorter_semantic.id);
         assert_eq!(left.id.as_str().len(), 64);
+    }
+
+    #[test]
+    fn semantic_snapshot_configuration_requires_a_complete_model_contract() {
+        let root = tempfile::tempdir().expect("data root");
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(root.path().to_path_buf()).expect("valid data root"),
+        );
+        let incomplete = KnowledgeConfig {
+            semantic_model_id: Some(vesc_knowledge_index::JINA_CODE_MODEL_ID.into()),
+            ..KnowledgeConfig::default()
+        };
+
+        let error = KnowledgeSnapshotStore::new(layout)
+            .with_semantic_config(&incomplete)
+            .err()
+            .expect("incomplete semantic configuration");
+
+        assert!(error.to_string().contains("configured together"));
     }
 
     #[tokio::test]
@@ -1110,7 +1342,7 @@ max_total_bytes = 10485760
     }
 
     #[tokio::test]
-    async fn moved_default_branch_retains_the_previous_snapshot() {
+    async fn moved_default_branch_retains_the_previous_snapshot_without_history_copies() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let (work, remote, _first, _second) = fixture_remote(temp.path());
         let data_root = temp.path().join("data");
@@ -1166,17 +1398,8 @@ max_total_bytes = 10485760
         assert!(artifact_matches(&current.artifact_path, "alphaunique"));
         assert!(artifact_matches(&current.artifact_path, "betaunique"));
         assert!(artifact_matches(&current.artifact_path, "gammaunique"));
-        let previous_history = vesc_knowledge_index::GitHistory::read_artifact(
-            &previous.artifact_path.join("history.json"),
-        )
-        .expect("previous history");
-        let current_history = vesc_knowledge_index::GitHistory::read_artifact(
-            &current.artifact_path.join("history.json"),
-        )
-        .expect("current history");
-        assert_eq!(previous_history.commits.len(), 2);
-        assert_eq!(current_history.commits.len(), 3);
-        assert_eq!(current_history.contents.len(), 3);
+        assert!(!previous.artifact_path.join("history.json").exists());
+        assert!(!current.artifact_path.join("history.json").exists());
         assert_eq!(
             store.default_manifest().expect("default alias").id,
             current.manifest.id

@@ -14,7 +14,7 @@ use crate::corpus::{Chunk, ChunkId, ContentDigest};
 
 const MAGIC: &[u8] = b"VESCRAG1";
 const CHECKSUM_LEN: usize = 32;
-const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Conservative outer batch size for the production embedding build.
 pub const DEFAULT_SEMANTIC_BATCH_SIZE: usize = 8;
@@ -108,6 +108,10 @@ pub struct VectorBuildObservations {
     pub provider_us: u64,
     pub vector_finalization_us: u64,
     pub input_bytes: u64,
+    #[serde(default)]
+    pub reused_vectors: usize,
+    #[serde(default)]
+    pub embedded_vectors: usize,
 }
 
 /// Tokenization and padding measurements for the exact provider inputs.
@@ -449,6 +453,12 @@ impl EmbeddingProfile {
 
 /// Synchronous provider boundary for batch document and query embeddings.
 pub trait EmbeddingProvider {
+    /// Returns the provider's fixed output dimension when known before inference.
+    #[must_use]
+    fn embedding_dimension(&self) -> Option<usize> {
+        None
+    }
+
     /// Returns the validated outer batch size used by corpus generation.
     #[must_use]
     fn embedding_batch_size(&self) -> EmbeddingBatchSize {
@@ -741,6 +751,10 @@ impl FakeEmbeddingProvider {
 }
 
 impl EmbeddingProvider for FakeEmbeddingProvider {
+    fn embedding_dimension(&self) -> Option<usize> {
+        Some(self.dimension)
+    }
+
     fn output_normalization(&self) -> OutputNormalization {
         OutputNormalization::Guaranteed
     }
@@ -1717,6 +1731,10 @@ pub fn configure_ort_verbose_logging(verbose: bool) -> Result<(), EmbeddingError
 
 #[cfg(feature = "semantic-fastembed")]
 impl EmbeddingProvider for FastEmbedProvider {
+    fn embedding_dimension(&self) -> Option<usize> {
+        Some(self.profile.dimension)
+    }
+
     fn embedding_batch_size(&self) -> EmbeddingBatchSize {
         self.batch_size
     }
@@ -1833,6 +1851,41 @@ pub struct VectorArtifact {
     pub values: Vec<f32>,
 }
 
+fn encoded_artifact_len(
+    chunks: &[Chunk],
+    dimension: usize,
+    model_id: &str,
+    model_revision: &str,
+) -> Result<usize, EmbeddingError> {
+    u32::try_from(chunks.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    u32::try_from(dimension).map_err(|_| EmbeddingError::TooLarge)?;
+    u32::try_from(model_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    u32::try_from(model_revision.len()).map_err(|_| EmbeddingError::TooLarge)?;
+
+    let fixed = MAGIC
+        .len()
+        .checked_add(4 * 5)
+        .and_then(|len| len.checked_add(model_id.len()))
+        .and_then(|len| len.checked_add(model_revision.len()))
+        .and_then(|len| len.checked_add(1 + 32 + CHECKSUM_LEN))
+        .ok_or(EmbeddingError::TooLarge)?;
+    let vector_bytes = dimension
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or(EmbeddingError::TooLarge)?;
+    let total = chunks.iter().try_fold(fixed, |total, chunk| {
+        let id_len = chunk.chunk_id.as_str().len();
+        u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
+        total
+            .checked_add(2)
+            .and_then(|total| total.checked_add(id_len))
+            .and_then(|total| total.checked_add(vector_bytes))
+            .ok_or(EmbeddingError::TooLarge)
+    })?;
+    (total <= MAX_ARTIFACT_BYTES)
+        .then_some(total)
+        .ok_or(EmbeddingError::TooLarge)
+}
+
 impl VectorArtifact {
     /// Builds and validates an artifact from a provider and ordered chunks.
     ///
@@ -1880,6 +1933,145 @@ impl VectorArtifact {
         )
     }
 
+    /// Builds an artifact while copying rows for stable chunk IDs from a compatible artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when reused or newly embedded rows cannot form a valid
+    /// artifact for the requested corpus.
+    pub fn from_provider_reusing_with_observations<P: EmbeddingProvider + ?Sized>(
+        provider: &mut P,
+        chunks: &[Chunk],
+        model_id: impl Into<String>,
+        model_revision: impl Into<String>,
+        corpus_digest: ContentDigest,
+        previous: Option<&Self>,
+    ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
+        let model_id = model_id.into();
+        let model_revision = model_revision.into();
+        let provider_dimension = provider.embedding_dimension();
+        let previous = previous.filter(|artifact| {
+            artifact.validate().is_ok()
+                && artifact.normalized
+                && artifact.model_id == model_id
+                && artifact.model_revision == model_revision
+                && provider_dimension.is_none_or(|dimension| dimension == artifact.dimension)
+        });
+
+        if let Some(dimension) = previous
+            .map(|artifact| artifact.dimension)
+            .or(provider_dimension)
+        {
+            encoded_artifact_len(chunks, dimension, &model_id, &model_revision)?;
+        }
+
+        let missing = chunks
+            .iter()
+            .filter(|chunk| {
+                previous.is_none_or(|artifact| artifact.ids.binary_search(&chunk.chunk_id).is_err())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let (embedded, mut observations) = if missing.is_empty() {
+            (None, VectorBuildObservations::default())
+        } else {
+            let inference_order = provider.inference_order(&missing)?;
+            let (artifact, observations) = Self::from_provider_with_observations_and_order(
+                provider,
+                &missing,
+                &model_id,
+                &model_revision,
+                corpus_digest.clone(),
+                inference_order.as_deref(),
+            )?;
+            (Some(artifact), observations)
+        };
+
+        let dimension = previous
+            .map(|artifact| artifact.dimension)
+            .or_else(|| embedded.as_ref().map(|artifact| artifact.dimension))
+            .ok_or(EmbeddingError::EmptyInput)?;
+        let value_count = chunks
+            .len()
+            .checked_mul(dimension)
+            .ok_or(EmbeddingError::TooLarge)?;
+        let mut order = (0..chunks.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
+        let mut ids = Vec::with_capacity(chunks.len());
+        let mut values = Vec::with_capacity(value_count);
+        for index in order {
+            let id = &chunks[index].chunk_id;
+            let source = previous
+                .and_then(|artifact| {
+                    artifact
+                        .ids
+                        .binary_search(id)
+                        .ok()
+                        .map(|row| (artifact, row))
+                })
+                .or_else(|| {
+                    embedded.as_ref().and_then(|artifact| {
+                        artifact
+                            .ids
+                            .binary_search(id)
+                            .ok()
+                            .map(|row| (artifact, row))
+                    })
+                })
+                .ok_or_else(|| EmbeddingError::MissingChunk(id.clone()))?;
+            let start = source
+                .1
+                .checked_mul(dimension)
+                .ok_or(EmbeddingError::TooLarge)?;
+            let end = start
+                .checked_add(dimension)
+                .ok_or(EmbeddingError::TooLarge)?;
+            ids.push(id.clone());
+            values.extend_from_slice(&source.0.values[start..end]);
+        }
+
+        observations.reused_vectors = chunks.len().saturating_sub(missing.len());
+        observations.embedded_vectors = missing.len();
+        let artifact = Self {
+            schema: 2,
+            model_id,
+            model_revision,
+            dimension,
+            normalized: true,
+            corpus_digest,
+            ids,
+            values,
+        };
+        artifact.validate()?;
+        Ok((artifact, observations))
+    }
+
+    /// Builds an artifact while consuming the compatible predecessor after rows are copied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] under the same conditions as
+    /// [`Self::from_provider_reusing_with_observations`].
+    pub fn from_provider_reusing_owned_with_observations<P: EmbeddingProvider + ?Sized>(
+        provider: &mut P,
+        chunks: &[Chunk],
+        model_id: impl Into<String>,
+        model_revision: impl Into<String>,
+        corpus_digest: ContentDigest,
+        previous: Option<Self>,
+    ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
+        let result = Self::from_provider_reusing_with_observations(
+            provider,
+            chunks,
+            model_id,
+            model_revision,
+            corpus_digest,
+            previous.as_ref(),
+        );
+        drop(previous);
+        result
+    }
+
     /// Builds an artifact using an optional provider-selected inference order.
     ///
     /// The returned rows are always restored to ascending stable chunk ID,
@@ -1899,6 +2091,11 @@ impl VectorArtifact {
         corpus_digest: ContentDigest,
         inference_order: Option<&[usize]>,
     ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
+        let model_id = model_id.into();
+        let model_revision = model_revision.into();
+        if let Some(dimension) = provider.embedding_dimension() {
+            encoded_artifact_len(chunks, dimension, &model_id, &model_revision)?;
+        }
         let batch_size = provider.embedding_batch_size().get();
         let output_normalization = provider.output_normalization();
         let mut observations = VectorBuildObservations::default();
@@ -1969,6 +2166,7 @@ impl VectorArtifact {
                 match dimension {
                     None => {
                         let vector_dimension = vector.len();
+                        encoded_artifact_len(chunks, vector_dimension, &model_id, &model_revision)?;
                         let total_values = chunks
                             .len()
                             .checked_mul(vector_dimension)
@@ -2021,8 +2219,8 @@ impl VectorArtifact {
 
         let artifact = Self {
             schema: 2,
-            model_id: model_id.into(),
-            model_revision: model_revision.into(),
+            model_id,
+            model_revision,
             dimension,
             normalized: true,
             corpus_digest,
@@ -2030,6 +2228,7 @@ impl VectorArtifact {
             values: sorted_values,
         };
         artifact.validate()?;
+        observations.embedded_vectors = chunks.len();
         Ok((artifact, observations))
     }
 
@@ -2467,6 +2666,26 @@ mod tests {
     use super::*;
     use crate::corpus::{NormalizedDocument, RepositoryId, Revision, SourceKind};
 
+    struct RecordingProvider {
+        dimension: usize,
+        embedded: usize,
+    }
+
+    impl EmbeddingProvider for RecordingProvider {
+        fn embedding_dimension(&self) -> Option<usize> {
+            Some(self.dimension)
+        }
+
+        fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            self.embedded += texts.len();
+            FakeEmbeddingProvider::new(self.dimension).embed_documents(texts)
+        }
+
+        fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+            FakeEmbeddingProvider::new(self.dimension).embed_query(text)
+        }
+    }
+
     fn chunks() -> Vec<Chunk> {
         ["alpha", "beta"]
             .into_iter()
@@ -2484,6 +2703,126 @@ mod tests {
                 Chunk::from_document(&document, 0, text.into(), Vec::new(), None).expect("chunk")
             })
             .collect()
+    }
+
+    #[test]
+    fn vector_build_reuses_unchanged_rows() {
+        let original_chunks = chunks();
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let original = VectorArtifact::from_provider(
+            &mut original_provider,
+            &original_chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"old"),
+        )
+        .expect("original artifact");
+        let mut next_chunks = original_chunks[..1].to_vec();
+        next_chunks.push(chunks().remove(1));
+        let mut provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        let (next, observations) = VectorArtifact::from_provider_reusing_with_observations(
+            &mut provider,
+            &next_chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"new"),
+            Some(&original),
+        )
+        .expect("incremental artifact");
+
+        assert_eq!(provider.embedded, 0);
+        assert_eq!(observations.reused_vectors, 2);
+        assert_eq!(observations.embedded_vectors, 0);
+        assert_eq!(next.ids, original.ids);
+        assert_eq!(next.values, original.values);
+    }
+
+    #[test]
+    fn vector_build_embeds_only_new_rows() {
+        let original_chunks = chunks();
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let original = VectorArtifact::from_provider(
+            &mut original_provider,
+            &original_chunks[..1],
+            "fake",
+            "test",
+            ContentDigest::of(b"old"),
+        )
+        .expect("original artifact");
+        let mut provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        let (_, observations) = VectorArtifact::from_provider_reusing_with_observations(
+            &mut provider,
+            &original_chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"new"),
+            Some(&original),
+        )
+        .expect("incremental artifact");
+
+        assert_eq!(provider.embedded, 1);
+        assert_eq!(observations.reused_vectors, 1);
+        assert_eq!(observations.embedded_vectors, 1);
+    }
+
+    #[test]
+    fn incompatible_vector_artifact_is_not_reused() {
+        let chunks = chunks();
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let original = VectorArtifact::from_provider(
+            &mut original_provider,
+            &chunks,
+            "old-model",
+            "test",
+            ContentDigest::of(b"old"),
+        )
+        .expect("original artifact");
+        let mut provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        let (_, observations) = VectorArtifact::from_provider_reusing_with_observations(
+            &mut provider,
+            &chunks,
+            "new-model",
+            "test",
+            ContentDigest::of(b"new"),
+            Some(&original),
+        )
+        .expect("rebuilt artifact");
+
+        assert_eq!(provider.embedded, chunks.len());
+        assert_eq!(observations.reused_vectors, 0);
+        assert_eq!(observations.embedded_vectors, chunks.len());
+    }
+
+    #[test]
+    fn oversized_vector_artifact_is_rejected_before_inference() {
+        let mut provider = RecordingProvider {
+            dimension: usize::MAX,
+            embedded: 0,
+        };
+
+        let error = VectorArtifact::from_provider(
+            &mut provider,
+            &chunks()[..1],
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect_err("oversized artifact");
+
+        assert!(matches!(error, EmbeddingError::TooLarge));
+        assert_eq!(provider.embedded, 0);
     }
 
     #[test]

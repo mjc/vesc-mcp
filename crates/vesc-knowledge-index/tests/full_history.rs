@@ -7,8 +7,9 @@ use std::process::Command;
 use tempfile::tempdir;
 use vesc_knowledge_index::corpus::git::{GitCorpusPolicy, GitCorpusSource};
 use vesc_knowledge_index::{
-    ContentDigest, GitHistory, GitHistoryChangeKind, LicenseStatus, RepositoryId, Revision,
-    TrustTier, ingest_git_history,
+    ContentDigest, FakeEmbeddingProvider, GitHistory, GitHistoryChangeKind, LicenseStatus,
+    RepositoryId, Revision, TrustTier, VectorArtifact, build_git_history_artifacts_incrementally,
+    build_git_history_artifacts_with_provider, ingest_git_history, ingest_git_history_fast_forward,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -133,6 +134,129 @@ fn binary_blobs_remain_in_history_without_becoming_search_chunks() {
             .iter()
             .all(|content| content.chunk.path.as_str() != "firmware.rs")
     );
+}
+
+#[test]
+fn full_history_build_with_provider_writes_matching_vectors() {
+    let (_root, work) = fixture();
+    let source = at_head(source(work.clone(), "fixture"), &work);
+    let artifacts = tempdir().expect("artifact root");
+    let mut provider = FakeEmbeddingProvider::new(8);
+
+    let summary = build_git_history_artifacts_with_provider(
+        artifacts.path(),
+        &[source],
+        None,
+        Some((&mut provider, "fake", "test-revision")),
+    )
+    .expect("semantic history build");
+
+    let vector = VectorArtifact::open_artifact(
+        &artifacts
+            .path()
+            .join("generations")
+            .join(&summary.artifacts.generation)
+            .join("vectors.bin"),
+    )
+    .expect("vector artifact");
+    assert_eq!(vector.model_id, "fake");
+    assert_eq!(vector.model_revision, "test-revision");
+    assert_eq!(vector.ids.len(), summary.artifacts.chunk_count);
+    assert!(!artifacts.path().join("history.json").exists());
+}
+
+#[test]
+fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
+    let (_root, work) = fixture();
+    let first_artifacts = tempdir().expect("first artifact root");
+    let mut first_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_with_provider(
+        first_artifacts.path(),
+        &[at_head(source(work.clone(), "fixture"), &work)],
+        None,
+        Some((&mut first_provider, "fake", "test-revision")),
+    )
+    .expect("first semantic history build");
+    let first_vector = VectorArtifact::open_artifact(
+        &first_artifacts
+            .path()
+            .join("generations")
+            .join(&first.artifacts.generation)
+            .join("vectors.bin"),
+    )
+    .expect("first vector artifact");
+
+    fs::write(work.join("new.md"), "a new semantic passage\n").expect("new passage");
+    git(&work, &["add", "new.md"]);
+    git(&work, &["commit", "-qm", "new passage"]);
+    let second_artifacts = tempdir().expect("second artifact root");
+    let mut second_provider = FakeEmbeddingProvider::new(8);
+    let cached_chunks = first
+        .history
+        .contents
+        .iter()
+        .map(|content| content.chunk.clone())
+        .collect::<Vec<_>>();
+    let second = build_git_history_artifacts_incrementally(
+        second_artifacts.path(),
+        &[at_head(source(work.clone(), "fixture"), &work)],
+        Some(first.history.tips.clone()),
+        Some(cached_chunks),
+        Some((&mut second_provider, "fake", "test-revision")),
+        Some(first_vector),
+    )
+    .expect("incremental semantic history build");
+    let observations = second
+        .artifacts
+        .observations
+        .vector_build
+        .expect("vector observations");
+
+    assert!(second.reused_snapshot);
+    assert_eq!(second.refresh.ingested_commits, 1);
+    assert_eq!(observations.reused_vectors, first.artifacts.chunk_count);
+    assert_eq!(
+        observations.embedded_vectors,
+        second.artifacts.chunk_count - first.artifacts.chunk_count
+    );
+}
+
+#[test]
+fn fast_forward_uses_cached_chunks_and_ingests_only_new_commits() {
+    let (_root, work) = fixture();
+    let first_source = at_head(source(work.clone(), "fixture"), &work);
+    let (first, _) = ingest_git_history(&[first_source], None).expect("first history");
+    let cached_chunks = first
+        .contents
+        .iter()
+        .map(|content| content.chunk.clone())
+        .collect::<Vec<_>>();
+
+    fs::write(work.join("incremental.md"), "incremental only\n").expect("new passage");
+    git(&work, &["add", "incremental.md"]);
+    git(&work, &["commit", "-qm", "incremental passage"]);
+    let next_source = at_head(source(work.clone(), "fixture"), &work);
+    let incremental = ingest_git_history_fast_forward(
+        std::slice::from_ref(&next_source),
+        &first.tips,
+        &cached_chunks,
+    )
+    .expect("incremental history")
+    .expect("fast-forward");
+    let (cold, _) = ingest_git_history(&[next_source], None).expect("cold history");
+    let incremental_ids = incremental
+        .0
+        .iter()
+        .map(|content| content.chunk.chunk_id.clone())
+        .collect::<Vec<_>>();
+    let cold_ids = cold
+        .contents
+        .iter()
+        .map(|content| content.chunk.chunk_id.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(incremental.1.ingested_commits, 1);
+    assert_eq!(incremental_ids, cold_ids);
 }
 
 #[test]

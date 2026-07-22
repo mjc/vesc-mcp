@@ -20,8 +20,10 @@ nix develop -c vesc-mcp-server --http
 
 The packaged build includes the generated knowledge artifact and the pinned
 INT8 `jinaai/jina-embeddings-v2-base-code` query model. `auto` retrieval uses
-hybrid search when the semantic runtime is available and falls back to lexical
-search with a warning if it is not:
+hybrid search when its snapshot has matching vectors. Managed snapshot
+preparation builds those vectors with the packaged model. Builds without a
+configured semantic model remain lexical-only and return an explicit lexical
+retry when `auto` or `hybrid` is requested:
 
 ```bash
 nix run
@@ -137,8 +139,10 @@ The first start binds HTTP before fetching three bare Git stores and building
 the combined default history in the background, so clients can observe
 `ping.knowledge` progress throughout the expensive first preparation. Later
 starts fetch incrementally with gix, reuse content-addressed passages, and
-advance the default alias only after the new snapshot validates. Changing one
-ref creates a new artifact without deleting older immutable snapshots.
+reuse unchanged semantic rows from the prior binary vector artifact. Only the
+new fast-forward commit range is chunked and embedded. The default alias advances
+only after the new snapshot validates; changing one ref does not delete older
+immutable snapshots.
 
 Bare repositories, manifests, indexes, and temporary same-filesystem staging
 live below `/var/lib/vesc-mcp`; disposable caches have the separate

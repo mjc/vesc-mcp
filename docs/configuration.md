@@ -154,7 +154,10 @@ Supported modes:
 | `hybrid` | Requires a compatible local vector artifact and model; reports an error if unavailable |
 
 The server never downloads a semantic model at startup. Model directory,
-identity, and revision must match the vector artifact manifest.
+identity, revision, and maximum input length become part of a managed snapshot's
+immutable identity. When all three model settings are configured, snapshot
+preparation writes a matching `vectors.bin`; without them, snapshots remain
+lexical-only.
 
 ### Managed knowledge repositories
 
@@ -218,7 +221,6 @@ repositories/<id>.git/
 repositories/<id>.refs.json
 snapshots/<snapshot-id>.json
 artifacts/<snapshot-id>/
-artifacts/<snapshot-id>/history.json
 preparation-status.json
 tmp/
 ```
@@ -228,20 +230,24 @@ repositories and prepares the default artifact in the background. The `ping`
 response exposes the bounded `knowledge` state and phase plus completed/total
 repository counts; the same state is atomically shared through
 `preparation-status.json`. The default artifact is one combined history
-containing every commit reachable from each configured default branch. It
-stores changed path occurrences separately from content-addressed passages, so
-unchanged blobs and chunks are not duplicated for every commit. Binary changes
-remain history occurrences but do not become searchable text chunks. Tags and
-branches are retained as named aliases into the commit graph.
+containing every searchable blob reachable from each configured default branch.
+The managed bare repositories remain the sole commit, tree, ref, and blob
+store; snapshots do not duplicate that graph in a corpus-sized JSON file.
+Tantivy stores the normalized searchable chunks and `vectors.bin` stores their
+embeddings.
 
-A later refresh walks the current graph with `gix`, reuses commits and passages
-from the previous immutable generation, ingests only newly reachable changed
-blobs, validates the new artifact, and then atomically advances the mutable
-default alias. Explicit prewarm selections remain commit-tree snapshots for
-version-specific comparisons. A failed refresh keeps the last complete default
-and reports it as stale. Run `vesc-mcp-server --refresh-repositories` from a
-deployment hook or timer to perform an incremental refresh and exit. There is
-no built-in background scheduler.
+A later refresh resolves the current tips from Git. An unchanged immutable
+snapshot ID reuses its complete artifact without rebuilding. Changed tips are
+checked against the prior tips in Git. Fast-forwards seed normalized chunks from
+the prior Tantivy artifact, ingest only the newly reachable commit range, and
+copy unchanged rows from a compatible `vectors.bin`; only new chunk IDs are
+embedded. Rewrites, policy changes, and incompatible semantic contracts fall
+back to a cold rebuild. The new derived artifact is validated before the mutable
+default alias advances. Explicit prewarm selections remain commit-tree snapshots
+for version-specific comparisons. A failed refresh keeps the last complete
+default and reports it as stale. Run
+`vesc-mcp-server --refresh-repositories` from a deployment hook or timer to
+perform a refresh and exit. There is no built-in background scheduler.
 
 Agents discover this local state with the read-only
 `list_vesc_source_versions` tool before choosing evidence. It accepts optional

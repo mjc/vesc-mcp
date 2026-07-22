@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
 #[cfg(feature = "git-corpus")]
 use crate::corpus::full_history::{
-    GitHistory, GitHistoryError, GitHistoryRefreshObservations, ingest_git_history_owned,
+    GitHistory, GitHistoryError, GitHistoryRefreshObservations, GitHistoryTip,
+    ingest_git_history_fast_forward_owned, ingest_git_history_owned,
 };
 #[cfg(feature = "git-corpus")]
 use crate::corpus::git::{
@@ -185,6 +186,15 @@ pub struct GitHistoryBuildSummary {
     pub refresh: GitHistoryRefreshObservations,
 }
 
+/// Summary for a complete-history build seeded from a prior immutable snapshot.
+#[cfg(feature = "git-corpus")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncrementalGitHistoryBuildSummary {
+    pub artifacts: BuildSummary,
+    pub refresh: GitHistoryRefreshObservations,
+    pub reused_snapshot: bool,
+}
+
 /// Build and atomically activate the embedded corpus generation under `root`.
 ///
 /// The generation manifest contains portable IDs, provenance, and checksums;
@@ -245,6 +255,7 @@ fn build_artifacts(
         root,
         &chunks,
         semantic,
+        None,
         "embedded-legacy-v1",
         Vec::new(),
         Vec::new(),
@@ -343,6 +354,7 @@ pub fn build_allowlisted_artifacts_with_provider(
         root,
         &chunks,
         semantic,
+        None,
         "allowlisted-v1",
         rejected,
         sources,
@@ -380,39 +392,142 @@ pub fn build_git_history_artifacts(
     sources: &[GitCorpusSource],
     previous: Option<GitHistory>,
 ) -> Result<GitHistoryBuildSummary, LifecycleError> {
+    build_git_history_artifacts_with_provider(root, sources, previous, None)
+}
+
+/// Build one searchable full-history artifact with optional semantic vectors.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when history ingestion, chunking, embedding,
+/// serialization, or staged activation fails.
+#[cfg(feature = "git-corpus")]
+pub fn build_git_history_artifacts_with_provider(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    previous: Option<GitHistory>,
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+) -> Result<GitHistoryBuildSummary, LifecycleError> {
+    build_git_history_artifacts_reusing_vectors(root, sources, previous, semantic, None)
+}
+
+/// Build one searchable full-history artifact and reuse compatible semantic rows.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when history ingestion, chunking, embedding,
+/// serialization, or staged activation fails.
+#[cfg(feature = "git-corpus")]
+pub fn build_git_history_artifacts_reusing_vectors(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    previous: Option<GitHistory>,
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    previous_vectors: Option<VectorArtifact>,
+) -> Result<GitHistoryBuildSummary, LifecycleError> {
     let started = Instant::now();
     let ingestion_started = Instant::now();
     let (history, refresh) = ingest_git_history_owned(sources, previous)?;
     let ingestion_us = elapsed_us(ingestion_started);
-    let legacy = legacy_chunks()?;
-    let chunks = legacy
+    let history_chunks = history
+        .contents
         .iter()
-        .chain(history.contents.iter().map(|content| &content.chunk))
-        .collect::<Vec<_>>();
-    let mut observations = BuildObservations::default();
-    observations.record_duration(BuildPhase::Ingestion, ingestion_us);
-    observations.git_ingestion = Some(refresh.git.clone());
-    observations.accepted_files = u64::try_from(history.contents.len()).unwrap_or(u64::MAX);
-    observations.visited_files = observations.accepted_files;
-    let artifacts = stage_chunk_refs(
+        .map(|content| content.chunk.clone())
+        .collect();
+    let artifacts = stage_git_history_chunks(
         root,
-        &chunks,
-        None,
-        None,
-        "git-full-history-v1",
-        Vec::new(),
-        Vec::new(),
+        history_chunks,
+        &refresh,
+        semantic,
+        previous_vectors,
         started,
-        observations,
+        ingestion_us,
     )?;
-    let temporary = root.join(format!(".history.tmp-{}", std::process::id()));
-    history.write_artifact(&temporary)?;
-    fs::rename(temporary, root.join("history.json"))?;
     Ok(GitHistoryBuildSummary {
         artifacts,
         history,
         refresh,
     })
+}
+
+/// Build complete Git history, reusing cached chunks for a verified fast-forward.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when Git inspection, chunking, embedding, or staging fails.
+#[cfg(feature = "git-corpus")]
+pub fn build_git_history_artifacts_incrementally(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    previous_tips: Option<Vec<GitHistoryTip>>,
+    previous_chunks: Option<Vec<crate::Chunk>>,
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    previous_vectors: Option<VectorArtifact>,
+) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
+    let started = Instant::now();
+    let ingestion_started = Instant::now();
+    let incremental = previous_tips
+        .zip(previous_chunks)
+        .map_or(Ok(None), |(tips, chunks)| {
+            ingest_git_history_fast_forward_owned(sources, &tips, chunks)
+        })?;
+    let (contents, refresh, reused_snapshot) = if let Some((contents, refresh)) = incremental {
+        (contents, refresh, true)
+    } else {
+        let (history, refresh) = ingest_git_history_owned(sources, None)?;
+        (history.contents, refresh, false)
+    };
+    let history_chunks = contents.into_iter().map(|content| content.chunk).collect();
+    let artifacts = stage_git_history_chunks(
+        root,
+        history_chunks,
+        &refresh,
+        semantic,
+        previous_vectors,
+        started,
+        elapsed_us(ingestion_started),
+    )?;
+    Ok(IncrementalGitHistoryBuildSummary {
+        artifacts,
+        refresh,
+        reused_snapshot,
+    })
+}
+
+#[cfg(feature = "git-corpus")]
+fn stage_git_history_chunks(
+    root: &Path,
+    history_chunks: Vec<crate::Chunk>,
+    refresh: &GitHistoryRefreshObservations,
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    previous_vectors: Option<VectorArtifact>,
+    started: Instant,
+    ingestion_us: u64,
+) -> Result<BuildSummary, LifecycleError> {
+    let history_chunk_count = history_chunks.len();
+    let mut chunks = legacy_chunks()?;
+    chunks.extend(history_chunks);
+    let mut observations = BuildObservations::default();
+    observations.record_duration(BuildPhase::Ingestion, ingestion_us);
+    observations.git_ingestion = Some(refresh.git.clone());
+    observations.accepted_files = u64::try_from(history_chunk_count).unwrap_or(u64::MAX);
+    observations.visited_files = observations.accepted_files;
+    let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
+        provider,
+        model_id,
+        model_revision,
+    });
+    stage_chunks(
+        root,
+        &chunks,
+        semantic,
+        previous_vectors,
+        "git-full-history-v1",
+        Vec::new(),
+        Vec::new(),
+        started,
+        observations,
+    )
 }
 
 /// Build an additive immutable Git-tree corpus with an optional embedding provider.
@@ -494,6 +609,7 @@ pub fn build_git_artifacts_with_provider(
         root,
         &chunks,
         semantic,
+        None,
         "git-tree-v1",
         rejected,
         inventory,
@@ -507,6 +623,7 @@ fn stage_chunks(
     root: &Path,
     chunks: &[crate::Chunk],
     semantic: Option<SemanticBuild<'_>>,
+    previous_vectors: Option<VectorArtifact>,
     corpus_version: &str,
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
@@ -519,6 +636,7 @@ fn stage_chunks(
         &chunk_refs,
         semantic,
         Some(chunks),
+        previous_vectors,
         corpus_version,
         diagnostics,
         sources,
@@ -533,6 +651,7 @@ fn stage_chunk_refs(
     chunks: &[&crate::Chunk],
     semantic: Option<SemanticBuild<'_>>,
     semantic_chunks: Option<&[crate::Chunk]>,
+    previous_vectors: Option<VectorArtifact>,
     corpus_version: &str,
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
@@ -587,14 +706,13 @@ fn stage_chunk_refs(
         let chunks = semantic_chunks.ok_or_else(|| {
             LifecycleError::Contract("semantic build requires contiguous chunks".into())
         })?;
-        let inference_order = semantic.provider.inference_order(chunks)?;
-        let (vector, vector_build) = VectorArtifact::from_provider_with_observations_and_order(
+        let (vector, vector_build) = VectorArtifact::from_provider_reusing_owned_with_observations(
             semantic.provider,
             chunks,
             semantic.model_id,
             semantic.model_revision,
             corpus.content_digest.clone(),
-            inference_order.as_deref(),
+            previous_vectors,
         )?;
         observations.embedding_input_bytes = vector_build.input_bytes;
         observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
