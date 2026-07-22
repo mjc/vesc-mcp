@@ -68,13 +68,6 @@ pub enum LexicalError {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LexicalArtifact {
-    schema: u16,
-    #[serde(default)]
-    chunks: Vec<Chunk>,
-}
-
-#[derive(Debug, Serialize)]
 struct LexicalDescriptor {
     schema: u16,
 }
@@ -216,49 +209,34 @@ impl LexicalIndex {
         Ok(writer.finish())
     }
 
-    /// Loads chunk data and opens its persisted Tantivy sidecar.
-    ///
-    /// Legacy artifacts without a sidecar are rebuilt in memory.
+    /// Loads chunk data from the persisted Tantivy index.
     ///
     /// # Errors
     ///
     /// Returns [`LexicalError::Io`] for read failures, [`LexicalError::Artifact`]
-    /// for malformed or incompatible JSON, or normal build errors.
+    /// for a malformed descriptor or Tantivy index.
     pub fn open_artifact(path: &Path) -> Result<Self, LexicalError> {
-        let artifact = Self::read_artifact(path)?;
-        let index_path = persisted_index_path(path);
-        if !index_path.exists() {
-            if artifact.schema == 2 {
-                return Err(LexicalError::Artifact(
-                    "lexical descriptor is missing its Tantivy index".into(),
-                ));
-            }
-            return Self::build_owned(artifact.chunks);
+        let descriptor = Self::read_descriptor(path)?;
+        if descriptor.schema != 2 {
+            return Err(LexicalError::Artifact(format!(
+                "unsupported lexical schema {}",
+                descriptor.schema
+            )));
         }
-        let chunks = if artifact.schema == 2 {
-            Self::read_persisted_chunks(path)?
-        } else {
-            artifact.chunks
-        }
-        .into_iter()
-        .map(|chunk| (chunk.chunk_id.clone(), chunk))
-        .collect();
+        let chunks = Self::read_persisted_chunks(path)?
+            .into_iter()
+            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+            .collect();
         Self::open_persisted_index(path, chunks)
     }
 
-    /// Opens the query-ready Tantivy sidecar without reading the chunk JSON.
-    ///
-    /// Legacy artifacts without a sidecar fall back to [`Self::open_artifact`].
+    /// Opens the query-ready Tantivy sidecar without reading the descriptor.
     ///
     /// # Errors
     ///
     /// Returns [`LexicalError`] when the sidecar or its stored chunks are invalid.
     pub fn open_search_artifact(path: &Path) -> Result<Self, LexicalError> {
-        if persisted_index_path(path).exists() {
-            Self::open_persisted_index(path, BTreeMap::new())
-        } else {
-            Self::open_artifact(path)
-        }
+        Self::open_persisted_index(path, BTreeMap::new())
     }
 
     fn open_persisted_index(
@@ -300,20 +278,15 @@ impl LexicalIndex {
         Ok(())
     }
 
-    /// Reads the compact lexical source artifact without constructing Tantivy.
+    /// Reads all chunks from the persisted Tantivy index.
     ///
     /// Provider benchmarks use this to select a bounded sample without paying
     /// the full-corpus index construction cost or including it in RSS results.
     ///
     /// # Errors
     ///
-    /// Returns [`LexicalError::Io`] for read failures or
-    /// [`LexicalError::Artifact`] for malformed or incompatible JSON.
+    /// Returns [`LexicalError`] when the persisted index is missing or invalid.
     pub fn read_artifact_chunks(path: &Path) -> Result<Vec<Chunk>, LexicalError> {
-        let artifact = Self::read_artifact(path)?;
-        if artifact.schema == 1 {
-            return Ok(artifact.chunks);
-        }
         Self::read_persisted_chunks(path)
     }
 
@@ -343,17 +316,10 @@ impl LexicalIndex {
             .collect()
     }
 
-    fn read_artifact(path: &Path) -> Result<LexicalArtifact, LexicalError> {
+    fn read_descriptor(path: &Path) -> Result<LexicalDescriptor, LexicalError> {
         let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
-        let artifact: LexicalArtifact = serde_json::from_reader(BufReader::new(file))
-            .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        if !matches!(artifact.schema, 1 | 2) {
-            return Err(LexicalError::Artifact(format!(
-                "unsupported lexical schema {}",
-                artifact.schema
-            )));
-        }
-        Ok(artifact)
+        serde_json::from_reader(BufReader::new(file))
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
 
     /// Searches title, identifiers, headings/body, and tags with conjunctive term matching.
@@ -915,19 +881,15 @@ mod tests {
     }
 
     #[test]
-    fn legacy_source_artifact_remains_readable() {
+    fn persisted_chunks_do_not_read_legacy_json() {
         let chunks = vec![chunk("alpha", "body", "alpha")];
         let root = tempfile::tempdir().expect("artifact root");
         let path = root.path().join("lexical.json");
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&LexicalArtifact {
-                schema: 1,
-                chunks: chunks.clone(),
-            })
-            .expect("serialize legacy artifact"),
-        )
-        .expect("write legacy artifact");
+        LexicalIndex::build(&chunks)
+            .expect("build index")
+            .write_artifact(&path)
+            .expect("write artifact");
+        std::fs::write(&path, b"obsolete legacy content").expect("replace descriptor");
         assert_eq!(
             LexicalIndex::read_artifact_chunks(&path).expect("read source artifact"),
             chunks

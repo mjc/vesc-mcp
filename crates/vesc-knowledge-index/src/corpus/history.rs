@@ -96,11 +96,9 @@ pub struct ChangeEvent {
     pub evidence: String,
 }
 
-/// A compact history artifact: unique content plus complete version occurrences.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A compact in-memory history: unique content plus complete version occurrences.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaggedHistory {
-    pub schema: u16,
     pub repository: RepositoryId,
     pub releases: Vec<HistoryRelease>,
     pub contents: Vec<HistoryContent>,
@@ -211,24 +209,6 @@ impl TaggedHistory {
                     && change.to_tags.iter().any(|candidate| candidate == to_tag)
             })
             .collect()
-    }
-
-    /// Writes a complete history artifact with an atomic same-directory rename.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HistoryError`] when serialization, writing, syncing, or renaming fails.
-    pub fn write_artifact(&self, path: &Path) -> Result<(), HistoryError> {
-        write_json_atomically(path, self)
-    }
-
-    /// Reads a complete history artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HistoryError`] when the file cannot be read or decoded.
-    pub fn read_artifact(path: &Path) -> Result<Self, HistoryError> {
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
     }
 }
 
@@ -438,7 +418,6 @@ pub fn ingest_tagged_history(source: &TaggedHistorySource) -> Result<TaggedHisto
         git: git_observations,
     };
     Ok(TaggedHistory {
-        schema: 1,
         repository: source.repository_id.clone(),
         releases: public_releases,
         contents: contents.into_values().collect(),

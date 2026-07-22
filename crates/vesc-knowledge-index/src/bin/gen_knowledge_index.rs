@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
     feature = "semantic-fastembed-online"
 ))]
 use sha2::{Digest, Sha256};
-#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
-use vesc_knowledge_index::TaggedHistory;
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
 #[cfg(feature = "semantic-fastembed")]
@@ -105,7 +103,6 @@ fn main() {
 }
 
 #[cfg(feature = "semantic-fastembed")]
-#[allow(clippy::option_if_let_else)]
 fn run_sequence_census(args: &[String]) {
     let model_dir = argument_value(args, "--semantic-model-dir")
         .map_or_else(|| panic!("--semantic-model-dir is required"), PathBuf::from);
@@ -123,26 +120,9 @@ fn run_sequence_census(args: &[String]) {
         .unwrap_or("4096")
         .parse::<usize>()
         .expect("--semantic-token-budget must be a positive integer");
-    let texts: Vec<String> = if let Some(history_path) = argument_value(args, "--history") {
-        #[cfg(feature = "git-corpus")]
-        {
-            TaggedHistory::read_artifact(Path::new(&history_path))
-                .unwrap_or_else(|error| panic!("read tagged history: {error}"))
-                .contents
-                .into_iter()
-                .map(|content| content.embedding_text)
-                .collect::<Vec<_>>()
-        }
-        #[cfg(not(feature = "git-corpus"))]
-        {
-            let _ = history_path;
-            panic!("--history requires the git-corpus feature")
-        }
-    } else {
-        let artifact = argument_value(args, "--artifact").map(PathBuf::from);
-        let (chunks, _) = semantic_benchmark_chunks(artifact.as_deref());
-        chunks.iter().map(embedding_text).collect::<Vec<_>>()
-    };
+    let artifact = argument_value(args, "--artifact").map(PathBuf::from);
+    let (chunks, _) = semantic_benchmark_chunks(artifact.as_deref());
+    let texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let census = sequence_length_census(
         &model_dir.join("tokenizer.json"),
         &texts,
@@ -284,12 +264,6 @@ fn run_history_build(args: &[String]) {
     let started = std::time::Instant::now();
     let mut history = ingest_tagged_history(&source)
         .unwrap_or_else(|error| panic!("ingest tagged history: {error}"));
-    fs::create_dir_all(&out).expect("create tagged-history output directory");
-    let history_path = out.join("history.json");
-    history
-        .write_artifact(&history_path)
-        .unwrap_or_else(|error| panic!("write {}: {error}", history_path.display()));
-    println!("history: {}", history_path.display());
     println!("version-refs: {}", history.observations.tag_count);
     println!("releases: {}", history.observations.release_count);
     println!("occurrences: {}", history.observations.occurrence_count);

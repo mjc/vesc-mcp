@@ -1,9 +1,6 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +12,6 @@ use super::git::{
 };
 use super::{Chunk, ContentDigest, RepositoryId, Revision, SourceKind};
 use crate::semantic::embedding_text;
-
-const HISTORY_SCHEMA: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,10 +64,8 @@ pub struct GitHistoryContent {
 }
 
 /// One logical, deterministic history set spanning every configured repository.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHistory {
-    pub schema: u16,
     pub tips: Vec<GitHistoryTip>,
     pub commits: Vec<GitHistoryCommit>,
     pub refs: Vec<GitHistoryRef>,
@@ -81,39 +74,12 @@ pub struct GitHistory {
 }
 
 impl GitHistory {
-    /// Writes the deterministic history artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitHistoryError`] when serialization or writing fails.
-    pub fn write_artifact(&self, path: &Path) -> Result<(), GitHistoryError> {
-        self.validate()?;
-        let mut writer = BufWriter::new(File::create(path)?);
-        serde_json::to_writer(&mut writer, self)?;
-        writer.flush()?;
-        Ok(())
-    }
-
-    /// Reads and validates a history artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitHistoryError`] when reading, decoding, or schema validation fails.
-    pub fn read_artifact(path: &Path) -> Result<Self, GitHistoryError> {
-        let history: Self = serde_json::from_slice(&fs::read(path)?)?;
-        history.validate()?;
-        Ok(history)
-    }
-
     /// Checks referential integrity and content-addressed identities.
     ///
     /// # Errors
     ///
     /// Returns [`GitHistoryError::Invalid`] for a corrupt or inconsistent artifact.
     pub fn validate(&self) -> Result<(), GitHistoryError> {
-        if self.schema != HISTORY_SCHEMA {
-            return Err(GitHistoryError::Schema(self.schema));
-        }
         let commits = self
             .commits
             .iter()
@@ -222,14 +188,8 @@ pub enum GitHistoryError {
     Git(String),
     #[error("cannot chunk Git history: {0}")]
     Chunking(String),
-    #[error("unsupported Git history schema {0}")]
-    Schema(u16),
     #[error("invalid Git history artifact: {0}")]
     Invalid(String),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
 }
 
 #[derive(Debug)]
@@ -263,28 +223,26 @@ struct HistoryAccumulator {
 
 impl HistoryAccumulator {
     fn new(previous: Option<GitHistory>, source_count: usize) -> Self {
-        let (commits, contents, occurrences) = previous
-            .filter(|history| history.schema == HISTORY_SCHEMA)
-            .map_or_else(
-                || (BTreeMap::new(), BTreeMap::new(), Vec::new()),
-                |history| {
-                    (
-                        history
-                            .commits
-                            .into_iter()
-                            .map(|commit| {
-                                ((commit.repository.clone(), commit.revision.clone()), commit)
-                            })
-                            .collect(),
-                        history
-                            .contents
-                            .into_iter()
-                            .map(|content| (content.key.clone(), content))
-                            .collect(),
-                        history.occurrences,
-                    )
-                },
-            );
+        let (commits, contents, occurrences) = previous.map_or_else(
+            || (BTreeMap::new(), BTreeMap::new(), Vec::new()),
+            |history| {
+                (
+                    history
+                        .commits
+                        .into_iter()
+                        .map(|commit| {
+                            ((commit.repository.clone(), commit.revision.clone()), commit)
+                        })
+                        .collect(),
+                    history
+                        .contents
+                        .into_iter()
+                        .map(|content| (content.key.clone(), content))
+                        .collect(),
+                    history.occurrences,
+                )
+            },
+        );
         Self {
             commits,
             contents,
@@ -389,7 +347,6 @@ impl HistoryAccumulator {
         self.refs.dedup();
         (
             GitHistory {
-                schema: HISTORY_SCHEMA,
                 tips: self.tips,
                 commits: self.commits.into_values().collect(),
                 refs: self.refs,

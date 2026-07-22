@@ -156,29 +156,6 @@ Passing any legacy `--vesc-path`, `--vesc-tool-path`, or `--refloat-path`
 argument selects explicit source mode, where all three paths and corresponding
 immutable `--*-revision` values remain required.
 
-## Tagged history ingestion
-
-Build the version/change graph without running the embedding provider:
-
-```bash
-cargo run --release -p vesc-knowledge-index --features git-corpus \
-  --bin gen-knowledge-index -- history-build --history-only \
-  --repo /path/to/repository --repository refloat \
-  --out target/tagged-history/refloat
-```
-
-Remove `--history-only` to build `vectors.json` through the persistent
-content-addressed cache as well. Supply the normal `--semantic-*` model flags;
-the Ryzen 5 8600G + RX 5700 XT hardware profile selects its measured FP16
-MIGraphX ingestion configuration automatically. `--cache PATH` keeps the
-cache outside the output directory when generations should share it.
-
-`history.json` preserves tag aliases, release ancestry, version occurrences,
-and added/modified/moved/removed evidence. `vectors.json` stores each unique
-embedding input once and expands matching version occurrences only after
-semantic scoring. Re-running the same embedding contract uses completed cache
-batches, including after a truncated final cache write.
-
 ## Semantic evaluation
 
 Semantic tests require a separately provisioned, pinned local model. The

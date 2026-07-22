@@ -7,8 +7,8 @@ use std::process::Command;
 use tempfile::tempdir;
 use vesc_knowledge_index::corpus::git::{GitCorpusPolicy, GitCorpusSource};
 use vesc_knowledge_index::{
-    ContentDigest, FakeEmbeddingProvider, GitHistory, GitHistoryChangeKind, LicenseStatus,
-    RepositoryId, Revision, TrustTier, VectorArtifact, build_git_history_artifacts_incrementally,
+    ContentDigest, FakeEmbeddingProvider, GitHistoryChangeKind, LicenseStatus, RepositoryId,
+    Revision, TrustTier, VectorArtifact, build_git_history_artifacts_incrementally,
     build_git_history_artifacts_with_provider, ingest_git_history, ingest_git_history_fast_forward,
 };
 
@@ -97,20 +97,9 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
     assert_eq!(warm.ingested_commits, 0);
     assert_eq!(warm.ingested_blobs, 0);
 
-    let artifact = work.join("history.json");
-    history.write_artifact(&artifact).expect("write history");
-    assert_eq!(
-        GitHistory::read_artifact(&artifact).expect("read history"),
-        history
-    );
     let mut corrupt = history;
     corrupt.occurrences[0].content_keys[0] = ContentDigest::of(b"not stored content");
-    fs::write(
-        &artifact,
-        serde_json::to_vec(&corrupt).expect("serialize corrupt history"),
-    )
-    .expect("write corrupt history");
-    assert!(GitHistory::read_artifact(&artifact).is_err());
+    assert!(corrupt.validate().is_err());
 }
 
 #[test]
@@ -162,7 +151,6 @@ fn full_history_build_with_provider_writes_matching_vectors() {
     assert_eq!(vector.model_id, "fake");
     assert_eq!(vector.model_revision, "test-revision");
     assert_eq!(vector.ids.len(), summary.artifacts.chunk_count);
-    assert!(!artifacts.path().join("history.json").exists());
 }
 
 #[test]

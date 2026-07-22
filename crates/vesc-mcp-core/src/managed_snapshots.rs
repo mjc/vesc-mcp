@@ -637,9 +637,7 @@ fn load_previous_snapshot(
         .join("generations")
         .join(artifact.corpus.content_digest.to_string())
         .join("lexical.json");
-    let chunks = vesc_knowledge_index::LexicalIndex::open_artifact(&lexical)
-        .ok()?
-        .into_chunks();
+    let chunks = vesc_knowledge_index::LexicalIndex::read_artifact_chunks(&lexical).ok()?;
     let vectors = (previous.semantic == current.semantic)
         .then(|| {
             artifact.vector_checksum.as_ref()?;
@@ -1013,13 +1011,6 @@ max_total_bytes = 10485760
                 .prewarmed
                 .iter()
                 .all(|snapshot| snapshot.manifest.profile == SnapshotProfile::SelectedTrees)
-        );
-        assert!(!prepared.default.artifact_path.join("history.json").exists());
-        assert!(
-            prepared
-                .prewarmed
-                .iter()
-                .all(|snapshot| !snapshot.artifact_path.join("history.json").exists())
         );
     }
 
@@ -1398,8 +1389,6 @@ max_total_bytes = 10485760
         assert!(artifact_matches(&current.artifact_path, "alphaunique"));
         assert!(artifact_matches(&current.artifact_path, "betaunique"));
         assert!(artifact_matches(&current.artifact_path, "gammaunique"));
-        assert!(!previous.artifact_path.join("history.json").exists());
-        assert!(!current.artifact_path.join("history.json").exists());
         assert_eq!(
             store.default_manifest().expect("default alias").id,
             current.manifest.id

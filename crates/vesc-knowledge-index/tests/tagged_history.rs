@@ -91,7 +91,7 @@ fn source(repository_path: std::path::PathBuf) -> TaggedHistorySource {
 
 #[test]
 fn tagged_history_preserves_aliases_and_version_change_evidence() {
-    let (root, work) = tagged_fixture();
+    let (_root, work) = tagged_fixture();
     let history = ingest_tagged_history(&source(work)).expect("tagged history");
 
     assert_eq!(history.releases.len(), 4);
@@ -129,13 +129,6 @@ fn tagged_history_preserves_aliases_and_version_change_evidence() {
     );
     assert_eq!(history.changes_between("v1", "v2").len(), 1);
     assert_eq!(history.changes_in_tag("v3").len(), 1);
-
-    let artifact = root.path().join("history.json");
-    history.write_artifact(&artifact).expect("write history");
-    assert_eq!(
-        vesc_knowledge_index::TaggedHistory::read_artifact(&artifact).expect("read history"),
-        history
-    );
 }
 
 #[test]
