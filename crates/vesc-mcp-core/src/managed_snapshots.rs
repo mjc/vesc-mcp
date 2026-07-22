@@ -519,13 +519,19 @@ fn build_or_reuse(
         if cached != *manifest {
             return Err(SnapshotError::IdentityMismatch);
         }
-        validate_snapshot_artifact(&artifact_path, &cached)?;
-        FileExt::unlock(&lock)?;
-        return Ok(PreparedSnapshot {
-            manifest: cached,
-            artifact_path,
-            disposition: SnapshotDisposition::Reused,
-        });
+        match validate_snapshot_artifact(&artifact_path, &cached) {
+            Ok(()) => {
+                FileExt::unlock(&lock)?;
+                return Ok(PreparedSnapshot {
+                    manifest: cached,
+                    artifact_path,
+                    disposition: SnapshotDisposition::Reused,
+                });
+            }
+            Err(error) => {
+                tracing::warn!(%error, "repairing incomplete managed snapshot artifact");
+            }
+        }
     }
 
     let sources = manifest
@@ -539,7 +545,40 @@ fn build_or_reuse(
             corpus_source(layout, repository, &selected.commit)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let vector_checkpoint_path =
+        build_snapshot_artifact(layout, manifest, &artifact_path, &sources, semantic)?;
+    validate_snapshot_artifact(&artifact_path, manifest)?;
+    write_json_atomic(&snapshot_path, manifest)?;
+    if let Some(path) = vector_checkpoint_path {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(%error, "failed to remove completed vector checkpoint"),
+        }
+    }
+    FileExt::unlock(&lock)?;
+    Ok(PreparedSnapshot {
+        manifest: manifest.clone(),
+        artifact_path,
+        disposition: SnapshotDisposition::Built,
+    })
+}
+
+fn build_snapshot_artifact(
+    layout: &KnowledgeDataLayout,
+    manifest: &KnowledgeSnapshotManifest,
+    artifact_path: &Path,
+    sources: &[GitCorpusSource],
+    semantic: Option<&SnapshotSemanticConfig>,
+) -> Result<Option<PathBuf>, SnapshotError> {
     let mut provider = semantic.map(semantic_provider).transpose()?;
+    let vector_checkpoint_path = semantic.map(|_| {
+        layout
+            .root()
+            .as_path()
+            .join("vector-checkpoints")
+            .join(format!("{}.bin", manifest.id.as_str()))
+    });
     match manifest.profile {
         SnapshotProfile::SelectedTrees => {
             let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
@@ -550,8 +589,8 @@ fn build_or_reuse(
                 )
             });
             vesc_knowledge_index::build_git_artifacts_with_provider(
-                &artifact_path,
-                &sources,
+                artifact_path,
+                sources,
                 semantic_build,
             )
             .map_err(|error| SnapshotError::Build(error.to_string()))?;
@@ -570,12 +609,13 @@ fn build_or_reuse(
                 )
             });
             let summary = vesc_knowledge_index::build_git_history_artifacts_incrementally(
-                &artifact_path,
-                &sources,
+                artifact_path,
+                sources,
                 previous_tips,
                 previous_chunks,
                 semantic_build,
                 previous_vectors,
+                vector_checkpoint_path.as_deref(),
             )
             .map_err(|error| SnapshotError::Build(error.to_string()))?;
             tracing::info!(
@@ -593,14 +633,7 @@ fn build_or_reuse(
             }
         }
     }
-    validate_snapshot_artifact(&artifact_path, manifest)?;
-    write_json_atomic(&snapshot_path, manifest)?;
-    FileExt::unlock(&lock)?;
-    Ok(PreparedSnapshot {
-        manifest: manifest.clone(),
-        artifact_path,
-        disposition: SnapshotDisposition::Built,
-    })
+    Ok(vector_checkpoint_path)
 }
 
 struct PreviousSnapshotArtifacts {
@@ -617,13 +650,6 @@ fn load_previous_snapshot(
         read_and_validate_manifest(&layout.root().as_path().join("default-snapshot.json")).ok()?;
     if previous.profile != SnapshotProfile::CompleteHistory
         || previous.component_versions != current.component_versions
-        || previous.repositories.len() != current.repositories.len()
-        || previous.repositories.iter().any(|repository| {
-            current.repositories.iter().all(|candidate| {
-                candidate.repository != repository.repository
-                    || candidate.policy_digest != repository.policy_digest
-            })
-        })
     {
         return None;
     }
@@ -633,9 +659,8 @@ fn load_previous_snapshot(
         &vesc_knowledge_index::active_manifest_path(&artifact_root),
     )
     .ok()?;
-    let lexical = artifact_root
-        .join("generations")
-        .join(artifact.corpus.content_digest.to_string())
+    let lexical = vesc_knowledge_index::active_generation_path(&artifact_root)
+        .ok()?
         .join("lexical.json");
     let chunks = vesc_knowledge_index::LexicalIndex::read_artifact_chunks(&lexical).ok()?;
     let vectors = (previous.semantic == current.semantic)
@@ -651,6 +676,12 @@ fn load_previous_snapshot(
     let tips = previous
         .repositories
         .iter()
+        .filter(|repository| {
+            current.repositories.iter().any(|candidate| {
+                candidate.repository == repository.repository
+                    && candidate.policy_digest == repository.policy_digest
+            })
+        })
         .map(|repository| {
             Some(vesc_knowledge_index::GitHistoryTip {
                 repository: CorpusRepositoryId::try_from(repository.repository.as_str()).ok()?,
@@ -718,9 +749,8 @@ fn validate_snapshot_artifact(
     let artifact =
         vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(path))
             .map_err(|error| SnapshotError::Build(error.to_string()))?;
-    let lexical = path
-        .join("generations")
-        .join(artifact.corpus.content_digest.to_string())
+    let lexical = vesc_knowledge_index::active_generation_path(path)
+        .map_err(|error| SnapshotError::Build(error.to_string()))?
         .join("lexical.json");
     drop(
         vesc_knowledge_index::LexicalIndex::open_search_artifact(&lexical)
@@ -984,14 +1014,9 @@ max_total_bytes = 10485760
     }
 
     fn artifact_matches(root: &Path, query: &str) -> bool {
-        let manifest = vesc_knowledge_index::inspect_manifest(
-            &vesc_knowledge_index::active_manifest_path(root),
-        )
-        .expect("artifact manifest");
         let lexical = vesc_knowledge_index::LexicalIndex::open_artifact(
-            &root
-                .join("generations")
-                .join(manifest.corpus.content_digest.to_string())
+            &vesc_knowledge_index::active_generation_path(root)
+                .expect("active generation")
                 .join("lexical.json"),
         )
         .expect("lexical artifact");
@@ -1330,6 +1355,43 @@ max_total_bytes = 10485760
         assert_eq!(restarted.disposition, SnapshotDisposition::Reused);
         assert!(artifact_matches(&restarted.artifact_path, "alphaunique"));
         assert!(artifact_matches(&restarted.artifact_path, "betaunique"));
+    }
+
+    #[tokio::test]
+    async fn cached_snapshot_repairs_an_incomplete_artifact() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first, _second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let id = RepositoryId::new("fixture").expect("repository id");
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                &id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+        let initial = KnowledgeSnapshotStore::new(layout.clone())
+            .prepare_default(&repositories)
+            .await
+            .expect("initial default");
+        fs::remove_file(vesc_knowledge_index::active_manifest_path(
+            &initial.artifact_path,
+        ))
+        .expect("remove active selector");
+        fs::remove_dir_all(remote).expect("remove fixture remote");
+
+        let repaired = KnowledgeSnapshotStore::new(layout)
+            .prepare_default(&repositories)
+            .await
+            .expect("repair cached artifact");
+
+        assert_eq!(repaired.manifest, initial.manifest);
+        assert_eq!(repaired.disposition, SnapshotDisposition::Built);
+        assert!(artifact_matches(&repaired.artifact_path, "alphaunique"));
     }
 
     #[tokio::test]

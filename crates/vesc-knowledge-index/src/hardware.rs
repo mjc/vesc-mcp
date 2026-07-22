@@ -100,7 +100,12 @@ fn model_matches(path: &Path, expected_bytes: u64, expected_sha256: &str) -> boo
         && sha256_file(path).is_ok_and(|digest| digest == expected_sha256)
 }
 
-fn sha256_file(path: &Path) -> io::Result<String> {
+/// Hash a file incrementally without loading it into memory.
+///
+/// # Errors
+///
+/// Returns an I/O error when the file cannot be opened or read.
+pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];

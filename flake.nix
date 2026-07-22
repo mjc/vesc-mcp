@@ -242,6 +242,7 @@
                 python3Packages.onnxruntime
               ]
               ++ lib.optionals stdenv.isLinux [
+                coz
                 heaptrack
                 perf
                 rocmPackages.rocm-runtime
@@ -265,6 +266,7 @@
               jq
               hyperfine
               time
+              coz
               heaptrack
               python3Packages.onnx
               python3Packages.onnxruntime

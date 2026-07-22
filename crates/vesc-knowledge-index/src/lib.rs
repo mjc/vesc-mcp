@@ -15,7 +15,6 @@ pub mod parsers;
 pub mod path_evaluation;
 pub mod pipeline;
 pub mod planning;
-#[cfg(feature = "git-corpus")]
 pub mod release_repositories;
 pub mod reranking;
 mod search;
@@ -23,20 +22,10 @@ pub mod semantic;
 
 pub use builder::IndexBuilder;
 pub use corpus::chunking::{ChunkingConfig, ChunkingError, chunk_document, chunk_markdown};
-#[cfg(feature = "git-corpus")]
 pub use corpus::full_history::{
-    GitHistory, GitHistoryChangeKind, GitHistoryCommit, GitHistoryContent, GitHistoryError,
-    GitHistoryOccurrence, GitHistoryRef, GitHistoryRefreshObservations, GitHistoryTip,
-    ingest_git_history, ingest_git_history_fast_forward,
+    GitHistoryError, GitHistoryRefreshObservations, GitHistoryTip, ingest_git_history_fast_forward,
 };
-#[cfg(feature = "git-corpus")]
 pub use corpus::git::GitIngestionObservations;
-#[cfg(feature = "git-corpus")]
-pub use corpus::history::{
-    ChangeEvent, ChangeKind, EmbeddingContract, HistoryContent, HistoryError, HistoryOccurrence,
-    HistoryRelease, HistorySemanticHit, HistoryVectorBuildObservations, HistoryVectorIndex,
-    TaggedHistory, TaggedHistoryObservations, TaggedHistorySource, ingest_tagged_history,
-};
 pub use corpus::ingest::{
     IngestionError, IngestionReport, SourceInventory, SourceRejection, SourceSpec,
     vesc_mcp_source_specs,
@@ -60,16 +49,14 @@ pub use hardware::{
 pub use lexical::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{
     BuildObservations, BuildPhase, BuildSummary, LifecycleError,
-    PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_manifest_path, artifact_component_versions,
-    build_allowlisted_artifacts, build_allowlisted_artifacts_with_provider,
-    build_embedded_artifacts, build_embedded_artifacts_with_provider, inspect_manifest,
+    PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_generation_path, active_manifest_path,
+    artifact_component_versions, build_allowlisted_artifacts,
+    build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
+    build_embedded_artifacts_with_provider, inspect_manifest,
 };
-#[cfg(feature = "git-corpus")]
 pub use lifecycle::{
-    GitHistoryBuildSummary, IncrementalGitHistoryBuildSummary, build_git_artifacts,
-    build_git_artifacts_with_provider, build_git_history_artifacts,
-    build_git_history_artifacts_incrementally, build_git_history_artifacts_reusing_vectors,
-    build_git_history_artifacts_with_provider,
+    IncrementalGitHistoryBuildSummary, build_git_artifacts, build_git_artifacts_with_provider,
+    build_git_history_artifacts_incrementally,
 };
 pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;
@@ -89,5 +76,5 @@ pub use semantic::{DocumentWindowVectors, FastEmbedProvider};
 pub use semantic::{
     SemanticExecutionProvider, SemanticRuntimeDiagnostics, SequenceBucketCensus,
     SequenceLengthCensus, configure_ort_verbose_logging, semantic_runtime_diagnostics,
-    sequence_length_census,
+    sequence_length_census, sequence_length_census_iter,
 };

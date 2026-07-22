@@ -1,6 +1,6 @@
 //! Bounded ingestion of immutable Git commit trees without a worktree.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -90,7 +90,7 @@ pub(super) struct Candidate {
     pub(super) size: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) enum CachedGitBlob {
     Text {
         content: String,
@@ -103,11 +103,6 @@ pub(super) enum CachedGitBlob {
         code: &'static str,
         message: &'static str,
     },
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct GitIngestionCache {
-    blobs: HashMap<(gix::ObjectId, String), CachedGitBlob>,
 }
 
 /// Aggregate Git-ingestion work, retained for profiling rather than artifact identity.
@@ -182,27 +177,6 @@ pub fn ingest_git_commit(
         trust_tier,
         license,
         policy,
-        None,
-    )
-}
-
-pub(crate) fn ingest_git_commit_cached(
-    repository_path: &Path,
-    repository_id: &RepositoryId,
-    revision: &Revision,
-    trust_tier: TrustTier,
-    license: &LicenseStatus,
-    policy: &GitCorpusPolicy,
-    cache: &mut GitIngestionCache,
-) -> Result<IngestionReport, GitIngestionError> {
-    ingest_git_commit_inner(
-        repository_path,
-        repository_id,
-        revision,
-        trust_tier,
-        license,
-        policy,
-        Some(cache),
     )
 }
 
@@ -214,7 +188,6 @@ fn ingest_git_commit_inner(
     trust_tier: TrustTier,
     license: &LicenseStatus,
     policy: &GitCorpusPolicy,
-    mut cache: Option<&mut GitIngestionCache>,
 ) -> Result<IngestionReport, GitIngestionError> {
     validate_policy(policy)?;
     let repo =
@@ -253,25 +226,10 @@ fn ingest_git_commit_inner(
         rejected,
         sources: Vec::with_capacity(candidates.len()),
         visited_files,
-        #[cfg(feature = "git-corpus")]
         git_observations: None,
     };
     for candidate in candidates {
-        let cache_key = (candidate.id, candidate.path.clone());
-        let cached = cache
-            .as_deref()
-            .and_then(|cache| cache.blobs.get(&cache_key))
-            .cloned();
-        let blob = if let Some(cached) = cached {
-            observations.blob_cache_hits = observations.blob_cache_hits.saturating_add(1);
-            cached
-        } else {
-            let loaded = load_git_blob(&repo, &candidate, &mut observations)?;
-            if let Some(cache) = cache.as_deref_mut() {
-                cache.blobs.insert(cache_key, loaded.clone());
-            }
-            loaded
-        };
+        let blob = load_git_blob(&repo, &candidate, &mut observations)?;
         let digest = if let CachedGitBlob::Text { digest, .. } = &blob {
             digest.clone()
         } else {

@@ -3,20 +3,12 @@
 #[cfg(feature = "semantic-fastembed")]
 use std::collections::BTreeMap;
 use std::env;
-#[cfg(any(
-    all(feature = "git-corpus", feature = "semantic-fastembed"),
-    feature = "semantic-fastembed-online"
-))]
+#[cfg(feature = "semantic-fastembed-online")]
 use std::fmt::Write as _;
 use std::fs;
-#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-#[cfg(any(
-    all(feature = "git-corpus", feature = "semantic-fastembed"),
-    feature = "semantic-fastembed-online"
-))]
+#[cfg(feature = "semantic-fastembed-online")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
@@ -26,7 +18,7 @@ use vesc_knowledge_index::benchmark::{
     benchmark_semantic, benchmark_semantic_queries, benchmark_semantic_with_artifact,
 };
 use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
-#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
+#[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::build_git_artifacts_with_provider;
 use vesc_knowledge_index::evaluation::{
     EvaluationMode, EvaluationQuery, EvaluationReport, EvaluationSuite, QualityThresholds,
@@ -38,22 +30,20 @@ use vesc_knowledge_index::{
     FusionConfig, SemanticExecutionProvider, VectorArtifact, WindowAggregation,
     aggregate_window_vectors, build_allowlisted_artifacts_with_provider,
     build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
-    fuse_candidates, semantic_runtime_diagnostics, sequence_length_census,
-};
-#[cfg(feature = "git-corpus")]
-use vesc_knowledge_index::{
-    ChunkingConfig, LicenseStatus, TaggedHistorySource, TrustTier, build_git_artifacts,
-    corpus::git::{GitCorpusPolicy, GitCorpusSource, GitIngestionObservations},
-    ingest_tagged_history,
-    release_repositories::{PINNED_RELEASE_REPOSITORIES, ReleaseRepositoryCache},
+    fuse_candidates, semantic_runtime_diagnostics, sequence_length_census_iter,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
 use vesc_knowledge_index::{DEFAULT_SEMANTIC_BATCH_SIZE, default_semantic_intra_threads};
 use vesc_knowledge_index::{
-    IndexBuilder, LexicalFilters, LexicalIndex, RepositoryId, Revision, active_manifest_path,
-    build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest, search_knowledge,
-    search_lexical_knowledge, vesc_mcp_source_specs,
+    IndexBuilder, LexicalFilters, LexicalIndex, RepositoryId, Revision, active_generation_path,
+    active_manifest_path, build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest,
+    search_knowledge, search_lexical_knowledge, vesc_mcp_source_specs,
+};
+use vesc_knowledge_index::{
+    LicenseStatus, TrustTier, build_git_artifacts,
+    corpus::git::{GitCorpusPolicy, GitCorpusSource, GitIngestionObservations},
+    release_repositories::{PINNED_RELEASE_REPOSITORIES, ReleaseRepositoryCache},
 };
 
 fn main() {
@@ -64,10 +54,6 @@ fn main() {
     }
     if args.first().is_some_and(|arg| arg == "window-quality") {
         run_window_quality(&args[1..]);
-        return;
-    }
-    if args.first().is_some_and(|arg| arg == "history-build") {
-        run_history_build(&args[1..]);
         return;
     }
     if args.first().is_some_and(|arg| arg == "provision-model") {
@@ -122,10 +108,9 @@ fn run_sequence_census(args: &[String]) {
         .expect("--semantic-token-budget must be a positive integer");
     let artifact = argument_value(args, "--artifact").map(PathBuf::from);
     let (chunks, _) = semantic_benchmark_chunks(artifact.as_deref());
-    let texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
-    let census = sequence_length_census(
+    let census = sequence_length_census_iter(
         &model_dir.join("tokenizer.json"),
-        &texts,
+        chunks.iter().map(embedding_text),
         &max_lengths,
         token_budget,
     )
@@ -233,210 +218,6 @@ fn run_window_quality(args: &[String]) {
 fn run_window_quality(_args: &[String]) {
     panic!("window quality requires the semantic-fastembed feature")
 }
-
-#[cfg(feature = "git-corpus")]
-#[allow(clippy::too_many_lines, unused_mut)]
-fn run_history_build(args: &[String]) {
-    let history_only = args.iter().any(|arg| arg == "--history-only");
-    let detected_args = (!history_only)
-        .then(|| detected_rx5700xt_8600g_build_args(args))
-        .flatten();
-    let args = detected_args.as_deref().unwrap_or(args);
-    let repository_path = PathBuf::from(
-        argument_value(args, "--repo")
-            .unwrap_or_else(|| panic!("history-build requires --repo PATH")),
-    );
-    let repository = RepositoryId::try_from(
-        argument_value(args, "--repository").unwrap_or_else(|| "history".into()),
-    )
-    .expect("valid repository identifier");
-    let out = PathBuf::from(
-        argument_value(args, "--out").unwrap_or_else(|| "target/tagged-history".into()),
-    );
-    let source = TaggedHistorySource {
-        repository_path,
-        repository_id: repository,
-        trust_tier: TrustTier::CuratedUpstream,
-        license: LicenseStatus::ReferenceOnly,
-        policy: GitCorpusPolicy::default(),
-        chunking: ChunkingConfig::default(),
-    };
-    let started = std::time::Instant::now();
-    let mut history = ingest_tagged_history(&source)
-        .unwrap_or_else(|error| panic!("ingest tagged history: {error}"));
-    println!("version-refs: {}", history.observations.tag_count);
-    println!("releases: {}", history.observations.release_count);
-    println!("occurrences: {}", history.observations.occurrence_count);
-    println!(
-        "unique-embedding-inputs: {}",
-        history.observations.unique_embedding_inputs
-    );
-    println!(
-        "git-blob-cache-hits: {}",
-        history.observations.git.blob_cache_hits
-    );
-    println!("history-build-ms: {}", started.elapsed().as_millis());
-
-    if history_only {
-        return;
-    }
-
-    let model_dir = argument_value(args, "--semantic-model-dir");
-    if model_dir.is_none() {
-        return;
-    }
-    #[cfg(feature = "semantic-fastembed")]
-    build_history_vectors(
-        args,
-        &out,
-        &mut history,
-        &PathBuf::from(model_dir.expect("checked above")),
-    );
-    #[cfg(not(feature = "semantic-fastembed"))]
-    {
-        let _ = model_dir;
-        panic!(
-            "history vector builds require semantic-fastembed; rerun with --features git-corpus,semantic-fastembed"
-        );
-    }
-}
-
-#[cfg(not(feature = "git-corpus"))]
-fn run_history_build(_args: &[String]) {
-    panic!("history-build requires the git-corpus feature");
-}
-
-#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
-fn build_history_vectors(
-    args: &[String],
-    out: &Path,
-    history: &mut vesc_knowledge_index::TaggedHistory,
-    model_dir: &Path,
-) {
-    let model_id = argument_value(args, "--semantic-model-id")
-        .unwrap_or_else(|| panic!("--semantic-model-id is required with --semantic-model-dir"));
-    let model_revision = argument_value(args, "--semantic-model-revision").unwrap_or_else(|| {
-        panic!("--semantic-model-revision is required with --semantic-model-dir")
-    });
-    let batch_size = argument_value(args, "--semantic-batch-size").map_or(
-        DEFAULT_SEMANTIC_BATCH_SIZE,
-        |value| {
-            value
-                .parse()
-                .expect("--semantic-batch-size must be an integer")
-        },
-    );
-    let intra_threads = argument_value(args, "--semantic-intra-threads").map_or_else(
-        default_semantic_intra_threads,
-        |value| {
-            value
-                .parse()
-                .expect("--semantic-intra-threads must be an integer")
-        },
-    );
-    let profile = semantic_profile_with_args(&model_id, args);
-    let length_bucketed = argument_value(args, "--semantic-length-bucketed")
-        .is_none_or(|value| matches!(value.as_str(), "1" | "true" | "yes"));
-    let lossless = args.iter().any(|arg| arg == "--semantic-lossless-windows");
-    let model_path = [
-        model_dir.join("model.onnx"),
-        model_dir.join("onnx/model.onnx"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-    .unwrap_or_else(|| panic!("no model.onnx found under {}", model_dir.display()));
-    let tokenizer_path = model_dir.join("tokenizer.json");
-    let contract = vesc_knowledge_index::EmbeddingContract {
-        schema: 1,
-        model_id,
-        model_revision,
-        model_digest: digest_file(&model_path),
-        tokenizer_digest: digest_file(&tokenizer_path),
-        profile,
-        windowing: format!(
-            "v2;lossless={lossless};length-bucketed={length_bucketed};aggregation={:?}",
-            semantic_window_aggregation(args)
-        ),
-        embedding_text_version: 2,
-    };
-    let cache =
-        argument_value(args, "--cache").map_or_else(|| out.join("vector-cache"), PathBuf::from);
-    let started = std::time::Instant::now();
-    let vector_path = out.join("vectors.json");
-    if let Ok(vectors) = vesc_knowledge_index::HistoryVectorIndex::read_artifact(&vector_path)
-        && vectors.contract == contract
-        && vectors
-            .keys
-            .iter()
-            .eq(history.contents.iter().map(|content| &content.vector_key))
-    {
-        println!("vectors: {}", vector_path.display());
-        println!("vector-cache: {}", cache.display());
-        println!("cache-hits: {}", history.contents.len());
-        println!("provider-inputs: 0");
-        println!("avoided-provider-inputs: {}", history.contents.len());
-        println!("vector-build-ms: {}", started.elapsed().as_millis());
-        return;
-    }
-    let occurrences = std::mem::take(&mut history.occurrences);
-    history.releases = Vec::new();
-    history.changes = Vec::new();
-    let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
-        model_dir,
-        Some(batch_size),
-        contract.profile.clone(),
-        Some(intra_threads),
-        semantic_execution_provider(args),
-    )
-    .unwrap_or_else(|error| panic!("load semantic model: {error}"));
-    provider.set_length_bucketed(length_bucketed);
-    provider.set_lossless_windowing(lossless);
-    provider.set_window_aggregation(semantic_window_aggregation(args));
-    let (mut vectors, observations) = vesc_knowledge_index::HistoryVectorIndex::build_with_cache(
-        &mut provider,
-        history,
-        contract,
-        &cache,
-    )
-    .unwrap_or_else(|error| panic!("build history vectors: {error}"));
-    vectors.occurrences = occurrences;
-    vectors
-        .write_artifact(&vector_path)
-        .unwrap_or_else(|error| panic!("write {}: {error}", vector_path.display()));
-    println!("vectors: {}", vector_path.display());
-    println!("vector-cache: {}", cache.display());
-    println!("cache-hits: {}", observations.cache_hits);
-    println!("provider-inputs: {}", observations.provider_inputs);
-    println!(
-        "avoided-provider-inputs: {}",
-        observations.avoided_provider_inputs
-    );
-    println!("vector-build-ms: {}", started.elapsed().as_millis());
-}
-
-#[cfg(all(feature = "git-corpus", feature = "semantic-fastembed"))]
-fn digest_file(path: &Path) -> ContentDigest {
-    let mut file = fs::File::open(path)
-        .unwrap_or_else(|error| panic!("open {} for hashing: {error}", path.display()));
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .unwrap_or_else(|error| panic!("read {} for hashing: {error}", path.display()));
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    let mut hex = String::with_capacity(64);
-    for byte in digest.finalize() {
-        write!(&mut hex, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    ContentDigest::try_from(format!("sha256:{hex}")).expect("SHA-256 is a valid content digest")
-}
-
-#[cfg(feature = "git-corpus")]
 #[allow(clippy::option_if_let_else, clippy::too_many_lines)]
 fn run_build_default(args: &[String]) {
     let detected_args = detected_rx5700xt_8600g_build_args(args);
@@ -521,11 +302,6 @@ fn run_build_default(args: &[String]) {
     fs::create_dir_all(&generated_generation)
         .unwrap_or_else(|error| panic!("create {}: {error}", generated_generation.display()));
     fs::copy(
-        generation.join("corpus.json"),
-        generated_generation.join("corpus.json"),
-    )
-    .unwrap_or_else(|error| panic!("copy default corpus manifest: {error}"));
-    fs::copy(
         generation.join("manifest.json"),
         generated_generation.join("manifest.json"),
     )
@@ -572,13 +348,11 @@ fn run_build_default(args: &[String]) {
         summary.observations.embedding_input_bytes
     );
     println!("visited-files: {}", summary.observations.visited_files);
-    #[cfg(feature = "git-corpus")]
     print_git_observations(summary.observations.git_ingestion.as_ref());
     println!(
         "provenance-bytes: {}",
         summary.observations.provenance_bytes()
     );
-    println!("corpus-bytes: {}", summary.observations.corpus_bytes);
     println!(
         "generation-manifest-bytes: {}",
         summary.observations.manifest_bytes
@@ -593,7 +367,6 @@ fn run_build_default(args: &[String]) {
     println!("generated-dir: {}", generated.display());
 }
 
-#[cfg(feature = "git-corpus")]
 fn default_corpus_sources(args: &[String]) -> Vec<GitCorpusSource> {
     const IDS: [&str; 4] = ["vesc", "vesc-tool", "refloat", "vesc-pkg"];
     let explicit = IDS.iter().any(|id| {
@@ -637,7 +410,6 @@ fn default_corpus_sources(args: &[String]) -> Vec<GitCorpusSource> {
         .collect()
 }
 
-#[cfg(feature = "git-corpus")]
 fn corpus_source(
     repository_id: RepositoryId,
     repository_path: PathBuf,
@@ -655,7 +427,6 @@ fn corpus_source(
     }
 }
 
-#[cfg(feature = "git-corpus")]
 fn repository_cache_root(args: &[String]) -> Result<PathBuf, &'static str> {
     select_repository_cache_root(
         argument_value(args, "--repository-cache").map(PathBuf::from),
@@ -665,7 +436,6 @@ fn repository_cache_root(args: &[String]) -> Result<PathBuf, &'static str> {
     )
 }
 
-#[cfg(feature = "git-corpus")]
 fn select_repository_cache_root(
     cli: Option<PathBuf>,
     configured: Option<PathBuf>,
@@ -678,11 +448,6 @@ fn select_repository_cache_root(
         .ok_or(
             "release repository cache root is unknown; pass --repository-cache or set VESC_BENCHMARK_REPOSITORY_CACHE",
         )
-}
-
-#[cfg(not(feature = "git-corpus"))]
-fn run_build_default(_args: &[String]) {
-    panic!("default corpus generation requires --features git-corpus");
 }
 
 #[cfg(feature = "semantic-fastembed-online")]
@@ -943,13 +708,11 @@ fn run_build(args: &[String]) {
         summary.observations.embedding_input_bytes
     );
     println!("visited-files: {}", summary.observations.visited_files);
-    #[cfg(feature = "git-corpus")]
     print_git_observations(summary.observations.git_ingestion.as_ref());
     println!(
         "provenance-bytes: {}",
         summary.observations.provenance_bytes()
     );
-    println!("corpus-bytes: {}", summary.observations.corpus_bytes);
     println!(
         "generation-manifest-bytes: {}",
         summary.observations.manifest_bytes
@@ -969,7 +732,6 @@ fn run_build(args: &[String]) {
     println!("active-manifest: {}", active_manifest_path(&out).display());
 }
 
-#[cfg(feature = "git-corpus")]
 fn print_git_observations(observations: Option<&GitIngestionObservations>) {
     let Some(observations) = observations else {
         return;
@@ -1197,21 +959,16 @@ fn evaluate_semantic(
 ) -> EvaluationReport {
     let manifest = inspect_manifest(&active_manifest_path(artifact))
         .unwrap_or_else(|error| panic!("inspect semantic artifact: {error}"));
-    let generation = artifact
-        .join("generations")
-        .join(manifest.corpus.content_digest.to_string());
+    let generation = active_generation_path(artifact)
+        .unwrap_or_else(|error| panic!("resolve semantic artifact: {error}"));
     let lexical_path = generation.join("lexical.json");
     let vector_path = generation.join("vectors.bin");
-    let lexical = LexicalIndex::open_artifact(&lexical_path)
+    let lexical = LexicalIndex::open_search_artifact(&lexical_path)
         .unwrap_or_else(|error| panic!("open semantic lexical artifact: {error}"));
     let vector = VectorArtifact::open_artifact(&vector_path)
         .unwrap_or_else(|error| panic!("open semantic vector artifact: {error}"));
-    let raw = fs::read_to_string(&lexical_path)
-        .unwrap_or_else(|error| panic!("read semantic lexical artifact: {error}"));
-    let artifact: LexicalSourceArtifact = serde_json::from_str(&raw)
-        .unwrap_or_else(|error| panic!("parse semantic lexical artifact: {error}"));
-    let chunks: BTreeMap<_, _> = artifact
-        .chunks
+    let chunks: BTreeMap<_, _> = LexicalIndex::read_artifact_chunks(&lexical_path)
+        .unwrap_or_else(|error| panic!("read semantic lexical artifact: {error}"))
         .into_iter()
         .map(|chunk| (chunk.chunk_id.clone(), chunk))
         .collect();
@@ -1278,14 +1035,6 @@ fn chunk_result_ids(chunk: &Chunk) -> Vec<String> {
     } else {
         chunk.legacy_ids.clone()
     }
-}
-
-#[cfg(feature = "semantic-fastembed")]
-#[derive(Debug, serde::Deserialize)]
-struct LexicalSourceArtifact {
-    #[serde(rename = "schema")]
-    _schema: u16,
-    chunks: Vec<Chunk>,
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -1438,11 +1187,10 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     let generation = artifact_root
         .join("generations")
         .join(corpus_digest.to_string());
-    let lexical = LexicalIndex::open_artifact(&generation.join("lexical.json"))
+    let lexical = LexicalIndex::open_search_artifact(&generation.join("lexical.json"))
         .unwrap_or_else(|error| panic!("open bake-off lexical artifact: {error}"));
     let chunks_by_id = chunks
         .iter()
-        .cloned()
         .map(|chunk| (chunk.chunk_id.clone(), chunk))
         .collect::<BTreeMap<_, _>>();
     let lexical_report = evaluate_suite_with_mode(
@@ -1489,16 +1237,10 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
             "ONNX byte count mismatch for {}",
             candidate.name
         );
-        let actual_digest = ContentDigest::of(
-            &fs::read(&model_path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", model_path.display())),
-        )
-        .to_string();
+        let actual_digest = vesc_knowledge_index::hardware::sha256_file(&model_path)
+            .unwrap_or_else(|error| panic!("hash {}: {error}", model_path.display()));
         assert_eq!(
-            actual_digest
-                .strip_prefix("sha256:")
-                .unwrap_or(&actual_digest),
-            candidate.onnx_sha256,
+            actual_digest, candidate.onnx_sha256,
             "ONNX SHA-256 mismatch for {}",
             candidate.name
         );
@@ -1550,10 +1292,6 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
                 }),
         );
         benchmark.peak_rss_bytes = peak_rss.get(&candidate.name).copied();
-        let encoded = vector
-            .encode()
-            .unwrap_or_else(|error| panic!("encode vectors for {}: {error}", candidate.name));
-        benchmark.vector_artifact_sha256 = Some(ContentDigest::of(&encoded).to_string());
         let semantic = evaluate_provider(
             &suite.queries,
             EvaluationMode::Semantic,
@@ -1738,7 +1476,7 @@ fn evaluate_provider(
     queries: &[EvaluationQuery],
     mode: EvaluationMode,
     lexical: &LexicalIndex,
-    chunks: &BTreeMap<ChunkId, Chunk>,
+    chunks: &BTreeMap<ChunkId, &Chunk>,
     vector: &VectorArtifact,
     provider: &mut FastEmbedProvider,
 ) -> EvaluationReport {
@@ -1760,6 +1498,7 @@ fn evaluate_provider(
             semantic_hits
                 .into_iter()
                 .filter_map(|hit| chunks.get(&hit.chunk_id))
+                .copied()
                 .flat_map(stable_chunk_result_ids)
                 .collect()
         } else {
@@ -1897,11 +1636,8 @@ fn run_semantic_query_benchmark(
         .collect::<Vec<_>>();
     let vector_path = argument_value(args, "--semantic-vector-artifact").map_or_else(
         || {
-            let manifest = inspect_manifest(&active_manifest_path(artifact_root))
-                .unwrap_or_else(|error| panic!("inspect semantic query artifact: {error}"));
-            artifact_root
-                .join("generations")
-                .join(manifest.corpus.content_digest.to_string())
+            active_generation_path(artifact_root)
+                .unwrap_or_else(|error| panic!("inspect semantic query artifact: {error}"))
                 .join("vectors.bin")
         },
         PathBuf::from,
@@ -2064,7 +1800,6 @@ fn run_semantic_benchmark(
     } else {
         chunks
     };
-    let mut embedding_texts = chunks.iter().map(embedding_text).collect::<Vec<_>>();
     let initialization_started = std::time::Instant::now();
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         &model_dir,
@@ -2079,7 +1814,7 @@ fn run_semantic_benchmark(
     provider.set_window_aggregation(semantic_window_aggregation(args));
     let chunks = if length_bucketed {
         let lengths = provider
-            .token_lengths(&embedding_texts)
+            .token_lengths_iter(chunks.iter().map(embedding_text))
             .unwrap_or_else(|error| panic!("measure token lengths: {error}"));
         let mut indexed = chunks.into_iter().zip(lengths).collect::<Vec<_>>();
         indexed.sort_unstable_by(|(left_chunk, left_length), (right_chunk, right_length)| {
@@ -2089,18 +1824,16 @@ fn run_semantic_benchmark(
                 .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
                 .then_with(|| left_chunk.chunk_id.cmp(&right_chunk.chunk_id))
         });
-        let chunks = indexed
+        indexed
             .into_iter()
             .map(|(chunk, _)| chunk)
-            .collect::<Vec<_>>();
-        embedding_texts = chunks.iter().map(embedding_text).collect();
-        chunks
+            .collect::<Vec<_>>()
     } else {
         chunks
     };
     let chunks = if let Some(size) = longest_chunks {
         let lengths = provider
-            .token_lengths(&embedding_texts)
+            .token_lengths_iter(chunks.iter().map(embedding_text))
             .unwrap_or_else(|error| panic!("measure token lengths: {error}"));
         let mut indexed = chunks.into_iter().zip(lengths).collect::<Vec<_>>();
         indexed.sort_unstable_by(|(left_chunk, left_length), (right_chunk, right_length)| {
@@ -2110,19 +1843,17 @@ fn run_semantic_benchmark(
                 .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
                 .then_with(|| left_chunk.chunk_id.cmp(&right_chunk.chunk_id))
         });
-        let chunks = indexed
+        indexed
             .into_iter()
             .take(size)
             .map(|(chunk, _)| chunk)
-            .collect::<Vec<_>>();
-        embedding_texts = chunks.iter().map(embedding_text).collect();
-        chunks
+            .collect::<Vec<_>>()
     } else {
         chunks
     };
     if token_statistics_only {
         let statistics = provider
-            .token_statistics(&embedding_texts)
+            .token_statistics_iter(chunks.iter().map(embedding_text))
             .unwrap_or_else(|error| panic!("measure semantic token statistics: {error}"));
         match format {
             "json" => println!(
@@ -2160,7 +1891,7 @@ fn run_semantic_benchmark(
         report.length_bucketed = length_bucketed;
         report.token_statistics = Some(
             provider
-                .token_statistics(&embedding_texts)
+                .token_statistics_iter(chunks.iter().map(embedding_text))
                 .unwrap_or_else(|error| panic!("measure semantic token statistics: {error}")),
         );
         reports.push(report);
@@ -2220,8 +1951,8 @@ fn semantic_benchmark_chunks(artifact_root: Option<&Path>) -> (Vec<Chunk>, Conte
             let manifest = inspect_manifest(&active_manifest_path(root))
                 .unwrap_or_else(|error| panic!("inspect benchmark artifact: {error}"));
             (
-                root.join("generations")
-                    .join(manifest.corpus.content_digest.to_string())
+                active_generation_path(root)
+                    .unwrap_or_else(|error| panic!("resolve benchmark artifact: {error}"))
                     .join("lexical.json"),
                 manifest.corpus.content_digest,
             )
@@ -2317,13 +2048,11 @@ fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {
             let path = if root.is_file() {
                 root.to_owned()
             } else {
-                let manifest = inspect_manifest(&active_manifest_path(root))
-                    .unwrap_or_else(|error| panic!("inspect lexical evaluation artifact: {error}"));
-                root.join("generations")
-                    .join(manifest.corpus.content_digest.to_string())
+                active_generation_path(root)
+                    .unwrap_or_else(|error| panic!("inspect lexical evaluation artifact: {error}"))
                     .join("lexical.json")
             };
-            LexicalIndex::open_artifact(&path)
+            LexicalIndex::open_search_artifact(&path)
                 .unwrap_or_else(|error| panic!("open lexical evaluation artifact: {error}"))
                 .search(query, &LexicalFilters::default(), 50)
                 .unwrap_or_else(|error| panic!("search lexical evaluation artifact: {error}"))
@@ -2353,7 +2082,6 @@ mod tests {
         let _ = lexical_result_ids("query", Some(artifact.path()));
     }
 
-    #[cfg(feature = "git-corpus")]
     #[test]
     fn release_repository_cache_root_has_explicit_stable_precedence() {
         assert_eq!(

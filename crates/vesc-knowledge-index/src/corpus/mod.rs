@@ -9,12 +9,8 @@ use sha2::{Digest, Sha256};
 use crate::{Category, IndexEntry};
 
 pub mod chunking;
-#[cfg(feature = "git-corpus")]
 pub mod full_history;
-#[cfg(feature = "git-corpus")]
 pub mod git;
-#[cfg(feature = "git-corpus")]
-pub mod history;
 pub mod ingest;
 
 use self::ingest::{SourceInventory, SourceRejection};
@@ -634,16 +630,17 @@ impl CorpusManifest {
     ) -> Self {
         documents.sort_unstable();
         chunks.sort_unstable();
-        let mut digest_input = Vec::new();
+        let mut digest_input = Sha256::new();
         for id in &documents {
-            digest_input.extend_from_slice(id.as_ref().as_bytes());
-            digest_input.push(0);
+            digest_input.update(id.as_ref().as_bytes());
+            digest_input.update([0]);
         }
         for id in &chunks {
-            digest_input.extend_from_slice(id.as_ref().as_bytes());
-            digest_input.push(0);
+            digest_input.update(id.as_ref().as_bytes());
+            digest_input.update([0]);
         }
-        let content_digest = ContentDigest::of(&digest_input);
+        let digest = digest_input.finalize();
+        let content_digest = ContentDigest(format!("sha256:{}", hex_bytes(digest.as_ref())));
         Self {
             schema: CORPUS_SCHEMA_V1,
             corpus_version,

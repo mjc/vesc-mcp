@@ -7,7 +7,7 @@ that every local model should be enabled. The recommended production path is:
 2. Granite Embedding 97M R2 INT8 CPU query embeddings;
 3. no reranker by default;
 4. authoritative deterministic Rust investigation contracts;
-5. deterministic, verifier-backed graph and tagged-history relationships;
+5. deterministic, verifier-backed graph and Git revision relationships;
 6. no planner model and no critic model by default;
 7. a frontier answerer reachable only after all mandatory repository × stage ×
    era facets and relationships are covered and subsequently cited.

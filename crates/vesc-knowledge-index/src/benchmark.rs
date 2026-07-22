@@ -542,7 +542,8 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
     let mut provider_samples = Vec::with_capacity(repetitions);
     let mut vector_finalization_samples = Vec::with_capacity(repetitions);
     let mut embedding_input_bytes = 0_u64;
-    let inference_order = provider.inference_order(chunks)?;
+    let chunk_refs = chunks.iter().collect::<Vec<_>>();
+    let inference_order = provider.inference_order(&chunk_refs)?;
     let mut build = || {
         let started = Instant::now();
         let (artifact, observations): (VectorArtifact, VectorBuildObservations) =
@@ -563,9 +564,10 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
     };
     let mut artifact = build()?;
     for _ in 1..repetitions {
+        drop(artifact);
         artifact = build()?;
     }
-    let artifact_bytes = u64::try_from(artifact.encode()?.len()).unwrap_or(u64::MAX);
+    let (artifact_digest, artifact_bytes) = artifact.encoded_digest()?;
     let queries = benchmark_semantic_queries(
         provider,
         &artifact,
@@ -611,7 +613,7 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
             rss_after_queries_bytes: queries.rss_after_queries_bytes,
             rss_retained_delta_bytes: queries.rss_retained_delta_bytes,
             peak_rss_bytes: None,
-            vector_artifact_sha256: None,
+            vector_artifact_sha256: Some(artifact_digest.to_string()),
             machine: MachineProfile {
                 os: std::env::consts::OS.into(),
                 arch: std::env::consts::ARCH.into(),
@@ -729,11 +731,7 @@ pub fn benchmark_lexical(
     let chunks = match artifact {
         Some(root) => {
             let path = lexical_path(root)?;
-            LexicalIndex::open_artifact(&path)?
-                .chunks()
-                .values()
-                .cloned()
-                .collect()
+            LexicalIndex::read_artifact_chunks(&path)?
         }
         None => embedded_chunks(),
     };
@@ -750,12 +748,12 @@ pub fn benchmark_lexical(
         let bytes = fs::metadata(&path)?.len();
         let mut load_samples = Vec::with_capacity(repetitions);
         for _ in 0..warmup_iterations {
-            let _ = LexicalIndex::open_artifact(&path)?;
+            let _ = LexicalIndex::open_search_artifact(&path)?;
         }
-        let mut loaded = LexicalIndex::open_artifact(&path)?;
+        let mut loaded = LexicalIndex::open_search_artifact(&path)?;
         for _ in 0..repetitions {
             let start = Instant::now();
-            let candidate = LexicalIndex::open_artifact(&path)?;
+            let candidate = LexicalIndex::open_search_artifact(&path)?;
             load_samples.push(elapsed_us(start));
             loaded = candidate;
         }
@@ -847,12 +845,9 @@ fn lexical_path(root: &Path) -> Result<PathBuf, BenchmarkError> {
     if root.is_file() {
         return Ok(root.to_owned());
     }
-    let manifest = crate::inspect_manifest(&crate::active_manifest_path(root))
-        .map_err(|error| BenchmarkError::Lexical(crate::LexicalError::Io(error.to_string())))?;
-    Ok(root
-        .join("generations")
-        .join(manifest.corpus.content_digest.to_string())
-        .join("lexical.json"))
+    crate::active_generation_path(root)
+        .map(|generation| generation.join("lexical.json"))
+        .map_err(|error| BenchmarkError::Lexical(crate::LexicalError::Io(error.to_string())))
 }
 
 fn embedded_chunks() -> Vec<Chunk> {
@@ -957,7 +952,7 @@ mod tests {
         impl crate::EmbeddingProvider for ReverseProvider {
             fn inference_order(
                 &mut self,
-                chunks: &[Chunk],
+                chunks: &[&Chunk],
             ) -> Result<Option<Vec<usize>>, crate::EmbeddingError> {
                 self.order_calls += 1;
                 Ok(Some((0..chunks.len()).rev().collect()))

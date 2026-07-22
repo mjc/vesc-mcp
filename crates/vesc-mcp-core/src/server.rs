@@ -33,11 +33,9 @@ use crate::tools::inspect::{
     inspect_vescpkg_json_with_sandbox,
 };
 use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json_with_client_roots};
-#[cfg(feature = "managed-git")]
 use crate::tools::list_source_versions::{
     ListVescSourceVersionsParams, list_vesc_source_versions_json,
 };
-#[cfg(feature = "managed-git")]
 use crate::tools::prepare_knowledge::{PrepareVescKnowledgeParams, prepare_vesc_knowledge_json};
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
@@ -185,8 +183,7 @@ impl Default for VescMcpService {
 impl VescMcpService {
     fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         let router = Self::base_tool_router();
-        #[cfg(feature = "managed-git")]
-        let router = router
+        router
             .with_route((
                 Self::list_vesc_source_versions_tool_attr(),
                 Self::list_vesc_source_versions,
@@ -194,8 +191,7 @@ impl VescMcpService {
             .with_route((
                 Self::prepare_vesc_knowledge_tool_attr(),
                 Self::prepare_vesc_knowledge,
-            ));
-        router
+            ))
     }
 
     /// Create a new MCP service with default tools and resource registry.
@@ -468,7 +464,6 @@ impl VescMcpService {
     }
 }
 
-#[cfg(feature = "managed-git")]
 impl VescMcpService {
     #[tool(description = "List cached source refs before prepare/search; never fetches.")]
     fn list_vesc_source_versions(
@@ -615,8 +610,7 @@ impl ServerHandler for VescMcpService {
 impl HttpMcpService {
     fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         let router = Self::base_tool_router();
-        #[cfg(feature = "managed-git")]
-        let router = router
+        router
             .with_route((
                 Self::list_vesc_source_versions_tool_attr(),
                 Self::list_vesc_source_versions,
@@ -624,8 +618,7 @@ impl HttpMcpService {
             .with_route((
                 Self::prepare_vesc_knowledge_tool_attr(),
                 Self::prepare_vesc_knowledge,
-            ));
-        router
+            ))
     }
 
     /// Tool names registered on the HTTP-safe service.
@@ -808,7 +801,6 @@ impl HttpMcpService {
     }
 }
 
-#[cfg(feature = "managed-git")]
 impl HttpMcpService {
     #[tool(description = "List cached source refs before prepare/search; never fetches.")]
     fn list_vesc_source_versions(
@@ -1312,7 +1304,6 @@ mod tests {
         assert!(names.iter().any(|name| name == "search_vesc_knowledge"));
     }
 
-    #[cfg(feature = "managed-git")]
     #[test]
     fn source_version_tools_are_shared_by_stdio_and_http() {
         let service = VescMcpService::new();

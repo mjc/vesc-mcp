@@ -47,11 +47,11 @@ filters pin retrieval to one exact snapshot:
 {"query":"imu_read_callback","mode":"lexical","filters":{"repository":"vesc","revision":"0123456789abcdef0123456789abcdef01234567"}}
 ```
 
-Git-tree ingestion is additive to the compatibility corpus. The optional
-`git-corpus` build feature consumes an already-managed repository plus an exact
-commit ID, reads blobs without a checkout, and records repository, revision,
-path, media type, trust, license, digest, and source span. Repository acquisition
-and active-generation selection remain separate lifecycle steps.
+Git-tree ingestion consumes an already-managed repository plus an exact commit
+ID, reads blobs without a checkout, and records repository, revision, path,
+media type, trust, license, digest, and source span. Git is always available;
+repository acquisition and active-generation selection remain separate,
+configuration-controlled lifecycle steps.
 
 ## Select and compare source versions
 

@@ -2,9 +2,7 @@
 
 use crate::config::{KnowledgeConfig, RetrievalMode};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-#[cfg(any(feature = "semantic-fastembed", test))]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "semantic-fastembed")]
@@ -887,15 +885,15 @@ fn hybrid_results(
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
-    let (lexical, chunks) =
+    let (lexical, mut chunks) =
         lexical_hits_and_chunks(&params.query, filters, candidate_limit, config)?;
-    let (semantic, live_rerank) =
-        semantic_hits(&params.query, filters, candidate_limit, config, &chunks)?;
+    let (mut semantic, live_rerank) = semantic_hits(&params.query, candidate_limit, config)?;
+    hydrate_semantic_chunks(&mut semantic, filters, config, &mut chunks)?;
     let context_budget = params
         .max_context_bytes
         .unwrap_or(config.max_passage_bytes)
         .min(config.max_passage_bytes);
-    let results = vesc_knowledge_index::fuse_candidates(
+    let fused = vesc_knowledge_index::fuse_candidates(
         &lexical,
         &semantic,
         &chunks,
@@ -903,14 +901,20 @@ fn hybrid_results(
             limit,
             ..FusionConfig::default()
         },
-    )
-    .into_iter()
-    .map(|hit| {
-        let context =
-            expand_adjacent_context(&hit.chunk, &chunks, MAX_EXPANDED_NEIGHBORS, context_budget);
-        fused_result(hit, &context, filters)
-    })
-    .collect();
+    );
+    hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
+    let results = fused
+        .into_iter()
+        .map(|hit| {
+            let context = expand_adjacent_context(
+                &hit.chunk,
+                &chunks,
+                MAX_EXPANDED_NEIGHBORS,
+                context_budget,
+            );
+            fused_result(hit, &context, filters)
+        })
+        .collect();
     let warnings = live_rerank
         .then(|| {
             "snapshot vector artifact unavailable; used the local model to semantically rerank lexical candidates"
@@ -930,22 +934,17 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     provider: &mut P,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, bool), String> {
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
-    let (lexical, chunks) =
+    let (lexical, mut chunks) =
         lexical_hits_and_chunks(&params.query, filters, candidate_limit, config)?;
-    let vector = load_vector_artifact(config, &chunks)?;
-    let semantic = semantic_hits_with_provider(
-        &params.query,
-        filters,
-        candidate_limit,
-        &vector,
-        &chunks,
-        provider,
-    )?;
+    let vector = load_vector_artifact(config)?;
+    let mut semantic =
+        semantic_hits_with_provider(&params.query, candidate_limit, &vector, provider)?;
+    hydrate_semantic_chunks(&mut semantic, filters, config, &mut chunks)?;
     let context_budget = params
         .max_context_bytes
         .unwrap_or(config.max_passage_bytes)
         .min(config.max_passage_bytes);
-    let results = vesc_knowledge_index::fuse_candidates(
+    let fused = vesc_knowledge_index::fuse_candidates(
         &lexical,
         &semantic,
         &chunks,
@@ -953,14 +952,20 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
             limit,
             ..FusionConfig::default()
         },
-    )
-    .into_iter()
-    .map(|hit| {
-        let context =
-            expand_adjacent_context(&hit.chunk, &chunks, MAX_EXPANDED_NEIGHBORS, context_budget);
-        fused_result(hit, &context, filters)
-    })
-    .collect();
+    );
+    hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
+    let results = fused
+        .into_iter()
+        .map(|hit| {
+            let context = expand_adjacent_context(
+                &hit.chunk,
+                &chunks,
+                MAX_EXPANDED_NEIGHBORS,
+                context_budget,
+            );
+            fused_result(hit, &context, filters)
+        })
+        .collect();
     Ok((results, false))
 }
 
@@ -969,32 +974,17 @@ fn lexical_hits_and_chunks(
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-) -> Result<(Vec<LexicalHit>, Arc<ChunkMap>), String> {
+) -> Result<(Vec<LexicalHit>, ChunkMap), String> {
     if let Some(path) = config.resolved_artifact_path() {
         let lexical_path = active_lexical_path(&path)?;
         return with_cached_lexical_index(&lexical_path, |index| {
             let hits = index
                 .search(query, filters, limit)
                 .map_err(|error| error.to_string())?;
-            let chunks = if index.chunks().is_empty() {
-                if configured_vector_artifact_exists(config) {
-                    cached_artifact(&FULL_CHUNK_CACHE, &lexical_path, || {
-                        Ok(LexicalIndex::read_artifact_chunks(&lexical_path)
-                            .map_err(|error| error.to_string())?
-                            .into_iter()
-                            .map(|chunk| (chunk.chunk_id.clone(), chunk))
-                            .collect())
-                    })?
-                } else {
-                    Arc::new(
-                        hits.iter()
-                            .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
-                            .collect(),
-                    )
-                }
-            } else {
-                Arc::new(index.chunks().clone())
-            };
+            let chunks = hits
+                .iter()
+                .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
+                .collect();
             Ok((hits, chunks))
         });
     }
@@ -1002,14 +992,17 @@ fn lexical_hits_and_chunks(
     let hits = index
         .search(query, filters, limit)
         .map_err(|error| error.to_string())?;
-    Ok((hits, Arc::new(index.chunks().clone())))
+    let chunks = hits
+        .iter()
+        .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
+        .collect();
+    Ok((hits, chunks))
 }
 
-static LEXICAL_ARTIFACT_CACHE: OnceLock<Mutex<Option<CachedLexicalArtifact>>> = OnceLock::new();
 type ChunkMap = BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>;
 type ArtifactCache<T> = OnceLock<Mutex<Option<(PathBuf, Arc<T>)>>>;
+static LEXICAL_ARTIFACT_CACHE: ArtifactCache<LexicalIndex> = OnceLock::new();
 
-static FULL_CHUNK_CACHE: ArtifactCache<ChunkMap> = OnceLock::new();
 #[cfg(any(feature = "semantic-fastembed", test))]
 static VECTOR_ARTIFACT_CACHE: ArtifactCache<VectorArtifact> = OnceLock::new();
 
@@ -1019,114 +1012,51 @@ fn cached_artifact<T>(
     load: impl FnOnce() -> Result<T, String>,
 ) -> Result<Arc<T>, String> {
     let cache = cache.get_or_init(|| Mutex::new(None));
-    let cached = {
-        let cache = cache
-            .lock()
-            .map_err(|_| "artifact cache is poisoned".to_string())?;
-        cache
-            .as_ref()
-            .filter(|(key, _)| key == path)
-            .map(|(_, value)| Arc::clone(value))
-    };
-    if let Some(value) = cached {
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "artifact cache is poisoned".to_string())?;
+    if let Some(value) = cache
+        .as_ref()
+        .filter(|(key, _)| key == path)
+        .map(|(_, value)| Arc::clone(value))
+    {
         return Ok(value);
     }
+    cache.take();
     let value = Arc::new(load()?);
-    *cache
-        .lock()
-        .map_err(|_| "artifact cache is poisoned".to_string())? =
-        Some((path.to_owned(), Arc::clone(&value)));
+    *cache = Some((path.to_owned(), Arc::clone(&value)));
+    drop(cache);
     Ok(value)
 }
 
-struct CachedLexicalArtifact {
-    key: PathBuf,
-    index: Arc<LexicalIndex>,
-}
-
 /// Reuse the active generation's Tantivy index between MCP requests.
-///
-/// ponytail: retain one index until snapshot-switch latency justifies a bounded
-/// cache; the mutex protects only the pointer and never artifact I/O or search.
 fn with_cached_lexical_index<T>(
     path: &Path,
     operation: impl FnOnce(&LexicalIndex) -> Result<T, String>,
 ) -> Result<T, String> {
-    let cache = LEXICAL_ARTIFACT_CACHE.get_or_init(|| Mutex::new(None));
-    let index = cache
-        .lock()
-        .map_err(|_| "lexical artifact cache is poisoned".to_string())?
-        .as_ref()
-        .filter(|entry| entry.key == path)
-        .map(|entry| Arc::clone(&entry.index));
-    let index = index.map_or_else(
-        || {
-            let loaded = Arc::new(
-                LexicalIndex::open_search_artifact(path)
-                    .map_err(|_| "configured lexical artifact unavailable".to_string())?,
-            );
-            let mut cache = cache
-                .lock()
-                .map_err(|_| "lexical artifact cache is poisoned".to_string())?;
-            let current = cache
-                .as_ref()
-                .filter(|entry| entry.key == path)
-                .map(|entry| Arc::clone(&entry.index));
-            let index = current.unwrap_or_else(|| {
-                *cache = Some(CachedLexicalArtifact {
-                    key: path.to_owned(),
-                    index: Arc::clone(&loaded),
-                });
-                loaded
-            });
-            drop(cache);
-            Ok::<_, String>(index)
-        },
-        Ok::<_, String>,
-    )?;
+    let index = cached_artifact(&LEXICAL_ARTIFACT_CACHE, path, || {
+        LexicalIndex::open_search_artifact(path)
+            .map_err(|_| "configured lexical artifact unavailable".to_string())
+    })?;
     operation(&index)
-}
-
-fn configured_vector_artifact_exists(config: &KnowledgeConfig) -> bool {
-    let Some(root) = config.resolved_artifact_path() else {
-        return false;
-    };
-    let Ok(manifest) =
-        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(&root))
-    else {
-        return false;
-    };
-    root.join("generations")
-        .join(manifest.corpus.content_digest.to_string())
-        .join("vectors.bin")
-        .is_file()
 }
 
 #[allow(clippy::significant_drop_tightening)]
 fn semantic_hits(
     query: &str,
-    filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-    chunks: &BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
 ) -> Result<(Vec<SemanticHit>, bool), String> {
     #[cfg(feature = "semantic-fastembed")]
     {
-        let vector = load_vector_artifact(config, chunks)?;
+        let vector = load_vector_artifact(config)?;
         let mut state = initialize_semantic_model(config)?;
         let entry = state
             .entry
             .as_mut()
             .ok_or_else(|| "semantic provider cache is empty".to_string())?;
-        let result = semantic_hits_with_provider(
-            query,
-            filters,
-            limit,
-            &vector,
-            chunks,
-            &mut entry.provider,
-        )
-        .map(|hits| (hits, false));
+        let result = semantic_hits_with_provider(query, limit, &vector, &mut entry.provider)
+            .map(|hits| (hits, false));
         entry.last_used = Instant::now();
         semantic_model_cache().wake.notify_one();
         result
@@ -1134,7 +1064,7 @@ fn semantic_hits(
 
     #[cfg(not(feature = "semantic-fastembed"))]
     {
-        let _ = (query, filters, limit, config, chunks);
+        let _ = (query, limit, config);
         Err("semantic-fastembed feature is disabled".into())
     }
 }
@@ -1273,23 +1203,26 @@ fn reap_idle_semantic_model() {
 }
 
 #[cfg(any(feature = "semantic-fastembed", test))]
-fn load_vector_artifact(
-    config: &KnowledgeConfig,
-    chunks: &BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
-) -> Result<Arc<VectorArtifact>, String> {
+fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>, String> {
     let root = config
         .resolved_artifact_path()
         .ok_or_else(|| "vector artifact is not configured".to_string())?;
-    let manifest =
-        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(&root))
-            .map_err(|_| "configured vector artifact unavailable".to_string())?;
-    let vector_path = root
-        .join("generations")
-        .join(manifest.corpus.content_digest.to_string())
+    let vector_path = vesc_knowledge_index::active_generation_path(&root)
+        .map_err(|_| "configured vector artifact unavailable".to_string())?
         .join("vectors.bin");
     let vector = cached_artifact(&VECTOR_ARTIFACT_CACHE, &vector_path, || {
-        VectorArtifact::open_artifact(&vector_path)
-            .map_err(|_| "configured vector artifact unavailable".to_string())
+        let manifest =
+            vesc_knowledge_index::inspect_manifest(&vector_path.with_file_name("manifest.json"))
+                .map_err(|_| "configured vector artifact unavailable".to_string())?;
+        let vector = VectorArtifact::open_artifact(&vector_path)
+            .map_err(|_| "configured vector artifact unavailable".to_string())?;
+        vector
+            .validate()
+            .map_err(|error| format!("semantic artifact incompatible: {error}"))?;
+        if vector.corpus_digest != manifest.corpus.content_digest {
+            return Err("semantic artifact incompatible with the active corpus".into());
+        }
+        Ok(vector)
     })?;
     let model_id = config
         .semantic_model_id
@@ -1299,25 +1232,17 @@ fn load_vector_artifact(
         .semantic_model_revision
         .as_deref()
         .ok_or_else(|| "semantic model revision is not configured".to_string())?;
-    let chunk_ids = chunks.keys().cloned().collect::<BTreeSet<_>>();
-    vector
-        .validate_for_corpus(
-            &manifest.corpus.content_digest,
-            &chunk_ids,
-            model_id,
-            model_revision,
-        )
-        .map_err(|error| format!("semantic artifact incompatible: {error}"))?;
+    if vector.model_id != model_id || vector.model_revision != model_revision {
+        return Err("semantic artifact incompatible with the configured model".into());
+    }
     Ok(vector)
 }
 
 #[cfg(any(feature = "semantic-fastembed", test))]
 fn semantic_hits_with_provider<P: EmbeddingProvider + ?Sized>(
     query: &str,
-    filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     vector: &VectorArtifact,
-    chunks: &BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>,
     provider: &mut P,
 ) -> Result<Vec<SemanticHit>, String> {
     let query = provider
@@ -1325,16 +1250,93 @@ fn semantic_hits_with_provider<P: EmbeddingProvider + ?Sized>(
         .map_err(|error| format!("query embedding failed: {error}"))?;
     vector
         .search(&query, limit)
-        .map(|hits| {
-            hits.into_iter()
-                .filter(|hit| {
-                    chunks
-                        .get(&hit.chunk_id)
-                        .is_some_and(|chunk| filters.matches(chunk))
-                })
-                .collect()
-        })
         .map_err(|error| format!("semantic search failed: {error}"))
+}
+
+fn hydrate_semantic_chunks(
+    hits: &mut Vec<SemanticHit>,
+    filters: &vesc_knowledge_index::LexicalFilters,
+    config: &KnowledgeConfig,
+    chunks: &mut ChunkMap,
+) -> Result<(), String> {
+    let ids = hits.iter().map(|hit| hit.chunk_id.clone()).collect();
+    hydrate_chunk_ids(&ids, config, chunks)?;
+    hits.retain(|hit| {
+        chunks
+            .get(&hit.chunk_id)
+            .is_some_and(|chunk| filters.matches(chunk))
+    });
+    Ok(())
+}
+
+fn hydrate_adjacent_chunks(
+    hits: &[vesc_knowledge_index::FusedHit],
+    config: &KnowledgeConfig,
+    chunks: &mut ChunkMap,
+) -> Result<(), String> {
+    let mut frontier = hits
+        .iter()
+        .map(|hit| hit.chunk.chunk_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut seen = frontier.clone();
+    for _ in 0..MAX_EXPANDED_NEIGHBORS {
+        let adjacent = frontier
+            .iter()
+            .filter_map(|id| chunks.get(id))
+            .flat_map(|chunk| {
+                [chunk.previous_chunk.clone(), chunk.next_chunk.clone()]
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|id| seen.insert(id.clone()))
+            .collect::<BTreeSet<_>>();
+        if adjacent.is_empty() {
+            break;
+        }
+        hydrate_chunk_ids(&adjacent, config, chunks)?;
+        frontier = adjacent
+            .into_iter()
+            .filter(|id| chunks.contains_key(id))
+            .collect();
+    }
+    Ok(())
+}
+
+fn hydrate_chunk_ids(
+    ids: &BTreeSet<vesc_knowledge_index::ChunkId>,
+    config: &KnowledgeConfig,
+    chunks: &mut ChunkMap,
+) -> Result<(), String> {
+    let missing = ids
+        .iter()
+        .filter(|id| !chunks.contains_key(*id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let loaded = if let Some(root) = config.resolved_artifact_path() {
+        let lexical_path = active_lexical_path(&root)?;
+        with_cached_lexical_index(&lexical_path, |index| {
+            index
+                .chunks_by_id(&missing)
+                .map_err(|error| error.to_string())
+        })?
+    } else {
+        let index = vesc_knowledge_index::lexical_index();
+        missing
+            .iter()
+            .filter_map(|id| {
+                index
+                    .chunks()
+                    .get(id)
+                    .cloned()
+                    .map(|chunk| (id.clone(), chunk))
+            })
+            .collect()
+    };
+    chunks.extend(loaded);
+    Ok(())
 }
 
 fn fused_result(
@@ -1414,13 +1416,9 @@ fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
     if root.is_file() {
         return Ok(root.to_owned());
     }
-    let manifest =
-        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(root))
-            .map_err(|_| "configured lexical artifact unavailable".to_string())?;
-    Ok(root
-        .join("generations")
-        .join(manifest.corpus.content_digest.to_string())
-        .join("lexical.json"))
+    vesc_knowledge_index::active_generation_path(root)
+        .map(|generation| generation.join("lexical.json"))
+        .map_err(|_| "configured lexical artifact unavailable".to_string())
 }
 
 fn legacy_result(hit: vesc_knowledge_index::KnowledgeSearchHit) -> SearchVescKnowledgeResult {
@@ -1848,6 +1846,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn artifact_cache_serializes_first_load() {
+        let cache: &'static ArtifactCache<usize> = Box::leak(Box::new(OnceLock::new()));
+        let path = PathBuf::from("vectors.bin");
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let (first_entered_tx, first_entered_rx) = std::sync::mpsc::channel();
+        let first_release = Arc::clone(&release);
+        let first_path = path.clone();
+        let first = std::thread::spawn(move || {
+            cached_artifact(cache, &first_path, || {
+                first_entered_tx.send(()).expect("report first load");
+                let (lock, wake) = &*first_release;
+                let mut released = lock.lock().expect("release mutex");
+                while !*released {
+                    released = wake.wait(released).expect("release wait");
+                }
+                drop(released);
+                Ok(7)
+            })
+        });
+        first_entered_rx.recv().expect("first load started");
+
+        let (second_entered_tx, second_entered_rx) = std::sync::mpsc::channel();
+        let second = std::thread::spawn(move || {
+            cached_artifact(cache, &path, || {
+                second_entered_tx.send(()).expect("report second load");
+                Ok(8)
+            })
+        });
+        let loaded_twice = second_entered_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_ok();
+
+        let (lock, wake) = &*release;
+        *lock.lock().expect("release mutex") = true;
+        wake.notify_all();
+        let first = first.join().expect("first loader").expect("first value");
+        let second = second.join().expect("second loader").expect("second value");
+
+        assert!(!loaded_twice, "the artifact was loaded concurrently");
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn artifact_cache_drops_old_generation_before_loading_new() {
+        let cache: &'static ArtifactCache<usize> = Box::leak(Box::new(OnceLock::new()));
+        let old_value =
+            cached_artifact(cache, Path::new("old/vectors.bin"), || Ok(7)).expect("old generation");
+        let old = Arc::downgrade(&old_value);
+        drop(old_value);
+        assert!(old.upgrade().is_some(), "old generation remains cached");
+
+        let value = cached_artifact(cache, Path::new("new/vectors.bin"), || {
+            assert!(
+                old.upgrade().is_none(),
+                "old generation remained cached while loading its replacement"
+            );
+            Ok(8)
+        })
+        .expect("new generation");
+
+        assert_eq!(*value, 8);
+    }
+
+    #[test]
     fn invalid_category_is_ignored() {
         for (category, filter_category) in [
             (Some("not_a_category".into()), None),
@@ -1947,6 +2009,7 @@ mod tests {
         assert!(response.results.len() <= 1);
     }
 
+    #[cfg(not(feature = "semantic-fastembed"))]
     #[test]
     fn explicit_hybrid_without_a_model_returns_structured_error() {
         let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {

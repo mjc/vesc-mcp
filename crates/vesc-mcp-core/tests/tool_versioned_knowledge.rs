@@ -1,5 +1,3 @@
-#![cfg(feature = "managed-git")]
-
 use std::fs;
 
 use serde_json::{Value, json};

@@ -1,11 +1,12 @@
 //! Normalized knowledge passage MCP resources.
 
-use serde_json::to_string_pretty;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use serde_json::to_string_pretty;
+
 use vesc_knowledge_index::{
-    ChunkId, DocumentId, LexicalIndex, NormalizedDocument, active_manifest_path, embedded_entries,
-    inspect_manifest,
+    ChunkId, DocumentId, LexicalIndex, NormalizedDocument, embedded_entries,
 };
 
 use super::{
@@ -52,25 +53,26 @@ fn read_knowledge_chunk_from_artifact(
     let lexical_path = if artifact_root.is_file() {
         artifact_root.to_owned()
     } else {
-        let manifest = inspect_manifest(&active_manifest_path(artifact_root)).map_err(|error| {
-            ResourceReadError::ReadFailed {
+        vesc_knowledge_index::active_generation_path(artifact_root)
+            .map_err(|error| ResourceReadError::ReadFailed {
                 uri: uri.into(),
                 message: format!("read knowledge artifact manifest: {error}"),
-            }
-        })?;
-        artifact_root
-            .join("generations")
-            .join(manifest.corpus.content_digest.to_string())
+            })?
             .join("lexical.json")
     };
-    let index = LexicalIndex::open_artifact(&lexical_path).map_err(|error| {
+    let index = LexicalIndex::open_search_artifact(&lexical_path).map_err(|error| {
         ResourceReadError::ReadFailed {
             uri: uri.into(),
             message: format!("read knowledge lexical artifact: {error}"),
         }
     })?;
-    let chunk = index
-        .chunks()
+    let chunks = index
+        .chunks_by_id(&BTreeSet::from([requested.clone()]))
+        .map_err(|error| ResourceReadError::ReadFailed {
+            uri: uri.into(),
+            message: format!("read knowledge chunk: {error}"),
+        })?;
+    let chunk = chunks
         .get(&requested)
         .ok_or_else(|| ResourceReadError::NotFound { uri: uri.into() })?;
     to_string_pretty(chunk).map_err(|error| ResourceReadError::ReadFailed {
@@ -113,18 +115,19 @@ fn read_knowledge_document_from_artifact(
     let requested = DocumentId::try_from(document.id.as_str())
         .map_err(|_| ResourceReadError::NotFound { uri: uri.into() })?;
     let lexical_path = artifact_lexical_path(artifact_root, uri)?;
-    let index = LexicalIndex::open_artifact(&lexical_path).map_err(|error| {
+    let index = LexicalIndex::open_search_artifact(&lexical_path).map_err(|error| {
         ResourceReadError::ReadFailed {
             uri: uri.into(),
             message: format!("read knowledge lexical artifact: {error}"),
         }
     })?;
-    let mut chunks: Vec<_> = index
-        .chunks()
-        .values()
-        .filter(|chunk| chunk.document_id == requested)
-        .collect();
-    chunks.sort_by_key(|chunk| chunk.ordinal);
+    let chunks =
+        index
+            .chunks_by_document_id(&requested)
+            .map_err(|error| ResourceReadError::ReadFailed {
+                uri: uri.into(),
+                message: format!("read knowledge document: {error}"),
+            })?;
     let Some(first) = chunks.first() else {
         return Err(ResourceReadError::NotFound { uri: uri.into() });
     };
@@ -162,16 +165,12 @@ fn artifact_lexical_path(artifact_root: &Path, uri: &str) -> Result<PathBuf, Res
     if artifact_root.is_file() {
         return Ok(artifact_root.to_owned());
     }
-    let manifest = inspect_manifest(&active_manifest_path(artifact_root)).map_err(|error| {
-        ResourceReadError::ReadFailed {
+    vesc_knowledge_index::active_generation_path(artifact_root)
+        .map(|generation| generation.join("lexical.json"))
+        .map_err(|error| ResourceReadError::ReadFailed {
             uri: uri.into(),
             message: format!("read knowledge artifact manifest: {error}"),
-        }
-    })?;
-    Ok(artifact_root
-        .join("generations")
-        .join(manifest.corpus.content_digest.to_string())
-        .join("lexical.json"))
+        })
 }
 
 /// Handler for normalized embedded knowledge documents.

@@ -68,7 +68,6 @@ pub struct IngestionReport {
     /// Number of source entries examined, including entries later rejected by policy.
     #[serde(default)]
     pub visited_files: usize,
-    #[cfg(feature = "git-corpus")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Non-identity profiling data; excluded from deterministic report equality.
     pub git_observations: Option<super::git::GitIngestionObservations>,
@@ -232,7 +231,6 @@ pub fn ingest_allowlisted(
         rejected: Vec::new(),
         sources: Vec::new(),
         visited_files: specs.len(),
-        #[cfg(feature = "git-corpus")]
         git_observations: None,
     };
     for spec in specs {

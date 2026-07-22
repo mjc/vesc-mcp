@@ -74,7 +74,7 @@ Cross-revision edges name both immutable revisions.
 | parser → produced artifact | one-to-many | build recipe/domain parser and explicit output declaration | source-to-wire/generated trace | incidental writes; require declared artifact or validated magic/schema |
 | generated → source file | many-to-many | compiler depfile, generator manifest, deterministic source annotation | recover authoritative source | stale comments; require build metadata or content-checked generator marker |
 | adjacent chunk ↔ adjacent chunk | at most two per chunk | structural chunker ordinals in one document/revision | local context continuity | none after artifact adjacency validation |
-| symbol/relation → revision occurrence | one per observed revision | tagged-history exact identity/occurrence builder | first/last/change evidence | fuzzy similarity; identity and content digests must validate |
+| symbol/relation → revision | one per reachable revision | Git reachability and chunk identity | first/last/change evidence | fuzzy similarity; identity and content digests must validate |
 | old occurrence → new occurrence | one-to-many across selected revisions | deterministic history diff and rename evidence | behavior evolution | rename guesses; unverified similarity remains outside the published graph |
 
 Compiler metadata outranks symbol tables, which outrank existing domain

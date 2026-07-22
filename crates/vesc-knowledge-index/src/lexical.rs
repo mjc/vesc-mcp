@@ -1,23 +1,23 @@
 //! Fielded lexical retrieval over normalized chunks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, TermQuery};
+use tantivy::collector::{Count, TopDocs};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, TermQuery, TermSetQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
-use crate::corpus::{Chunk, ChunkId, ContentDigest, SourceKind, TrustTier};
+use crate::corpus::{Chunk, ChunkId, ContentDigest, DocumentId, SourceKind, TrustTier};
 use crate::{Category, RepositoryId, Revision};
 
-pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-stored-chunks-descriptor-v3";
+pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-stored-chunks-descriptor-v4";
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -132,6 +132,7 @@ struct LexicalFields {
     body: Field,
     tags: Field,
     chunk_id: Field,
+    document_id: Field,
     category: Field,
     repository: Field,
     trust_tier: Field,
@@ -197,8 +198,7 @@ impl LexicalIndex {
         chunks: impl IntoIterator<Item = &'a Chunk>,
         path: &Path,
     ) -> Result<(ContentDigest, u64), LexicalError> {
-        let chunks = chunks.into_iter().collect::<Vec<_>>();
-        Self::write_persisted_index(chunks.iter().copied(), path)?;
+        Self::write_persisted_index(chunks, path)?;
         let file = File::create(path).map_err(|error| LexicalError::Io(error.to_string()))?;
         let mut writer = DigestingWriter::new(BufWriter::new(file));
         serde_json::to_writer(&mut writer, &LexicalDescriptor { schema: 2 })
@@ -309,7 +309,7 @@ impl LexicalIndex {
                     .and_then(|value| value.as_str())
                     .ok_or(LexicalError::MissingChunkId)
                     .and_then(|json| {
-                        serde_json::from_str(json)
+                        serde_json::from_str::<Chunk>(json)
                             .map_err(|error| LexicalError::Artifact(error.to_string()))
                     })
             })
@@ -438,6 +438,113 @@ impl LexicalIndex {
         Ok(hits)
     }
 
+    /// Reads only the requested chunks from the persisted Tantivy index.
+    ///
+    /// Unknown IDs are ignored, matching a map lookup against an in-memory
+    /// index without deserializing unrelated stored chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when Tantivy cannot read a matching document
+    /// or its stored chunk is invalid.
+    pub fn chunks_by_id(
+        &self,
+        ids: &BTreeSet<ChunkId>,
+    ) -> Result<BTreeMap<ChunkId, Chunk>, LexicalError> {
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        if !self.chunks.is_empty() {
+            return Ok(ids
+                .iter()
+                .filter_map(|id| {
+                    self.chunks
+                        .get(id)
+                        .cloned()
+                        .map(|chunk| (id.clone(), chunk))
+                })
+                .collect());
+        }
+
+        let query = TermSetQuery::new(
+            ids.iter()
+                .map(|id| Term::from_field_text(self.fields.chunk_id, id.as_str())),
+        );
+        let searcher = self.reader.searcher();
+        let documents = searcher
+            .search(&query, &TopDocs::with_limit(ids.len()).order_by_score())
+            .map_err(LexicalError::Search)?;
+        documents
+            .into_iter()
+            .map(|(_, address)| {
+                let document = searcher
+                    .doc::<TantivyDocument>(address)
+                    .map_err(LexicalError::Search)?;
+                let chunk: Chunk = document
+                    .get_first(self.fields.chunk_json)
+                    .and_then(|value| value.as_str())
+                    .ok_or(LexicalError::MissingChunkId)
+                    .and_then(|json| {
+                        serde_json::from_str(json)
+                            .map_err(|error| LexicalError::Artifact(error.to_string()))
+                    })?;
+                Ok((chunk.chunk_id.clone(), chunk))
+            })
+            .collect()
+    }
+
+    /// Reads only the chunks belonging to one document from the persisted index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when Tantivy cannot read a matching document
+    /// or its stored chunk is invalid.
+    pub fn chunks_by_document_id(
+        &self,
+        document_id: &DocumentId,
+    ) -> Result<Vec<Chunk>, LexicalError> {
+        if !self.chunks.is_empty() {
+            let mut chunks = self
+                .chunks
+                .values()
+                .filter(|chunk| &chunk.document_id == document_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            chunks.sort_by_key(|chunk| chunk.ordinal);
+            return Ok(chunks);
+        }
+
+        let query = TermQuery::new(
+            Term::from_field_text(self.fields.document_id, document_id.as_str()),
+            IndexRecordOption::Basic,
+        );
+        let searcher = self.reader.searcher();
+        let count = searcher
+            .search(&query, &Count)
+            .map_err(LexicalError::Search)?;
+        let documents = searcher
+            .search(&query, &TopDocs::with_limit(count).order_by_score())
+            .map_err(LexicalError::Search)?;
+        let mut chunks = documents
+            .into_iter()
+            .map(|(_, address)| {
+                let document = searcher
+                    .doc::<TantivyDocument>(address)
+                    .map_err(LexicalError::Search)?;
+                document
+                    .get_first(self.fields.chunk_json)
+                    .and_then(|value| value.as_str())
+                    .ok_or(LexicalError::MissingChunkId)
+                    .and_then(|json| {
+                        serde_json::from_str::<Chunk>(json)
+                            .map_err(|error| LexicalError::Artifact(error.to_string()))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        chunks.sort_by_key(|chunk| chunk.ordinal);
+        Ok(chunks)
+    }
+
     /// Returns the underlying schema for artifact inspection.
     #[must_use]
     pub fn schema(&self) -> Schema {
@@ -515,6 +622,7 @@ fn schema() -> (Schema, LexicalFields) {
     let body = builder.add_text_field("body", text.clone());
     let tags = builder.add_text_field("tags", text);
     let chunk_id = builder.add_text_field("chunk_id", STRING | STORED);
+    let document_id = builder.add_text_field("document_id", STRING);
     let category = builder.add_text_field("category", STRING | STORED);
     let repository = builder.add_text_field("repository", STRING | STORED);
     let trust_tier = builder.add_text_field("trust_tier", STRING | STORED);
@@ -530,6 +638,7 @@ fn schema() -> (Schema, LexicalFields) {
             body,
             tags,
             chunk_id,
+            document_id,
             category,
             repository,
             trust_tier,
@@ -553,6 +662,7 @@ fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk) {
         chunk.tags.iter().cloned().collect::<Vec<_>>().join(" "),
     );
     document.add_text(fields.chunk_id, chunk.chunk_id.as_str());
+    document.add_text(fields.document_id, chunk.document_id.as_str());
     document.add_text(
         fields.category,
         chunk
@@ -877,6 +987,53 @@ mod tests {
                 .expect("search")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn persisted_index_reads_only_requested_chunks() {
+        let chunks = [
+            chunk("alpha", "first body", "first"),
+            chunk("beta", "second body", "second"),
+            chunk("gamma", "third body", "third"),
+        ];
+        let index = LexicalIndex::build(&chunks).expect("index");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("lexical.json");
+        index.write_artifact(&path).expect("write artifact");
+        let reopened = LexicalIndex::open_search_artifact(&path).expect("open search artifact");
+        let requested = BTreeSet::from([
+            chunks[0].chunk_id.clone(),
+            ChunkId::try_from("missing").expect("chunk id"),
+        ]);
+
+        assert_eq!(
+            reopened
+                .chunks_by_id(&requested)
+                .expect("requested chunks")
+                .into_values()
+                .collect::<Vec<_>>(),
+            vec![chunks[0].clone()]
+        );
+    }
+
+    #[test]
+    fn persisted_index_reads_only_requested_document() {
+        let chunks = [
+            chunk("alpha", "first body", "first"),
+            chunk("beta", "second body", "second"),
+        ];
+        let index = LexicalIndex::build(&chunks).expect("index");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("lexical.json");
+        index.write_artifact(&path).expect("write artifact");
+        let reopened = LexicalIndex::open_search_artifact(&path).expect("open search artifact");
+
+        assert_eq!(
+            reopened
+                .chunks_by_document_id(&chunks[0].document_id)
+                .expect("document chunks"),
+            vec![chunks[0].clone()]
         );
     }
 

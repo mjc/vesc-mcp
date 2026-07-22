@@ -37,7 +37,7 @@
     {
       "stage": "graph_and_history",
       "tickets": ["VESCM-179", "VESCM-191"],
-      "decision": "Use deterministic verifier-backed CodeGraphRAG relationships and immutable tagged-history occurrence/change evidence.",
+      "decision": "Use deterministic verifier-backed CodeGraphRAG relationships and immutable Git revision evidence.",
       "evidence": "docs/codegraphrag-design.md"
     },
     {

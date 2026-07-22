@@ -83,7 +83,6 @@ pub fn asset_missing(root: &Path, relative: &Path) -> bool {
 }
 
 /// Three-repository managed knowledge fixture with release and tag refs.
-#[cfg(feature = "managed-git")]
 pub struct VersionedKnowledgeFixture {
     _temp: tempfile::TempDir,
     knowledge: crate::config::KnowledgeConfig,
@@ -91,7 +90,6 @@ pub struct VersionedKnowledgeFixture {
     tagged_commit: String,
 }
 
-#[cfg(feature = "managed-git")]
 impl VersionedKnowledgeFixture {
     /// Build and synchronize a local three-repository fixture.
     pub async fn new() -> Self {
@@ -168,7 +166,6 @@ impl VersionedKnowledgeFixture {
     }
 }
 
-#[cfg(feature = "managed-git")]
 fn versioned_git(cwd: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .args(args)
@@ -187,7 +184,6 @@ fn versioned_git(cwd: &Path, args: &[&str]) -> String {
         .to_owned()
 }
 
-#[cfg(feature = "managed-git")]
 fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
     let work = root.join("work");
     let remote = root.join("remote.git");
@@ -236,7 +232,6 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
     (remote, old, tagged)
 }
 
-#[cfg(feature = "managed-git")]
 fn versioned_repository_toml(id: &str) -> String {
     format!(
         r#"
@@ -308,7 +303,6 @@ impl McpTestHarness {
     }
 
     /// Seed one configured managed repository from a test fixture remote.
-    #[cfg(feature = "managed-git")]
     pub async fn sync_managed_source(&self, id: &str, remote: &str) {
         let repository = self
             .knowledge
@@ -398,7 +392,6 @@ impl McpTestHarness {
         Some(response)
     }
 
-    #[cfg(feature = "managed-git")]
     fn call_source_version_tool(&self, name: &str, arguments: serde_json::Value) -> Option<String> {
         use crate::tools::list_source_versions::{
             ListVescSourceVersionsParams, list_vesc_source_versions_json,
@@ -411,7 +404,6 @@ impl McpTestHarness {
         })
     }
 
-    #[cfg(feature = "managed-git")]
     /// Call a tool that may perform asynchronous snapshot preparation.
     pub async fn call_tool_async(&self, name: &str, arguments: serde_json::Value) -> String {
         if name == "prepare_vesc_knowledge" {
@@ -479,7 +471,6 @@ impl McpTestHarness {
         if let Some(response) = self.call_feedback_tool(name, arguments.clone()) {
             return response;
         }
-        #[cfg(feature = "managed-git")]
         if let Some(response) = self.call_source_version_tool(name, arguments.clone()) {
             return response;
         }

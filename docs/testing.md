@@ -71,12 +71,12 @@ handlers as a live server.
 ```bash
 cargo nextest run -p vesc-mcp-core -E 'test(tool_)'
 cargo nextest run -p vesc-domain -p vesc-mcp-core -E 'test(golden) | test(build_native_lib)'
-cargo nextest run -p vesc-knowledge-index --features git-corpus -E 'binary(git_ingestion)'
+cargo nextest run -p vesc-knowledge-index -E 'binary(git_ingestion)'
 cargo check -p vesc-knowledge-index
 cargo check -p vesc-knowledge-index --features semantic-fastembed
 ```
 
-The `git-corpus` tests create local repositories and require no network. The
+The Git ingestion tests create local repositories and require no network. The
 semantic feature check compiles the local adapter but does not download a
 model.
 
@@ -141,7 +141,7 @@ repository path arguments:
 
 ```bash
 nix develop -c cargo run --release -p vesc-knowledge-index \
-  --features git-corpus --bin gen-knowledge-index -- \
+  --bin gen-knowledge-index -- \
   build-default --no-semantic \
   --repository-cache target/release-repositories
 ```

@@ -1,5 +1,6 @@
 //! Deterministic fusion of lexical and semantic retrieval candidates.
 
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -161,10 +162,10 @@ fn append_bounded_piece(output: &mut String, piece: &str, max_bytes: usize) -> b
 /// signals once, exact identifier hits are protected ahead of ordinary hits,
 /// and identical content digests are emitted only once.
 #[must_use]
-pub fn fuse_candidates(
+pub fn fuse_candidates<C: Borrow<Chunk>>(
     lexical: &[LexicalHit],
     semantic: &[SemanticHit],
-    chunks: &BTreeMap<ChunkId, Chunk>,
+    chunks: &BTreeMap<ChunkId, C>,
     config: FusionConfig,
 ) -> Vec<FusedHit> {
     let k = f64::from(config.rrf_k);
@@ -184,6 +185,7 @@ pub fn fuse_candidates(
         let Some(chunk) = chunks.get(&hit.chunk_id) else {
             continue;
         };
+        let chunk = chunk.borrow();
         let entry = candidates
             .entry(hit.chunk_id.clone())
             .or_insert_with(|| Candidate::new(chunk.clone()));

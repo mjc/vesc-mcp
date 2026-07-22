@@ -2,8 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-
 use super::chunking::{ChunkingConfig, chunk_document};
 use super::git::{
     CachedGitBlob, Candidate, GitCorpusPolicy, GitCorpusSource, GitIngestionError,
@@ -13,159 +11,10 @@ use super::git::{
 use super::{Chunk, ContentDigest, RepositoryId, Revision, SourceKind};
 use crate::semantic::embedding_text;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHistoryTip {
     pub repository: RepositoryId,
     pub revision: Revision,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GitHistoryCommit {
-    pub repository: RepositoryId,
-    pub revision: Revision,
-    pub parents: Vec<Revision>,
-    pub commit_time: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GitHistoryRef {
-    pub repository: RepositoryId,
-    pub name: String,
-    pub revision: Revision,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitHistoryChangeKind {
-    Added,
-    Modified,
-    Deleted,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GitHistoryOccurrence {
-    pub repository: RepositoryId,
-    pub revision: Revision,
-    pub path: String,
-    pub kind: GitHistoryChangeKind,
-    pub content_keys: Vec<ContentDigest>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GitHistoryContent {
-    pub key: ContentDigest,
-    pub embedding_key: ContentDigest,
-    pub chunk: Chunk,
-}
-
-/// One logical, deterministic history set spanning every configured repository.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitHistory {
-    pub tips: Vec<GitHistoryTip>,
-    pub commits: Vec<GitHistoryCommit>,
-    pub refs: Vec<GitHistoryRef>,
-    pub contents: Vec<GitHistoryContent>,
-    pub occurrences: Vec<GitHistoryOccurrence>,
-}
-
-impl GitHistory {
-    /// Checks referential integrity and content-addressed identities.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitHistoryError::Invalid`] for a corrupt or inconsistent artifact.
-    pub fn validate(&self) -> Result<(), GitHistoryError> {
-        let commits = self
-            .commits
-            .iter()
-            .map(|commit| (commit.repository.clone(), commit.revision.clone()))
-            .collect::<BTreeSet<_>>();
-        if commits.len() != self.commits.len() {
-            return Err(GitHistoryError::Invalid("duplicate commit identity".into()));
-        }
-        if self.commits.iter().any(|commit| {
-            commit
-                .parents
-                .iter()
-                .any(|parent| !commits.contains(&(commit.repository.clone(), parent.clone())))
-        }) {
-            return Err(GitHistoryError::Invalid(
-                "commit names an unreachable parent".into(),
-            ));
-        }
-        if self
-            .tips
-            .iter()
-            .any(|tip| !commits.contains(&(tip.repository.clone(), tip.revision.clone())))
-        {
-            return Err(GitHistoryError::Invalid(
-                "tip does not name a reachable commit".into(),
-            ));
-        }
-        if self.refs.iter().any(|reference| {
-            !commits.contains(&(reference.repository.clone(), reference.revision.clone()))
-        }) {
-            return Err(GitHistoryError::Invalid(
-                "ref does not name a reachable commit".into(),
-            ));
-        }
-        let contents = self
-            .contents
-            .iter()
-            .map(|content| (content.key.clone(), content))
-            .collect::<BTreeMap<_, _>>();
-        if contents.len() != self.contents.len() {
-            return Err(GitHistoryError::Invalid(
-                "duplicate content identity".into(),
-            ));
-        }
-        let mut referenced = BTreeSet::new();
-        for occurrence in &self.occurrences {
-            if !commits.contains(&(occurrence.repository.clone(), occurrence.revision.clone())) {
-                return Err(GitHistoryError::Invalid(
-                    "occurrence does not name a reachable commit".into(),
-                ));
-            }
-            for key in &occurrence.content_keys {
-                let Some(content) = contents.get(key) else {
-                    return Err(GitHistoryError::Invalid(
-                        "occurrence names missing content".into(),
-                    ));
-                };
-                if content.embedding_key
-                    != ContentDigest::of(embedding_text(&content.chunk).as_bytes())
-                    || content.key
-                        != occurrence_content_key(
-                            &occurrence.repository,
-                            &occurrence.path,
-                            &content.embedding_key,
-                        )
-                {
-                    return Err(GitHistoryError::Invalid(
-                        "content-addressed identity mismatch".into(),
-                    ));
-                }
-                referenced.insert(key.clone());
-            }
-        }
-        if referenced.len() != contents.len() {
-            return Err(GitHistoryError::Invalid("unreferenced content".into()));
-        }
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn chunks(&self) -> Vec<Chunk> {
-        self.contents
-            .iter()
-            .map(|content| content.chunk.clone())
-            .collect()
-    }
 }
 
 /// Work performed by one refresh. These counters do not affect artifact identity.
@@ -194,205 +43,14 @@ pub enum GitHistoryError {
 
 #[derive(Debug)]
 struct ReachableCommit {
-    revision: Revision,
-    parents: Vec<Revision>,
-    commit_time: i64,
+    id: gix::ObjectId,
+    first_parent: Option<gix::ObjectId>,
 }
 
 #[derive(Debug)]
-enum PendingChange {
-    Upsert {
-        path: String,
-        id: gix::ObjectId,
-        kind: GitHistoryChangeKind,
-    },
-    Delete {
-        path: String,
-    },
-}
-
-struct HistoryAccumulator {
-    commits: BTreeMap<(RepositoryId, Revision), GitHistoryCommit>,
-    contents: BTreeMap<ContentDigest, GitHistoryContent>,
-    occurrences: Vec<GitHistoryOccurrence>,
-    tips: Vec<GitHistoryTip>,
-    refs: Vec<GitHistoryRef>,
-    reachable_keys: BTreeSet<(RepositoryId, Revision)>,
-    observations: GitHistoryRefreshObservations,
-}
-
-impl HistoryAccumulator {
-    fn new(previous: Option<GitHistory>, source_count: usize) -> Self {
-        let (commits, contents, occurrences) = previous.map_or_else(
-            || (BTreeMap::new(), BTreeMap::new(), Vec::new()),
-            |history| {
-                (
-                    history
-                        .commits
-                        .into_iter()
-                        .map(|commit| {
-                            ((commit.repository.clone(), commit.revision.clone()), commit)
-                        })
-                        .collect(),
-                    history
-                        .contents
-                        .into_iter()
-                        .map(|content| (content.key.clone(), content))
-                        .collect(),
-                    history.occurrences,
-                )
-            },
-        );
-        Self {
-            commits,
-            contents,
-            occurrences,
-            tips: Vec::with_capacity(source_count),
-            refs: Vec::new(),
-            reachable_keys: BTreeSet::new(),
-            observations: GitHistoryRefreshObservations::default(),
-        }
-    }
-
-    fn ingest_source(&mut self, source: &GitCorpusSource) -> Result<(), GitHistoryError> {
-        validate_policy(&source.policy)?;
-        let repo = gix::open(&source.repository_path)
-            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        let tip_id = gix::ObjectId::from_hex(source.revision.as_str().as_bytes())
-            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        let reachable = reachable_commits(&repo, tip_id)?;
-        self.observations.reachable_commits = self
-            .observations
-            .reachable_commits
-            .saturating_add(reachable.len());
-        let reachable_revisions = reachable
-            .iter()
-            .map(|commit| commit.revision.clone())
-            .collect::<BTreeSet<_>>();
-        self.reachable_keys.extend(
-            reachable_revisions
-                .iter()
-                .cloned()
-                .map(|revision| (source.repository_id.clone(), revision)),
-        );
-        self.tips.push(GitHistoryTip {
-            repository: source.repository_id.clone(),
-            revision: source.revision.clone(),
-        });
-        self.refs.extend(reachable_refs(
-            &repo,
-            &source.repository_id,
-            &reachable_revisions,
-        )?);
-
-        for commit in reachable {
-            let key = (source.repository_id.clone(), commit.revision.clone());
-            if self.commits.contains_key(&key) {
-                self.observations.reused_commits =
-                    self.observations.reused_commits.saturating_add(1);
-                continue;
-            }
-            ingest_commit_changes(
-                &repo,
-                source,
-                &commit,
-                &reachable_revisions,
-                &mut self.contents,
-                &mut self.occurrences,
-                &mut self.observations,
-            )?;
-            self.commits.insert(
-                key,
-                GitHistoryCommit {
-                    repository: source.repository_id.clone(),
-                    revision: commit.revision,
-                    parents: commit.parents,
-                    commit_time: commit.commit_time,
-                },
-            );
-            self.observations.ingested_commits =
-                self.observations.ingested_commits.saturating_add(1);
-        }
-        Ok(())
-    }
-
-    fn finish(mut self) -> (GitHistory, GitHistoryRefreshObservations) {
-        self.commits
-            .retain(|key, _| self.reachable_keys.contains(key));
-        self.occurrences.retain(|occurrence| {
-            self.reachable_keys
-                .contains(&(occurrence.repository.clone(), occurrence.revision.clone()))
-        });
-        self.occurrences.sort_by(|left, right| {
-            left.repository
-                .cmp(&right.repository)
-                .then_with(|| left.revision.cmp(&right.revision))
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        self.occurrences.dedup();
-        let referenced = self
-            .occurrences
-            .iter()
-            .flat_map(|occurrence| occurrence.content_keys.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        self.contents.retain(|key, _| referenced.contains(key));
-        self.tips
-            .sort_by(|left, right| left.repository.cmp(&right.repository));
-        self.refs.sort_by(|left, right| {
-            left.repository
-                .cmp(&right.repository)
-                .then_with(|| left.name.cmp(&right.name))
-                .then_with(|| left.revision.cmp(&right.revision))
-        });
-        self.refs.dedup();
-        (
-            GitHistory {
-                tips: self.tips,
-                commits: self.commits.into_values().collect(),
-                refs: self.refs,
-                contents: self.contents.into_values().collect(),
-                occurrences: self.occurrences,
-            },
-            self.observations,
-        )
-    }
-}
-
-/// Refresh a deterministic combined history, processing only newly reachable commits.
-///
-/// The commit graph is walked to establish the authoritative reachable set, but
-/// blobs and chunks from commits present in `previous` are reused verbatim.
-///
-/// # Errors
-///
-/// Returns [`GitHistoryError`] for invalid policies, missing Git objects,
-/// tree-diff failures, invalid source content, or chunking failures.
-pub fn ingest_git_history(
-    sources: &[GitCorpusSource],
-    previous: Option<&GitHistory>,
-) -> Result<(GitHistory, GitHistoryRefreshObservations), GitHistoryError> {
-    ingest_git_history_owned(sources, previous.cloned())
-}
-
-pub(crate) fn ingest_git_history_owned(
-    sources: &[GitCorpusSource],
-    previous: Option<GitHistory>,
-) -> Result<(GitHistory, GitHistoryRefreshObservations), GitHistoryError> {
-    let mut ordered_sources = sources.iter().collect::<Vec<_>>();
-    ordered_sources.sort_by(|left, right| left.repository_id.cmp(&right.repository_id));
-    if ordered_sources
-        .windows(2)
-        .any(|pair| pair[0].repository_id == pair[1].repository_id)
-    {
-        return Err(GitHistoryError::Invalid(
-            "repository identities must be unique".into(),
-        ));
-    }
-    let mut accumulator = HistoryAccumulator::new(previous, ordered_sources.len());
-    for source in ordered_sources {
-        accumulator.ingest_source(source)?;
-    }
-    Ok(accumulator.finish())
+struct PendingChange {
+    path: String,
+    id: gix::ObjectId,
 }
 
 /// Reuse cached Git chunks when every configured tip is a fast-forward.
@@ -408,7 +66,7 @@ pub fn ingest_git_history_fast_forward(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     cached_chunks: &[Chunk],
-) -> Result<Option<(Vec<GitHistoryContent>, GitHistoryRefreshObservations)>, GitHistoryError> {
+) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     ingest_git_history_fast_forward_from_chunks(
         sources,
         previous_tips,
@@ -420,7 +78,7 @@ pub(crate) fn ingest_git_history_fast_forward_owned(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     cached_chunks: Vec<Chunk>,
-) -> Result<Option<(Vec<GitHistoryContent>, GitHistoryRefreshObservations)>, GitHistoryError> {
+) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     ingest_git_history_fast_forward_from_chunks(sources, previous_tips, cached_chunks)
 }
 
@@ -428,74 +86,80 @@ fn ingest_git_history_fast_forward_from_chunks(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     cached_chunks: impl IntoIterator<Item = Chunk>,
-) -> Result<Option<(Vec<GitHistoryContent>, GitHistoryRefreshObservations)>, GitHistoryError> {
+) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     let tips = previous_tips
         .iter()
         .map(|tip| (tip.repository.clone(), tip.revision.clone()))
         .collect::<BTreeMap<_, _>>();
-    if tips.len() != sources.len() {
-        return Ok(None);
-    }
     let repositories = sources
         .iter()
         .map(|source| source.repository_id.clone())
         .collect::<BTreeSet<_>>();
-    if repositories.len() != sources.len() || repositories != tips.keys().cloned().collect() {
+    if repositories.len() != sources.len() {
         return Ok(None);
     }
 
     let mut contents = cached_chunks
         .into_iter()
         .filter(|chunk| {
-            chunk.source_kind == SourceKind::GitBlob && repositories.contains(&chunk.repository)
+            chunk.source_kind == SourceKind::GitBlob
+                && repositories.contains(&chunk.repository)
+                && tips.contains_key(&chunk.repository)
         })
         .map(|chunk| {
             let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());
-            let key = occurrence_content_key(&chunk.repository, &chunk.path, &embedding_key);
             (
-                key.clone(),
-                GitHistoryContent {
-                    key,
-                    embedding_key,
-                    chunk,
-                },
+                history_content_key(&chunk.repository, &chunk.path, &embedding_key),
+                chunk,
             )
         })
         .collect::<BTreeMap<_, _>>();
     let mut observations = GitHistoryRefreshObservations::default();
-    for source in sources {
+    let mut ordered_sources = sources.iter().collect::<Vec<_>>();
+    ordered_sources.sort_by(|left, right| {
+        tips.contains_key(&right.repository_id)
+            .cmp(&tips.contains_key(&left.repository_id))
+            .then_with(|| left.repository_id.cmp(&right.repository_id))
+    });
+    let mut processed = Vec::<(&GitCorpusSource, BTreeSet<gix::ObjectId>)>::new();
+    for source in ordered_sources {
         validate_policy(&source.policy)?;
         let repo = gix::open(&source.repository_path)
             .map_err(|error| GitHistoryError::Git(error.to_string()))?;
         let current_id = gix::ObjectId::from_hex(source.revision.as_str().as_bytes())
             .map_err(|error| GitHistoryError::Git(error.to_string()))?;
         let current = reachable_commits(&repo, current_id)?;
-        let previous_revision = tips
-            .get(&source.repository_id)
-            .expect("repository set checked above");
-        if !current
-            .iter()
-            .any(|commit| &commit.revision == previous_revision)
-        {
-            return Ok(None);
-        }
-        let previous_id = gix::ObjectId::from_hex(previous_revision.as_str().as_bytes())
-            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        let previous = reachable_commits(&repo, previous_id)?
-            .into_iter()
-            .map(|commit| commit.revision)
-            .collect::<BTreeSet<_>>();
         let reachable_revisions = current
             .iter()
-            .map(|commit| commit.revision.clone())
+            .map(|commit| commit.id)
             .collect::<BTreeSet<_>>();
+        let mut previous = if let Some(previous_revision) = tips.get(&source.repository_id) {
+            let previous_id = gix::ObjectId::from_hex(previous_revision.as_str().as_bytes())
+                .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+            if !reachable_revisions.contains(&previous_id) {
+                return Ok(None);
+            }
+            reachable_commits(&repo, previous_id)?
+                .into_iter()
+                .map(|commit| commit.id)
+                .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
+        previous.extend(
+            processed
+                .iter()
+                .filter(|(known, _)| same_corpus_contract(source, known))
+                .flat_map(|(_, revisions)| revisions)
+                .filter(|revision| reachable_revisions.contains(*revision))
+                .copied(),
+        );
         observations.reachable_commits =
             observations.reachable_commits.saturating_add(current.len());
         observations.reused_commits = observations.reused_commits.saturating_add(previous.len());
-        let mut occurrences = Vec::new();
         for commit in current
             .iter()
-            .filter(|commit| !previous.contains(&commit.revision))
+            .filter(|commit| !previous.contains(&commit.id))
         {
             ingest_commit_changes(
                 &repo,
@@ -503,13 +167,19 @@ fn ingest_git_history_fast_forward_from_chunks(
                 commit,
                 &reachable_revisions,
                 &mut contents,
-                &mut occurrences,
                 &mut observations,
             )?;
             observations.ingested_commits = observations.ingested_commits.saturating_add(1);
         }
+        processed.push((source, reachable_revisions));
     }
     Ok(Some((contents.into_values().collect(), observations)))
+}
+
+fn same_corpus_contract(left: &GitCorpusSource, right: &GitCorpusSource) -> bool {
+    left.trust_tier == right.trust_tier
+        && left.license == right.license
+        && left.policy == right.policy
 }
 
 fn reachable_commits(
@@ -526,21 +196,10 @@ fn reachable_commits(
             let commit = info
                 .object()
                 .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-            let revision = Revision::try_from(info.id.to_string())
-                .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-            let parents = commit
-                .parent_ids()
-                .map(|parent| Revision::try_from(parent.to_string()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-            let commit_time = commit
-                .time()
-                .map_err(|error| GitHistoryError::Git(error.to_string()))?
-                .seconds;
+            let first_parent = commit.parent_ids().next().map(gix::Id::detach);
             Ok(ReachableCommit {
-                revision,
-                parents,
-                commit_time,
+                id: info.id,
+                first_parent,
             })
         })
         .collect::<Result<Vec<_>, GitHistoryError>>()?;
@@ -548,60 +207,25 @@ fn reachable_commits(
     Ok(commits)
 }
 
-fn reachable_refs(
-    repo: &gix::Repository,
-    repository: &RepositoryId,
-    reachable: &BTreeSet<Revision>,
-) -> Result<Vec<GitHistoryRef>, GitHistoryError> {
-    let references = repo
-        .references()
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let refs = references
-        .all()
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let mut output = Vec::new();
-    for reference in refs {
-        let mut reference = reference.map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        let Ok(commit) = reference.peel_to_commit() else {
-            continue;
-        };
-        let revision = Revision::try_from(commit.id.to_string())
-            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        if reachable.contains(&revision) {
-            output.push(GitHistoryRef {
-                repository: repository.clone(),
-                name: reference.name().as_bstr().to_string(),
-                revision,
-            });
-        }
-    }
-    Ok(output)
-}
-
 fn ingest_commit_changes(
     repo: &gix::Repository,
     source: &GitCorpusSource,
     commit: &ReachableCommit,
-    reachable_revisions: &BTreeSet<Revision>,
-    contents: &mut BTreeMap<ContentDigest, GitHistoryContent>,
-    occurrences: &mut Vec<GitHistoryOccurrence>,
+    reachable_revisions: &BTreeSet<gix::ObjectId>,
+    contents: &mut BTreeMap<ContentDigest, Chunk>,
     observations: &mut GitHistoryRefreshObservations,
 ) -> Result<(), GitHistoryError> {
-    let commit_id = gix::ObjectId::from_hex(commit.revision.as_str().as_bytes())
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let current_commit = repo
-        .find_commit(commit_id)
+        .find_commit(commit.id)
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let current = current_commit
         .tree()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let previous = commit.parents.first().map_or_else(
+    let previous = commit.first_parent.map_or_else(
         || Ok(repo.empty_tree()),
         |parent| {
-            let id = gix::ObjectId::from_hex(parent.as_str().as_bytes())
-                .map_err(|error| GitHistoryError::Git(error.to_string()))?;
             let parent = repo
-                .find_commit(id)
+                .find_commit(parent)
                 .map_err(|error| GitHistoryError::Git(error.to_string()))?;
             parent
                 .tree()
@@ -623,33 +247,19 @@ fn ingest_commit_changes(
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     pending.sort_by(|left, right| pending_path(left).cmp(pending_path(right)));
 
-    for change in pending {
-        match change {
-            PendingChange::Delete { path } => occurrences.push(GitHistoryOccurrence {
-                repository: source.repository_id.clone(),
-                revision: commit.revision.clone(),
-                path,
-                kind: GitHistoryChangeKind::Deleted,
-                content_keys: Vec::new(),
-            }),
-            PendingChange::Upsert { path, id, kind } => {
-                let Some(occurrence) = ingest_upsert(
-                    repo,
-                    source,
-                    commit,
-                    reachable_revisions,
-                    path,
-                    id,
-                    kind,
-                    contents,
-                    observations,
-                )?
-                else {
-                    continue;
-                };
-                occurrences.push(occurrence);
-            }
-        }
+    let revision = Revision::try_from(commit.id.to_string())
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    for PendingChange { path, id } in pending {
+        ingest_upsert(
+            repo,
+            source,
+            &revision,
+            reachable_revisions,
+            &path,
+            id,
+            contents,
+            observations,
+        )?;
     }
     Ok(())
 }
@@ -658,38 +268,31 @@ fn ingest_commit_changes(
 fn ingest_upsert(
     repo: &gix::Repository,
     source: &GitCorpusSource,
-    commit: &ReachableCommit,
-    reachable_revisions: &BTreeSet<Revision>,
-    path: String,
+    revision: &Revision,
+    reachable_revisions: &BTreeSet<gix::ObjectId>,
+    path: &str,
     id: gix::ObjectId,
-    kind: GitHistoryChangeKind,
-    contents: &mut BTreeMap<ContentDigest, GitHistoryContent>,
+    contents: &mut BTreeMap<ContentDigest, Chunk>,
     observations: &mut GitHistoryRefreshObservations,
-) -> Result<Option<GitHistoryOccurrence>, GitHistoryError> {
+) -> Result<(), GitHistoryError> {
     let size = repo
         .find_header(id)
         .map_err(|error| GitHistoryError::Git(error.to_string()))?
         .size();
     let candidate = Candidate {
-        path: path.clone(),
+        path: path.to_string(),
         id,
         size,
     };
     let blob = load_git_blob(repo, &candidate, &mut observations.git)?;
     if matches!(blob, CachedGitBlob::Rejected { .. }) {
-        return Ok(Some(GitHistoryOccurrence {
-            repository: source.repository_id.clone(),
-            revision: commit.revision.clone(),
-            path,
-            kind,
-            content_keys: Vec::new(),
-        }));
+        return Ok(());
     }
     observations.ingested_blobs = observations.ingested_blobs.saturating_add(1);
     let document = document_from_git_blob(
-        &path,
+        path,
         &source.repository_id,
-        &commit.revision,
+        revision,
         source.trust_tier,
         &source.license,
         blob,
@@ -697,39 +300,27 @@ fn ingest_upsert(
     let mut chunks = chunk_document(&document, ChunkingConfig::default())
         .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
     for chunk in &mut chunks {
-        chunk.identifiers = identifiers(&path, &chunk.text);
+        chunk.identifiers = identifiers(path, &chunk.text);
     }
-    let mut content_keys = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());
-        let key = occurrence_content_key(&source.repository_id, &path, &embedding_key);
+        let key = history_content_key(&source.repository_id, path, &embedding_key);
         if let Some(existing) = contents.get_mut(&key) {
             observations.reused_contents = observations.reused_contents.saturating_add(1);
-            if !reachable_revisions.contains(&existing.chunk.revision) {
-                existing.chunk = chunk;
+            let existing_is_reachable =
+                gix::ObjectId::from_hex(existing.revision.as_str().as_bytes())
+                    .is_ok_and(|id| reachable_revisions.contains(&id));
+            if !existing_is_reachable {
+                *existing = chunk;
             }
         } else {
-            contents.insert(
-                key.clone(),
-                GitHistoryContent {
-                    key: key.clone(),
-                    embedding_key,
-                    chunk,
-                },
-            );
+            contents.insert(key, chunk);
         }
-        content_keys.push(key);
     }
-    Ok(Some(GitHistoryOccurrence {
-        repository: source.repository_id.clone(),
-        revision: commit.revision.clone(),
-        path,
-        kind,
-        content_keys,
-    }))
+    Ok(())
 }
 
-fn occurrence_content_key(
+fn history_content_key(
     repository: &RepositoryId,
     path: &str,
     embedding_key: &ContentDigest,
@@ -757,34 +348,16 @@ fn collect_change(
             entry_mode,
             id,
             ..
-        } if entry_mode.is_blob() => push_upsert(
-            location.to_string(),
-            id.detach(),
-            GitHistoryChangeKind::Added,
-            policy,
-            pending,
-        ),
+        } if entry_mode.is_blob() => {
+            push_upsert(location.to_string(), id.detach(), policy, pending);
+        }
         Change::Modification {
             location,
             entry_mode,
             id,
             ..
-        } if entry_mode.is_blob() => push_upsert(
-            location.to_string(),
-            id.detach(),
-            GitHistoryChangeKind::Modified,
-            policy,
-            pending,
-        ),
-        Change::Deletion {
-            location,
-            entry_mode,
-            ..
         } if entry_mode.is_blob() => {
-            let path = location.to_string();
-            if is_selected(&path, policy) {
-                pending.push(PendingChange::Delete { path });
-            }
+            push_upsert(location.to_string(), id.detach(), policy, pending);
         }
         _ => {}
     }
@@ -793,17 +366,14 @@ fn collect_change(
 fn push_upsert(
     path: String,
     id: gix::ObjectId,
-    kind: GitHistoryChangeKind,
     policy: &GitCorpusPolicy,
     pending: &mut Vec<PendingChange>,
 ) {
     if is_selected(&path, policy) {
-        pending.push(PendingChange::Upsert { path, id, kind });
+        pending.push(PendingChange { path, id });
     }
 }
 
 fn pending_path(change: &PendingChange) -> &str {
-    match change {
-        PendingChange::Upsert { path, .. } | PendingChange::Delete { path } => path,
-    }
+    &change.path
 }

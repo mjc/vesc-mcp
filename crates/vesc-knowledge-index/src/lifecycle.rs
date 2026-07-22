@@ -8,12 +8,10 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
-#[cfg(feature = "git-corpus")]
 use crate::corpus::full_history::{
-    GitHistory, GitHistoryError, GitHistoryRefreshObservations, GitHistoryTip,
-    ingest_git_history_fast_forward_owned, ingest_git_history_owned,
+    GitHistoryError, GitHistoryRefreshObservations, GitHistoryTip,
+    ingest_git_history_fast_forward_owned,
 };
-#[cfg(feature = "git-corpus")]
 use crate::corpus::git::{
     GitCorpusSource, GitIngestionError, GitIngestionObservations, ingest_git_commit,
 };
@@ -41,10 +39,8 @@ pub enum LifecycleError {
     Lexical(#[from] LexicalError),
     #[error("vector artifact failed: {0}")]
     Vector(#[from] EmbeddingError),
-    #[cfg(feature = "git-corpus")]
     #[error("Git corpus ingestion failed: {0}")]
     Git(#[from] GitIngestionError),
-    #[cfg(feature = "git-corpus")]
     #[error("Git history ingestion failed: {0}")]
     GitHistory(#[from] GitHistoryError),
 }
@@ -90,14 +86,12 @@ pub struct BuildObservations {
     pub vector_count: usize,
     pub vector_dimension: Option<usize>,
     pub artifact_bytes: u64,
-    pub corpus_bytes: u64,
     pub manifest_bytes: u64,
     pub active_manifest_bytes: u64,
     pub inventory_count: usize,
     pub rejection_count: usize,
     pub resolved_batch_size: Option<usize>,
     pub vector_build: Option<VectorBuildObservations>,
-    #[cfg(feature = "git-corpus")]
     #[serde(default)]
     pub git_ingestion: Option<GitIngestionObservations>,
 }
@@ -177,17 +171,7 @@ pub struct BuildSummary {
     pub manifest: ArtifactManifest,
 }
 
-/// Summary for a combined complete-history build.
-#[cfg(feature = "git-corpus")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitHistoryBuildSummary {
-    pub artifacts: BuildSummary,
-    pub history: GitHistory,
-    pub refresh: GitHistoryRefreshObservations,
-}
-
 /// Summary for a complete-history build seeded from a prior immutable snapshot.
-#[cfg(feature = "git-corpus")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncrementalGitHistoryBuildSummary {
     pub artifacts: BuildSummary,
@@ -230,6 +214,7 @@ pub fn build_embedded_artifacts_with_provider(
             provider,
             model_id,
             model_revision,
+            checkpoint_path: None,
         }),
     )
 }
@@ -238,6 +223,7 @@ struct SemanticBuild<'a> {
     provider: &'a mut dyn EmbeddingProvider,
     model_id: &'a str,
     model_revision: &'a str,
+    checkpoint_path: Option<&'a Path>,
 }
 
 fn build_artifacts(
@@ -349,6 +335,7 @@ pub fn build_allowlisted_artifacts_with_provider(
         provider,
         model_id,
         model_revision,
+        checkpoint_path: None,
     });
     stage_chunks(
         root,
@@ -368,7 +355,6 @@ pub fn build_allowlisted_artifacts_with_provider(
 /// # Errors
 ///
 /// Returns [`LifecycleError`] when Git ingestion, chunking, or artifact staging fails.
-#[cfg(feature = "git-corpus")]
 pub fn build_git_artifacts(
     root: &Path,
     sources: &[GitCorpusSource],
@@ -376,86 +362,11 @@ pub fn build_git_artifacts(
     build_git_artifacts_with_provider(root, sources, None)
 }
 
-/// Build one searchable artifact from every commit reachable in all sources.
-///
-/// `previous` enables commit/blob/chunk reuse. The resulting history and search
-/// artifacts are deterministic and independent of whether the build was cold
-/// or incremental.
-///
-/// # Errors
-///
-/// Returns [`LifecycleError`] when history ingestion, chunking, indexing,
-/// serialization, or staged activation fails.
-#[cfg(feature = "git-corpus")]
-pub fn build_git_history_artifacts(
-    root: &Path,
-    sources: &[GitCorpusSource],
-    previous: Option<GitHistory>,
-) -> Result<GitHistoryBuildSummary, LifecycleError> {
-    build_git_history_artifacts_with_provider(root, sources, previous, None)
-}
-
-/// Build one searchable full-history artifact with optional semantic vectors.
-///
-/// # Errors
-///
-/// Returns [`LifecycleError`] when history ingestion, chunking, embedding,
-/// serialization, or staged activation fails.
-#[cfg(feature = "git-corpus")]
-pub fn build_git_history_artifacts_with_provider(
-    root: &Path,
-    sources: &[GitCorpusSource],
-    previous: Option<GitHistory>,
-    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
-) -> Result<GitHistoryBuildSummary, LifecycleError> {
-    build_git_history_artifacts_reusing_vectors(root, sources, previous, semantic, None)
-}
-
-/// Build one searchable full-history artifact and reuse compatible semantic rows.
-///
-/// # Errors
-///
-/// Returns [`LifecycleError`] when history ingestion, chunking, embedding,
-/// serialization, or staged activation fails.
-#[cfg(feature = "git-corpus")]
-pub fn build_git_history_artifacts_reusing_vectors(
-    root: &Path,
-    sources: &[GitCorpusSource],
-    previous: Option<GitHistory>,
-    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
-    previous_vectors: Option<VectorArtifact>,
-) -> Result<GitHistoryBuildSummary, LifecycleError> {
-    let started = Instant::now();
-    let ingestion_started = Instant::now();
-    let (history, refresh) = ingest_git_history_owned(sources, previous)?;
-    let ingestion_us = elapsed_us(ingestion_started);
-    let history_chunks = history
-        .contents
-        .iter()
-        .map(|content| content.chunk.clone())
-        .collect();
-    let artifacts = stage_git_history_chunks(
-        root,
-        history_chunks,
-        &refresh,
-        semantic,
-        previous_vectors,
-        started,
-        ingestion_us,
-    )?;
-    Ok(GitHistoryBuildSummary {
-        artifacts,
-        history,
-        refresh,
-    })
-}
-
 /// Build complete Git history, reusing cached chunks for a verified fast-forward.
 ///
 /// # Errors
 ///
 /// Returns [`LifecycleError`] when Git inspection, chunking, embedding, or staging fails.
-#[cfg(feature = "git-corpus")]
 pub fn build_git_history_artifacts_incrementally(
     root: &Path,
     sources: &[GitCorpusSource],
@@ -463,6 +374,7 @@ pub fn build_git_history_artifacts_incrementally(
     previous_chunks: Option<Vec<crate::Chunk>>,
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
     previous_vectors: Option<VectorArtifact>,
+    vector_checkpoint_path: Option<&Path>,
 ) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
     let started = Instant::now();
     let ingestion_started = Instant::now();
@@ -471,21 +383,28 @@ pub fn build_git_history_artifacts_incrementally(
         .map_or(Ok(None), |(tips, chunks)| {
             ingest_git_history_fast_forward_owned(sources, &tips, chunks)
         })?;
-    let (contents, refresh, reused_snapshot) = if let Some((contents, refresh)) = incremental {
-        (contents, refresh, true)
+    let (history_chunks, refresh, reused_snapshot) = if let Some((chunks, refresh)) = incremental {
+        (chunks, refresh, true)
     } else {
-        let (history, refresh) = ingest_git_history_owned(sources, None)?;
-        (history.contents, refresh, false)
+        let (chunks, refresh) = ingest_git_history_fast_forward_owned(sources, &[], Vec::new())?
+            .ok_or_else(|| {
+                LifecycleError::Contract("cold Git history ingestion was rejected".into())
+            })?;
+        (chunks, refresh, false)
     };
-    let history_chunks = contents.into_iter().map(|content| content.chunk).collect();
+    let mut observations = BuildObservations::default();
+    observations.record_duration(BuildPhase::Ingestion, elapsed_us(ingestion_started));
+    observations.git_ingestion = Some(refresh.git.clone());
+    observations.accepted_files = u64::try_from(history_chunks.len()).unwrap_or(u64::MAX);
+    observations.visited_files = observations.accepted_files;
     let artifacts = stage_git_history_chunks(
         root,
         history_chunks,
-        &refresh,
         semantic,
         previous_vectors,
+        vector_checkpoint_path,
         started,
-        elapsed_us(ingestion_started),
+        observations,
     )?;
     Ok(IncrementalGitHistoryBuildSummary {
         artifacts,
@@ -494,28 +413,22 @@ pub fn build_git_history_artifacts_incrementally(
     })
 }
 
-#[cfg(feature = "git-corpus")]
 fn stage_git_history_chunks(
     root: &Path,
     history_chunks: Vec<crate::Chunk>,
-    refresh: &GitHistoryRefreshObservations,
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
     previous_vectors: Option<VectorArtifact>,
+    vector_checkpoint_path: Option<&Path>,
     started: Instant,
-    ingestion_us: u64,
+    observations: BuildObservations,
 ) -> Result<BuildSummary, LifecycleError> {
-    let history_chunk_count = history_chunks.len();
     let mut chunks = legacy_chunks()?;
     chunks.extend(history_chunks);
-    let mut observations = BuildObservations::default();
-    observations.record_duration(BuildPhase::Ingestion, ingestion_us);
-    observations.git_ingestion = Some(refresh.git.clone());
-    observations.accepted_files = u64::try_from(history_chunk_count).unwrap_or(u64::MAX);
-    observations.visited_files = observations.accepted_files;
     let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
         provider,
         model_id,
         model_revision,
+        checkpoint_path: vector_checkpoint_path,
     });
     stage_chunks(
         root,
@@ -535,7 +448,6 @@ fn stage_git_history_chunks(
 /// # Errors
 ///
 /// Returns [`LifecycleError`] when Git ingestion, chunking, embedding, or artifact staging fails.
-#[cfg(feature = "git-corpus")]
 pub fn build_git_artifacts_with_provider(
     root: &Path,
     sources: &[GitCorpusSource],
@@ -604,6 +516,7 @@ pub fn build_git_artifacts_with_provider(
         provider,
         model_id,
         model_revision,
+        checkpoint_path: None,
     });
     stage_chunks(
         root,
@@ -628,41 +541,8 @@ fn stage_chunks(
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
     started: Instant,
-    observations: BuildObservations,
-) -> Result<BuildSummary, LifecycleError> {
-    let chunk_refs = chunks.iter().collect::<Vec<_>>();
-    stage_chunk_refs(
-        root,
-        &chunk_refs,
-        semantic,
-        Some(chunks),
-        previous_vectors,
-        corpus_version,
-        diagnostics,
-        sources,
-        started,
-        observations,
-    )
-}
-
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn stage_chunk_refs(
-    root: &Path,
-    chunks: &[&crate::Chunk],
-    semantic: Option<SemanticBuild<'_>>,
-    semantic_chunks: Option<&[crate::Chunk]>,
-    previous_vectors: Option<VectorArtifact>,
-    corpus_version: &str,
-    diagnostics: Vec<SourceRejection>,
-    sources: Vec<SourceInventory>,
-    started: Instant,
     mut observations: BuildObservations,
 ) -> Result<BuildSummary, LifecycleError> {
-    observations.documents = chunks
-        .iter()
-        .map(|chunk| chunk.document_id.clone())
-        .collect::<BTreeSet<_>>()
-        .len();
     observations.chunks = chunks.len();
     observations.inventory_count = observations.inventory_count.max(sources.len());
     observations.rejection_count = observations.rejection_count.max(diagnostics.len());
@@ -676,7 +556,8 @@ fn stage_chunk_refs(
         .map(|chunk| chunk.document_id.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .collect();
+        .collect::<Vec<_>>();
+    observations.documents = documents.len();
     let chunk_ids = chunks
         .iter()
         .map(|chunk| chunk.chunk_id.clone())
@@ -694,26 +575,36 @@ fn stage_chunk_refs(
     observations.record(BuildPhase::Corpus, corpus_started);
 
     fs::create_dir_all(root)?;
-    let temp_root = unique_temp_root(root)?;
+    let staging = tempfile::Builder::new().prefix(".tmp-").tempdir_in(root)?;
+    let temp_root = staging.path();
     let generation_root = root.join("generations");
     fs::create_dir_all(&generation_root)?;
     let lexical_path = temp_root.join("lexical.json");
     let encoding_started = Instant::now();
     let (lexical_checksum, lexical_bytes) =
-        LexicalIndex::write_search_artifact_with_digest(chunks.iter().copied(), &lexical_path)?;
+        LexicalIndex::write_search_artifact_with_digest(chunks.iter(), &lexical_path)?;
     observations.record(BuildPhase::Encoding, encoding_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
-        let chunks = semantic_chunks.ok_or_else(|| {
-            LifecycleError::Contract("semantic build requires contiguous chunks".into())
-        })?;
-        let (vector, vector_build) = VectorArtifact::from_provider_reusing_owned_with_observations(
-            semantic.provider,
-            chunks,
-            semantic.model_id,
-            semantic.model_revision,
-            corpus.content_digest.clone(),
-            previous_vectors,
-        )?;
+        let (vector, vector_build) = if let Some(checkpoint_path) = semantic.checkpoint_path {
+            VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+                semantic.provider,
+                chunks,
+                semantic.model_id,
+                semantic.model_revision,
+                corpus.content_digest.clone(),
+                previous_vectors,
+                checkpoint_path,
+            )?
+        } else {
+            VectorArtifact::from_provider_reusing_owned_with_observations(
+                semantic.provider,
+                chunks,
+                semantic.model_id,
+                semantic.model_revision,
+                corpus.content_digest.clone(),
+                previous_vectors,
+            )?
+        };
         observations.embedding_input_bytes = vector_build.input_bytes;
         observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
         observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
@@ -748,34 +639,33 @@ fn stage_chunk_refs(
         .validate()
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
     let manifest_started = Instant::now();
-    let corpus_bytes = serde_json::to_vec(&manifest.corpus)?;
-    observations.corpus_bytes = u64::try_from(corpus_bytes.len()).unwrap_or(u64::MAX);
     let manifest_bytes = serde_json::to_vec(&manifest)?;
     observations.manifest_bytes = u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX);
     observations.active_manifest_bytes = observations.manifest_bytes;
-    let corpus_byte_count = u64::try_from(corpus_bytes.len()).unwrap_or(u64::MAX);
     let manifest_byte_count = u64::try_from(manifest_bytes.len()).unwrap_or(u64::MAX);
-    fs::write(temp_root.join("corpus.json"), &corpus_bytes)?;
     fs::write(temp_root.join("manifest.json"), &manifest_bytes)?;
     observations.record(BuildPhase::Manifest, manifest_started);
     let validation_started = Instant::now();
     validate_written_generation(
-        &temp_root,
+        temp_root,
         &manifest,
         lexical_bytes,
         vector_bytes,
-        corpus_byte_count,
         manifest_byte_count,
     )?;
     observations.record(BuildPhase::Validation, validation_started);
 
-    let generation = manifest.corpus.content_digest.to_string();
+    let generation = ContentDigest::of(&manifest_bytes).to_string();
     let final_root = generation_root.join(&generation);
     if final_root.exists() {
-        validate_generation(&final_root, &manifest)?;
-        fs::remove_dir_all(&temp_root)?;
+        if let Err(error) = validate_generation(&final_root, &manifest) {
+            if !repair_vector_file(temp_root, &final_root, &manifest)? {
+                return Err(error);
+            }
+            validate_generation(&final_root, &manifest)?;
+        }
     } else {
-        fs::rename(&temp_root, &final_root)?;
+        fs::rename(temp_root, &final_root)?;
     }
     let activation_started = Instant::now();
     let active_pointer = ActiveManifestPointer::new(&generation, &manifest_bytes)?;
@@ -803,7 +693,7 @@ fn stage_chunk_refs(
 /// Version inputs which affect persisted artifact compatibility and identity.
 #[must_use]
 pub fn artifact_component_versions() -> BTreeMap<String, String> {
-    let versions = BTreeMap::from([
+    let mut versions = BTreeMap::from([
         (
             "vesc-knowledge-index".into(),
             env!("CARGO_PKG_VERSION").into(),
@@ -816,38 +706,15 @@ pub fn artifact_component_versions() -> BTreeMap<String, String> {
         ("markdown-parser".into(), "pulldown-cmark-0.13".into()),
         ("vector-format".into(), "dense-cosine-v2".into()),
     ]);
-    #[cfg(feature = "git-corpus")]
-    {
-        let mut versions = versions;
-        versions.insert(
-            "git-corpus-policy".into(),
-            crate::corpus::git::GIT_CORPUS_POLICY_VERSION.into(),
-        );
-        versions
-    }
-    #[cfg(not(feature = "git-corpus"))]
-    {
-        versions
-    }
+    versions.insert(
+        "git-policy".into(),
+        crate::corpus::git::GIT_CORPUS_POLICY_VERSION.into(),
+    );
+    versions
 }
 
 fn elapsed_us(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
-}
-
-fn unique_temp_root(root: &Path) -> Result<PathBuf, std::io::Error> {
-    for suffix in 0..100_u32 {
-        let candidate = root.join(format!(".tmp-{}-{suffix}", std::process::id()));
-        match fs::create_dir(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => return Err(error),
-            _ => {}
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "could not allocate a unique artifact staging directory",
-    ))
 }
 
 fn validate_generation(root: &Path, expected: &ArtifactManifest) -> Result<(), LifecycleError> {
@@ -866,19 +733,41 @@ fn validate_generation(root: &Path, expected: &ArtifactManifest) -> Result<(), L
                 "lexical artifact checksum mismatch".into(),
             ));
         }
-        LexicalIndex::open_artifact(&lexical_path)?;
+        LexicalIndex::open_search_artifact(&lexical_path)?;
     }
     if let Some(checksum) = &manifest.vector_checksum {
         let vector_path = root.join("vectors.bin");
-        let vector_bytes = fs::read(&vector_path)?;
-        if ContentDigest::of(&vector_bytes) != *checksum {
+        let (_, actual_checksum) = VectorArtifact::open_artifact_with_digest(&vector_path)?;
+        if actual_checksum != *checksum {
             return Err(LifecycleError::Contract(
                 "vector artifact checksum mismatch".into(),
             ));
         }
-        VectorArtifact::decode(&vector_bytes)?;
     }
     Ok(())
+}
+
+fn repair_vector_file(
+    staged: &Path,
+    existing: &Path,
+    expected: &ArtifactManifest,
+) -> Result<bool, LifecycleError> {
+    if expected.vector_checksum.is_none() {
+        return Ok(false);
+    }
+    let manifest: ArtifactManifest =
+        serde_json::from_slice(&fs::read(existing.join("manifest.json"))?)?;
+    if manifest != *expected {
+        return Ok(false);
+    }
+    let lexical_path = existing.join("lexical.json");
+    let lexical_bytes = fs::read(&lexical_path)?;
+    if manifest.lexical_checksum.as_ref() != Some(&ContentDigest::of(&lexical_bytes)) {
+        return Ok(false);
+    }
+    LexicalIndex::open_search_artifact(&lexical_path)?;
+    fs::rename(staged.join("vectors.bin"), existing.join("vectors.bin"))?;
+    Ok(true)
 }
 
 fn validate_written_generation(
@@ -886,14 +775,12 @@ fn validate_written_generation(
     expected: &ArtifactManifest,
     lexical_bytes: u64,
     vector_bytes: Option<u64>,
-    corpus_bytes: u64,
     manifest_bytes: u64,
 ) -> Result<(), LifecycleError> {
     expected
         .validate()
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
     let mut expected_files = vec![
-        ("corpus.json", corpus_bytes),
         ("manifest.json", manifest_bytes),
         ("lexical.json", lexical_bytes),
     ];
@@ -940,11 +827,6 @@ pub fn inspect_manifest(path: &Path) -> Result<ArtifactManifest, LifecycleError>
                 ));
             }
             let manifest: ArtifactManifest = serde_json::from_slice(&generation_bytes)?;
-            if manifest.corpus.content_digest != pointer.generation {
-                return Err(LifecycleError::Contract(
-                    "active manifest generation mismatch".into(),
-                ));
-            }
             manifest
         }
     };
@@ -963,6 +845,26 @@ pub fn active_manifest_path(root: &Path) -> PathBuf {
     root.join("active.json")
 }
 
+/// Resolve the immutable generation selected by an artifact root.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when the active selector is missing or malformed.
+pub fn active_generation_path(root: &Path) -> Result<PathBuf, LifecycleError> {
+    let bytes = fs::read(active_manifest_path(root))?;
+    if let Ok(manifest) = serde_json::from_slice::<ArtifactManifest>(&bytes) {
+        manifest
+            .validate()
+            .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+        return Ok(root
+            .join("generations")
+            .join(manifest.corpus.content_digest.to_string()));
+    }
+    let pointer: ActiveManifestPointer = serde_json::from_slice(&bytes)?;
+    pointer.validate()?;
+    Ok(root.join("generations").join(pointer.generation.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -976,10 +878,17 @@ mod tests {
         assert!(summary.document_count > 0);
         assert!(summary.chunk_count > 0);
         assert!(summary.build_duration_us > 0);
+        assert!(
+            !temp
+                .path()
+                .join("generations")
+                .join(&summary.generation)
+                .join("corpus.json")
+                .exists()
+        );
         assert!(summary.observations.manifest_bytes > 0);
         assert!(summary.observations.active_manifest_bytes > 0);
         assert!(summary.observations.active_manifest_bytes < summary.observations.manifest_bytes);
-        assert!(summary.observations.corpus_bytes > 0);
         assert_eq!(
             summary.observations.provenance_bytes(),
             summary.observations.manifest_bytes + summary.observations.active_manifest_bytes
@@ -1093,6 +1002,108 @@ mod tests {
         assert!(build_embedded_artifacts(temp.path()).is_err());
         let active = inspect_manifest(&active_manifest_path(temp.path())).expect("active");
         assert_eq!(active, first.manifest);
+    }
+
+    #[test]
+    fn adding_vectors_activates_a_new_generation() {
+        let temp = tempfile::tempdir().expect("artifact root");
+        let lexical = build_embedded_artifacts(temp.path()).expect("lexical build");
+        let mut provider = crate::FakeEmbeddingProvider::new(4);
+
+        let semantic = build_embedded_artifacts_with_provider(
+            temp.path(),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("semantic upgrade");
+
+        assert_ne!(semantic.generation, lexical.generation);
+        assert!(
+            temp.path()
+                .join("generations")
+                .join(&lexical.generation)
+                .is_dir()
+        );
+        assert!(
+            temp.path()
+                .join("generations")
+                .join(&semantic.generation)
+                .join("vectors.bin")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn missing_vector_in_an_existing_generation_is_repaired() {
+        let temp = tempfile::tempdir().expect("artifact root");
+        let mut provider = crate::FakeEmbeddingProvider::new(4);
+        let first = build_embedded_artifacts_with_provider(
+            temp.path(),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("semantic build");
+        let vector = temp
+            .path()
+            .join("generations")
+            .join(&first.generation)
+            .join("vectors.bin");
+        fs::remove_file(&vector).expect("remove vector");
+
+        let repaired = build_embedded_artifacts_with_provider(
+            temp.path(),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("repair vector");
+
+        assert_eq!(repaired.generation, first.generation);
+        assert!(vector.is_file());
+    }
+
+    #[test]
+    fn failed_build_removes_partial_staging_generation() {
+        struct FailingProvider;
+
+        impl EmbeddingProvider for FailingProvider {
+            fn embedding_dimension(&self) -> Option<usize> {
+                Some(4)
+            }
+
+            fn embed_documents(
+                &mut self,
+                _texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                Err(EmbeddingError::Provider("expected test failure".into()))
+            }
+
+            fn embed_query(&mut self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                unreachable!("artifact builds do not embed queries")
+            }
+        }
+
+        let root = tempfile::tempdir().expect("artifact root");
+        let error = build_embedded_artifacts_with_provider(
+            root.path(),
+            &mut FailingProvider,
+            "fake",
+            "test-revision",
+        )
+        .expect_err("provider failure");
+
+        assert!(error.to_string().contains("expected test failure"));
+        assert!(
+            fs::read_dir(root.path())
+                .expect("artifact root entries")
+                .all(|entry| !entry
+                    .expect("artifact root entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tmp-"))
+        );
     }
 
     #[test]
