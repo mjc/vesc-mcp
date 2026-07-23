@@ -1110,11 +1110,11 @@ impl FastEmbedProvider {
         let read = |name: &str| {
             std::fs::read(root.join(name)).map_err(|error| EmbeddingError::Io(error.to_string()))
         };
-        let model_bytes = read("model.onnx")?;
-        let model_digest = ContentDigest::of(&model_bytes);
+        let model_path = root.join("model.onnx");
+        let model_digest = digest_file(&model_path)?;
         validate_migraphx_model_digest(model_digest.as_str(), &profile, execution_provider)?;
         let model = fastembed::UserDefinedEmbeddingModel::new(
-            model_bytes,
+            model_path,
             fastembed::TokenizerFiles {
                 tokenizer_file: read("tokenizer.json")?,
                 config_file: read("config.json")?,
@@ -3339,6 +3339,20 @@ fn io_error(error: std::io::Error) -> EmbeddingError {
     EmbeddingError::Io(error.to_string())
 }
 
+fn digest_file(path: &Path) -> Result<ContentDigest, EmbeddingError> {
+    let mut reader = BufReader::new(File::open(path).map_err(io_error)?);
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0_u8; STREAM_BUFFER_BYTES];
+    loop {
+        let read = reader.read(&mut buffer).map_err(io_error)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    digest_from_bytes(digest.finalize().as_ref())
+}
+
 fn read_error(error: std::io::Error) -> EmbeddingError {
     if error.kind() == std::io::ErrorKind::UnexpectedEof {
         EmbeddingError::Truncated
@@ -3384,6 +3398,19 @@ const fn hex_digit(byte: u8) -> Result<u8, EmbeddingError> {
 mod tests {
     use super::*;
     use crate::corpus::{NormalizedDocument, RepositoryId, Revision, SourceKind};
+
+    #[test]
+    fn file_digest_matches_in_memory_digest() {
+        let directory = tempfile::tempdir().expect("digest directory");
+        let path = directory.path().join("model.onnx");
+        let bytes = vec![0x5a; STREAM_BUFFER_BYTES * 2 + 17];
+        std::fs::write(&path, &bytes).expect("write model");
+
+        assert_eq!(
+            digest_file(&path).expect("digest model"),
+            ContentDigest::of(&bytes)
+        );
+    }
 
     struct RecordingProvider {
         dimension: usize,

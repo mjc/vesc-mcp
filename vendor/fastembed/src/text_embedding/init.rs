@@ -5,7 +5,7 @@ use crate::{
     common::TokenizerFiles,
     init::{HasMaxLength, InitOptionsWithLength},
     pooling::Pooling,
-    EmbeddingModel, OutputKey, QuantizationMode,
+    EmbeddingModel, OnnxSource, OutputKey, QuantizationMode,
 };
 use ort::{
     execution_providers::ExecutionProviderDispatch,
@@ -102,10 +102,10 @@ impl From<TextInitOptions> for InitOptionsUserDefined {
 
 /// Struct for "bring your own" embedding models
 ///
-/// The onnx_file and tokenizer_files are expecting the files' bytes
+/// The ONNX model may be supplied as bytes or as a file path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserDefinedEmbeddingModel {
-    pub onnx_file: Vec<u8>,
+    pub onnx_source: OnnxSource,
     pub external_initializers: Vec<ExternalInitializerFile>,
     pub tokenizer_files: TokenizerFiles,
     pub pooling: Option<Pooling>,
@@ -124,9 +124,9 @@ pub struct ExternalInitializerFile {
 }
 
 impl UserDefinedEmbeddingModel {
-    pub fn new(onnx_file: Vec<u8>, tokenizer_files: TokenizerFiles) -> Self {
+    pub fn new(onnx_source: impl Into<OnnxSource>, tokenizer_files: TokenizerFiles) -> Self {
         Self {
-            onnx_file,
+            onnx_source: onnx_source.into(),
             external_initializers: Vec::new(),
             tokenizer_files,
             quantization: QuantizationMode::None,

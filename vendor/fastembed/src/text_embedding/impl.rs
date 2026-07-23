@@ -120,7 +120,10 @@ impl TextEmbedding {
                     .map_err(builder_error)?;
             }
 
-            session_builder.commit_from_memory(&model.onnx_file)?
+            match &model.onnx_source {
+                crate::OnnxSource::Memory(bytes) => session_builder.commit_from_memory(bytes)?,
+                crate::OnnxSource::File(path) => session_builder.commit_from_file(path)?,
+            }
         };
 
         let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
