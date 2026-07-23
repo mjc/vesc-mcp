@@ -343,6 +343,9 @@ fn synchronize(
     if interrupt.load(Ordering::Relaxed) {
         return Err(ManagedGitError::Git("refresh interrupted".to_owned()));
     }
+    if remote_url.starts_with("https://") {
+        ensure_rustls_crypto_provider()?;
+    }
     let repositories = layout.root().as_path().join("repositories");
     fs::create_dir_all(&repositories)?;
     fs::create_dir_all(layout.staging())?;
@@ -358,6 +361,15 @@ fn synchronize(
     write_catalog(layout, &catalog)?;
     FileExt::unlock(&lock)?;
     Ok(catalog)
+}
+
+fn ensure_rustls_crypto_provider() -> Result<(), ManagedGitError> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    rustls::crypto::CryptoProvider::get_default()
+        .map(|_| ())
+        .ok_or_else(|| ManagedGitError::Git("rustls crypto provider unavailable".to_owned()))
 }
 
 fn lock_repository(path: &Path) -> Result<File, ManagedGitError> {

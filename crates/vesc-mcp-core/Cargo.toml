@@ -20,7 +20,10 @@ semantic-migraphx = ["semantic-fastembed", "vesc-knowledge-index/semantic-migrap
 [dependencies]
 anyhow.workspace = true
 fs4 = "0.13"
-gix = { workspace = true, features = ["blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "revision"] }
+gix = { workspace = true, features = ["blocking-network-client", "blocking-http-transport-reqwest", "revision"] }
+# Select rustls with ring without enabling reqwest's default AWS-LC provider.
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

@@ -15,7 +15,7 @@
     rust-overlay,
     flake-utils,
   }: let
-    packageFor = system: accelerated: let
+    packageFor = system: accelerated: profiling: let
       pkgs = import nixpkgs {
         inherit system;
         overlays = [(import rust-overlay)];
@@ -141,15 +141,23 @@
           || pkgs.lib.hasInfix "/crates/vesc-mcp-core/src/resources/snippets" path
           || pkgs.lib.hasInfix "/vendor/fastembed/src/sparse_text_embedding/weights" path;
       };
-      commonArgs = {
-        pname = "vesc-mcp";
-        version = "0.1.0";
-        inherit src;
-        strictDeps = true;
-        cargoExtraArgs = "-p vesc-mcp-server --features ${semanticFeatures}";
-        nativeBuildInputs = [pkgs.pkg-config];
-        doCheck = false;
-      };
+      commonArgs =
+        {
+          pname = "vesc-mcp";
+          version = "0.1.0";
+          inherit src;
+          strictDeps = true;
+          cargoExtraArgs = "-p vesc-mcp-server --features ${semanticFeatures}";
+          nativeBuildInputs = [pkgs.pkg-config];
+          doCheck = false;
+        }
+        // pkgs.lib.optionalAttrs profiling {
+          CARGO_BUILD_JOBS = "1";
+          CARGO_BUILD_RUSTFLAGS = "-C force-frame-pointers=yes";
+          CARGO_PROFILE_RELEASE_DEBUG = "2";
+          CARGO_PROFILE_RELEASE_STRIP = "none";
+          dontStrip = true;
+        };
       cargoArtifacts = craneLib.buildDepsOnly commonArgs;
     in
       craneLib.buildPackage (
@@ -244,11 +252,12 @@
       in {
         packages =
           {
-            default = packageFor system false;
-            vesc-mcp = packageFor system false;
+            default = packageFor system false false;
+            vesc-mcp = packageFor system false false;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            vesc-mcp-migraphx = packageFor system true;
+            vesc-mcp-migraphx = packageFor system true false;
+            vesc-mcp-migraphx-profile = packageFor system true true;
           };
         devShells =
           {
@@ -341,7 +350,7 @@
     ))
     // {
       overlays.default = final: _prev: {
-        vesc-mcp = packageFor final.system false;
+        vesc-mcp = packageFor final.system false false;
       };
       nixosModules.default = nixosModule;
     };
