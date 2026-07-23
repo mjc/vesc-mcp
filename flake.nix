@@ -155,7 +155,7 @@
         // pkgs.lib.optionalAttrs profiling {
           CARGO_BUILD_JOBS = "1";
           CARGO_BUILD_RUSTFLAGS = "-C force-frame-pointers=yes";
-          CARGO_PROFILE_RELEASE_DEBUG = "2";
+          CARGO_PROFILE_RELEASE_DEBUG = "line-tables-only";
           CARGO_PROFILE_RELEASE_STRIP = "none";
           dontStrip = true;
         };
