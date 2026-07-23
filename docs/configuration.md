@@ -135,8 +135,15 @@ The default `lexical` mode is local and does not download a model.
 | `[knowledge.semantic] model_dir` | `VESC_RAG_SEMANTIC_MODEL_DIR` | unset | Pinned local model directory |
 | `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
 | `[knowledge.semantic] model_revision` | `VESC_RAG_SEMANTIC_MODEL_REVISION` | unset | Pinned model revision |
-| `[knowledge.semantic] max_length` | `VESC_RAG_SEMANTIC_MAX_LENGTH` | model profile | Optional lower input-length limit shared with artifact ingestion |
+| `[knowledge.semantic] max_length` | `VESC_RAG_SEMANTIC_MAX_LENGTH` | model profile | Query input-length limit |
 | `[knowledge.semantic] idle_timeout_secs` | `VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS` | `300` | Seconds before unloading an idle model |
+| `[knowledge.semantic.ingestion] model_dir` | `VESC_RAG_SEMANTIC_INGEST_MODEL_DIR` | query model | Optional separate bulk-ingestion model directory |
+| `[knowledge.semantic.ingestion] model_sha256` | `VESC_RAG_SEMANTIC_INGEST_MODEL_SHA256` | unset | Exact lowercase SHA-256 of the ingestion `model.onnx` |
+| `[knowledge.semantic.ingestion] provider` | `VESC_RAG_SEMANTIC_INGEST_PROVIDER` | `cpu` | Bulk-ingestion backend (`cpu` or `migraphx`) |
+| `[knowledge.semantic.ingestion] device_id` | `VESC_RAG_SEMANTIC_INGEST_DEVICE_ID` | `0` | Provider device number |
+| `[knowledge.semantic.ingestion] max_length` | `VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH` | query limit | Lossless ingestion window length |
+| `[knowledge.semantic.ingestion] batch_size` | `VESC_RAG_SEMANTIC_INGEST_BATCH_SIZE` | `8` | Bounded provider batch size |
+| `[knowledge.semantic.ingestion] window_aggregation` | `VESC_RAG_SEMANTIC_INGEST_WINDOW_AGGREGATION` | `mean` | `mean` or `token_weighted_mean` |
 | `[feedback] path` | `VESC_RAG_FEEDBACK_PATH` | unset | Durable directory containing the bounded `feedback.json` store |
 | `[feedback] writes_enabled` | `VESC_RAG_FEEDBACK_WRITES` | `false` | Expose model feedback write tools when a store is configured |
 
@@ -153,11 +160,14 @@ Supported modes:
 | `auto` | Uses hybrid search and reports an error with an explicit lexical retry when semantic retrieval fails |
 | `hybrid` | Requires a compatible local vector artifact and model; reports an error if unavailable |
 
-The server never downloads a semantic model at startup. Model directory,
-identity, revision, and maximum input length become part of a managed snapshot's
-immutable identity. When all three model settings are configured, snapshot
-preparation writes a matching `vectors.bin`; without them, snapshots remain
-lexical-only.
+The server never downloads a semantic model at startup. Model identity,
+revision, query length, and any split-ingestion model hash/backend/profile
+become part of a managed snapshot's immutable identity. The ingestion graph is
+hash-checked before use, so checkpoints and prior vectors cannot cross profiles.
+When all three base model settings are configured, snapshot preparation writes
+a matching `vectors.bin`; without them, snapshots remain lexical-only. The
+portable package uses CPU inference. Hardware-specific packages may provide a
+measured ingestion profile while retaining the CPU query model.
 
 ### Managed knowledge repositories
 

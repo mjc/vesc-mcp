@@ -15,6 +15,7 @@ test-fixtures = []
 semantic-fastembed = ["vesc-knowledge-index/semantic-fastembed"]
 semantic-coreml = ["semantic-fastembed", "vesc-knowledge-index/semantic-coreml"]
 semantic-rocm = ["semantic-fastembed", "vesc-knowledge-index/semantic-rocm"]
+semantic-migraphx = ["semantic-fastembed", "vesc-knowledge-index/semantic-migraphx"]
 
 [dependencies]
 anyhow.workspace = true

@@ -13,7 +13,7 @@ use vesc_knowledge_index::corpus::{
     LicenseStatus, RepositoryId as CorpusRepositoryId, Revision, TrustTier as CorpusTrustTier,
 };
 
-use crate::config::KnowledgeConfig;
+use crate::config::{KnowledgeConfig, SemanticIngestionProvider};
 use crate::managed_git::{ManagedGitError, ManagedGitStore};
 pub use crate::managed_repositories::KnowledgeSnapshotId;
 use crate::managed_repositories::{
@@ -46,6 +46,19 @@ pub struct SnapshotSemanticModel {
     pub model_id: String,
     pub model_revision: String,
     pub max_length: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingestion: Option<SnapshotSemanticIngestion>,
+}
+
+/// Reproducible bulk-ingestion contract included in snapshot identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotSemanticIngestion {
+    pub model_sha256: String,
+    pub provider: SemanticIngestionProvider,
+    pub device_id: i32,
+    pub max_length: usize,
+    pub batch_size: usize,
+    pub window_aggregation: vesc_knowledge_index::WindowAggregation,
 }
 
 #[derive(Clone)]
@@ -254,12 +267,52 @@ impl KnowledgeSnapshotStore {
                         profile.max_length
                     )));
                 }
+                let (model_dir, ingestion) = config.semantic_ingestion.as_ref().map_or_else(
+                    || Ok((model_dir, None)),
+                    |ingestion| {
+                        if ingestion.max_length == 0
+                            || ingestion.max_length > profile.max_length
+                            || ingestion.batch_size == 0
+                        {
+                            return Err(SnapshotError::Build(format!(
+                                "semantic ingestion max length must be between 1 and {} and batch size must be nonzero for {model_id}",
+                                profile.max_length
+                            )));
+                        }
+                        let actual = vesc_knowledge_index::hardware::sha256_file(
+                            &ingestion.model_dir.join("model.onnx"),
+                        )
+                        .map_err(|error| {
+                            SnapshotError::Build(format!(
+                                "read semantic ingestion model: {error}"
+                            ))
+                        })?;
+                        if !actual.eq_ignore_ascii_case(&ingestion.model_sha256) {
+                            return Err(SnapshotError::Build(
+                                "semantic ingestion model SHA-256 does not match configuration"
+                                    .into(),
+                            ));
+                        }
+                        Ok((
+                            ingestion.model_dir.clone(),
+                            Some(SnapshotSemanticIngestion {
+                                model_sha256: ingestion.model_sha256.to_ascii_lowercase(),
+                                provider: ingestion.provider,
+                                device_id: ingestion.device_id,
+                                max_length: ingestion.max_length,
+                                batch_size: ingestion.batch_size,
+                                window_aggregation: ingestion.window_aggregation,
+                            }),
+                        ))
+                    },
+                )?;
                 Some(SnapshotSemanticConfig {
                     model_dir,
                     model: SnapshotSemanticModel {
                         model_id,
                         model_revision,
                         max_length,
+                        ingestion,
                     },
                 })
             }
@@ -780,15 +833,32 @@ fn semantic_provider(
             semantic.model.model_id
         ))
     })?;
-    profile.max_length = semantic.model.max_length;
-    vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile_and_threads(
+    let ingestion = semantic.model.ingestion.as_ref();
+    profile.max_length = ingestion.map_or(semantic.model.max_length, |config| config.max_length);
+    let provider = ingestion.map_or(
+        vesc_knowledge_index::SemanticExecutionProvider::Auto,
+        |config| match config.provider {
+            SemanticIngestionProvider::Cpu => vesc_knowledge_index::SemanticExecutionProvider::Cpu,
+            SemanticIngestionProvider::Migraphx => {
+                vesc_knowledge_index::SemanticExecutionProvider::Migraphx {
+                    device_id: config.device_id,
+                }
+            }
+        },
+    );
+    vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
         &semantic.model_dir,
-        None,
+        ingestion.map(|config| config.batch_size),
         profile,
         Some(vesc_knowledge_index::default_semantic_intra_threads()),
+        provider,
     )
     .map(|mut provider| {
+        provider.set_length_bucketed(ingestion.is_some());
         provider.set_lossless_windowing(true);
+        if let Some(ingestion) = ingestion {
+            provider.set_window_aggregation(ingestion.window_aggregation);
+        }
         Box::new(provider) as Box<dyn vesc_knowledge_index::EmbeddingProvider>
     })
     .map_err(|error| SnapshotError::Build(format!("semantic provider unavailable: {error}")))
@@ -1088,6 +1158,7 @@ max_total_bytes = 10485760
                 model_id: "fake".into(),
                 model_revision: "test".into(),
                 max_length: 512,
+                ingestion: None,
             }),
         )
         .expect("semantic manifest");
@@ -1097,9 +1168,27 @@ max_total_bytes = 10485760
                 model_id: "fake".into(),
                 model_revision: "test".into(),
                 max_length: 256,
+                ingestion: None,
             }),
         )
         .expect("semantic manifest with shorter inputs");
+        let accelerated_semantic = KnowledgeSnapshotManifest::new(
+            same.repositories.clone(),
+            Some(SnapshotSemanticModel {
+                model_id: "fake".into(),
+                model_revision: "test".into(),
+                max_length: 512,
+                ingestion: Some(SnapshotSemanticIngestion {
+                    model_sha256: "f".repeat(64),
+                    provider: SemanticIngestionProvider::Migraphx,
+                    device_id: 0,
+                    max_length: 64,
+                    batch_size: 64,
+                    window_aggregation: vesc_knowledge_index::WindowAggregation::TokenWeightedMean,
+                }),
+            }),
+        )
+        .expect("accelerated semantic manifest");
 
         assert_eq!(left, same);
         assert_ne!(left.id, moved.id);
@@ -1107,6 +1196,7 @@ max_total_bytes = 10485760
         assert_ne!(left.id, complete_history.id);
         assert_ne!(left.id, semantic.id);
         assert_ne!(semantic.id, shorter_semantic.id);
+        assert_ne!(semantic.id, accelerated_semantic.id);
         assert_eq!(left.id.as_str().len(), 64);
     }
 
@@ -1127,6 +1217,39 @@ max_total_bytes = 10485760
             .expect("incomplete semantic configuration");
 
         assert!(error.to_string().contains("configured together"));
+    }
+
+    #[test]
+    fn semantic_ingestion_configuration_rejects_the_wrong_model() {
+        let root = tempfile::tempdir().expect("data root");
+        let model = tempfile::tempdir().expect("model root");
+        fs::write(model.path().join("model.onnx"), b"wrong model").expect("model file");
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(root.path().to_path_buf()).expect("valid data root"),
+        );
+        let config = KnowledgeConfig {
+            semantic_model_dir: Some(model.path().to_path_buf()),
+            semantic_model_id: Some(vesc_knowledge_index::JINA_CODE_MODEL_ID.into()),
+            semantic_model_revision: Some(vesc_knowledge_index::JINA_CODE_MODEL_REVISION.into()),
+            semantic_max_length: Some(vesc_knowledge_index::JINA_CODE_MAX_LENGTH),
+            semantic_ingestion: Some(crate::config::SemanticIngestionConfig {
+                model_dir: model.path().to_path_buf(),
+                model_sha256: "f".repeat(64),
+                provider: SemanticIngestionProvider::Migraphx,
+                device_id: 0,
+                max_length: vesc_knowledge_index::JINA_CODE_INGEST_MAX_LENGTH,
+                batch_size: vesc_knowledge_index::JINA_CODE_INGEST_BATCH_SIZE,
+                window_aggregation: vesc_knowledge_index::WindowAggregation::TokenWeightedMean,
+            }),
+            ..KnowledgeConfig::default()
+        };
+
+        let error = KnowledgeSnapshotStore::new(layout)
+            .with_semantic_config(&config)
+            .err()
+            .expect("wrong model must fail");
+
+        assert!(error.to_string().contains("SHA-256"));
     }
 
     #[tokio::test]

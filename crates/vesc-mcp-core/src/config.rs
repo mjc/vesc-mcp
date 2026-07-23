@@ -42,6 +42,21 @@ pub const VESC_RAG_SEMANTIC_MODEL_REVISION_ENV: &str = "VESC_RAG_SEMANTIC_MODEL_
 pub const VESC_RAG_SEMANTIC_MAX_LENGTH_ENV: &str = "VESC_RAG_SEMANTIC_MAX_LENGTH";
 /// Environment variable controlling how long an idle semantic model remains loaded.
 pub const VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV: &str = "VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS";
+/// Environment variable selecting a separate local model for bulk ingestion.
+pub const VESC_RAG_SEMANTIC_INGEST_MODEL_DIR_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_MODEL_DIR";
+/// Environment variable selecting the bulk-ingestion execution provider.
+pub const VESC_RAG_SEMANTIC_INGEST_PROVIDER_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_PROVIDER";
+/// Environment variable selecting the bulk-ingestion provider device.
+pub const VESC_RAG_SEMANTIC_INGEST_DEVICE_ID_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_DEVICE_ID";
+/// Environment variable limiting bulk-ingestion model windows.
+pub const VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH";
+/// Environment variable selecting the bulk-ingestion provider batch size.
+pub const VESC_RAG_SEMANTIC_INGEST_BATCH_SIZE_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_BATCH_SIZE";
+/// Environment variable identifying the exact bulk-ingestion ONNX graph.
+pub const VESC_RAG_SEMANTIC_INGEST_MODEL_SHA256_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_MODEL_SHA256";
+/// Environment variable selecting lossless-window aggregation for ingestion.
+pub const VESC_RAG_SEMANTIC_INGEST_WINDOW_AGGREGATION_ENV: &str =
+    "VESC_RAG_SEMANTIC_INGEST_WINDOW_AGGREGATION";
 
 /// Typed configuration loading and validation failures.
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +70,8 @@ pub enum ConfigError {
     UnknownPrewarmRepository(RepositoryId),
     #[error("invalid prewarm selector for repository {0}")]
     InvalidPrewarmSelector(RepositoryId),
+    #[error("semantic ingestion model directory and SHA-256 must be configured together")]
+    IncompleteSemanticIngestion,
 }
 
 /// Knowledge retrieval rollout mode.
@@ -82,6 +99,39 @@ impl FromStr for RetrievalMode {
     }
 }
 
+/// Runtime backend used only while constructing semantic vector artifacts.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticIngestionProvider {
+    #[default]
+    Cpu,
+    Migraphx,
+}
+
+impl FromStr for SemanticIngestionProvider {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "cpu" => Ok(Self::Cpu),
+            "migraphx" => Ok(Self::Migraphx),
+            other => Err(format!("unsupported semantic ingestion provider {other:?}")),
+        }
+    }
+}
+
+/// Optional split profile for accelerated bulk vector construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticIngestionConfig {
+    pub model_dir: PathBuf,
+    pub model_sha256: String,
+    pub provider: SemanticIngestionProvider,
+    pub device_id: i32,
+    pub max_length: usize,
+    pub batch_size: usize,
+    pub window_aggregation: vesc_knowledge_index::WindowAggregation,
+}
+
 /// Durable model-feedback configuration.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeedbackConfig {
@@ -102,6 +152,7 @@ pub struct KnowledgeConfig {
     pub semantic_model_revision: Option<String>,
     pub semantic_max_length: Option<usize>,
     pub semantic_idle_timeout_secs: u64,
+    pub semantic_ingestion: Option<SemanticIngestionConfig>,
     pub max_limit: usize,
     pub max_query_bytes: usize,
     pub max_response_bytes: usize,
@@ -121,6 +172,7 @@ impl Default for KnowledgeConfig {
             semantic_model_revision: None,
             semantic_max_length: None,
             semantic_idle_timeout_secs: 5 * 60,
+            semantic_ingestion: None,
             max_limit: 50,
             max_query_bytes: 4 * 1024,
             max_response_bytes: 64 * 1024,
@@ -364,6 +416,18 @@ struct SemanticSection {
     model_revision: Option<String>,
     max_length: Option<usize>,
     idle_timeout_secs: Option<u64>,
+    ingestion: Option<SemanticIngestionSection>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SemanticIngestionSection {
+    model_dir: Option<String>,
+    model_sha256: Option<String>,
+    provider: Option<SemanticIngestionProvider>,
+    device_id: Option<i32>,
+    max_length: Option<usize>,
+    batch_size: Option<usize>,
+    window_aggregation: Option<vesc_knowledge_index::WindowAggregation>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -388,6 +452,13 @@ struct EnvOverrides {
     semantic_model_revision: Option<String>,
     semantic_max_length: Option<usize>,
     semantic_idle_timeout_secs: Option<u64>,
+    semantic_ingest_model_dir: Option<PathBuf>,
+    semantic_ingest_model_sha256: Option<String>,
+    semantic_ingest_provider: Option<SemanticIngestionProvider>,
+    semantic_ingest_device_id: Option<i32>,
+    semantic_ingest_max_length: Option<usize>,
+    semantic_ingest_batch_size: Option<usize>,
+    semantic_ingest_window_aggregation: Option<vesc_knowledge_index::WindowAggregation>,
     feedback_path: Option<PathBuf>,
     feedback_writes_enabled: Option<bool>,
 }
@@ -455,6 +526,33 @@ fn read_env_overrides() -> EnvOverrides {
         semantic_idle_timeout_secs: env::var(VESC_RAG_SEMANTIC_IDLE_TIMEOUT_SECS_ENV)
             .ok()
             .and_then(|value| value.parse().ok()),
+        semantic_ingest_model_dir: env::var(VESC_RAG_SEMANTIC_INGEST_MODEL_DIR_ENV)
+            .ok()
+            .map(|value| workspace::expand_path(&value)),
+        semantic_ingest_model_sha256: env::var(VESC_RAG_SEMANTIC_INGEST_MODEL_SHA256_ENV).ok(),
+        semantic_ingest_provider: env::var(VESC_RAG_SEMANTIC_INGEST_PROVIDER_ENV)
+            .ok()
+            .and_then(|value| SemanticIngestionProvider::from_str(&value).ok()),
+        semantic_ingest_device_id: env::var(VESC_RAG_SEMANTIC_INGEST_DEVICE_ID_ENV)
+            .ok()
+            .and_then(|value| value.parse().ok()),
+        semantic_ingest_max_length: env::var(VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH_ENV)
+            .ok()
+            .and_then(|value| value.parse().ok()),
+        semantic_ingest_batch_size: env::var(VESC_RAG_SEMANTIC_INGEST_BATCH_SIZE_ENV)
+            .ok()
+            .and_then(|value| value.parse().ok()),
+        semantic_ingest_window_aggregation: env::var(
+            VESC_RAG_SEMANTIC_INGEST_WINDOW_AGGREGATION_ENV,
+        )
+        .ok()
+        .and_then(|value| match value.as_str() {
+            "mean" => Some(vesc_knowledge_index::WindowAggregation::Mean),
+            "token_weighted_mean" | "token-weighted-mean" => {
+                Some(vesc_knowledge_index::WindowAggregation::TokenWeightedMean)
+            }
+            _ => None,
+        }),
         feedback_path: env::var(VESC_RAG_FEEDBACK_PATH_ENV)
             .ok()
             .map(|value| workspace::expand_path(&value)),
@@ -463,6 +561,54 @@ fn read_env_overrides() -> EnvOverrides {
             .as_deref()
             .map(parse_bool_env),
     }
+}
+
+fn resolve_semantic_ingestion(
+    knowledge: Option<&KnowledgeSection>,
+    env: &EnvOverrides,
+    semantic_max_length: Option<usize>,
+) -> Result<Option<SemanticIngestionConfig>, ConfigError> {
+    let file = knowledge
+        .and_then(|section| section.semantic.as_ref())
+        .and_then(|semantic| semantic.ingestion.as_ref());
+    let model_dir = env.semantic_ingest_model_dir.clone().or_else(|| {
+        file.and_then(|ingestion| ingestion.model_dir.as_deref())
+            .map(workspace::expand_path)
+    });
+    let model_sha256 = env
+        .semantic_ingest_model_sha256
+        .clone()
+        .or_else(|| file.and_then(|ingestion| ingestion.model_sha256.clone()));
+    let (model_dir, model_sha256) = match (model_dir, model_sha256) {
+        (None, None) => return Ok(None),
+        (Some(model_dir), Some(model_sha256)) => (model_dir, model_sha256),
+        _ => return Err(ConfigError::IncompleteSemanticIngestion),
+    };
+    Ok(Some(SemanticIngestionConfig {
+        model_dir,
+        model_sha256,
+        provider: env
+            .semantic_ingest_provider
+            .or_else(|| file.and_then(|ingestion| ingestion.provider))
+            .unwrap_or_default(),
+        device_id: env
+            .semantic_ingest_device_id
+            .or_else(|| file.and_then(|ingestion| ingestion.device_id))
+            .unwrap_or_default(),
+        max_length: env
+            .semantic_ingest_max_length
+            .or_else(|| file.and_then(|ingestion| ingestion.max_length))
+            .or(semantic_max_length)
+            .unwrap_or(512),
+        batch_size: env
+            .semantic_ingest_batch_size
+            .or_else(|| file.and_then(|ingestion| ingestion.batch_size))
+            .unwrap_or(8),
+        window_aggregation: env
+            .semantic_ingest_window_aggregation
+            .or_else(|| file.and_then(|ingestion| ingestion.window_aggregation))
+            .unwrap_or(vesc_knowledge_index::WindowAggregation::Mean),
+    }))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -505,6 +651,12 @@ fn try_merge_config(
         knowledge.map_or_else(Vec::new, |section| section.prewarm.clone()),
         &repositories,
     )?;
+    let semantic_max_length = env.semantic_max_length.or_else(|| {
+        knowledge
+            .and_then(|section| section.semantic.as_ref())
+            .and_then(|semantic| semantic.max_length)
+    });
+    let semantic_ingestion = resolve_semantic_ingestion(knowledge, env, semantic_max_length)?;
     Ok(McpConfig {
         package_roots,
         refloat_root: env.refloat_root.clone().unwrap_or_else(|| {
@@ -571,11 +723,7 @@ fn try_merge_config(
                     .and_then(|section| section.semantic.as_ref())
                     .and_then(|semantic| semantic.model_revision.clone())
             }),
-            semantic_max_length: env.semantic_max_length.or_else(|| {
-                knowledge
-                    .and_then(|section| section.semantic.as_ref())
-                    .and_then(|semantic| semantic.max_length)
-            }),
+            semantic_max_length,
             semantic_idle_timeout_secs: env
                 .semantic_idle_timeout_secs
                 .or_else(|| {
@@ -584,6 +732,7 @@ fn try_merge_config(
                         .and_then(|semantic| semantic.idle_timeout_secs)
                 })
                 .unwrap_or(defaults.semantic_idle_timeout_secs),
+            semantic_ingestion,
             max_limit: knowledge
                 .and_then(|section| section.max_limit)
                 .unwrap_or(defaults.max_limit),
@@ -933,6 +1082,45 @@ idle_timeout_secs = 60
         );
         assert_eq!(merged.knowledge.semantic_max_length, Some(512));
         assert_eq!(merged.knowledge.semantic_idle_timeout_secs, 60);
+    }
+
+    #[test]
+    fn knowledge_config_reads_split_semantic_ingestion_profile() {
+        let file: ConfigFile = toml::from_str(
+            r#"
+[knowledge.semantic]
+model_dir = "/models/jina-int8"
+model_id = "jinaai/jina-embeddings-v2-base-code"
+model_revision = "pinned-revision"
+max_length = 512
+
+[knowledge.semantic.ingestion]
+model_dir = "/models/jina-fp16"
+model_sha256 = "pinned-fp16-sha256"
+provider = "migraphx"
+device_id = 0
+max_length = 64
+batch_size = 64
+window_aggregation = "token_weighted_mean"
+"#,
+        )
+        .expect("parse split semantic config");
+
+        let merged = merge_config(&file, &EnvOverrides::default());
+        let ingestion = merged
+            .knowledge
+            .semantic_ingestion
+            .expect("ingestion profile");
+        assert_eq!(ingestion.model_dir, PathBuf::from("/models/jina-fp16"));
+        assert_eq!(ingestion.model_sha256, "pinned-fp16-sha256");
+        assert_eq!(ingestion.provider, SemanticIngestionProvider::Migraphx);
+        assert_eq!(ingestion.device_id, 0);
+        assert_eq!(ingestion.max_length, 64);
+        assert_eq!(ingestion.batch_size, 64);
+        assert_eq!(
+            ingestion.window_aggregation,
+            vesc_knowledge_index::WindowAggregation::TokenWeightedMean
+        );
     }
 
     #[test]
