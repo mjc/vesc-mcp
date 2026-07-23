@@ -821,47 +821,140 @@ fn validate_snapshot_artifact(
 }
 
 #[cfg(feature = "semantic-fastembed")]
+struct DeferredSemanticProvider {
+    model_dir: PathBuf,
+    profile: vesc_knowledge_index::EmbeddingProfile,
+    batch_size: vesc_knowledge_index::EmbeddingBatchSize,
+    execution_provider: vesc_knowledge_index::SemanticExecutionProvider,
+    length_bucketed: bool,
+    window_aggregation: Option<vesc_knowledge_index::WindowAggregation>,
+    provider: Option<vesc_knowledge_index::FastEmbedProvider>,
+}
+
+#[cfg(feature = "semantic-fastembed")]
+impl DeferredSemanticProvider {
+    fn new(semantic: &SnapshotSemanticConfig) -> Result<Self, SnapshotError> {
+        let mut profile =
+            vesc_knowledge_index::EmbeddingProfile::for_model_id(&semantic.model.model_id)
+                .ok_or_else(|| {
+                    SnapshotError::Build(format!(
+                        "no embedding profile is registered for {}",
+                        semantic.model.model_id
+                    ))
+                })?;
+        let ingestion = semantic.model.ingestion.as_ref();
+        profile.max_length =
+            ingestion.map_or(semantic.model.max_length, |config| config.max_length);
+        let batch_size = vesc_knowledge_index::EmbeddingBatchSize::new(ingestion.map_or(
+            vesc_knowledge_index::DEFAULT_SEMANTIC_BATCH_SIZE,
+            |config| config.batch_size,
+        ))
+        .map_err(|error| SnapshotError::Build(error.to_string()))?;
+        let execution_provider = ingestion.map_or(
+            vesc_knowledge_index::SemanticExecutionProvider::Auto,
+            |config| match config.provider {
+                SemanticIngestionProvider::Cpu => {
+                    vesc_knowledge_index::SemanticExecutionProvider::Cpu
+                }
+                SemanticIngestionProvider::Migraphx => {
+                    vesc_knowledge_index::SemanticExecutionProvider::Migraphx {
+                        device_id: config.device_id,
+                    }
+                }
+            },
+        );
+        Ok(Self {
+            model_dir: semantic.model_dir.clone(),
+            profile,
+            batch_size,
+            execution_provider,
+            length_bucketed: ingestion.is_some(),
+            window_aggregation: ingestion.map(|config| config.window_aggregation),
+            provider: None,
+        })
+    }
+
+    fn provider(
+        &mut self,
+    ) -> Result<&mut vesc_knowledge_index::FastEmbedProvider, vesc_knowledge_index::EmbeddingError>
+    {
+        if self.provider.is_none() {
+            let mut provider = vesc_knowledge_index::FastEmbedProvider::
+                from_model_dir_with_profile_and_threads_and_provider(
+                    &self.model_dir,
+                    Some(self.batch_size.get()),
+                    self.profile.clone(),
+                    Some(vesc_knowledge_index::default_semantic_intra_threads()),
+                    self.execution_provider,
+                )
+                .map_err(|error| {
+                    vesc_knowledge_index::EmbeddingError::Provider(format!(
+                        "semantic provider unavailable: {error}"
+                    ))
+                })?;
+            provider.set_length_bucketed(self.length_bucketed);
+            provider.set_lossless_windowing(true);
+            if let Some(aggregation) = self.window_aggregation {
+                provider.set_window_aggregation(aggregation);
+            }
+            self.provider = Some(provider);
+        }
+        Ok(self.provider.as_mut().expect("provider initialized above"))
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+impl vesc_knowledge_index::EmbeddingProvider for DeferredSemanticProvider {
+    fn embedding_dimension(&self) -> Option<usize> {
+        Some(self.profile.dimension)
+    }
+
+    fn embedding_batch_size(&self) -> vesc_knowledge_index::EmbeddingBatchSize {
+        self.batch_size
+    }
+
+    fn output_normalization(&self) -> vesc_knowledge_index::OutputNormalization {
+        if self.profile.normalize {
+            vesc_knowledge_index::OutputNormalization::Guaranteed
+        } else {
+            vesc_knowledge_index::OutputNormalization::Unknown
+        }
+    }
+
+    fn inference_order(
+        &mut self,
+        chunks: &[&vesc_knowledge_index::Chunk],
+    ) -> Result<Option<Vec<usize>>, vesc_knowledge_index::EmbeddingError> {
+        if chunks.is_empty() {
+            return Ok(None);
+        }
+        self.provider()?.inference_order(chunks)
+    }
+
+    fn embed_documents(
+        &mut self,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, vesc_knowledge_index::EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.provider()?.embed_documents(texts)
+    }
+
+    fn embed_query(
+        &mut self,
+        text: &str,
+    ) -> Result<Vec<f32>, vesc_knowledge_index::EmbeddingError> {
+        self.provider()?.embed_query(text)
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
 fn semantic_provider(
     semantic: &SnapshotSemanticConfig,
 ) -> Result<Box<dyn vesc_knowledge_index::EmbeddingProvider>, SnapshotError> {
-    let mut profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(
-        &semantic.model.model_id,
-    )
-    .ok_or_else(|| {
-        SnapshotError::Build(format!(
-            "no embedding profile is registered for {}",
-            semantic.model.model_id
-        ))
-    })?;
-    let ingestion = semantic.model.ingestion.as_ref();
-    profile.max_length = ingestion.map_or(semantic.model.max_length, |config| config.max_length);
-    let provider = ingestion.map_or(
-        vesc_knowledge_index::SemanticExecutionProvider::Auto,
-        |config| match config.provider {
-            SemanticIngestionProvider::Cpu => vesc_knowledge_index::SemanticExecutionProvider::Cpu,
-            SemanticIngestionProvider::Migraphx => {
-                vesc_knowledge_index::SemanticExecutionProvider::Migraphx {
-                    device_id: config.device_id,
-                }
-            }
-        },
-    );
-    vesc_knowledge_index::FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider(
-        &semantic.model_dir,
-        ingestion.map(|config| config.batch_size),
-        profile,
-        Some(vesc_knowledge_index::default_semantic_intra_threads()),
-        provider,
-    )
-    .map(|mut provider| {
-        provider.set_length_bucketed(ingestion.is_some());
-        provider.set_lossless_windowing(true);
-        if let Some(ingestion) = ingestion {
-            provider.set_window_aggregation(ingestion.window_aggregation);
-        }
-        Box::new(provider) as Box<dyn vesc_knowledge_index::EmbeddingProvider>
-    })
-    .map_err(|error| SnapshotError::Build(format!("semantic provider unavailable: {error}")))
+    DeferredSemanticProvider::new(semantic)
+        .map(|provider| Box::new(provider) as Box<dyn vesc_knowledge_index::EmbeddingProvider>)
 }
 
 #[cfg(not(feature = "semantic-fastembed"))]
@@ -1217,6 +1310,27 @@ max_total_bytes = 10485760
             .expect("incomplete semantic configuration");
 
         assert!(error.to_string().contains("configured together"));
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn semantic_provider_defers_model_initialization_until_inference() {
+        let semantic = SnapshotSemanticConfig {
+            model_dir: PathBuf::from("/model/must/not/be/opened"),
+            model: SnapshotSemanticModel {
+                model_id: vesc_knowledge_index::JINA_CODE_MODEL_ID.into(),
+                model_revision: vesc_knowledge_index::JINA_CODE_MODEL_REVISION.into(),
+                max_length: vesc_knowledge_index::JINA_CODE_MAX_LENGTH,
+                ingestion: None,
+            },
+        };
+
+        let provider = semantic_provider(&semantic).expect("deferred provider");
+
+        assert_eq!(
+            provider.embedding_dimension(),
+            Some(vesc_knowledge_index::EmbeddingProfile::jina_v2_base_code().dimension)
+        );
     }
 
     #[test]

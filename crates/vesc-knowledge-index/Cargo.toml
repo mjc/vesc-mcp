@@ -16,6 +16,7 @@ semantic-coreml = ["semantic-fastembed", "dep:ort", "ort/coreml"]
 semantic-rocm = ["semantic-fastembed", "dep:ort", "ort/rocm"]
 semantic-migraphx = ["semantic-fastembed", "dep:ort", "ort/migraphx"]
 semantic-fastembed-online = ["semantic-fastembed", "fastembed/online"]
+coz-profile = ["dep:coz"]
 
 [dependencies]
 serde.workspace = true
@@ -30,6 +31,7 @@ ort = { workspace = true, optional = true }
 thiserror.workspace = true
 tokenizers = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+coz = { workspace = true, optional = true }
 tempfile = "3"
 
 [[bin]]

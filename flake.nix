@@ -28,7 +28,8 @@
       semanticFeatures =
         "semantic-fastembed"
         + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ",semantic-coreml"
-        + pkgs.lib.optionalString accelerated ",semantic-migraphx";
+        + pkgs.lib.optionalString accelerated ",semantic-migraphx"
+        + pkgs.lib.optionalString profiling ",coz-profile";
       semanticRuntime =
         if accelerated
         then pkgs.onnxruntime.override {rocmSupport = true;}

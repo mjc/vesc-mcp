@@ -170,6 +170,8 @@ fn ingest_git_history_fast_forward_from_chunks(
                 &mut observations,
             )?;
             observations.ingested_commits = observations.ingested_commits.saturating_add(1);
+            #[cfg(feature = "coz-profile")]
+            coz::progress!("git_history_ingested_commit");
         }
         processed.push((source, reachable_revisions));
     }
@@ -197,6 +199,8 @@ fn reachable_commits(
                 .object()
                 .map_err(|error| GitHistoryError::Git(error.to_string()))?;
             let first_parent = commit.parent_ids().next().map(gix::Id::detach);
+            #[cfg(feature = "coz-profile")]
+            coz::progress!("git_history_walk_commit");
             Ok(ReachableCommit {
                 id: info.id,
                 first_parent,
@@ -284,7 +288,9 @@ fn ingest_upsert(
         id,
         size,
     };
-    let blob = load_git_blob(repo, &candidate, &mut observations.git)?;
+    // History search uses chunk-local identifiers below. Avoid building and
+    // cloning a file-wide identifier set into every chunk only to overwrite it.
+    let blob = load_git_blob(repo, &candidate, &mut observations.git, false)?;
     if matches!(blob, CachedGitBlob::Rejected { .. }) {
         return Ok(());
     }
@@ -317,6 +323,8 @@ fn ingest_upsert(
             contents.insert(key, chunk);
         }
     }
+    #[cfg(feature = "coz-profile")]
+    coz::progress!("git_history_ingested_blob");
     Ok(())
 }
 

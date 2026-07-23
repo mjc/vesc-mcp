@@ -19,6 +19,7 @@ semantic-fastembed = ["vesc-mcp-core/semantic-fastembed"]
 semantic-coreml = ["semantic-fastembed", "vesc-mcp-core/semantic-coreml"]
 semantic-rocm = ["semantic-fastembed", "vesc-mcp-core/semantic-rocm"]
 semantic-migraphx = ["semantic-fastembed", "vesc-mcp-core/semantic-migraphx"]
+coz-profile = ["vesc-mcp-core/coz-profile"]
 
 [dependencies]
 anyhow.workspace = true

@@ -1101,6 +1101,8 @@ impl FastEmbedProvider {
         execution_provider: SemanticExecutionProvider,
         graph_optimization_level: ort::session::builder::GraphOptimizationLevel,
     ) -> Result<Self, EmbeddingError> {
+        #[cfg(feature = "coz-profile")]
+        coz::scope!("semantic_provider_initialization");
         if profile.max_length == 0 || profile.dimension == 0 || !profile.normalize {
             return Err(EmbeddingError::Provider(
                 "FastEmbed requires a non-zero, normalized embedding profile".into(),
@@ -2093,6 +2095,8 @@ fn flush_checkpoint_batch(
     checkpoint.write_batch(rows, vectors)?;
     rows.clear();
     vectors.clear();
+    #[cfg(feature = "coz-profile")]
+    coz::progress!("semantic_checkpoint_batch");
     Ok(())
 }
 
@@ -2429,7 +2433,9 @@ impl VectorArtifact {
             .map(|&index| &chunks[index])
             .collect::<Vec<_>>();
         let natural_order;
-        let inference_order = if let Some(order) = provider.inference_order(&missing_chunks)? {
+        let inference_order = if missing.is_empty() {
+            Vec::new()
+        } else if let Some(order) = provider.inference_order(&missing_chunks)? {
             if order.len() != missing.len() || order.iter().any(|&index| index >= missing.len()) {
                 return Err(EmbeddingError::Provider(
                     "provider returned an invalid inference order".into(),
@@ -2482,7 +2488,11 @@ impl VectorArtifact {
             );
 
             let provider_started = Instant::now();
-            let vectors = provider.embed_documents(&texts);
+            let vectors = {
+                #[cfg(feature = "coz-profile")]
+                coz::scope!("semantic_provider_batch");
+                provider.embed_documents(&texts)
+            };
             observations.provider_us = observations
                 .provider_us
                 .saturating_add(elapsed_us(provider_started));
@@ -2533,6 +2543,8 @@ impl VectorArtifact {
             observations.embedded_vectors = observations
                 .embedded_vectors
                 .saturating_add(source_indices.len());
+            #[cfg(feature = "coz-profile")]
+            coz::progress!("semantic_inference_batch");
         }
         flush_checkpoint_batch(
             &mut checkpoint,
@@ -3580,6 +3592,71 @@ mod tests {
         .expect("resumed cached artifact");
 
         assert_eq!(restarted.embedded, 0);
+        assert_eq!(observations.reused_vectors, chunks.len());
+    }
+
+    #[test]
+    fn completed_checkpoint_skips_provider_inference_setup() {
+        struct SetupPanics(RecordingProvider);
+
+        impl EmbeddingProvider for SetupPanics {
+            fn embedding_dimension(&self) -> Option<usize> {
+                self.0.embedding_dimension()
+            }
+
+            fn inference_order(
+                &mut self,
+                _chunks: &[&Chunk],
+            ) -> Result<Option<Vec<usize>>, EmbeddingError> {
+                panic!("completed checkpoint must not initialize inference");
+            }
+
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                self.0.embed_documents(texts)
+            }
+
+            fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                self.0.embed_query(text)
+            }
+        }
+
+        let cache = tempfile::tempdir().expect("vector checkpoint");
+        let checkpoint = cache.path().join("vectors.bin");
+        let chunks = chunks();
+        let mut first = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+            &mut first,
+            &chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"first"),
+            None,
+            &checkpoint,
+        )
+        .expect("initial cached artifact");
+
+        let mut restarted = SetupPanics(RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        });
+        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+            &mut restarted,
+            &chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"first"),
+            None,
+            &checkpoint,
+        )
+        .expect("resumed cached artifact");
+
+        assert_eq!(restarted.0.embedded, 0);
         assert_eq!(observations.reused_vectors, chunks.len());
     }
 

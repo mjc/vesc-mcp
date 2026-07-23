@@ -273,6 +273,8 @@ impl LexicalIndex {
         let mut writer = index.writer(15_000_000).map_err(LexicalError::Writer)?;
         for chunk in chunks {
             add_chunk(&writer, fields, chunk);
+            #[cfg(feature = "coz-profile")]
+            coz::progress!("lexical_indexed_chunk");
         }
         writer.commit().map_err(LexicalError::Commit)?;
         Ok(())

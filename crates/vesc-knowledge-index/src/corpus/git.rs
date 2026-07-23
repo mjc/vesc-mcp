@@ -229,7 +229,7 @@ fn ingest_git_commit_inner(
         git_observations: None,
     };
     for candidate in candidates {
-        let blob = load_git_blob(&repo, &candidate, &mut observations)?;
+        let blob = load_git_blob(&repo, &candidate, &mut observations, true)?;
         let digest = if let CachedGitBlob::Text { digest, .. } = &blob {
             digest.clone()
         } else {
@@ -278,6 +278,7 @@ pub(super) fn load_git_blob(
     repo: &gix::Repository,
     candidate: &Candidate,
     observations: &mut GitIngestionObservations,
+    extract_identifiers: bool,
 ) -> Result<CachedGitBlob, GitIngestionError> {
     let blob_load_started = Instant::now();
     let object = repo
@@ -317,7 +318,11 @@ pub(super) fn load_git_blob(
     Ok(CachedGitBlob::Text {
         digest: ContentDigest::of(content.as_bytes()),
         media_type: media_type(&candidate.path).to_owned(),
-        identifiers: identifiers(&candidate.path, &content),
+        identifiers: if extract_identifiers {
+            identifiers(&candidate.path, &content)
+        } else {
+            BTreeSet::new()
+        },
         line_count: u32::try_from(content.lines().count().max(1)).unwrap_or(u32::MAX),
         content,
     })
