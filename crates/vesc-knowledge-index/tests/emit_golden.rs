@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use vesc_knowledge_index::search_knowledge;
+use vesc_knowledge_index::{LexicalFilters, lexical_index};
 
 #[test]
 #[ignore = "manual: regenerate tests/golden/*.json"]
@@ -17,11 +17,14 @@ fn emit_golden_search_fixtures() {
     std::fs::create_dir_all(&out_dir).expect("create golden dir");
 
     for (file_stem, query) in queries {
-        let hits = search_knowledge(query, None, 1);
+        let hits = lexical_index()
+            .search(query, &LexicalFilters::default(), 1)
+            .expect("lexical search");
         let top = hits
             .first()
             .unwrap_or_else(|| panic!("no hits for {query}"));
-        let category = match top.category {
+        let chunk = &top.chunk;
+        let category = match chunk.category.expect("catalog category") {
             vesc_knowledge_index::Category::FirmwareApi => "firmware_api",
             vesc_knowledge_index::Category::Lispbm => "lispbm",
             vesc_knowledge_index::Category::PackageBuild => "package_build",
@@ -31,12 +34,14 @@ fn emit_golden_search_fixtures() {
         let payload = serde_json::json!({
             "query": query,
             "top": {
-                "id": top.id,
-                "name": top.name,
+                "id": chunk
+                    .registered_id
+                    .as_deref()
+                    .unwrap_or_else(|| chunk.chunk_id.as_ref()),
+                "name": chunk.title,
                 "category": category,
-                "score": top.score,
-                "source_repo": top.source.repo,
-                "source_path": top.source.path,
+                "source_repo": chunk.repository,
+                "source_path": chunk.path,
             }
         });
         let path = out_dir.join(format!("{file_stem}.json"));

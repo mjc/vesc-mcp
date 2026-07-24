@@ -7,7 +7,7 @@ use vesc_knowledge_index::{
 };
 
 #[test]
-fn legacy_entry_migration_preserves_exact_name_and_id() {
+fn catalog_entry_conversion_preserves_exact_name_and_id() {
     let entry = IndexEntry {
         id: "vesc_c_if.lbm_add_extension".into(),
         name: "lbm_add_extension".into(),
@@ -21,12 +21,12 @@ fn legacy_entry_migration_preserves_exact_name_and_id() {
         keywords: vec!["extension".into()],
     };
 
-    let document = NormalizedDocument::from_legacy(&entry).expect("migration");
-    let chunk = document.legacy_chunk().expect("legacy chunk");
+    let document = NormalizedDocument::from_catalog_entry(&entry).expect("conversion");
+    let chunk = document.catalog_chunk().expect("catalog chunk");
 
     assert_eq!(document.schema, SchemaVersion { major: 1, minor: 0 });
     assert_eq!(chunk.schema, SchemaVersion { major: 1, minor: 0 });
-    assert_eq!(document.legacy_ids, vec![entry.id]);
+    assert_eq!(document.registered_id, Some(entry.id));
     assert_eq!(document.category, Some(Category::FirmwareApi));
     assert_eq!(chunk.text, entry.summary);
     assert_eq!(

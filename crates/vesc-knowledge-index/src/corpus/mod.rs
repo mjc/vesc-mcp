@@ -285,7 +285,7 @@ impl SchemaVersion {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum SourceKind {
-    LegacyIndex,
+    EmbeddedCatalog,
     Markdown,
     CatalogYaml,
     CatalogJson,
@@ -374,8 +374,7 @@ pub struct NormalizedDocument {
     pub content_digest: ContentDigest,
     pub source_span: Option<SourceSpan>,
     pub adapter_schema: SchemaVersion,
-    #[serde(default)]
-    pub legacy_ids: Vec<String>,
+    pub registered_id: Option<String>,
 }
 
 impl NormalizedDocument {
@@ -429,21 +428,21 @@ impl NormalizedDocument {
             content_digest,
             source_span: None,
             adapter_schema: CORPUS_SCHEMA_V1,
-            legacy_ids: Vec::new(),
+            registered_id: None,
         })
     }
 
-    /// Migrates one legacy summary-sized entry without losing its identifier.
+    /// Converts one embedded catalog entry into the normalized corpus model.
     ///
     /// # Errors
     ///
-    /// Returns [`CorpusError`] when the legacy source metadata cannot form a valid document.
-    pub fn from_legacy(entry: &IndexEntry) -> Result<Self, CorpusError> {
+    /// Returns [`CorpusError`] when the catalog metadata cannot form a valid document.
+    pub fn from_catalog_entry(entry: &IndexEntry) -> Result<Self, CorpusError> {
         let repository = RepositoryId::try_from(entry.source.repo.as_str())?;
-        let revision = Revision::try_from("legacy")?;
+        let revision = Revision::try_from("embedded-catalog-v1")?;
         let mut document = Self::new(
             entry.name.clone(),
-            SourceKind::LegacyIndex,
+            SourceKind::EmbeddedCatalog,
             repository,
             revision,
             entry.source.path.clone(),
@@ -460,16 +459,16 @@ impl NormalizedDocument {
             None,
             None,
         )?);
-        document.legacy_ids.push(entry.id.clone());
+        document.registered_id = Some(entry.id.clone());
         Ok(document)
     }
 
-    /// Produces the one-chunk compatibility representation for a legacy entry.
+    /// Produces the catalog entry's single normalized chunk.
     ///
     /// # Errors
     ///
-    /// Returns [`CorpusError`] when the legacy summary is empty or its span is invalid.
-    pub fn legacy_chunk(&self) -> Result<Chunk, CorpusError> {
+    /// Returns [`CorpusError`] when the catalog summary is empty or its span is invalid.
+    pub fn catalog_chunk(&self) -> Result<Chunk, CorpusError> {
         Chunk::from_document(self, 0, self.content.clone(), Vec::new(), self.source_span)
     }
 }
@@ -495,8 +494,7 @@ pub struct Chunk {
     pub category: Option<Category>,
     pub tags: BTreeSet<String>,
     pub identifiers: Vec<CompactString>,
-    #[serde(default)]
-    pub legacy_ids: Vec<String>,
+    pub registered_id: Option<String>,
     pub trust_tier: TrustTier,
     pub resource_uri: Option<ResourceUri>,
     pub previous_chunk: Option<ChunkId>,
@@ -552,7 +550,7 @@ impl Chunk {
                 .iter()
                 .map(CompactString::from)
                 .collect(),
-            legacy_ids: document.legacy_ids.clone(),
+            registered_id: document.registered_id.clone(),
             trust_tier: document.trust_tier,
             resource_uri: Some(resource_uri),
             previous_chunk: None,

@@ -38,7 +38,7 @@ use vesc_knowledge_index::{DEFAULT_SEMANTIC_BATCH_SIZE, default_semantic_intra_t
 use vesc_knowledge_index::{
     IndexBuilder, LexicalFilters, LexicalIndex, RepositoryId, Revision, active_generation_path,
     active_manifest_path, build_allowlisted_artifacts, build_embedded_artifacts, inspect_manifest,
-    search_knowledge, search_lexical_knowledge, vesc_mcp_source_specs,
+    search_lexical_knowledge, vesc_mcp_source_specs,
 };
 use vesc_knowledge_index::{
     LicenseStatus, TrustTier, build_git_artifacts,
@@ -821,22 +821,18 @@ fn run_evaluation(args: &[String]) {
             .parse::<f32>()
             .expect("--semantic-min-similarity must be a number")
     });
-    let mode_name = argument_value(args, "--mode").unwrap_or_else(|| "legacy".into());
+    let mode_name = argument_value(args, "--mode").unwrap_or_else(|| "lexical".into());
     let modes = match mode_name.as_str() {
-        "legacy" => vec![EvaluationMode::Legacy],
         "lexical" => vec![EvaluationMode::Lexical],
         "semantic" => vec![EvaluationMode::Semantic],
         "hybrid" => vec![EvaluationMode::Hybrid],
         "all" => vec![
-            EvaluationMode::Legacy,
             EvaluationMode::Lexical,
             EvaluationMode::Semantic,
             EvaluationMode::Hybrid,
         ],
         other => {
-            panic!(
-                "unsupported evaluation mode {other:?}; use legacy, lexical, semantic, hybrid, or all"
-            )
+            panic!("unsupported evaluation mode {other:?}; use lexical, semantic, hybrid, or all")
         }
     };
     let queries = read_evaluation_queries(&suite_path);
@@ -910,12 +906,6 @@ fn evaluate_mode(
         semantic_min_similarity,
     );
     match mode {
-        EvaluationMode::Legacy => evaluate_suite_with_mode(queries, mode, Vec::new(), |query| {
-            search_knowledge(query, None, 50)
-                .into_iter()
-                .map(|hit| hit.id)
-                .collect()
-        }),
         EvaluationMode::Lexical => evaluate_suite_with_mode(queries, mode, Vec::new(), |query| {
             lexical_result_ids(query, artifact)
         }),
@@ -1030,11 +1020,12 @@ fn evaluate_semantic(
 
 #[cfg(feature = "semantic-fastembed")]
 fn chunk_result_ids(chunk: &Chunk) -> Vec<String> {
-    if chunk.legacy_ids.is_empty() {
-        vec![chunk.chunk_id.to_string()]
-    } else {
-        chunk.legacy_ids.clone()
-    }
+    vec![
+        chunk
+            .registered_id
+            .clone()
+            .unwrap_or_else(|| chunk.chunk_id.to_string()),
+    ]
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -1961,9 +1952,9 @@ fn semantic_benchmark_chunks(artifact_root: Option<&Path>) -> (Vec<Chunk>, Conte
             let chunks = embedded_entries()
                 .iter()
                 .filter_map(|entry| {
-                    NormalizedDocument::from_legacy(entry)
+                    NormalizedDocument::from_catalog_entry(entry)
                         .ok()
-                        .and_then(|document| document.legacy_chunk().ok())
+                        .and_then(|document| document.catalog_chunk().ok())
                 })
                 .collect();
             return (chunks, ContentDigest::of(b"embedded-benchmark"));
@@ -2060,54 +2051,13 @@ fn lexical_result_ids(query: &str, artifact: Option<&Path>) -> Vec<String> {
     );
     hits.into_iter()
         .flat_map(|hit| {
-            if hit.chunk.legacy_ids.is_empty() {
-                vec![hit.chunk.chunk_id.to_string()]
-            } else {
-                hit.chunk.legacy_ids
-            }
+            vec![
+                hit.chunk
+                    .registered_id
+                    .unwrap_or_else(|| hit.chunk.chunk_id.to_string()),
+            ]
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[should_panic(expected = "open lexical evaluation artifact")]
-    fn incompatible_lexical_artifact_is_an_explicit_error() {
-        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact");
-        fs::write(artifact.path(), b"legacy-format").expect("invalid artifact fixture");
-
-        let _ = lexical_result_ids("query", Some(artifact.path()));
-    }
-
-    #[test]
-    fn release_repository_cache_root_has_explicit_stable_precedence() {
-        assert_eq!(
-            select_repository_cache_root(
-                Some("cli".into()),
-                Some("configured".into()),
-                Some("xdg".into()),
-                Some("home".into()),
-            ),
-            Ok(PathBuf::from("cli"))
-        );
-        assert_eq!(
-            select_repository_cache_root(
-                None,
-                Some("configured".into()),
-                Some("xdg".into()),
-                Some("home".into()),
-            ),
-            Ok(PathBuf::from("configured"))
-        );
-        assert_eq!(
-            select_repository_cache_root(None, None, Some("xdg".into()), Some("home".into())),
-            Ok(PathBuf::from("xdg/vesc-mcp/release-repositories"))
-        );
-        assert!(select_repository_cache_root(None, None, None, None).is_err());
-    }
 }
 
 fn read_evaluation_queries(path: &Path) -> Vec<EvaluationQuery> {
@@ -2513,4 +2463,45 @@ fn resolve_refloat_root(manifest_dir: &Path) -> PathBuf {
     }
 
     PathBuf::from(env::var("HOME").unwrap_or_else(|_| "/".into())).join("projects/refloat")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "open lexical evaluation artifact")]
+    fn incompatible_lexical_artifact_is_an_explicit_error() {
+        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact");
+        fs::write(artifact.path(), b"incompatible-format").expect("invalid artifact fixture");
+
+        let _ = lexical_result_ids("query", Some(artifact.path()));
+    }
+
+    #[test]
+    fn release_repository_cache_root_has_explicit_stable_precedence() {
+        assert_eq!(
+            select_repository_cache_root(
+                Some("cli".into()),
+                Some("configured".into()),
+                Some("xdg".into()),
+                Some("home".into()),
+            ),
+            Ok(PathBuf::from("cli"))
+        );
+        assert_eq!(
+            select_repository_cache_root(
+                None,
+                Some("configured".into()),
+                Some("xdg".into()),
+                Some("home".into()),
+            ),
+            Ok(PathBuf::from("configured"))
+        );
+        assert_eq!(
+            select_repository_cache_root(None, None, Some("xdg".into()), Some("home".into())),
+            Ok(PathBuf::from("xdg/vesc-mcp/release-repositories"))
+        );
+        assert!(select_repository_cache_root(None, None, None, None).is_err());
+    }
 }

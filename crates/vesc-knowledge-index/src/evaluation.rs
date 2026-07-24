@@ -22,7 +22,6 @@ pub enum Intent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationMode {
-    Legacy,
     Lexical,
     Semantic,
     Hybrid,
@@ -436,7 +435,7 @@ pub fn evaluate_suite<I>(queries: &[EvaluationQuery], search: I) -> EvaluationRe
 where
     I: FnMut(&str) -> Vec<String>,
 {
-    evaluate_suite_with_mode(queries, EvaluationMode::Legacy, Vec::new(), search)
+    evaluate_suite_with_mode(queries, EvaluationMode::Lexical, Vec::new(), search)
 }
 
 /// Evaluates a suite while recording the selected backend and degradation notes.

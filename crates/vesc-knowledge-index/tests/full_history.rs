@@ -186,6 +186,55 @@ fn full_history_build_with_provider_writes_matching_vectors() {
 }
 
 #[test]
+fn lexical_format_upgrade_reindexes_but_reuses_all_matching_vectors() {
+    let (_root, work) = fixture();
+    let source = at_head(source(work.clone(), "fixture"), &work);
+    let first_artifacts = tempdir().expect("first artifact root");
+    let mut first_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_incrementally(
+        first_artifacts.path(),
+        std::slice::from_ref(&source),
+        None,
+        None,
+        Some((&mut first_provider, "fake", "test-revision")),
+        None,
+        None,
+    )
+    .expect("first semantic history build");
+    let first_generation = first_artifacts
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let second_artifacts = tempdir().expect("second artifact root");
+    let mut second_provider = FakeEmbeddingProvider::new(8);
+
+    let second = build_git_history_artifacts_from_previous(
+        second_artifacts.path(),
+        std::slice::from_ref(&source),
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(std::slice::from_ref(&source)),
+            lexical_path: first_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: first.artifacts.manifest.vector_checksum,
+            vector_path: Some(first_generation.join("vectors.bin")),
+            lexical_format_compatible: false,
+        }),
+        Some((&mut second_provider, "fake", "test-revision")),
+        None,
+    )
+    .expect("reindexed semantic history build");
+    let observations = second
+        .artifacts
+        .observations
+        .vector_build
+        .expect("vector observations");
+
+    assert!(second.reused_snapshot);
+    assert_eq!(observations.reused_vectors, second.artifacts.chunk_count);
+    assert_eq!(observations.embedded_vectors, 0);
+}
+
+#[test]
 fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
     let (_root, work) = fixture();
     add_tokenized_path_history(&work);
@@ -231,6 +280,7 @@ fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
             corpus_digest: first.artifacts.manifest.corpus.content_digest.clone(),
             vector_checksum: first.artifacts.manifest.vector_checksum.clone(),
             vector_path: Some(first_vector_path.clone()),
+            lexical_format_compatible: true,
         }),
         Some((&mut second_provider, "fake", "test-revision")),
         None,
@@ -292,7 +342,7 @@ fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
 }
 
 #[test]
-fn corrupt_previous_vector_falls_back_to_a_complete_build() {
+fn corrupt_previous_vector_falls_back_during_a_lexical_format_upgrade() {
     let (_root, work) = fixture();
     let first_source = at_head(source(work.clone(), "fixture"), &work);
     let first_artifacts = tempdir().expect("first artifact root");
@@ -333,6 +383,7 @@ fn corrupt_previous_vector_falls_back_to_a_complete_build() {
             corpus_digest: first.artifacts.manifest.corpus.content_digest,
             vector_checksum: first.artifacts.manifest.vector_checksum,
             vector_path: Some(corrupt_vector_path),
+            lexical_format_compatible: false,
         }),
         Some((&mut second_provider, "fake", "test-revision")),
         None,
@@ -390,6 +441,7 @@ fn mismatched_lexical_inventory_falls_back_to_a_complete_build() {
             corpus_digest: mismatched_digest,
             vector_checksum: None,
             vector_path: None,
+            lexical_format_compatible: true,
         }),
         None,
         None,

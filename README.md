@@ -4,6 +4,11 @@ vesc-mcp gives MCP-compatible assistants reliable, local access to VESC
 firmware and `.vescpkg` knowledge. It can search the bundled knowledge base,
 inspect and validate package files, and build packages with VESC Tool.
 
+Its knowledge scope includes current VESC behavior plus historical codepaths,
+versions, bugs, and architecture. That historical VESC coverage is corpus
+content, not a reason to retain obsolete vesc-mcp APIs or storage formats.
+Future retrieval may also support VESC-aware code review.
+
 It does not discover devices, upload packages, or flash firmware.
 
 ## Install

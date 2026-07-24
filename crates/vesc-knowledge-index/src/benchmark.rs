@@ -854,9 +854,9 @@ fn embedded_chunks() -> Vec<Chunk> {
     embedded_entries()
         .iter()
         .filter_map(|entry| {
-            crate::NormalizedDocument::from_legacy(entry)
+            crate::NormalizedDocument::from_catalog_entry(entry)
                 .ok()
-                .and_then(|document| document.legacy_chunk().ok())
+                .and_then(|document| document.catalog_chunk().ok())
         })
         .collect()
 }

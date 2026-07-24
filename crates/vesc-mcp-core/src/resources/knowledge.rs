@@ -27,10 +27,10 @@ pub fn read_knowledge_chunk(
     let requested = ChunkId::try_from(chunk.id.as_str())
         .map_err(|_| ResourceReadError::NotFound { uri: uri.into() })?;
     for entry in embedded_entries() {
-        let Ok(document) = NormalizedDocument::from_legacy(entry) else {
+        let Ok(document) = NormalizedDocument::from_catalog_entry(entry) else {
             continue;
         };
-        let Ok(candidate) = document.legacy_chunk() else {
+        let Ok(candidate) = document.catalog_chunk() else {
             continue;
         };
         if candidate.chunk_id == requested {
@@ -94,7 +94,7 @@ pub fn read_knowledge_document(
     let requested = DocumentId::try_from(document.id.as_str())
         .map_err(|_| ResourceReadError::NotFound { uri: uri.into() })?;
     for entry in embedded_entries() {
-        let Ok(candidate) = NormalizedDocument::from_legacy(entry) else {
+        let Ok(candidate) = NormalizedDocument::from_catalog_entry(entry) else {
             continue;
         };
         if candidate.document_id == requested {

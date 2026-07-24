@@ -519,7 +519,7 @@ max_total_bytes = 10000
         .expect("write snapshot");
         if is_default {
             fs::write(
-                root.join("default-snapshot.json"),
+                crate::default_snapshot_path(root),
                 serde_json::to_vec(&manifest).expect("serialize default snapshot"),
             )
             .expect("write default snapshot");

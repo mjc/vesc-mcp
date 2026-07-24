@@ -4,7 +4,6 @@
     "category": "firmware_api",
     "id": "priority.vesc-nvm",
     "name": "vesc_nvm",
-    "score": 800,
     "source_path": "catalog/vesc/nvm.yaml",
     "source_repo": "catalog"
   }

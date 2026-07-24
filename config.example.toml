@@ -25,7 +25,7 @@ package_roots = [
 enable_flash = false
 
 [knowledge]
-# Rollout modes: lexical, legacy, auto, hybrid.
+# Retrieval modes: lexical, auto, hybrid.
 mode = "lexical"
 # Persistent managed-source state. Must be absolute. When omitted, systemd's
 # STATE_DIRECTORY, then the platform/XDG per-user data directory is used.

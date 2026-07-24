@@ -12,7 +12,7 @@ use std::time::Duration;
 use std::time::Instant;
 use vesc_knowledge_index::{
     Category, ExpandedContext, FusionConfig, LexicalHit, LexicalIndex, SemanticHit,
-    expand_adjacent_context, search_knowledge,
+    expand_adjacent_context,
 };
 #[cfg(any(feature = "semantic-fastembed", test))]
 use vesc_knowledge_index::{EmbeddingProvider, VectorArtifact, semantic_query_text};
@@ -27,10 +27,8 @@ use crate::{
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
-    /// Preserve the original ranked legacy index contract.
-    #[default]
-    Legacy,
     /// Use Tantivy over normalized chunks.
+    #[default]
     Lexical,
     /// Require semantic retrieval and fuse it with lexical evidence.
     Hybrid,
@@ -47,20 +45,18 @@ pub enum SearchResponseDetail {
     /// Return bounded ranked rows; read the linked resource for full evidence.
     #[default]
     Compact,
-    /// Return the compatibility response with provenance and diagnostics.
+    /// Return provenance and diagnostics.
     Full,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchVescKnowledgeParams {
     /// Free-text query matched against entry names, keywords, and summaries.
     pub query: String,
     /// Immutable snapshot returned by `prepare_vesc_knowledge`.
     #[serde(default)]
     pub snapshot_id: Option<String>,
-    /// Optional category filter. Unrecognized values are ignored.
-    #[serde(default)]
-    pub category: Option<String>,
     /// Maximum number of hits to return (default 10).
     #[serde(default = "default_search_limit")]
     pub limit: usize,
@@ -84,15 +80,13 @@ pub struct SearchVescKnowledgeParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SearchVescKnowledgeFilters {
     /// Category filter. Unrecognized values are ignored.
     #[serde(default)]
     pub category: Option<String>,
     #[serde(default)]
     pub repository: Option<String>,
-    /// Compatibility form accepted from callers that use list-style filters.
-    #[serde(default)]
-    pub repository_ids: Vec<String>,
     /// Exact source paths. Multiple paths are additive alternatives.
     #[serde(default)]
     pub paths: Vec<String>,
@@ -449,49 +443,47 @@ pub fn search_vesc_knowledge_tool_with_config(
     }
 
     match parse_filters(params) {
-        Ok((category, filters)) => {
-            match search_mode(params, mode, category, &filters, limit, config) {
-                Ok((mut results, warnings)) => {
-                    if let Some(snapshot_id) = selected
-                        .as_ref()
-                        .and_then(|artifact| artifact.snapshot_id.as_ref())
-                    {
-                        qualify_snapshot_resources(&mut results, snapshot_id.as_str());
-                    }
-                    let mut response = SearchVescKnowledgeResponse {
-                        ok: true,
-                        mode,
-                        capabilities: capabilities_for_mode(mode),
-                        corrections: Vec::new(),
-                        results,
-                        error: None,
-                        warnings,
-                        index: index_metadata(config, selected.as_ref()),
-                        timing: None,
-                    };
-                    response.timing = Some(SearchVescKnowledgeTiming {
-                        total_us: elapsed_us(started),
-                        result_count: response.results.len(),
-                    });
-                    response = response.bounded(params, config, params.detail);
-                    if let Some(timing) = &mut response.timing {
-                        timing.result_count = response.results.len();
-                    }
-                    response
+        Ok(filters) => match search_mode(params, mode, &filters, limit, config) {
+            Ok((mut results, warnings)) => {
+                if let Some(snapshot_id) = selected
+                    .as_ref()
+                    .and_then(|artifact| artifact.snapshot_id.as_ref())
+                {
+                    qualify_snapshot_resources(&mut results, snapshot_id.as_str());
                 }
-                Err(error) => SearchVescKnowledgeResponse {
-                    ok: false,
+                let mut response = SearchVescKnowledgeResponse {
+                    ok: true,
                     mode,
-                    capabilities: Vec::new(),
+                    capabilities: capabilities_for_mode(mode),
                     corrections: Vec::new(),
-                    results: Vec::new(),
-                    error: Some(error),
-                    warnings: Vec::new(),
+                    results,
+                    error: None,
+                    warnings,
                     index: index_metadata(config, selected.as_ref()),
                     timing: None,
-                },
+                };
+                response.timing = Some(SearchVescKnowledgeTiming {
+                    total_us: elapsed_us(started),
+                    result_count: response.results.len(),
+                });
+                response = response.bounded(params, config, params.detail);
+                if let Some(timing) = &mut response.timing {
+                    timing.result_count = response.results.len();
+                }
+                response
             }
-        }
+            Err(error) => SearchVescKnowledgeResponse {
+                ok: false,
+                mode,
+                capabilities: Vec::new(),
+                corrections: Vec::new(),
+                results: Vec::new(),
+                error: Some(error),
+                warnings: Vec::new(),
+                index: index_metadata(config, selected.as_ref()),
+                timing: None,
+            },
+        },
         Err(error) => error_response(mode, error),
     }
 }
@@ -537,7 +529,6 @@ fn qualify_snapshot_resources(results: &mut [SearchVescKnowledgeResult], snapsho
 
 const fn configured_mode(config: &KnowledgeConfig) -> SearchMode {
     match config.mode {
-        RetrievalMode::Legacy => SearchMode::Legacy,
         RetrievalMode::Lexical => SearchMode::Lexical,
         RetrievalMode::Auto => SearchMode::Auto,
         RetrievalMode::Hybrid => SearchMode::Hybrid,
@@ -546,7 +537,6 @@ const fn configured_mode(config: &KnowledgeConfig) -> SearchMode {
 
 fn capabilities_for_mode(mode: SearchMode) -> Vec<String> {
     match mode {
-        SearchMode::Legacy => vec!["legacy-index".into()],
         SearchMode::Lexical => vec![
             "lexical-index".into(),
             "provenance".into(),
@@ -741,7 +731,7 @@ fn index_metadata(
         snapshot_id: None,
         snapshot_profile: None,
         repositories: BTreeMap::new(),
-        corpus_version: "embedded-legacy-v1".into(),
+        corpus_version: "embedded-catalog-v1".into(),
         corpus_digest: None,
         document_count: count,
         chunk_count: count,
@@ -754,18 +744,12 @@ fn index_metadata(
 
 fn parse_filters(
     params: &SearchVescKnowledgeParams,
-) -> Result<(Option<Category>, vesc_knowledge_index::LexicalFilters), String> {
-    let category = parse_category(params.category.as_deref());
-    let filter_category = parse_category(params.filters.category.as_deref());
-    if category.is_some() && filter_category.is_some() && category != filter_category {
-        return Err("category and filters.category conflict".into());
-    }
-    let category = category.or(filter_category);
+) -> Result<vesc_knowledge_index::LexicalFilters, String> {
+    let category = parse_category(params.filters.category.as_deref());
     let repository = params
         .filters
         .repository
         .as_deref()
-        .or_else(|| params.filters.repository_ids.first().map(String::as_str))
         .map(vesc_knowledge_index::RepositoryId::try_from)
         .transpose()
         .map_err(|_| "repository filter must be non-empty".to_string())?;
@@ -806,42 +790,31 @@ fn parse_filters(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((
+    Ok(vesc_knowledge_index::LexicalFilters {
         category,
-        vesc_knowledge_index::LexicalFilters {
-            category,
-            repository,
-            paths: params
-                .filters
-                .paths
-                .iter()
-                .filter(|path| !path.trim().is_empty())
-                .cloned()
-                .collect(),
-            revision,
-            source_kind,
-            trust_tier,
-            tags,
-        },
-    ))
+        repository,
+        paths: params
+            .filters
+            .paths
+            .iter()
+            .filter(|path| !path.trim().is_empty())
+            .cloned()
+            .collect(),
+        revision,
+        source_kind,
+        trust_tier,
+        tags,
+    })
 }
 
 fn search_mode(
     params: &SearchVescKnowledgeParams,
     mode: SearchMode,
-    category: Option<Category>,
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
     match mode {
-        SearchMode::Legacy => Ok((
-            search_knowledge(&params.query, category, limit)
-                .into_iter()
-                .map(legacy_result)
-                .collect(),
-            Vec::new(),
-        )),
         SearchMode::Lexical => Ok((
             lexical_results(&params.query, filters, limit, config)?
                 .into_iter()
@@ -1359,9 +1332,8 @@ fn fused_result(
 ) -> SearchVescKnowledgeResult {
     let chunk = hit.chunk;
     let id = chunk
-        .legacy_ids
-        .first()
-        .cloned()
+        .registered_id
+        .clone()
         .unwrap_or_else(|| chunk.chunk_id.to_string());
     let line = chunk.source_span.as_ref().map_or(0, |span| span.start_line);
     let source_span = chunk.source_span;
@@ -1438,36 +1410,6 @@ fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
         .map_err(|_| "configured lexical artifact unavailable".to_string())
 }
 
-fn legacy_result(hit: vesc_knowledge_index::KnowledgeSearchHit) -> SearchVescKnowledgeResult {
-    SearchVescKnowledgeResult {
-        id: hit.id,
-        name: hit.name,
-        category: category_label(hit.category).into(),
-        summary: hit.summary,
-        source: SearchVescKnowledgeSource {
-            repo: hit.source.repo,
-            path: hit.source.path,
-            line: hit.source.line,
-            end_line: None,
-            start_byte: None,
-            end_byte: None,
-            revision: None,
-        },
-        score: hit.score,
-        chunk_id: None,
-        document_id: None,
-        passage: None,
-        heading_path: None,
-        resource_uri: None,
-        document_uri: None,
-        retrieval_score: None,
-        origin: None,
-        correction_ids: Vec::new(),
-        provenance: None,
-        explanation: None,
-    }
-}
-
 fn lexical_result(
     hit: vesc_knowledge_index::LexicalHit,
     rank: usize,
@@ -1476,9 +1418,8 @@ fn lexical_result(
     let chunk = hit.chunk;
     let name = chunk.title.clone();
     let id = chunk
-        .legacy_ids
-        .first()
-        .cloned()
+        .registered_id
+        .clone()
         .unwrap_or_else(|| chunk.chunk_id.to_string());
     let line = chunk.source_span.as_ref().map_or(0, |span| span.start_line);
     let source_span = chunk.source_span;
@@ -1610,7 +1551,7 @@ pub fn search_vesc_knowledge_json_with_feedback(
         };
         let feedback = parse_filters(params)
             .map_err(|error| format!("feedback filters unavailable: {error}"))
-            .and_then(|(_, filters)| {
+            .and_then(|filters| {
                 search_feedback(&params.query, store, resources, &filters, limit)
                     .map_err(|error| error.to_string())
             });
@@ -1678,7 +1619,6 @@ fn replay_search_params(
     Ok(SearchVescKnowledgeParams {
         query: correction.retrieval_trace.query.clone(),
         snapshot_id: None,
-        category: None,
         limit: correction.retrieval_trace.limit,
         mode,
         filters,
@@ -1928,42 +1868,36 @@ mod tests {
 
     #[test]
     fn invalid_category_is_ignored() {
-        for (category, filter_category) in [
-            (Some("not_a_category".into()), None),
-            (None, Some("also_not_a_category".into())),
-        ] {
-            let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
-                query: "nvm".into(),
-                snapshot_id: None,
-                category,
-                limit: 10,
-                mode: Some(SearchMode::Legacy),
-                filters: SearchVescKnowledgeFilters {
-                    category: filter_category,
-                    ..SearchVescKnowledgeFilters::default()
-                },
-                max_response_bytes: None,
-                max_context_bytes: None,
-                detail: SearchResponseDetail::Full,
-            });
-            assert!(resp.ok);
-            assert!(resp.error.is_none());
-            assert!(!resp.results.is_empty());
-        }
+        let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
+            query: "nvm".into(),
+            snapshot_id: None,
+            limit: 10,
+            mode: Some(SearchMode::Lexical),
+            filters: SearchVescKnowledgeFilters {
+                category: Some("not_a_category".into()),
+                ..SearchVescKnowledgeFilters::default()
+            },
+            max_response_bytes: None,
+            max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
+        });
+        assert!(resp.ok);
+        assert!(resp.error.is_none());
+        assert!(!resp.results.is_empty());
     }
 
     #[test]
-    fn list_style_repository_and_path_filters_are_accepted() {
+    fn repository_and_path_filters_are_accepted() {
         let params: SearchVescKnowledgeParams = serde_json::from_value(serde_json::json!({
             "query": "bms_update",
             "filters": {
-                "repository_ids": ["refloat"],
+                "repository": "refloat",
                 "paths": ["src/bms.c"]
             }
         }))
-        .expect("compatibility filters");
+        .expect("filters");
 
-        let (_, filters) = parse_filters(&params).expect("parsed filters");
+        let filters = parse_filters(&params).expect("parsed filters");
         assert_eq!(
             filters.repository.as_ref().map(ToString::to_string),
             Some("refloat".into())
@@ -1972,13 +1906,26 @@ mod tests {
     }
 
     #[test]
+    fn removed_search_fields_are_rejected() {
+        for params in [
+            serde_json::json!({ "query": "nvm", "category": "firmware_api" }),
+            serde_json::json!({
+                "query": "nvm",
+                "filters": { "repository_ids": ["vesc"] }
+            }),
+        ] {
+            serde_json::from_value::<SearchVescKnowledgeParams>(params)
+                .expect_err("removed field must not be accepted");
+        }
+    }
+
+    #[test]
     fn zero_limit_uses_default() {
         let resp = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "pkg".into(),
             snapshot_id: None,
-            category: None,
             limit: 0,
-            mode: Some(SearchMode::Legacy),
+            mode: Some(SearchMode::Lexical),
             filters: SearchVescKnowledgeFilters::default(),
             max_response_bytes: None,
             max_context_bytes: None,
@@ -2010,7 +1957,6 @@ mod tests {
             &SearchVescKnowledgeParams {
                 query: "nvm".into(),
                 snapshot_id: None,
-                category: None,
                 limit: 1,
                 mode: None,
                 filters: SearchVescKnowledgeFilters::default(),
@@ -2032,7 +1978,6 @@ mod tests {
         let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "nvm".into(),
             snapshot_id: None,
-            category: None,
             limit: 1,
             mode: Some(SearchMode::Hybrid),
             filters: SearchVescKnowledgeFilters::default(),
@@ -2054,7 +1999,6 @@ mod tests {
         let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
             query: "nvm".into(),
             snapshot_id: None,
-            category: None,
             limit: 1,
             mode: Some(SearchMode::Auto),
             filters: SearchVescKnowledgeFilters::default(),
@@ -2081,7 +2025,6 @@ mod tests {
             &SearchVescKnowledgeParams {
                 query: "lbm_add_extension".into(),
                 snapshot_id: None,
-                category: None,
                 limit: 1,
                 mode: Some(SearchMode::Lexical),
                 filters: SearchVescKnowledgeFilters::default(),
@@ -2097,7 +2040,7 @@ mod tests {
         );
 
         assert!(response.ok);
-        assert_eq!(response.results[0].id, "vesc_c_if.lbm_add_extension");
+        assert_eq!(response.results[0].id, "native_lib_abi.lbm_add_extension");
         assert!(response.index.is_some());
         assert!(
             response
@@ -2224,7 +2167,6 @@ mod tests {
         let params = SearchVescKnowledgeParams {
             query: "lbm_add_extension".into(),
             snapshot_id: None,
-            category: None,
             limit: 3,
             mode: Some(SearchMode::Hybrid),
             filters: SearchVescKnowledgeFilters::default(),
@@ -2262,7 +2204,6 @@ mod tests {
         let params = SearchVescKnowledgeParams {
             query: "lbm_add_extension".into(),
             snapshot_id: None,
-            category: None,
             limit: 3,
             mode: Some(SearchMode::Hybrid),
             filters: SearchVescKnowledgeFilters::default(),
@@ -2292,12 +2233,11 @@ mod tests {
             &SearchVescKnowledgeParams {
                 query: "lbm_add_extension".into(),
                 snapshot_id: None,
-                category: None,
                 limit: 1,
                 mode: Some(SearchMode::Lexical),
                 filters: SearchVescKnowledgeFilters {
                     category: Some("firmware_api".into()),
-                    revision: Some("legacy".into()),
+                    revision: Some("embedded-catalog-v1".into()),
                     ..SearchVescKnowledgeFilters::default()
                 },
                 max_response_bytes: None,
@@ -2318,7 +2258,7 @@ mod tests {
                 .as_ref()
                 .expect("explanation")
                 .filter_effects,
-            vec!["category=firmware_api", "revision=legacy"]
+            vec!["category=firmware_api", "revision=embedded-catalog-v1"]
         );
     }
 
@@ -2330,7 +2270,6 @@ mod tests {
             &SearchVescKnowledgeParams {
                 query: "lbm".into(),
                 snapshot_id: None,
-                category: None,
                 limit: 10,
                 mode: Some(SearchMode::Lexical),
                 filters: SearchVescKnowledgeFilters::default(),

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
-use vesc_knowledge_index::embedded_entries;
 use vesc_knowledge_index::evaluation::{EvaluationQuery, Intent, evaluate_suite};
+use vesc_knowledge_index::{LexicalFilters, embedded_entries, lexical_index};
 
 fn fixture() -> Vec<EvaluationQuery> {
     serde_json::from_str(include_str!("../../../tests/evaluation/v1/queries.json"))
@@ -26,7 +26,7 @@ fn v1_fixture_has_representative_intent_coverage() {
 }
 
 #[test]
-fn v1_fixture_references_existing_legacy_entries() {
+fn v1_fixture_references_existing_catalog_entries() {
     let ids: BTreeSet<_> = embedded_entries()
         .iter()
         .map(|entry| entry.id.as_str())
@@ -39,12 +39,18 @@ fn v1_fixture_references_existing_legacy_entries() {
 }
 
 #[test]
-fn legacy_baseline_report_is_deterministic() {
+fn lexical_baseline_report_is_deterministic() {
     let queries = fixture();
     let report = evaluate_suite(&queries, |text| {
-        vesc_knowledge_index::search_knowledge(text, None, 50)
+        lexical_index()
+            .search(text, &LexicalFilters::default(), 50)
+            .expect("lexical search")
             .into_iter()
-            .map(|hit| hit.id)
+            .map(|hit| {
+                hit.chunk
+                    .registered_id
+                    .unwrap_or_else(|| hit.chunk.chunk_id.to_string())
+            })
             .collect()
     });
     let first = serde_json::to_vec(&report).expect("serialize report");

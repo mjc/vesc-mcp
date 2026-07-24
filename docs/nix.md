@@ -18,21 +18,16 @@ For Streamable HTTP:
 nix develop -c vesc-mcp-server --http
 ```
 
-The packaged build includes the generated knowledge artifact and the pinned
-INT8 `jinaai/jina-embeddings-v2-base-code` query model. `auto` retrieval uses
-hybrid search when its snapshot has matching vectors. Managed snapshot
-preparation builds those vectors with the packaged model. Builds without a
-configured semantic model remain lexical-only and return an explicit lexical
-retry when `auto` or `hybrid` is requested:
+The packaged build includes the embedded catalog and the pinned INT8
+`jinaai/jina-embeddings-v2-base-code` query model. `auto` retrieval uses hybrid
+search when its managed snapshot has matching vectors. Managed snapshot
+preparation builds those vectors with the packaged model. Without a managed
+snapshot, lexical search uses the embedded catalog and `auto` or `hybrid`
+returns an explicit lexical retry:
 
 ```bash
 nix run
 ```
-
-The previous BGE model remains at
-`share/vesc-mcp/models/bge-small-en-v1.5-quantized` inside the package for an
-explicit fallback. It must be paired with a compatible BGE vector artifact;
-overriding only the model would correctly fail artifact compatibility checks.
 
 ## Develop and test
 

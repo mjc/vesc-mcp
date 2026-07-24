@@ -421,7 +421,7 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
     let summary = build_git_artifacts(artifacts.path(), &[source]).expect("build Git corpus");
     assert!(
         summary.document_count > 94,
-        "compatibility corpus remains additive"
+        "catalog corpus remains additive"
     );
     assert_eq!(summary.manifest.sources.len(), 4);
     assert_eq!(

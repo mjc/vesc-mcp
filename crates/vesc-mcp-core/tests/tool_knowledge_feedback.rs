@@ -234,7 +234,6 @@ fn feedback_search_respects_total_limit_and_updates_timing() {
         &SearchVescKnowledgeParams {
             query: "load-native-lib import tag".into(),
             snapshot_id: None,
-            category: None,
             limit: 1,
             mode: None,
             filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
@@ -339,7 +338,6 @@ fn correction_replay_measures_base_knowledge_without_advisory() {
         &SearchVescKnowledgeParams {
             query: correction.retrieval_trace.query.clone(),
             snapshot_id: None,
-            category: None,
             limit: correction.retrieval_trace.limit,
             mode: Some(vesc_mcp_core::tools::search_knowledge::SearchMode::Lexical),
             filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
@@ -536,7 +534,6 @@ fn compact_related_search_compacts_correction_advisory() {
     let mut params = SearchVescKnowledgeParams {
         query: "native loader tag".into(),
         snapshot_id: None,
-        category: None,
         limit: 10,
         mode: None,
         filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
@@ -597,7 +594,6 @@ fn unrelated_search_does_not_surface_loader_advisory() {
         &SearchVescKnowledgeParams {
             query: "realtime data field identifiers".into(),
             snapshot_id: None,
-            category: None,
             limit: 10,
             mode: None,
             filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),
@@ -626,7 +622,6 @@ fn affected_search_hit_references_the_correction() {
     let params = SearchVescKnowledgeParams {
         query: "lisp imports load-native-lib".into(),
         snapshot_id: None,
-        category: None,
         limit: 10,
         mode: None,
         filters: vesc_mcp_core::tools::search_knowledge::SearchVescKnowledgeFilters::default(),

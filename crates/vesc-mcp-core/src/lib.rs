@@ -30,19 +30,13 @@ pub use error::{CoreError, CoreResult};
 pub use server::{HttpMcpService, VescMcpService};
 
 const DEFAULT_SNAPSHOT_FILE: &str = "default-snapshot-corpus-1.1.json";
-const LEGACY_DEFAULT_SNAPSHOT_FILE: &str = "default-snapshot.json";
 
 fn default_snapshot_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(DEFAULT_SNAPSHOT_FILE)
 }
 
 fn read_default_snapshot(root: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    match std::fs::read(default_snapshot_path(root)) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::read(root.join(LEGACY_DEFAULT_SNAPSHOT_FILE))
-        }
-        result => result,
-    }
+    std::fs::read(default_snapshot_path(root))
 }
 
 #[cfg(test)]
@@ -50,23 +44,16 @@ mod default_snapshot_tests {
     use super::*;
 
     #[test]
-    fn versioned_default_preserves_and_supersedes_the_rollback_pointer() {
+    fn default_snapshot_does_not_read_an_unversioned_pointer() {
         let root = tempfile::tempdir().expect("data root");
-        let legacy = root.path().join(LEGACY_DEFAULT_SNAPSHOT_FILE);
-        std::fs::write(&legacy, b"legacy").expect("legacy pointer");
-        assert_eq!(
-            read_default_snapshot(root.path()).expect("legacy fallback"),
-            b"legacy"
-        );
+        std::fs::write(root.path().join("default-snapshot.json"), b"obsolete")
+            .expect("unversioned pointer");
 
-        std::fs::write(default_snapshot_path(root.path()), b"current").expect("versioned pointer");
         assert_eq!(
-            read_default_snapshot(root.path()).expect("versioned pointer"),
-            b"current"
-        );
-        assert_eq!(
-            std::fs::read(legacy).expect("preserved rollback pointer"),
-            b"legacy"
+            read_default_snapshot(root.path())
+                .expect_err("unversioned pointer must be ignored")
+                .kind(),
+            std::io::ErrorKind::NotFound
         );
     }
 }

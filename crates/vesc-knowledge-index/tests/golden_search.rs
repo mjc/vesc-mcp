@@ -3,14 +3,13 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use vesc_knowledge_index::{Category, search_knowledge};
+use vesc_knowledge_index::{Category, LexicalFilters, lexical_index};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct GoldenSearchTop {
     id: String,
     name: String,
     category: String,
-    score: u32,
     source_repo: String,
     source_path: String,
 }
@@ -47,20 +46,25 @@ const fn category_name(category: Category) -> &'static str {
 
 fn assert_golden_search(name: &str) {
     let expected = load_expectation(name);
-    let hits = search_knowledge(&expected.query, None, 1);
+    let hits = lexical_index()
+        .search(&expected.query, &LexicalFilters::default(), 1)
+        .expect("lexical search");
     assert!(
         !hits.is_empty(),
         "query {:?} returned no hits",
         expected.query
     );
     let top = &hits[0];
+    let chunk = &top.chunk;
     let actual = GoldenSearchTop {
-        id: top.id.clone(),
-        name: top.name.clone(),
-        category: category_name(top.category).into(),
-        score: top.score,
-        source_repo: top.source.repo.clone(),
-        source_path: top.source.path.clone(),
+        id: chunk
+            .registered_id
+            .clone()
+            .unwrap_or_else(|| chunk.chunk_id.to_string()),
+        name: chunk.title.clone(),
+        category: category_name(chunk.category.expect("catalog category")).into(),
+        source_repo: chunk.repository.to_string(),
+        source_path: chunk.path.clone(),
     };
     assert_eq!(actual, expected.top, "query {:?}", expected.query);
 }

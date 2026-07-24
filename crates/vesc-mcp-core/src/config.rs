@@ -80,7 +80,6 @@ pub enum ConfigError {
 pub enum RetrievalMode {
     #[default]
     Lexical,
-    Legacy,
     Auto,
     Hybrid,
 }
@@ -90,7 +89,6 @@ impl FromStr for RetrievalMode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "legacy" => Ok(Self::Legacy),
             "lexical" => Ok(Self::Lexical),
             "auto" => Ok(Self::Auto),
             "hybrid" => Ok(Self::Hybrid),
@@ -242,7 +240,7 @@ impl KnowledgeConfig {
         })
     }
 
-    /// Resolve the explicit compatibility artifact or the current managed default.
+    /// Resolve the explicit artifact or the current managed default.
     #[must_use]
     pub fn resolved_artifact_path(&self) -> Option<PathBuf> {
         self.resolved_artifact().map(|artifact| artifact.path)
@@ -1265,7 +1263,7 @@ max_total_bytes = 1073741824
         config.knowledge.artifact_path = Some(temp.path().join("bundled-fallback"));
         let id = "a".repeat(64);
         std::fs::write(
-            temp.path().join("default-snapshot.json"),
+            crate::default_snapshot_path(temp.path()),
             serde_json::to_vec(&serde_json::json!({ "id": id })).expect("alias JSON"),
         )
         .expect("default alias");
@@ -1447,6 +1445,12 @@ writes_enabled = false
     #[test]
     fn knowledge_mode_rejects_unknown_values() {
         let error = RetrievalMode::from_str("not-a-mode").expect_err("invalid mode");
+        assert!(error.contains("unsupported retrieval mode"));
+    }
+
+    #[test]
+    fn knowledge_mode_rejects_legacy() {
+        let error = RetrievalMode::from_str("legacy").expect_err("unsupported mode");
         assert!(error.contains("unsupported retrieval mode"));
     }
 

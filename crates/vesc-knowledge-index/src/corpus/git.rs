@@ -677,7 +677,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_value::<Vec<compact_str::CompactString>>(serialized)
-                .expect("legacy JSON identifiers deserialize"),
+                .expect("existing JSON identifiers deserialize"),
             identifiers
         );
     }

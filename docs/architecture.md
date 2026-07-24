@@ -130,15 +130,13 @@ flowchart LR
 ```
 
 `lexical` is the offline default after passing the locked evaluation gate.
-`legacy` remains the explicit compatibility mode. The lexical path uses the
-normalized in-memory Tantivy index. Hybrid fusion uses RRF with a lexical floor
+The lexical path uses the normalized Tantivy index. Hybrid fusion uses RRF with a lexical floor
 and bounded adjacent context, so an uncalibrated semantic model cannot displace
 trusted lexical evidence; `auto` reports an error when semantic capability is
 unavailable. Artifact writes are staged and the active manifest
 selector is replaced only after checksum validation. The selector in
 `active.json` points to the full generation manifest and carries its checksum;
-readers should use the lifecycle inspection API, which also accepts legacy
-full-manifest `active.json` files.
+readers should use the lifecycle inspection API.
 
 The lexical MCP path caches the validated index by immutable generation path,
 so a rebuilt generation naturally invalidates the cache. Search responses expose

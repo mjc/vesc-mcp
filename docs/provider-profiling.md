@@ -14,10 +14,6 @@ which is offline, deterministic, and strongest for exact firmware symbols.
   runtime is unavailable.
 - Keep CPU as the default query execution provider. The RX 5700 XT exception
   below uses MIGraphX only for bulk ingestion.
-- Keep `Xenova/bge-small-en-v1.5` at revision
-  `ea104dacec62c0de699686887e3f920caeb4f3e3` only as a legacy fallback with a
-  matching BGE vector artifact.
-
 ## Why lexical fallback remains required
 
 Semantic and hybrid retrieval improve conceptual code queries, while lexical

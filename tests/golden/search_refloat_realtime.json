@@ -2,10 +2,9 @@
   "query": "REALTIME",
   "top": {
     "category": "refloat_command",
-    "id": "refloat_command.REALTIME_DATA",
-    "name": "REALTIME_DATA",
-    "score": 900,
-    "source_path": "doc/commands/REALTIME_DATA.md",
+    "id": "refloat_command.REALTIME_DATA_INTERNAL",
+    "name": "REALTIME_DATA_INTERNAL",
+    "source_path": "doc/commands/REALTIME_DATA_INTERNAL.md",
     "source_repo": "refloat"
   }
 }

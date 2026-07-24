@@ -64,8 +64,8 @@ fn full_search_detail_preserves_current_result_fields() {
 
     let top = &results[0];
     assert_eq!(top["name"], "lbm_add_extension");
-    assert_eq!(top["id"], "vesc_c_if.lbm_add_extension");
-    assert_eq!(top["category"], "firmware_api");
+    assert_eq!(top["id"], "native_lib_abi.lbm_add_extension");
+    assert_eq!(top["category"], "native_lib_abi");
     assert!(
         top["score"].as_u64().is_some_and(|score| score > 0),
         "entry: {top}"
@@ -76,8 +76,8 @@ fn full_search_detail_preserves_current_result_fields() {
             .is_some_and(|summary| summary.contains("extension")),
         "entry: {top}"
     );
-    assert_eq!(top["source"]["repo"], "vesc");
-    assert_eq!(top["source"]["path"], "lispBM/c_libs/vesc_c_if.h");
+    assert_eq!(top["source"]["repo"], "vesc-mcp");
+    assert_eq!(top["source"]["path"], "docs/vesc-pkg-lib-abi.md");
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn lexical_mode_returns_readable_provenance_resource() {
     let chunk: Value = serde_json::from_str(&chunk).expect("chunk resource is JSON");
     assert_eq!(
         chunk["text"],
-        "Primary extension registration surface for native packages (`lbm_add_extension`)"
+        "Native package registers LispBM extensions through VESC_IF"
     );
 
     let document_uri = body["results"][0]["document_uri"]
@@ -168,13 +168,13 @@ fn documented_search_examples_are_behaviorally_supported() {
 }
 
 #[test]
-fn unknown_category_is_ignored_at_the_mcp_boundary() {
+fn unknown_category_filter_is_ignored_at_the_mcp_boundary() {
     let harness = McpTestHarness::new();
     let response = harness.call_tool(
         "search_vesc_knowledge",
         serde_json::json!({
             "query": "lbm_add_extension",
-            "category": "unknown",
+            "filters": { "category": "unknown" },
             "mode": "lexical"
         }),
     );

@@ -1,11 +1,10 @@
 {
   "query": "lbm_add_extension",
   "top": {
-    "category": "firmware_api",
-    "id": "vesc_c_if.lbm_add_extension",
+    "category": "native_lib_abi",
+    "id": "native_lib_abi.lbm_add_extension",
     "name": "lbm_add_extension",
-    "score": 1000,
-    "source_path": "lispBM/c_libs/vesc_c_if.h",
-    "source_repo": "vesc"
+    "source_path": "docs/vesc-pkg-lib-abi.md",
+    "source_repo": "vesc-mcp"
   }
 }

@@ -22,7 +22,7 @@ use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 use crate::corpus::{Chunk, ChunkId, ContentDigest, DocumentId, SourceKind, TrustTier};
 use crate::{Category, RepositoryId, Revision};
 
-pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-stored-chunks-descriptor-v4";
+pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-stored-chunks-descriptor-v5";
 const INDEX_WRITER_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;
 const MAX_INCREMENTAL_SEGMENTS: usize = 32;
@@ -416,9 +416,11 @@ impl LexicalIndex {
     ///
     /// The digest is identical to [`crate::CorpusManifest::new`] without
     /// materializing either complete ID inventory.
-    pub(crate) fn corpus_inventory(
-        path: &Path,
-    ) -> Result<(usize, usize, ContentDigest), LexicalError> {
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when the persisted index is missing, corrupt,
+    /// or contains duplicate chunk documents.
+    pub fn corpus_inventory(path: &Path) -> Result<(usize, usize, ContentDigest), LexicalError> {
         let index = Self::open_persisted_index(path, BTreeMap::new())?;
         let searcher = index.reader.searcher();
         let mut writer = DigestingWriter::new(std::io::sink());
@@ -772,9 +774,9 @@ fn sort_hits(hits: &mut [LexicalHit], raw_terms: &[String]) {
             .then_with(|| {
                 if left.exact_identifier && right.exact_identifier {
                     left.chunk
-                        .legacy_ids
-                        .is_empty()
-                        .cmp(&right.chunk.legacy_ids.is_empty())
+                        .registered_id
+                        .is_none()
+                        .cmp(&right.chunk.registered_id.is_none())
                 } else {
                     std::cmp::Ordering::Equal
                 }
@@ -1141,12 +1143,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_exact_identifier_wins_over_duplicate_normalized_record() {
-        let mut legacy = chunk("NVM", "legacy summary", "read_nvm");
-        legacy.legacy_ids.push("vesc_c_if.read_nvm".into());
+    fn registered_exact_identifier_wins_over_anonymous_record() {
+        let mut registered = chunk("NVM", "registered summary", "read_nvm");
+        registered.registered_id = Some("vesc_c_if.read_nvm".into());
         let index = LexicalIndex::build(&[
             chunk("NVM record", "normalized catalog record", "read_nvm"),
-            legacy,
+            registered,
         ])
         .expect("index");
         let hits = index
@@ -1154,8 +1156,8 @@ mod tests {
             .expect("search");
 
         assert_eq!(
-            hits[0].chunk.legacy_ids,
-            vec![String::from("vesc_c_if.read_nvm")]
+            hits[0].chunk.registered_id,
+            Some(String::from("vesc_c_if.read_nvm"))
         );
     }
 
@@ -1516,7 +1518,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_chunks_do_not_read_legacy_json() {
+    fn persisted_chunks_ignore_descriptor_contents() {
         let chunks = vec![chunk("alpha", "body", "alpha")];
         let root = tempfile::tempdir().expect("artifact root");
         let path = root.path().join("lexical.json");
@@ -1524,7 +1526,7 @@ mod tests {
             .expect("build index")
             .write_artifact(&path)
             .expect("write artifact");
-        std::fs::write(&path, b"obsolete legacy content").expect("replace descriptor");
+        std::fs::write(&path, b"obsolete descriptor contents").expect("replace descriptor");
         assert_eq!(
             LexicalIndex::read_artifact_chunks(&path).expect("read source artifact"),
             chunks

@@ -17,7 +17,6 @@ pub mod pipeline;
 pub mod planning;
 pub mod release_repositories;
 pub mod reranking;
-mod search;
 pub mod semantic;
 
 pub use builder::IndexBuilder;
@@ -35,8 +34,7 @@ pub use corpus::{
     LicenseStatus, NormalizedDocument, RepositoryId, ResourceUri, Revision, SchemaVersion,
     SourceKind, SourceSpan, TrustTier, validate_chunk_adjacency,
 };
-pub use embedded::{KnowledgeSearchHit, embedded_entries, search_knowledge};
-pub use embedded::{lexical_index, search_lexical_knowledge};
+pub use embedded::{embedded_entries, lexical_index, search_lexical_knowledge};
 pub use entry::{Category, IndexEntry, SourceRef};
 pub use fusion::{
     ExpandedContext, FusedHit, FusionConfig, expand_adjacent_context, fuse_candidates,
@@ -64,7 +62,6 @@ pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;
 pub use parsers::refloat_commands::RefloatCommandsParseError;
 pub use parsers::vesc_c_if::VescCIfParseError;
-pub use search::{ScoredEntry, rank_entries};
 pub use semantic::{
     DEFAULT_SEMANTIC_BATCH_SIZE, EmbeddingBatchSize, EmbeddingError, EmbeddingProfile,
     EmbeddingProvider, FakeEmbeddingProvider, OutputNormalization, Pooling, SemanticHit,

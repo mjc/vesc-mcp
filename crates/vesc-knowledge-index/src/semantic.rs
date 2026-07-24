@@ -1,5 +1,6 @@
 //! Optional local semantic retrieval contracts and vector artifacts.
 
+use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -538,7 +539,7 @@ pub trait EmbeddingProvider {
 
 /// Builds the stable document text sent to the embedding provider.
 ///
-/// Legacy records often carry their useful vocabulary in titles, identifiers,
+/// Catalog records often carry their useful vocabulary in titles, identifiers,
 /// and tags rather than in the short body summary. Keep those fields in the
 /// semantic input so vector retrieval sees the same corpus concepts that the
 /// lexical fields expose.
@@ -2040,6 +2041,44 @@ impl VectorCheckpoint {
         Ok(())
     }
 
+    fn read_row_into(
+        &mut self,
+        row: usize,
+        output: &mut Vec<f32>,
+        bytes: &mut Vec<u8>,
+    ) -> Result<(), EmbeddingError> {
+        if !self.is_complete(row) {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        output.resize(self.dimension, 0.0);
+        bytes.resize(
+            self.dimension
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or(EmbeddingError::TooLarge)?,
+            0,
+        );
+        self.file
+            .seek(SeekFrom::Start(self.row_offset(row)?))
+            .and_then(|_| self.file.read_exact(bytes))
+            .map_err(|error| EmbeddingError::Io(error.to_string()))?;
+        for (value, bytes) in output.iter_mut().zip(bytes.chunks_exact(4)) {
+            *value = f32::from_le_bytes(bytes.try_into().expect("four-byte checkpoint value"));
+        }
+        Ok(())
+    }
+
+    fn mark_incomplete(&mut self, row: usize) -> Result<(), EmbeddingError> {
+        if row >= self.count {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        self.completed[row / 8] &= !(1 << (row % 8));
+        self.file
+            .seek(SeekFrom::Start(48))
+            .and_then(|_| self.file.write_all(&self.completed))
+            .and_then(|()| self.file.sync_data())
+            .map_err(|error| EmbeddingError::Io(error.to_string()))
+    }
+
     fn write_batch<V: AsRef<[f32]>>(
         &mut self,
         rows: &[usize],
@@ -2107,6 +2146,130 @@ fn flush_checkpoint_batch(
     Ok(())
 }
 
+fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized>(
+    provider: &mut P,
+    chunks: &[&Chunk],
+    dimension: usize,
+    observations: &mut VectorBuildObservations,
+) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+    if chunks.is_empty() {
+        return Err(EmbeddingError::EmptyInput);
+    }
+    let natural_order;
+    let inference_order = if let Some(order) = provider.inference_order(chunks)? {
+        if order.len() != chunks.len() || order.iter().any(|&index| index >= chunks.len()) {
+            return Err(EmbeddingError::Provider(
+                "provider returned an invalid inference order".into(),
+            ));
+        }
+        let mut seen = vec![false; chunks.len()];
+        for &index in &order {
+            if std::mem::replace(&mut seen[index], true) {
+                return Err(EmbeddingError::Provider(
+                    "provider returned a duplicate inference index".into(),
+                ));
+            }
+        }
+        order
+    } else {
+        natural_order = (0..chunks.len()).collect::<Vec<_>>();
+        natural_order
+    };
+
+    let input_started = Instant::now();
+    let texts = inference_order
+        .iter()
+        .map(|&index| embedding_text(chunks[index]))
+        .collect::<Vec<_>>();
+    observations.embedding_input_us = observations
+        .embedding_input_us
+        .saturating_add(elapsed_us(input_started));
+    observations.input_bytes = observations.input_bytes.saturating_add(
+        texts
+            .iter()
+            .map(String::len)
+            .try_fold(0_u64, |total, len| {
+                u64::try_from(len)
+                    .ok()
+                    .and_then(|len| total.checked_add(len))
+            })
+            .unwrap_or(u64::MAX),
+    );
+
+    let provider_started = Instant::now();
+    let vectors = provider.embed_documents(&texts)?;
+    observations.provider_us = observations
+        .provider_us
+        .saturating_add(elapsed_us(provider_started));
+    if vectors.len() != chunks.len() {
+        return Err(EmbeddingError::DimensionMismatch {
+            expected: chunks.len(),
+            actual: vectors.len(),
+        });
+    }
+
+    let finalization_started = Instant::now();
+    let normalization = provider.output_normalization();
+    let mut ordered = std::iter::repeat_with(|| None)
+        .take(chunks.len())
+        .collect::<Vec<_>>();
+    for (index, mut vector) in inference_order.into_iter().zip(vectors) {
+        if vector.len() != dimension {
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: dimension,
+                actual: vector.len(),
+            });
+        }
+        match normalization {
+            OutputNormalization::Guaranteed => validate_vector(&vector, true)?,
+            OutputNormalization::Unknown => normalize(&mut vector)?,
+        }
+        ordered[index] = Some(vector);
+    }
+    observations.vector_finalization_us = observations
+        .vector_finalization_us
+        .saturating_add(elapsed_us(finalization_started));
+    observations.embedded_vectors = observations.embedded_vectors.saturating_add(chunks.len());
+    ordered
+        .into_iter()
+        .map(|vector| vector.ok_or(EmbeddingError::InvalidHeader))
+        .collect()
+}
+
+fn reconciliation_checkpoint_identity(
+    missing: &[&Chunk],
+    corpus_digest: &ContentDigest,
+    previous_checksum: &ContentDigest,
+    model_id: &str,
+    model_revision: &str,
+) -> Result<ContentDigest, EmbeddingError> {
+    let mut digest = Sha256::new();
+    for bytes in [
+        b"vesc-reconciliation-checkpoint-v1".as_slice(),
+        corpus_digest.as_str().as_bytes(),
+        previous_checksum.as_str().as_bytes(),
+        model_id.as_bytes(),
+        model_revision.as_bytes(),
+    ] {
+        digest.update(
+            u64::try_from(bytes.len())
+                .map_err(|_| EmbeddingError::TooLarge)?
+                .to_le_bytes(),
+        );
+        digest.update(bytes);
+    }
+    for chunk in missing {
+        let bytes = chunk.chunk_id.as_str().as_bytes();
+        digest.update(
+            u64::try_from(bytes.len())
+                .map_err(|_| EmbeddingError::TooLarge)?
+                .to_le_bytes(),
+        );
+        digest.update(bytes);
+    }
+    digest_from_bytes(&digest.finalize())
+}
+
 /// Reproducible row-major vector artifact keyed by sorted stable chunk IDs.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2133,8 +2296,20 @@ pub(crate) struct IncrementalVectorArtifact<'a> {
     pub path: &'a Path,
 }
 
-fn encoded_artifact_len(
-    chunks: &[Chunk],
+#[derive(Clone, Copy)]
+pub(crate) struct ReconciledVectorArtifact<'a> {
+    pub model_id: &'a str,
+    pub model_revision: &'a str,
+    pub corpus_digest: &'a ContentDigest,
+    pub previous_corpus_digest: &'a ContentDigest,
+    pub previous_checksum: &'a ContentDigest,
+    pub previous_path: &'a Path,
+    pub path: &'a Path,
+    pub checkpoint_path: Option<&'a Path>,
+}
+
+fn encoded_artifact_len<C: Borrow<Chunk>>(
+    chunks: &[C],
     dimension: usize,
     model_id: &str,
     model_revision: &str,
@@ -2155,6 +2330,7 @@ fn encoded_artifact_len(
         .checked_mul(std::mem::size_of::<f32>())
         .ok_or(EmbeddingError::TooLarge)?;
     let total = chunks.iter().try_fold(fixed, |total, chunk| {
+        let chunk = chunk.borrow();
         let id_len = chunk.chunk_id.as_str().len();
         u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
         total
@@ -2182,7 +2358,13 @@ impl VectorArtifact {
             && provider_dimension.is_none_or(|dimension| dimension == self.dimension)
     }
 
-    pub(crate) fn validate_reusable_artifact(
+    /// Verifies that an on-disk vector artifact can seed an incremental build.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the checksum, schema, corpus, model, or
+    /// optional provider dimension does not match.
+    pub fn validate_reusable_artifact(
         path: &Path,
         expected_checksum: &ContentDigest,
         expected_corpus_digest: &ContentDigest,
@@ -2850,6 +3032,222 @@ impl VectorArtifact {
             digest_from_bytes(&digest)?,
             length,
             count,
+            header.dimension,
+            observations,
+        ))
+    }
+
+    /// Streams matching rows from a predecessor and embeds only new chunk IDs.
+    ///
+    /// Unlike the append-only path, this also drops predecessor rows absent
+    /// from the requested corpus, allowing bounded format migrations.
+    #[allow(clippy::too_many_lines)] // One ordered streaming reconciliation pass.
+    pub(crate) fn write_provider_reconciling_artifact_with_observations<
+        P: EmbeddingProvider + ?Sized,
+    >(
+        provider: &mut P,
+        chunks: &[Chunk],
+        request: ReconciledVectorArtifact<'_>,
+    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
+        let ReconciledVectorArtifact {
+            model_id,
+            model_revision,
+            corpus_digest,
+            previous_corpus_digest,
+            previous_checksum,
+            previous_path,
+            path,
+            checkpoint_path,
+        } = request;
+        if previous_path == path {
+            return Err(EmbeddingError::Io(
+                "reconciled vector destination must differ from its predecessor".into(),
+            ));
+        }
+        let mut ordered = chunks.iter().collect::<Vec<_>>();
+        ordered.sort_unstable_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+        if ordered
+            .windows(2)
+            .any(|chunks| chunks[0].chunk_id == chunks[1].chunk_id)
+        {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+
+        let (mut source, header) = open_verified_vector_reader(previous_path, previous_checksum)?;
+        validate_reconciled_header(
+            &header,
+            provider,
+            model_id,
+            model_revision,
+            previous_corpus_digest,
+        )?;
+        let mut row = Vec::with_capacity(header.dimension);
+        let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+        let mut missing = Vec::new();
+        for chunk in &ordered {
+            while previous_id.as_ref().is_some_and(|id| id < &chunk.chunk_id) {
+                previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+            }
+            if previous_id.as_ref() == Some(&chunk.chunk_id) {
+                previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+            } else {
+                missing.push(*chunk);
+            }
+        }
+
+        let mut observations = VectorBuildObservations::default();
+        let mut checkpoint = if let Some(path) = checkpoint_path.filter(|_| !missing.is_empty()) {
+            let identity = reconciliation_checkpoint_identity(
+                &missing,
+                corpus_digest,
+                previous_checksum,
+                model_id,
+                model_revision,
+            )?;
+            Some(VectorCheckpoint::open(
+                path,
+                header.dimension,
+                missing.len(),
+                &identity,
+            )?)
+        } else {
+            None
+        };
+        if let Some(checkpoint) = checkpoint.as_mut() {
+            let batch_size = provider.embedding_batch_size().get();
+            let mut rows = Vec::with_capacity(batch_size);
+            let mut checkpoint_vector = Vec::new();
+            let mut checkpoint_bytes = Vec::new();
+            for missing_row in 0..missing.len() {
+                if checkpoint.is_complete(missing_row) {
+                    checkpoint.read_row_into(
+                        missing_row,
+                        &mut checkpoint_vector,
+                        &mut checkpoint_bytes,
+                    )?;
+                    if validate_vector(&checkpoint_vector, true).is_ok() {
+                        continue;
+                    }
+                    checkpoint.mark_incomplete(missing_row)?;
+                }
+                rows.push(missing_row);
+                if rows.len() < batch_size {
+                    continue;
+                }
+                let chunks = rows.iter().map(|&row| missing[row]).collect::<Vec<_>>();
+                let vectors = embed_reconciliation_batch(
+                    provider,
+                    &chunks,
+                    header.dimension,
+                    &mut observations,
+                )?;
+                checkpoint.write_batch(&rows, &vectors)?;
+                rows.clear();
+            }
+            if !rows.is_empty() {
+                let chunks = rows.iter().map(|&row| missing[row]).collect::<Vec<_>>();
+                let vectors = embed_reconciliation_batch(
+                    provider,
+                    &chunks,
+                    header.dimension,
+                    &mut observations,
+                )?;
+                checkpoint.write_batch(&rows, &vectors)?;
+            }
+        }
+        let expected_length =
+            encoded_artifact_len(&ordered, header.dimension, model_id, model_revision)?;
+        let destination = File::create(path).map_err(io_error)?;
+        let mut artifact = DigestingWriter::new(BufWriter::new(destination));
+        let checksum = {
+            let mut body = DigestingWriter::new(&mut artifact);
+            write_vector_header(
+                &mut body,
+                2,
+                header.dimension,
+                ordered.len(),
+                model_id,
+                model_revision,
+                true,
+                corpus_digest,
+            )?;
+            let (mut source, _) = rewind_vector_reader(source)?;
+            let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+            let batch_size = provider.embedding_batch_size().get();
+            let mut next_missing = 0_usize;
+            let mut batch_start = 0_usize;
+            let mut embedded_batch = Vec::new();
+            let mut embedded_row = 0_usize;
+            let mut checkpoint_vector = Vec::new();
+            let mut checkpoint_bytes = Vec::new();
+            for chunk in &ordered {
+                while previous_id.as_ref().is_some_and(|id| id < &chunk.chunk_id) {
+                    previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+                }
+                if previous_id.as_ref() == Some(&chunk.chunk_id) {
+                    validate_vector(&row, true)?;
+                    write_vector_row(&mut body, &chunk.chunk_id, &row)?;
+                    previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+                    continue;
+                }
+                let missing_row = next_missing.saturating_sub(embedded_batch.len()) + embedded_row;
+                if let Some(checkpoint) = checkpoint.as_mut() {
+                    checkpoint.read_row_into(
+                        missing_row,
+                        &mut checkpoint_vector,
+                        &mut checkpoint_bytes,
+                    )?;
+                    validate_vector(&checkpoint_vector, true)?;
+                    write_vector_row(&mut body, &chunk.chunk_id, &checkpoint_vector)?;
+                    next_missing = missing_row + 1;
+                    embedded_row = 0;
+                    embedded_batch.clear();
+                    continue;
+                }
+                if embedded_row == embedded_batch.len() {
+                    batch_start = next_missing;
+                    let end = next_missing.saturating_add(batch_size).min(missing.len());
+                    embedded_batch = embed_reconciliation_batch(
+                        provider,
+                        &missing[next_missing..end],
+                        header.dimension,
+                        &mut observations,
+                    )?;
+                    next_missing = end;
+                    embedded_row = 0;
+                }
+                if missing.get(batch_start + embedded_row) != Some(chunk) {
+                    return Err(EmbeddingError::MissingChunk(chunk.chunk_id.clone()));
+                }
+                write_vector_row(
+                    &mut body,
+                    &chunk.chunk_id,
+                    embedded_batch
+                        .get(embedded_row)
+                        .ok_or_else(|| EmbeddingError::MissingChunk(chunk.chunk_id.clone()))?,
+                )?;
+                embedded_row += 1;
+            }
+            if next_missing != missing.len() || embedded_row != embedded_batch.len() {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            let (_, checksum, body_length) = body.finish();
+            if body_length != (expected_length - CHECKSUM_LEN) as u64 {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            checksum
+        };
+        artifact.write_all(&checksum).map_err(io_error)?;
+        artifact.flush().map_err(io_error)?;
+        let (_, digest, length) = artifact.finish();
+        if length != expected_length as u64 {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        observations.reused_vectors = ordered.len().saturating_sub(observations.embedded_vectors);
+        Ok((
+            digest_from_bytes(&digest)?,
+            length,
+            ordered.len(),
             header.dimension,
             observations,
         ))
@@ -3539,6 +3937,10 @@ impl<R: Read> BinaryReader<R> {
     const fn is_empty(&self) -> bool {
         self.remaining == 0
     }
+
+    fn into_inner(self) -> R {
+        self.inner
+    }
 }
 
 struct VectorHeader {
@@ -3549,6 +3951,68 @@ struct VectorHeader {
     count: usize,
     normalized: bool,
     corpus_digest: ContentDigest,
+}
+
+fn open_verified_vector_reader(
+    path: &Path,
+    expected_checksum: &ContentDigest,
+) -> Result<(BinaryReader<BufReader<File>>, VectorHeader), EmbeddingError> {
+    let file = File::open(path).map_err(io_error)?;
+    let length = file.metadata().map_err(io_error)?.len();
+    if length > MAX_ARTIFACT_BYTES as u64 || length < (MAGIC.len() + CHECKSUM_LEN) as u64 {
+        return Err(EmbeddingError::TooLarge);
+    }
+    let body_length = length - CHECKSUM_LEN as u64;
+    let mut reader = BufReader::new(file);
+    if verify_reader_checksum(&mut reader, body_length)? != *expected_checksum {
+        return Err(EmbeddingError::ChecksumMismatch);
+    }
+    reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
+    let mut reader = BinaryReader::new(
+        reader,
+        usize::try_from(body_length).map_err(|_| EmbeddingError::TooLarge)?,
+    );
+    let header = read_vector_header(&mut reader)?;
+    Ok((reader, header))
+}
+
+fn rewind_vector_reader(
+    reader: BinaryReader<BufReader<File>>,
+) -> Result<(BinaryReader<BufReader<File>>, VectorHeader), EmbeddingError> {
+    let mut reader = reader.into_inner();
+    let length = reader.get_ref().metadata().map_err(io_error)?.len();
+    if length > MAX_ARTIFACT_BYTES as u64 || length < (MAGIC.len() + CHECKSUM_LEN) as u64 {
+        return Err(EmbeddingError::TooLarge);
+    }
+    let body_length = length - CHECKSUM_LEN as u64;
+    reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
+    let mut reader = BinaryReader::new(
+        reader,
+        usize::try_from(body_length).map_err(|_| EmbeddingError::TooLarge)?,
+    );
+    let header = read_vector_header(&mut reader)?;
+    Ok((reader, header))
+}
+
+fn validate_reconciled_header<P: EmbeddingProvider + ?Sized>(
+    header: &VectorHeader,
+    provider: &P,
+    model_id: &str,
+    model_revision: &str,
+    corpus_digest: &ContentDigest,
+) -> Result<(), EmbeddingError> {
+    if header.schema != 2
+        || !header.normalized
+        || header.model_id != model_id
+        || header.model_revision != model_revision
+        || header.corpus_digest != *corpus_digest
+        || provider
+            .embedding_dimension()
+            .is_some_and(|dimension| dimension != header.dimension)
+    {
+        return Err(EmbeddingError::ModelMismatch);
+    }
+    Ok(())
 }
 
 fn read_vector_header<R: Read>(
@@ -3630,17 +4094,28 @@ fn read_vector_row<R: Read>(
     reader: &mut BinaryReader<R>,
     dimension: usize,
 ) -> Result<Option<(ChunkId, Vec<f32>)>, EmbeddingError> {
+    let mut vector = Vec::with_capacity(dimension);
+    let chunk_id = read_vector_row_into(reader, dimension, &mut vector)?;
+    Ok(chunk_id.map(|chunk_id| (chunk_id, vector)))
+}
+
+fn read_vector_row_into<R: Read>(
+    reader: &mut BinaryReader<R>,
+    dimension: usize,
+    vector: &mut Vec<f32>,
+) -> Result<Option<ChunkId>, EmbeddingError> {
     if reader.is_empty() {
         return Ok(None);
     }
     let chunk_id_len = u32::from(reader.u16()?);
     let chunk_id = ChunkId::try_from(reader.string(chunk_id_len)?)
         .map_err(|_| EmbeddingError::InvalidHeader)?;
-    let mut vector = Vec::with_capacity(dimension);
+    vector.clear();
+    vector.reserve(dimension.saturating_sub(vector.capacity()));
     for _ in 0..dimension {
         vector.push(f32::from_le_bytes(reader.array::<4>()?));
     }
-    Ok(Some((chunk_id, vector)))
+    Ok(Some(chunk_id))
 }
 
 fn write_vector_row(
@@ -3828,23 +4303,22 @@ mod tests {
         }
     }
 
+    fn chunk(text: &str) -> Chunk {
+        let document = NormalizedDocument::new(
+            text,
+            SourceKind::Markdown,
+            RepositoryId::try_from("repo").expect("repo"),
+            Revision::try_from("rev").expect("rev"),
+            format!("docs/{text}.md"),
+            "text/markdown",
+            text,
+        )
+        .expect("document");
+        Chunk::from_document(&document, 0, text.into(), Vec::new(), None).expect("chunk")
+    }
+
     fn chunks() -> Vec<Chunk> {
-        ["alpha", "beta"]
-            .into_iter()
-            .map(|text| {
-                let document = NormalizedDocument::new(
-                    text,
-                    SourceKind::Markdown,
-                    RepositoryId::try_from("repo").expect("repo"),
-                    Revision::try_from("rev").expect("rev"),
-                    format!("docs/{text}.md"),
-                    "text/markdown",
-                    text,
-                )
-                .expect("document");
-                Chunk::from_document(&document, 0, text.into(), Vec::new(), None).expect("chunk")
-            })
-            .collect()
+        ["alpha", "beta"].into_iter().map(chunk).collect()
     }
 
     #[test]
@@ -3913,6 +4387,265 @@ mod tests {
         assert_eq!(provider.embedded, 1);
         assert_eq!(observations.reused_vectors, 1);
         assert_eq!(observations.embedded_vectors, 1);
+    }
+
+    #[test]
+    fn reconciled_vector_build_streams_matching_rows_and_drops_stale_rows() {
+        let root = tempfile::tempdir().expect("vector artifacts");
+        let previous_path = root.path().join("previous.bin");
+        let next_path = root.path().join("next.bin");
+        let previous_chunks = chunks();
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let previous = VectorArtifact::from_provider(
+            &mut original_provider,
+            &previous_chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"old"),
+        )
+        .expect("previous artifact");
+        let (previous_checksum, _) = previous
+            .write_artifact_with_digest(&previous_path)
+            .expect("write previous artifact");
+        let current_chunks = vec![previous_chunks[0].clone(), chunk("gamma")];
+        let mut provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        let (_, _, count, dimension, observations) =
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut provider,
+                &current_chunks,
+                ReconciledVectorArtifact {
+                    model_id: "fake",
+                    model_revision: "test",
+                    corpus_digest: &ContentDigest::of(b"new"),
+                    previous_corpus_digest: &previous.corpus_digest,
+                    previous_checksum: &previous_checksum,
+                    previous_path: &previous_path,
+                    path: &next_path,
+                    checkpoint_path: None,
+                },
+            )
+            .expect("reconciled artifact");
+
+        let next = VectorArtifact::open_artifact(&next_path).expect("open reconciled artifact");
+        let expected_ids = current_chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            next.ids.iter().cloned().collect::<BTreeSet<_>>(),
+            expected_ids
+        );
+        assert_eq!(count, 2);
+        assert_eq!(dimension, 4);
+        assert_eq!(provider.embedded, 1);
+        assert_eq!(observations.reused_vectors, 1);
+        assert_eq!(observations.embedded_vectors, 1);
+    }
+
+    #[test]
+    fn reconciled_vector_build_resumes_missing_rows_from_checkpoint() {
+        let root = tempfile::tempdir().expect("vector artifacts");
+        let previous_path = root.path().join("previous.bin");
+        let next_path = root.path().join("next.bin");
+        let checkpoint_path = root.path().join("checkpoint.bin");
+        let previous_chunks = vec![chunk("alpha")];
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let previous = VectorArtifact::from_provider(
+            &mut original_provider,
+            &previous_chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"old"),
+        )
+        .expect("previous artifact");
+        let (previous_checksum, _) = previous
+            .write_artifact_with_digest(&previous_path)
+            .expect("write previous artifact");
+        let current_chunks = vec![previous_chunks[0].clone(), chunk("beta"), chunk("gamma")];
+        let request = ReconciledVectorArtifact {
+            model_id: "fake",
+            model_revision: "test",
+            corpus_digest: &ContentDigest::of(b"new"),
+            previous_corpus_digest: &previous.corpus_digest,
+            previous_checksum: &previous_checksum,
+            previous_path: &previous_path,
+            path: &next_path,
+            checkpoint_path: Some(&checkpoint_path),
+        };
+        let mut interrupted = InterruptedProvider { calls: 0 };
+
+        assert!(matches!(
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut interrupted,
+                &current_chunks,
+                request,
+            ),
+            Err(EmbeddingError::Provider(message)) if message == "interrupted"
+        ));
+
+        let mut restarted = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut restarted,
+                &current_chunks,
+                request,
+            )
+            .expect("resumed artifact");
+
+        assert_eq!(restarted.embedded, 1);
+        assert_eq!(observations.embedded_vectors, 1);
+        assert_eq!(observations.reused_vectors, 2);
+    }
+
+    #[test]
+    fn reconciled_checkpoint_resets_when_predecessor_changes() {
+        let root = tempfile::tempdir().expect("vector artifacts");
+        let first_path = root.path().join("first.bin");
+        let second_path = root.path().join("second.bin");
+        let next_path = root.path().join("next.bin");
+        let checkpoint_path = root.path().join("checkpoint.bin");
+        let current_chunks = vec![chunk("alpha"), chunk("beta"), chunk("gamma")];
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let first = VectorArtifact::from_provider(
+            &mut original_provider,
+            &current_chunks[..1],
+            "fake",
+            "test",
+            ContentDigest::of(b"first"),
+        )
+        .expect("first predecessor");
+        let (first_checksum, _) = first
+            .write_artifact_with_digest(&first_path)
+            .expect("write first predecessor");
+        let mut interrupted = InterruptedProvider { calls: 0 };
+        let first_request = ReconciledVectorArtifact {
+            model_id: "fake",
+            model_revision: "test",
+            corpus_digest: &ContentDigest::of(b"current"),
+            previous_corpus_digest: &first.corpus_digest,
+            previous_checksum: &first_checksum,
+            previous_path: &first_path,
+            path: &next_path,
+            checkpoint_path: Some(&checkpoint_path),
+        };
+        assert!(
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut interrupted,
+                &current_chunks,
+                first_request,
+            )
+            .is_err()
+        );
+
+        let second = VectorArtifact::from_provider(
+            &mut original_provider,
+            &current_chunks[1..2],
+            "fake",
+            "test",
+            ContentDigest::of(b"second"),
+        )
+        .expect("second predecessor");
+        let (second_checksum, _) = second
+            .write_artifact_with_digest(&second_path)
+            .expect("write second predecessor");
+        let second_request = ReconciledVectorArtifact {
+            model_id: "fake",
+            model_revision: "test",
+            corpus_digest: &ContentDigest::of(b"current"),
+            previous_corpus_digest: &second.corpus_digest,
+            previous_checksum: &second_checksum,
+            previous_path: &second_path,
+            path: &next_path,
+            checkpoint_path: Some(&checkpoint_path),
+        };
+        let mut restarted = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut restarted,
+                &current_chunks,
+                second_request,
+            )
+            .expect("reconciled artifact");
+
+        assert_eq!(restarted.embedded, 2);
+        assert_eq!(observations.embedded_vectors, 2);
+        assert_eq!(observations.reused_vectors, 1);
+    }
+
+    #[test]
+    fn reconciled_vector_build_reembeds_a_corrupt_checkpoint_row() {
+        let root = tempfile::tempdir().expect("vector artifacts");
+        let previous_path = root.path().join("previous.bin");
+        let next_path = root.path().join("next.bin");
+        let checkpoint_path = root.path().join("checkpoint.bin");
+        let previous_chunks = vec![chunk("alpha")];
+        let mut original_provider = FakeEmbeddingProvider::new(4);
+        let previous = VectorArtifact::from_provider(
+            &mut original_provider,
+            &previous_chunks,
+            "fake",
+            "test",
+            ContentDigest::of(b"old"),
+        )
+        .expect("previous artifact");
+        let (previous_checksum, _) = previous
+            .write_artifact_with_digest(&previous_path)
+            .expect("write previous artifact");
+        let current_chunks = vec![previous_chunks[0].clone(), chunk("beta"), chunk("gamma")];
+        let request = ReconciledVectorArtifact {
+            model_id: "fake",
+            model_revision: "test",
+            corpus_digest: &ContentDigest::of(b"new"),
+            previous_corpus_digest: &previous.corpus_digest,
+            previous_checksum: &previous_checksum,
+            previous_path: &previous_path,
+            path: &next_path,
+            checkpoint_path: Some(&checkpoint_path),
+        };
+        let mut interrupted = InterruptedProvider { calls: 0 };
+        assert!(
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut interrupted,
+                &current_chunks,
+                request,
+            )
+            .is_err()
+        );
+        let mut checkpoint = OpenOptions::new()
+            .write(true)
+            .open(&checkpoint_path)
+            .expect("open checkpoint");
+        checkpoint
+            .seek(SeekFrom::Start(49))
+            .and_then(|_| checkpoint.write_all(&[0_u8; 16]))
+            .expect("corrupt completed row");
+        let mut restarted = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reconciling_artifact_with_observations(
+                &mut restarted,
+                &current_chunks,
+                request,
+            )
+            .expect("repair corrupt checkpoint");
+
+        assert_eq!(restarted.embedded, 2);
+        assert_eq!(observations.embedded_vectors, 2);
+        assert_eq!(observations.reused_vectors, 1);
     }
 
     #[test]

@@ -8,7 +8,7 @@ Normal searches use a compact progressive-disclosure response. Its `fields`
 table describes ranked rows containing `name`, `category`, a bounded `excerpt`,
 `source_index` into the top-level `sources` table, and an opaque `chunk_id`. Read
 `vesc://knowledge/chunk/{chunk_id}` for the full bounded passage. Add
-`"detail":"full"` when a client needs the compatibility response with
+`"detail":"full"` when a client needs the complete response with
 provenance, document URI, ranking explanation, index metadata, and timing.
 
 ## Exact identifier
@@ -80,8 +80,8 @@ Full results use
 `vesc://knowledge/snapshot/{snapshot}/chunk/{id}` and
 `vesc://knowledge/snapshot/{snapshot}/document/{id}` resources. Those URIs keep
 resolving to the selected immutable artifact after the configured default moves
-to a newer snapshot. Omitting `snapshot_id` remains compatible with existing
-clients: it searches the active default and reports that default's snapshot ID
+to a newer snapshot. Omitting `snapshot_id` searches the active default and
+reports that default's snapshot ID
 and resolved repository commits in the response.
 
 To compare versions, prepare two selections and run the same query once against

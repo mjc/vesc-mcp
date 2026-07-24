@@ -13,14 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v16
-      - name: Stage the pinned corpus and model
+      - name: Stage the pinned model
         run: |
-          digest='sha256:71342745041784d58f147b1cd99a7743377d3d9e0fa42ad4dab1f0aa280652ab'
-          artifact='target/vescm195-artifacts'
           model='target/models/granite-embedding-97m-multilingual-r2-qint8-avx2'
-          mkdir -p "$artifact/generations/$digest" "$model" target/vescm195-m1
-          gzip -dc release/knowledge/active.json.gz > "$artifact/active.json"
-          gzip -dc "release/knowledge/generations/$digest/lexical.json.gz" > "$artifact/generations/$digest/lexical.json"
+          mkdir -p "$model" target/vescm195-m1
           base='https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/835ad14087e140460703cf0fae09f97d469d65c2'
           curl -fL --retry 3 "$base/onnx/model_quint8_avx2.onnx" -o "$model/model.onnx"
           for file in tokenizer.json config.json special_tokens_map.json tokenizer_config.json; do
@@ -28,13 +24,35 @@ jobs:
           done
       - name: Build release benchmark
         run: nix develop -c cargo build --release -p vesc-knowledge-index --bin gen-knowledge-index --features semantic-coreml
+      - name: Build the current pinned corpus
+        run: |
+          target/release/gen-knowledge-index build-default \
+            --generated-dir target/vescm195-artifacts \
+            --staging-dir target/vescm195-staging
+          generation="$(jq -r .generation target/vescm195-artifacts/active.json)"
+          manifest="target/vescm195-artifacts/generations/$generation/manifest.json"
+          digest="$(jq -r .corpus.content_digest "$manifest")"
+          documents="$(jq -r '.corpus.document_count // (.corpus.documents | length)' "$manifest")"
+          chunks="$(jq -r '.corpus.chunk_count // (.corpus.chunks | length)' "$manifest")"
+          jq \
+            --arg digest "$digest" \
+            --argjson documents "$documents" \
+            --argjson chunks "$chunks" \
+            '.corpus_digest = $digest | .corpus_documents = $documents | .corpus_chunks = $chunks' \
+            tests/evaluation/v2/queries.json > target/vescm195-m1/queries.json
+          jq \
+            --arg digest "$digest" \
+            --argjson documents "$documents" \
+            --argjson chunks "$chunks" \
+            '.corpus_digest = $digest | .corpus_documents = $documents | .corpus_chunks = $chunks' \
+            tests/benchmark/modern-embedding-models.json > target/vescm195-m1/models.json
       - name: Run bounded native ONNX CPU benchmark
         run: |
           nix develop -c /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
             --artifact target/vescm195-artifacts \
             --model-root target/models \
-            --suite tests/evaluation/v2/queries.json \
-            --config tests/benchmark/modern-embedding-models.json \
+            --suite target/vescm195-m1/queries.json \
+            --config target/vescm195-m1/models.json \
             --candidate granite-embedding-97m-multilingual-r2-qint8-avx2 \
             --semantic-quality-chunks 128 \
             --semantic-batch-size 8 \
@@ -55,8 +73,8 @@ jobs:
           nix develop -c /usr/bin/time -l target/release/gen-knowledge-index bakeoff \
             --artifact target/vescm195-artifacts \
             --model-root target/models \
-            --suite tests/evaluation/v2/queries.json \
-            --config tests/benchmark/modern-embedding-models.json \
+            --suite target/vescm195-m1/queries.json \
+            --config target/vescm195-m1/models.json \
             --candidate granite-embedding-97m-multilingual-r2-qint8-avx2 \
             --semantic-quality-chunks 128 \
             --semantic-batch-size 8 \

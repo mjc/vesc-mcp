@@ -113,7 +113,7 @@ If you manage a generated knowledge artifact separately, set
 `[knowledge] artifact_path` or `VESC_RAG_ARTIFACT` to its root and restart the
 server.
 
-If no generated artifact is configured, the embedded compatibility index is
+If no generated artifact is configured, the embedded catalog index is
 still available. `lexical` is the safest default mode.
 
 ## Hybrid search reports a capability error

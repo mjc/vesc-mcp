@@ -98,7 +98,6 @@ pub fn benchmark_search(
     let params = |query: &str| SearchVescKnowledgeParams {
         query: query.to_owned(),
         snapshot_id: None,
-        category: None,
         limit: 10,
         mode: Some(SearchMode::Lexical),
         filters: SearchVescKnowledgeFilters::default(),

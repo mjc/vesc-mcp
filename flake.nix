@@ -96,43 +96,6 @@
           path = "${semanticModel}/tokenizer_config.json";
         }
       ];
-      legacySemanticModel = pkgs.linkFarm "bge-small-en-v1.5-quantized" (
-        map
-        (file: {
-          name = file.name;
-          path = pkgs.fetchurl {
-            url = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3/${file.source}";
-            inherit (file) hash;
-          };
-        })
-        [
-          {
-            name = "model.onnx";
-            source = "onnx/model_quantized.onnx";
-            hash = "sha256-bJxhAalW1i37XnGQxTgibAxbucsntlEjS23wY+59v+Q=";
-          }
-          {
-            name = "tokenizer.json";
-            source = "tokenizer.json";
-            hash = "sha256-0kGmDV6PBMwbKz6e96SSGye/Um2fYFCrkPkmeh+eXGY=";
-          }
-          {
-            name = "config.json";
-            source = "config.json";
-            hash = "sha256-+nP5C/ksjKzh+8twliYwbyvbyeo+W1+UtEDfm2qlY1A=";
-          }
-          {
-            name = "special_tokens_map.json";
-            source = "special_tokens_map.json";
-            hash = "sha256-ttNGvjZqfR1IMy28n987+JYLXYeVIrd5ndulnnYjfuM=";
-          }
-          {
-            name = "tokenizer_config.json";
-            source = "tokenizer_config.json";
-            hash = "sha256-kmHn15tEyBlcHK2itFPlWwCuuB6QemZkl0tNd3YXKrM=";
-          }
-        ]
-      );
       src = pkgs.lib.cleanSourceWith {
         src = ./.;
         filter = path: type:
@@ -169,29 +132,12 @@
             commonArgs.nativeBuildInputs
             ++ [
               pkgs.makeWrapper
-              pkgs.gzip
             ];
           postInstall = ''
-            knowledge="$out/share/vesc-mcp/knowledge"
-            mkdir -p "$knowledge/generations"
-            gzip -dc ${./release/knowledge}/active.json.gz > "$knowledge/active.json"
-            for source in ${./release/knowledge}/generations/*/lexical.json.gz; do
-              generation="$(basename "$(dirname "$source")")"
-              mkdir "$knowledge/generations/$generation"
-              gzip -dc "$source" > "$knowledge/generations/$generation/lexical.json"
-              if [ -f "$(dirname "$source")/vectors.bin.gz" ]; then
-                gzip -dc "$(dirname "$source")/vectors.bin.gz" \
-                  > "$knowledge/generations/$generation/vectors.bin"
-              fi
-            done
-            test -s "$knowledge/active.json"
-            test -s "$knowledge/generations/"*/lexical.json
-            mkdir -p "$out/share/vesc-mcp/models"
+            mkdir -p "$out/share/vesc-mcp"
             ln -s ${./catalog} "$out/share/vesc-mcp/catalog"
-            ln -s ${legacySemanticModel} "$out/share/vesc-mcp/models/bge-small-en-v1.5-quantized"
             wrapProgram "$out/bin/vesc-mcp-server" \
               --set-default VESC_MCP_WORKSPACE_ROOT "$out/share/vesc-mcp" \
-              --set-default VESC_RAG_ARTIFACT "$knowledge" \
               --set-default VESC_RAG_MODE auto \
               --set-default VESC_RAG_SEMANTIC_MODEL_DIR "${semanticModel}" \
               --set-default VESC_RAG_SEMANTIC_MODEL_ID "${semanticModelId}" \
@@ -243,8 +189,8 @@
           export VESC_GIT_BIN="${pkgs.git}/bin/git"
           export VESC_TIME_BIN="${pkgs.time}/bin/time"
         '';
-        # Current ONNX Runtime releases build MIGraphX for AMD. The legacy
-        # ROCm execution provider is no longer present in the upstream 1.26
+        # Current ONNX Runtime releases build MIGraphX for AMD. The ROCm
+        # execution provider is no longer present in the upstream 1.26
         # source, so keep this name for the shell output while using nixpkgs'
         # supported AMD configuration.
         rocmOnnxruntime =

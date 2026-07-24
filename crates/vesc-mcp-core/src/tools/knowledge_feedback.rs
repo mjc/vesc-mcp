@@ -712,7 +712,7 @@ pub fn search_feedback(
     let mut notes = Vec::new();
     let mut corrections = Vec::new();
     for hit in hits {
-        let Some(id) = hit.chunk.legacy_ids.first() else {
+        let Some(id) = hit.chunk.registered_id.as_ref() else {
             continue;
         };
         match by_id.get(id) {
@@ -997,7 +997,7 @@ fn record_chunk(record: &KnowledgeRecord) -> Result<Chunk, FeedbackError> {
     document
         .tags
         .extend(tags.iter().map(|tag| tag.to_ascii_lowercase()));
-    document.legacy_ids.push(record.id().to_owned());
+    document.registered_id = Some(record.id().to_owned());
     document.canonical_uri = Some(
         ResourceUri::try_from(feedback_resource_uri(record.id()))
             .map_err(|error| FeedbackError::Invalid(error.to_string()))?,

@@ -95,9 +95,6 @@ impl<'de> Deserialize<'de> for RepositoryId {
 #[serde(transparent)]
 pub struct KnowledgeSnapshotId(String);
 
-/// Compatibility name retained for callers of the original data-layout API.
-pub type SnapshotId = KnowledgeSnapshotId;
-
 impl KnowledgeSnapshotId {
     /// Validate an immutable snapshot identifier.
     ///
@@ -525,7 +522,7 @@ impl KnowledgeDataLayout {
     }
 
     #[must_use]
-    pub fn snapshot(&self, id: &SnapshotId) -> PathBuf {
+    pub fn snapshot(&self, id: &KnowledgeSnapshotId) -> PathBuf {
         self.root
             .as_path()
             .join("snapshots")
@@ -533,7 +530,7 @@ impl KnowledgeDataLayout {
     }
 
     #[must_use]
-    pub fn artifact(&self, id: &SnapshotId) -> PathBuf {
+    pub fn artifact(&self, id: &KnowledgeSnapshotId) -> PathBuf {
         self.root.as_path().join("artifacts").join(id.as_str())
     }
 
@@ -718,7 +715,7 @@ max_total_bytes = 268435456
         let root = DataRoot::new(PathBuf::from("/var/lib/vesc-mcp")).expect("absolute root");
         let layout = KnowledgeDataLayout::new(root);
         let repository = RepositoryId::new("vesc-tool").expect("repository id");
-        let snapshot = SnapshotId::new("sha256-0123456789abcdef").expect("snapshot id");
+        let snapshot = KnowledgeSnapshotId::new("sha256-0123456789abcdef").expect("snapshot id");
 
         assert_eq!(
             layout.repository(&repository),
@@ -733,6 +730,6 @@ max_total_bytes = 268435456
             Path::new("/var/lib/vesc-mcp/artifacts/sha256-0123456789abcdef")
         );
         assert_eq!(layout.staging(), Path::new("/var/lib/vesc-mcp/tmp"));
-        assert!(SnapshotId::new("../escape").is_err());
+        assert!(KnowledgeSnapshotId::new("../escape").is_err());
     }
 }

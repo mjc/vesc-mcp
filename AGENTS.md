@@ -33,7 +33,7 @@ to configured roots plus the connected client's advertised local roots.
 | `validate_package_layout` | Check pkgdesc asset references exist | `root` — package directory |
 | `build_vescpkg` | Build `.vescpkg` via `vesc_tool` | `root`, `timeout_secs` (default 120) |
 | `run_package_checks` | Run fmt/clippy/test in package sandbox | `root` |
-| `search_vesc_knowledge` | Search legacy/lexical/hybrid knowledge evidence | `query`, `category`, `filters`, `mode`, `limit`, bounded context/response budgets |
+| `search_vesc_knowledge` | Search lexical/hybrid knowledge evidence | `query`, `filters`, `mode`, `limit`, bounded context/response budgets |
 | `submit_vesc_knowledge_feedback` | Persist a reusable low-trust lesson when registered evidence is not available | `question`, `lesson`, related queries/identifiers/tags, optional `supersedes` |
 | `correct_vesc_knowledge` | Elevate a user-authorized correction and diagnose why MCP retrieval steered the model wrong | `question`, `authorization`, mistaken/corrected conclusions, `reasoning_failure`, `gap_diagnoses`, bounded `retrieval_trace`, qualifiers, affected resources, exact registered `evidence_resources` |
 | `replay_vesc_knowledge_correction` | Re-run a correction's preserved query against base knowledge without advisories | `correction_id` |

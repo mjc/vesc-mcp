@@ -210,9 +210,9 @@ pub fn fuse_candidates<C: Borrow<Chunk>>(
             // should not be buried beneath anonymous source-code passages.
             .then_with(|| {
                 left.chunk
-                    .legacy_ids
-                    .is_empty()
-                    .cmp(&right.chunk.legacy_ids.is_empty())
+                    .registered_id
+                    .is_none()
+                    .cmp(&right.chunk.registered_id.is_none())
             })
             .then_with(|| {
                 if config.lexical_floor {
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn registered_evidence_precedes_anonymous_source_passages() {
         let mut registered = chunk("registered", 0, "registered", "registered_id");
-        registered.legacy_ids.push("catalog.registered".into());
+        registered.registered_id = Some("catalog.registered".into());
         let source = chunk("source", 0, "source", "source_id");
         let hits = fuse_candidates(
             &[],

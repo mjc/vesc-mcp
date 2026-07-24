@@ -185,7 +185,6 @@ in
     retrievalMode = lib.mkOption {
       type = lib.types.enum [
         "lexical"
-        "legacy"
         "auto"
         "hybrid"
       ];

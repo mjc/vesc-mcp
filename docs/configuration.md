@@ -130,7 +130,7 @@ The default `lexical` mode is local and does not download a model.
 | Setting | Environment variable | Default | Purpose |
 |---------|----------------------|---------|---------|
 | `[knowledge] mode` | `VESC_RAG_MODE` | `lexical` | Retrieval mode |
-| `[knowledge] artifact_path` | `VESC_RAG_ARTIFACT` | bundled or embedded corpus | Generated artifact directory |
+| `[knowledge] artifact_path` | `VESC_RAG_ARTIFACT` | unset; embedded catalog | Generated artifact directory |
 | `[knowledge] data_root` | `STATE_DIRECTORY` fallback | platform application-data directory | Persistent repository, snapshot, and artifact state |
 | `[knowledge.semantic] model_dir` | `VESC_RAG_SEMANTIC_MODEL_DIR` | unset | Pinned local model directory |
 | `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
@@ -156,7 +156,6 @@ Supported modes:
 | Mode | Behavior |
 |------|----------|
 | `lexical` | Offline keyword and identifier search; recommended default |
-| `legacy` | Compatibility search for older results |
 | `auto` | Uses hybrid search and reports an error with an explicit lexical retry when semantic retrieval fails |
 | `hybrid` | Requires a compatible local vector artifact and model; reports an error if unavailable |
 
