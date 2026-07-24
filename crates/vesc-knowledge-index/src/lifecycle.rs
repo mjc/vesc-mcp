@@ -324,7 +324,7 @@ fn build_artifacts(
     observations.record(BuildPhase::Chunking, chunking_started);
     stage_chunks(
         root,
-        &chunks,
+        chunks,
         semantic,
         None,
         None,
@@ -426,7 +426,7 @@ pub fn build_allowlisted_artifacts_with_provider(
     });
     stage_chunks(
         root,
-        &chunks,
+        chunks,
         semantic,
         None,
         None,
@@ -597,7 +597,7 @@ pub fn build_git_history_artifacts_from_previous(
     };
     let artifacts = stage_chunks(
         root,
-        &delta,
+        delta,
         semantic,
         None,
         None,
@@ -685,7 +685,7 @@ fn stage_git_history_chunks(
     });
     stage_chunks(
         root,
-        &chunks,
+        chunks,
         semantic,
         previous_vectors,
         reconciled_vectors,
@@ -775,7 +775,7 @@ pub fn build_git_artifacts_with_provider(
     });
     stage_chunks(
         root,
-        &chunks,
+        chunks,
         semantic,
         None,
         None,
@@ -791,7 +791,7 @@ pub fn build_git_artifacts_with_provider(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn stage_chunks(
     root: &Path,
-    chunks: &[crate::Chunk],
+    chunks: Vec<crate::Chunk>,
     semantic: Option<SemanticBuild<'_>>,
     previous_vectors: Option<VectorArtifact>,
     reconciled_vectors: Option<ReconciledVectorStage>,
@@ -863,7 +863,7 @@ fn stage_chunks(
             let (checksum, bytes, count, dimension, vector_build) =
                 VectorArtifact::write_provider_appending_artifact_with_observations(
                     semantic.provider,
-                    chunks,
+                    &chunks,
                     IncrementalVectorArtifact {
                         model_id: semantic.model_id,
                         model_revision: semantic.model_revision,
@@ -922,7 +922,7 @@ fn stage_chunks(
             let (vector, vector_build) = if let Some(checkpoint_path) = semantic.checkpoint_path {
                 VectorArtifact::from_provider_reusing_with_checkpoint_observations(
                     semantic.provider,
-                    chunks,
+                    &chunks,
                     semantic.model_id,
                     semantic.model_revision,
                     corpus.content_digest.clone(),
@@ -932,7 +932,7 @@ fn stage_chunks(
             } else {
                 VectorArtifact::from_provider_reusing_owned_with_observations(
                     semantic.provider,
-                    chunks,
+                    &chunks,
                     semantic.model_id,
                     semantic.model_revision,
                     corpus.content_digest.clone(),

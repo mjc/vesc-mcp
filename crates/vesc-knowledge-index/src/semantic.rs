@@ -2146,17 +2146,18 @@ fn flush_checkpoint_batch(
     Ok(())
 }
 
-fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized>(
+fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized, C: Borrow<Chunk>>(
     provider: &mut P,
-    chunks: &[&Chunk],
+    chunks: &[C],
     dimension: usize,
     observations: &mut VectorBuildObservations,
 ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
     if chunks.is_empty() {
         return Err(EmbeddingError::EmptyInput);
     }
+    let chunks = chunks.iter().map(Borrow::borrow).collect::<Vec<_>>();
     let natural_order;
-    let inference_order = if let Some(order) = provider.inference_order(chunks)? {
+    let inference_order = if let Some(order) = provider.inference_order(&chunks)? {
         if order.len() != chunks.len() || order.iter().any(|&index| index >= chunks.len()) {
             return Err(EmbeddingError::Provider(
                 "provider returned an invalid inference order".into(),
@@ -2237,7 +2238,7 @@ fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized>(
 }
 
 fn reconciliation_checkpoint_identity(
-    missing: &[&Chunk],
+    missing: &[Chunk],
     corpus_digest: &ContentDigest,
     previous_checksum: &ContentDigest,
     model_id: &str,
@@ -2314,7 +2315,21 @@ fn encoded_artifact_len<C: Borrow<Chunk>>(
     model_id: &str,
     model_revision: &str,
 ) -> Result<usize, EmbeddingError> {
-    u32::try_from(chunks.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    encoded_artifact_len_from_ids(
+        chunks.iter().map(|chunk| &chunk.borrow().chunk_id),
+        dimension,
+        model_id,
+        model_revision,
+    )
+}
+
+fn encoded_artifact_len_from_ids<'a>(
+    mut ids: impl ExactSizeIterator<Item = &'a ChunkId>,
+    dimension: usize,
+    model_id: &str,
+    model_revision: &str,
+) -> Result<usize, EmbeddingError> {
+    u32::try_from(ids.len()).map_err(|_| EmbeddingError::TooLarge)?;
     u32::try_from(dimension).map_err(|_| EmbeddingError::TooLarge)?;
     u32::try_from(model_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
     u32::try_from(model_revision.len()).map_err(|_| EmbeddingError::TooLarge)?;
@@ -2329,9 +2344,8 @@ fn encoded_artifact_len<C: Borrow<Chunk>>(
     let vector_bytes = dimension
         .checked_mul(std::mem::size_of::<f32>())
         .ok_or(EmbeddingError::TooLarge)?;
-    let total = chunks.iter().try_fold(fixed, |total, chunk| {
-        let chunk = chunk.borrow();
-        let id_len = chunk.chunk_id.as_str().len();
+    let total = ids.try_fold(fixed, |total, id| {
+        let id_len = id.as_str().len();
         u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
         total
             .checked_add(2)
@@ -3046,7 +3060,7 @@ impl VectorArtifact {
         P: EmbeddingProvider + ?Sized,
     >(
         provider: &mut P,
-        chunks: &[Chunk],
+        mut chunks: Vec<Chunk>,
         request: ReconciledVectorArtifact<'_>,
     ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
         let ReconciledVectorArtifact {
@@ -3064,9 +3078,8 @@ impl VectorArtifact {
                 "reconciled vector destination must differ from its predecessor".into(),
             ));
         }
-        let mut ordered = chunks.iter().collect::<Vec<_>>();
-        ordered.sort_unstable_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
-        if ordered
+        chunks.sort_unstable_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+        if chunks
             .windows(2)
             .any(|chunks| chunks[0].chunk_id == chunks[1].chunk_id)
         {
@@ -3083,15 +3096,26 @@ impl VectorArtifact {
         )?;
         let mut row = Vec::with_capacity(header.dimension);
         let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
-        let mut missing = Vec::new();
-        for chunk in &ordered {
+        let mut missing_flags = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
             while previous_id.as_ref().is_some_and(|id| id < &chunk.chunk_id) {
                 previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
             }
             if previous_id.as_ref() == Some(&chunk.chunk_id) {
                 previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+                missing_flags.push(false);
             } else {
-                missing.push(*chunk);
+                missing_flags.push(true);
+            }
+        }
+        let mut ids = Vec::with_capacity(chunks.len());
+        let mut missing = Vec::new();
+        for (chunk, is_missing) in chunks.into_iter().zip(missing_flags) {
+            if is_missing {
+                ids.push(chunk.chunk_id.clone());
+                missing.push(chunk);
+            } else {
+                ids.push(chunk.chunk_id);
             }
         }
 
@@ -3134,7 +3158,7 @@ impl VectorArtifact {
                 if rows.len() < batch_size {
                     continue;
                 }
-                let chunks = rows.iter().map(|&row| missing[row]).collect::<Vec<_>>();
+                let chunks = rows.iter().map(|&row| &missing[row]).collect::<Vec<_>>();
                 let vectors = embed_reconciliation_batch(
                     provider,
                     &chunks,
@@ -3145,7 +3169,7 @@ impl VectorArtifact {
                 rows.clear();
             }
             if !rows.is_empty() {
-                let chunks = rows.iter().map(|&row| missing[row]).collect::<Vec<_>>();
+                let chunks = rows.iter().map(|&row| &missing[row]).collect::<Vec<_>>();
                 let vectors = embed_reconciliation_batch(
                     provider,
                     &chunks,
@@ -3156,7 +3180,7 @@ impl VectorArtifact {
             }
         }
         let expected_length =
-            encoded_artifact_len(&ordered, header.dimension, model_id, model_revision)?;
+            encoded_artifact_len_from_ids(ids.iter(), header.dimension, model_id, model_revision)?;
         let destination = File::create(path).map_err(io_error)?;
         let mut artifact = DigestingWriter::new(BufWriter::new(destination));
         let checksum = {
@@ -3165,7 +3189,7 @@ impl VectorArtifact {
                 &mut body,
                 2,
                 header.dimension,
-                ordered.len(),
+                ids.len(),
                 model_id,
                 model_revision,
                 true,
@@ -3180,13 +3204,13 @@ impl VectorArtifact {
             let mut embedded_row = 0_usize;
             let mut checkpoint_vector = Vec::new();
             let mut checkpoint_bytes = Vec::new();
-            for chunk in &ordered {
-                while previous_id.as_ref().is_some_and(|id| id < &chunk.chunk_id) {
+            for id in &ids {
+                while previous_id.as_ref().is_some_and(|previous| previous < id) {
                     previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
                 }
-                if previous_id.as_ref() == Some(&chunk.chunk_id) {
+                if previous_id.as_ref() == Some(id) {
                     validate_vector(&row, true)?;
-                    write_vector_row(&mut body, &chunk.chunk_id, &row)?;
+                    write_vector_row(&mut body, id, &row)?;
                     previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
                     continue;
                 }
@@ -3198,7 +3222,7 @@ impl VectorArtifact {
                         &mut checkpoint_bytes,
                     )?;
                     validate_vector(&checkpoint_vector, true)?;
-                    write_vector_row(&mut body, &chunk.chunk_id, &checkpoint_vector)?;
+                    write_vector_row(&mut body, id, &checkpoint_vector)?;
                     next_missing = missing_row + 1;
                     embedded_row = 0;
                     embedded_batch.clear();
@@ -3216,15 +3240,19 @@ impl VectorArtifact {
                     next_missing = end;
                     embedded_row = 0;
                 }
-                if missing.get(batch_start + embedded_row) != Some(chunk) {
-                    return Err(EmbeddingError::MissingChunk(chunk.chunk_id.clone()));
+                if missing
+                    .get(batch_start + embedded_row)
+                    .map(|chunk| &chunk.chunk_id)
+                    != Some(id)
+                {
+                    return Err(EmbeddingError::MissingChunk(id.clone()));
                 }
                 write_vector_row(
                     &mut body,
-                    &chunk.chunk_id,
+                    id,
                     embedded_batch
                         .get(embedded_row)
-                        .ok_or_else(|| EmbeddingError::MissingChunk(chunk.chunk_id.clone()))?,
+                        .ok_or_else(|| EmbeddingError::MissingChunk(id.clone()))?,
                 )?;
                 embedded_row += 1;
             }
@@ -3243,11 +3271,11 @@ impl VectorArtifact {
         if length != expected_length as u64 {
             return Err(EmbeddingError::InvalidHeader);
         }
-        observations.reused_vectors = ordered.len().saturating_sub(observations.embedded_vectors);
+        observations.reused_vectors = ids.len().saturating_sub(observations.embedded_vectors);
         Ok((
             digest_from_bytes(&digest)?,
             length,
-            ordered.len(),
+            ids.len(),
             header.dimension,
             observations,
         ))
@@ -4416,7 +4444,7 @@ mod tests {
         let (_, _, count, dimension, observations) =
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut provider,
-                &current_chunks,
+                current_chunks.clone(),
                 ReconciledVectorArtifact {
                     model_id: "fake",
                     model_revision: "test",
@@ -4481,7 +4509,7 @@ mod tests {
         assert!(matches!(
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut interrupted,
-                &current_chunks,
+                current_chunks.clone(),
                 request,
             ),
             Err(EmbeddingError::Provider(message)) if message == "interrupted"
@@ -4494,7 +4522,7 @@ mod tests {
         let (_, _, _, _, observations) =
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut restarted,
-                &current_chunks,
+                current_chunks,
                 request,
             )
             .expect("resumed artifact");
@@ -4538,7 +4566,7 @@ mod tests {
         assert!(
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut interrupted,
-                &current_chunks,
+                current_chunks.clone(),
                 first_request,
             )
             .is_err()
@@ -4573,7 +4601,7 @@ mod tests {
         let (_, _, _, _, observations) =
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut restarted,
-                &current_chunks,
+                current_chunks,
                 second_request,
             )
             .expect("reconciled artifact");
@@ -4617,7 +4645,7 @@ mod tests {
         assert!(
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut interrupted,
-                &current_chunks,
+                current_chunks.clone(),
                 request,
             )
             .is_err()
@@ -4638,7 +4666,7 @@ mod tests {
         let (_, _, _, _, observations) =
             VectorArtifact::write_provider_reconciling_artifact_with_observations(
                 &mut restarted,
-                &current_chunks,
+                current_chunks,
                 request,
             )
             .expect("repair corrupt checkpoint");
