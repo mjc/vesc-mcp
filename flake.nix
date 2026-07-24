@@ -245,9 +245,11 @@
                   heaptrack
                   inferno
                   perf
+                  procps
                   rocmPackages.rocm-runtime
                   rocmPackages.rocminfo
                   vulkan-tools
+                  zstd
                 ];
               shellHook =
                 rustShellHook rustToolchain
@@ -270,11 +272,13 @@
                 time
                 coz
                 heaptrack
+                procps
                 python3Packages.onnx
                 python3Packages.onnxruntime
                 rocmOnnxruntime
                 rocmPackages.rocm-runtime
                 rocmPackages.rocminfo
+                zstd
               ];
               shellHook =
                 rustShellHook rustToolchain

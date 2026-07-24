@@ -184,14 +184,80 @@ case "$command" in
           set -euo pipefail
           status="$VESC_MCP_PROFILE_DATA_ROOT/preparation-status.json"
           initial_status_stamp=$(stat -c %y "$status" 2>/dev/null || true)
+          profiler_pid=
+          server_pid=
+          only_child_pid() {
+            local -a children
+            [[ -n $profiler_pid ]] || return 1
+            mapfile -t children < <(pgrep -P "$profiler_pid" || true)
+            ((${#children[@]} == 1)) || return 1
+            echo "${children[0]}"
+          }
+          debuggee_pid() {
+            local -a children
+            mapfile -t children < <(
+              pgrep -P "$profiler_pid" -f -- "$VESC_MCP_PROFILE_BINARY" || true
+            )
+            ((${#children[@]} == 1)) || return 1
+            echo "${children[0]}"
+          }
+          wait_until_dead() {
+            local pid=$1 attempts=$2 attempt
+            for ((attempt = 0; attempt < attempts; attempt++)); do
+              kill -0 "$pid" 2>/dev/null || return 0
+              sleep 0.1
+            done
+            return 1
+          }
+          stop_capture() {
+            local finished_profiler profiler_status forced=false
+            [[ -n $profiler_pid ]] || return 0
+            [[ -z $server_pid ]] || kill -TERM "$server_pid" 2>/dev/null || true
+            if ! wait_until_dead "$profiler_pid" 200; then
+              [[ -z $server_pid ]] || kill -KILL "$server_pid" 2>/dev/null || true
+              kill -INT "$profiler_pid" 2>/dev/null || true
+              if ! wait_until_dead "$profiler_pid" 50; then
+                kill -KILL "$profiler_pid" 2>/dev/null || true
+                if ! wait_until_dead "$profiler_pid" 50; then
+                  profiler_pid=
+                  server_pid=
+                  return 1
+                fi
+              fi
+              forced=true
+            fi
+            if [[ -n $server_pid ]] && ! wait_until_dead "$server_pid" 50; then
+              kill -KILL "$server_pid" 2>/dev/null || true
+              wait_until_dead "$server_pid" 50 || true
+              forced=true
+            fi
+            finished_profiler=$profiler_pid
+            profiler_pid=
+            server_pid=
+            set +e
+            wait "$finished_profiler" 2>/dev/null
+            profiler_status=$?
+            set -e
+            [[ $forced == false && ($profiler_status == 0 || $profiler_status == 143) ]]
+          }
+          cleanup() {
+            [[ -n $profiler_pid ]] || profiler_pid=${!:-}
+            [[ -n $server_pid ]] || server_pid=$(only_child_pid || true)
+            stop_capture || true
+          }
+          trap cleanup EXIT
           heaptrack --record-only -o "$VESC_MCP_PROFILE_OUTPUT/heaptrack" \
             "$VESC_MCP_PROFILE_BINARY" "$@" &
           profiler_pid=$!
-          cleanup() {
-            kill -INT "$profiler_pid" 2>/dev/null || return 0
-            wait "$profiler_pid" 2>/dev/null || true
+          for _ in {1..100}; do
+            server_pid=$(debuggee_pid) && break
+            kill -0 "$profiler_pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          [[ -n $server_pid ]] || {
+            echo "heaptrack did not start exactly one debuggee" >&2
+            exit 1
           }
-          trap cleanup EXIT
           deadline=$((SECONDS + VESC_MCP_PROFILE_TIMEOUT_SECS))
           while true; do
             status_stamp=$(stat -c %y "$status" 2>/dev/null || true)
@@ -200,7 +266,6 @@ case "$command" in
               break
             fi
             kill -0 "$profiler_pid" 2>/dev/null || {
-              wait "$profiler_pid" || true
               echo "heaptrack exited before preparation finished" >&2
               exit 1
             }
@@ -210,13 +275,25 @@ case "$command" in
             }
             sleep 0.1
           done
-          kill -INT "$profiler_pid"
-          wait "$profiler_pid" || true
+          kill -0 "$server_pid" 2>/dev/null || {
+            echo "heaptrack debuggee exited before capture finalization" >&2
+            exit 1
+          }
+          capture_status=0
+          stop_capture || capture_status=$?
           trap - EXIT
+          ((capture_status == 0)) || {
+            echo "heaptrack capture did not shut down cleanly" >&2
+            exit 1
+          }
           cp "$status" "$VESC_MCP_PROFILE_OUTPUT/preparation-status.json"
           trace="$VESC_MCP_PROFILE_OUTPUT/heaptrack.zst"
           [[ -s $trace && $(stat -c %s "$trace") -ge 1000000 ]] || {
             echo "heaptrack produced an invalid or undersized trace" >&2
+            exit 1
+          }
+          zstd -t --quiet "$trace" || {
+            echo "heaptrack produced a corrupt trace" >&2
             exit 1
           }
           if grep -q '\''"state":"failed"'\'' "$status"; then
