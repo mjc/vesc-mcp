@@ -28,7 +28,7 @@ timeout_secs=${VESC_MCP_PROFILE_TIMEOUT_SECS:-600}
 memory_high=${VESC_MCP_PROFILE_MEMORY_HIGH:-2G}
 memory_max=${VESC_MCP_PROFILE_MEMORY_MAX:-3G}
 scope=(
-  systemd-run --user --scope --quiet
+  systemd-run --user --scope --quiet --expand-environment=no
   -p MemoryHigh="$memory_high"
   -p MemoryMax="$memory_max"
   -p MemorySwapMax=0
