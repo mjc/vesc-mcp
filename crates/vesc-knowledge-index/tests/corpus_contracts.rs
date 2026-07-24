@@ -24,6 +24,8 @@ fn legacy_entry_migration_preserves_exact_name_and_id() {
     let document = NormalizedDocument::from_legacy(&entry).expect("migration");
     let chunk = document.legacy_chunk().expect("legacy chunk");
 
+    assert_eq!(document.schema, SchemaVersion { major: 1, minor: 0 });
+    assert_eq!(chunk.schema, SchemaVersion { major: 1, minor: 0 });
     assert_eq!(document.legacy_ids, vec![entry.id]);
     assert_eq!(document.category, Some(Category::FirmwareApi));
     assert_eq!(chunk.text, entry.summary);
@@ -64,6 +66,27 @@ fn manifest_json_is_byte_stable() {
         first.canonical_json().expect("json"),
         second.canonical_json().expect("json")
     );
+}
+
+#[test]
+fn compact_manifest_serializes_counts_without_id_inventories() {
+    let manifest = CorpusManifest::from_inventory(
+        CorpusVersion::try_from("git-full-history-v1").expect("version"),
+        123,
+        456,
+        ContentDigest::of(b"inventory"),
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&manifest.canonical_json().expect("json")).expect("value");
+
+    assert_eq!(manifest.document_count(), 123);
+    assert_eq!(manifest.chunk_count(), 456);
+    assert_eq!(manifest.schema, SchemaVersion { major: 1, minor: 1 });
+    assert!(manifest.validate().is_ok());
+    assert!(json.get("documents").is_none());
+    assert!(json.get("chunks").is_none());
+    assert_eq!(json["document_count"], 123);
+    assert_eq!(json["chunk_count"], 456);
 }
 
 #[test]

@@ -52,11 +52,13 @@ pub use lifecycle::{
     PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_generation_path, active_manifest_path,
     artifact_component_versions, build_allowlisted_artifacts,
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
-    build_embedded_artifacts_with_provider, inspect_manifest,
+    build_embedded_artifacts_with_provider, inspect_manifest, inspect_previous_artifact,
+    validate_active_generation,
 };
 pub use lifecycle::{
-    IncrementalGitHistoryBuildSummary, build_git_artifacts, build_git_artifacts_with_provider,
-    build_git_history_artifacts_incrementally,
+    IncrementalGitHistoryBuildSummary, PreviousArtifactSummary, PreviousGitHistoryArtifact,
+    build_git_artifacts, build_git_artifacts_with_provider,
+    build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
 };
 pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;

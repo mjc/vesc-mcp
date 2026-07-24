@@ -716,9 +716,7 @@ fn index_metadata(
         if root.is_file() {
             return None;
         }
-        if let Ok(manifest) = vesc_knowledge_index::inspect_manifest(
-            &vesc_knowledge_index::active_manifest_path(&root),
-        ) {
+        if let Ok(manifest) = active_artifact_summary(&root) {
             return Some(SearchVescKnowledgeIndex {
                 snapshot_id: resolved.snapshot_id.map(|id| id.as_str().to_owned()),
                 snapshot_profile: resolved.snapshot_profile,
@@ -727,14 +725,14 @@ fn index_metadata(
                     .into_iter()
                     .map(|(id, commit)| (id.as_str().to_owned(), commit))
                     .collect(),
-                corpus_version: manifest.corpus.corpus_version.to_string(),
-                corpus_digest: Some(manifest.corpus.content_digest.to_string()),
-                document_count: manifest.corpus.documents.len(),
-                chunk_count: manifest.corpus.chunks.len(),
-                source_count: manifest.sources.len(),
-                diagnostic_count: manifest.diagnostics.len(),
-                component_versions: manifest.component_versions,
-                lexical_checksum: manifest.lexical_checksum.map(|digest| digest.to_string()),
+                corpus_version: manifest.corpus_version.to_string(),
+                corpus_digest: Some(manifest.corpus_digest.to_string()),
+                document_count: manifest.document_count,
+                chunk_count: manifest.chunk_count,
+                source_count: manifest.source_count,
+                diagnostic_count: manifest.diagnostic_count,
+                component_versions: manifest.component_versions.clone(),
+                lexical_checksum: manifest.lexical_checksum.as_ref().map(ToString::to_string),
             });
         }
     }
@@ -1002,6 +1000,8 @@ fn lexical_hits_and_chunks(
 type ChunkMap = BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>;
 type ArtifactCache<T> = OnceLock<Mutex<Option<(PathBuf, Arc<T>)>>>;
 static LEXICAL_ARTIFACT_CACHE: ArtifactCache<LexicalIndex> = OnceLock::new();
+static ARTIFACT_METADATA_CACHE: ArtifactCache<vesc_knowledge_index::PreviousArtifactSummary> =
+    OnceLock::new();
 
 #[cfg(any(feature = "semantic-fastembed", test))]
 static VECTOR_ARTIFACT_CACHE: ArtifactCache<VectorArtifact> = OnceLock::new();
@@ -1027,6 +1027,19 @@ fn cached_artifact<T>(
     *cache = Some((path.to_owned(), Arc::clone(&value)));
     drop(cache);
     Ok(value)
+}
+
+fn active_artifact_summary(
+    root: &Path,
+) -> Result<Arc<vesc_knowledge_index::PreviousArtifactSummary>, String> {
+    let generation = vesc_knowledge_index::active_generation_path(root)
+        .map_err(|_| "configured knowledge artifact unavailable".to_string())?;
+    cached_artifact(&ARTIFACT_METADATA_CACHE, &generation, || {
+        vesc_knowledge_index::inspect_previous_artifact(
+            &vesc_knowledge_index::active_manifest_path(root),
+        )
+        .map_err(|_| "configured knowledge artifact unavailable".to_string())
+    })
 }
 
 /// Reuse the active generation's Tantivy index between MCP requests.
@@ -1207,19 +1220,19 @@ fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>,
     let root = config
         .resolved_artifact_path()
         .ok_or_else(|| "vector artifact is not configured".to_string())?;
-    let vector_path = vesc_knowledge_index::active_generation_path(&root)
-        .map_err(|_| "configured vector artifact unavailable".to_string())?
+    let artifact = active_artifact_summary(&root)
+        .map_err(|_| "configured vector artifact unavailable".to_string())?;
+    let vector_path = root
+        .join("generations")
+        .join(artifact.generation.as_str())
         .join("vectors.bin");
     let vector = cached_artifact(&VECTOR_ARTIFACT_CACHE, &vector_path, || {
-        let manifest =
-            vesc_knowledge_index::inspect_manifest(&vector_path.with_file_name("manifest.json"))
-                .map_err(|_| "configured vector artifact unavailable".to_string())?;
         let vector = VectorArtifact::open_artifact(&vector_path)
             .map_err(|_| "configured vector artifact unavailable".to_string())?;
         vector
             .validate()
             .map_err(|error| format!("semantic artifact incompatible: {error}"))?;
-        if vector.corpus_digest != manifest.corpus.content_digest {
+        if vector.corpus_digest != artifact.corpus_digest {
             return Err("semantic artifact incompatible with the active corpus".into());
         }
         Ok(vector)
@@ -1416,8 +1429,12 @@ fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
     if root.is_file() {
         return Ok(root.to_owned());
     }
-    vesc_knowledge_index::active_generation_path(root)
-        .map(|generation| generation.join("lexical.json"))
+    active_artifact_summary(root)
+        .map(|artifact| {
+            root.join("generations")
+                .join(artifact.generation.as_str())
+                .join("lexical.json")
+        })
         .map_err(|_| "configured lexical artifact unavailable".to_string())
 }
 

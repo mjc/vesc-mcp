@@ -15,7 +15,7 @@ semantic-fastembed = ["dep:fastembed", "dep:ort", "dep:rayon", "dep:tokenizers",
 semantic-coreml = ["semantic-fastembed", "dep:ort", "ort/coreml"]
 semantic-rocm = ["semantic-fastembed", "dep:ort", "ort/rocm"]
 semantic-migraphx = ["semantic-fastembed", "dep:ort", "ort/migraphx"]
-semantic-fastembed-online = ["semantic-fastembed", "fastembed/online"]
+semantic-fastembed-online = ["semantic-fastembed", "fastembed/hf-hub-rustls-tls"]
 coz-profile = ["dep:coz"]
 
 [dependencies]

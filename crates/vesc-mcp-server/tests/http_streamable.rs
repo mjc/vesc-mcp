@@ -9,6 +9,7 @@ use rmcp::{
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
+use vesc_mcp_core::config::KnowledgeConfig;
 use vesc_mcp_core::test_support::VersionedKnowledgeFixture;
 use vesc_mcp_core::{VescMcpService, resources::VESC_C_IF_URI};
 use vesc_mcp_server::http::{HttpServerConfig, router};
@@ -24,7 +25,11 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
         allowed_origins: Vec::new(),
         auth_token: None,
     };
-    let app = router(&config, VescMcpService::new().http_service(), &cancellation);
+    let app = router(
+        &config,
+        VescMcpService::with_knowledge_config(KnowledgeConfig::default()).http_service(),
+        &cancellation,
+    );
     let listener = TcpListener::bind(config.bind).await?;
     let address = listener.local_addr()?;
     let server_cancellation = cancellation.clone();

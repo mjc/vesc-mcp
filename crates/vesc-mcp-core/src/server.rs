@@ -233,6 +233,7 @@ impl VescMcpService {
     }
 
     fn from_state(state: SharedMcpState) -> Self {
+        crate::install_ring_crypto_provider();
         let mut tool_router = Self::tool_router();
         if !state.feedback_writes_enabled {
             tool_router.disable_route("submit_vesc_knowledge_feedback");
@@ -1322,7 +1323,8 @@ mod tests {
 
     #[test]
     fn feedback_write_tools_are_disabled_by_default() {
-        let names = VescMcpService::new().list_tool_names();
+        let names =
+            VescMcpService::with_knowledge_config(KnowledgeConfig::default()).list_tool_names();
         assert!(
             !names
                 .iter()
@@ -1333,7 +1335,7 @@ mod tests {
 
     #[test]
     fn instructions_without_feedback_do_not_advertise_advisories() {
-        let instructions = VescMcpService::new()
+        let instructions = VescMcpService::with_knowledge_config(KnowledgeConfig::default())
             .get_info()
             .instructions
             .expect("server instructions");

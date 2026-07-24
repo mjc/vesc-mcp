@@ -206,6 +206,7 @@
               --set-default VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH 64 \
               --set-default VESC_RAG_SEMANTIC_INGEST_BATCH_SIZE 64 \
               --set-default VESC_RAG_SEMANTIC_INGEST_WINDOW_AGGREGATION token_weighted_mean \
+              --prefix LD_LIBRARY_PATH : "${pkgs.rocmPackages.migraphx}/lib/migraphx/lib" \
             ''}--set-default ORT_DYLIB_PATH "${semanticRuntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
           '';
           meta.mainProgram = "vesc-mcp-server";
@@ -296,6 +297,7 @@
                 ++ lib.optionals stdenv.isLinux [
                   coz
                   heaptrack
+                  inferno
                   perf
                   rocmPackages.rocm-runtime
                   rocmPackages.rocminfo

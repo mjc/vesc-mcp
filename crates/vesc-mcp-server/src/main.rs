@@ -4,8 +4,9 @@ use std::future::Future;
 use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
+use vesc_mcp_core::config::{McpConfig, SemanticIngestionProvider};
 use vesc_mcp_core::managed_git::ManagedGitStore;
-use vesc_mcp_core::managed_repositories::{KnowledgeDataLayout, RepositoryPolicy};
+use vesc_mcp_core::managed_repositories::{DataRoot, KnowledgeDataLayout, RepositoryPolicy};
 use vesc_mcp_core::managed_snapshots::{KnowledgeSnapshotStore, SnapshotDisposition};
 use vesc_mcp_core::preparation_status::{
     KnowledgePreparationStatus, PreparationPhase, PreparationState, write_preparation_status,
@@ -97,8 +98,57 @@ impl StartupPolicy {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn migraphx_cache_path(
+    data_root: Option<&DataRoot>,
+    provider: Option<SemanticIngestionProvider>,
+) -> Option<PathBuf> {
+    match (data_root, provider) {
+        (Some(root), Some(SemanticIngestionProvider::Migraphx)) => {
+            Some(root.as_path().join("migraphx-cache"))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_migraphx_cache() -> anyhow::Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    const CACHE_ENV: &str = "ORT_MIGRAPHX_MODEL_CACHE_PATH";
+    if env::var_os(CACHE_ENV).is_some() {
+        return Ok(());
+    }
+    let config = McpConfig::load();
+    let provider = config
+        .knowledge
+        .semantic_ingestion
+        .as_ref()
+        .map(|ingestion| ingestion.provider);
+    let Some(path) = migraphx_cache_path(config.knowledge.data_root.as_ref(), provider) else {
+        return Ok(());
+    };
+    fs::create_dir_all(&path)?;
+    let error = std::process::Command::new(env::current_exe()?)
+        .args(env::args_os().skip(1))
+        .env(CACHE_ENV, path)
+        .exec();
+    Err(error.into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_migraphx_cache() -> anyhow::Result<()> {
+    Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    configure_migraphx_cache()?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--benchmark-search") {
         run_benchmark(&args)?;
@@ -324,12 +374,30 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
 
-    use super::{PreparationReporter, StartupPolicy, run_http};
+    use vesc_mcp_core::config::SemanticIngestionProvider;
+    use vesc_mcp_core::managed_repositories::DataRoot;
+
+    use super::{PreparationReporter, StartupPolicy, migraphx_cache_path, run_http};
+
+    #[test]
+    fn migraphx_cache_uses_the_configured_data_root() {
+        let root = DataRoot::new(PathBuf::from("/var/lib/vesc-mcp")).expect("absolute data root");
+
+        assert_eq!(
+            migraphx_cache_path(Some(&root), Some(SemanticIngestionProvider::Migraphx)),
+            Some(PathBuf::from("/var/lib/vesc-mcp/migraphx-cache"))
+        );
+        assert_eq!(
+            migraphx_cache_path(Some(&root), Some(SemanticIngestionProvider::Cpu)),
+            None
+        );
+    }
 
     #[test]
     fn startup_policy_defaults_to_refresh_eager_and_offline_fallback() {

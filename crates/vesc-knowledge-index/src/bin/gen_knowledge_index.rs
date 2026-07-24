@@ -156,7 +156,7 @@ fn run_window_quality(args: &[String]) {
     suite
         .validate_for_corpus(
             corpus_digest.as_ref(),
-            manifest.corpus.documents.len(),
+            manifest.corpus.document_count(),
             chunks.len(),
             &chunk_ids,
         )
@@ -779,8 +779,8 @@ fn run_inspect(args: &[String]) {
         manifest.schema.major, manifest.schema.minor
     );
     println!("corpus: {}", manifest.corpus.corpus_version);
-    println!("documents: {}", manifest.corpus.documents.len());
-    println!("chunks: {}", manifest.corpus.chunks.len());
+    println!("documents: {}", manifest.corpus.document_count());
+    println!("chunks: {}", manifest.corpus.chunk_count());
     println!("corpus-digest: {}", manifest.corpus.content_digest);
     println!("lexical-checksum: {:?}", manifest.lexical_checksum);
     println!("vector-checksum: {:?}", manifest.vector_checksum);
@@ -1158,7 +1158,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
     let (mut chunks, corpus_digest) = semantic_benchmark_chunks(Some(&artifact_root));
     let manifest = inspect_manifest(&active_manifest_path(&artifact_root))
         .unwrap_or_else(|error| panic!("inspect bake-off artifact: {error}"));
-    let corpus_documents = manifest.corpus.documents.len();
+    let corpus_documents = manifest.corpus.document_count();
     let chunk_ids = chunks
         .iter()
         .map(|chunk| chunk.chunk_id.to_string())

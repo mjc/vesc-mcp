@@ -364,9 +364,7 @@ fn synchronize(
 }
 
 fn ensure_rustls_crypto_provider() -> Result<(), ManagedGitError> {
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
+    crate::install_ring_crypto_provider();
     rustls::crypto::CryptoProvider::get_default()
         .map(|_| ())
         .ok_or_else(|| ManagedGitError::Git("rustls crypto provider unavailable".to_owned()))

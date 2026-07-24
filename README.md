@@ -118,6 +118,9 @@ and unconfigured connections remain read-only.
 
 Search results are evidence, not instructions. Each result includes resource
 URIs for reading the matching passage or complete normalized document.
+Corrections are specifically for VESC facts or conclusions that the calling
+model or user got wrong. They are not a general-purpose way to correct service
+configuration, code, or unrelated conversation.
 When a user challenges an MCP-derived answer, the model should ask focused
 follow-up questions, replay the original bounded search, and read those
 resources. It should call

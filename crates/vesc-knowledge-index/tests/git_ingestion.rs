@@ -426,7 +426,7 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
     assert_eq!(summary.manifest.sources.len(), 4);
     assert_eq!(
         summary.manifest.component_versions["git-policy"],
-        "reviewed-v1"
+        "reviewed-v2"
     );
     let lexical = LexicalIndex::open_artifact(
         &artifacts

@@ -2116,6 +2116,16 @@ pub struct VectorArtifact {
     pub values: Vec<f32>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct IncrementalVectorArtifact<'a> {
+    pub model_id: &'a str,
+    pub model_revision: &'a str,
+    pub corpus_digest: &'a ContentDigest,
+    pub previous_corpus_digest: &'a ContentDigest,
+    pub previous_path: &'a Path,
+    pub path: &'a Path,
+}
+
 fn encoded_artifact_len(
     chunks: &[Chunk],
     dimension: usize,
@@ -2165,6 +2175,70 @@ impl VectorArtifact {
             && provider_dimension.is_none_or(|dimension| dimension == self.dimension)
     }
 
+    pub(crate) fn validate_reusable_artifact(
+        path: &Path,
+        expected_checksum: &ContentDigest,
+        expected_corpus_digest: &ContentDigest,
+        model_id: &str,
+        model_revision: &str,
+        provider_dimension: Option<usize>,
+    ) -> Result<(), EmbeddingError> {
+        let header = verified_artifact_header(path, expected_checksum)?;
+        if header.schema != 2
+            || !header.normalized
+            || header.model_id != model_id
+            || header.model_revision != model_revision
+            || header.corpus_digest != *expected_corpus_digest
+            || provider_dimension.is_some_and(|dimension| dimension != header.dimension)
+        {
+            return Err(EmbeddingError::ModelMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_artifact(
+        path: &Path,
+        expected_checksum: &ContentDigest,
+        expected_corpus_digest: &ContentDigest,
+        expected_count: usize,
+    ) -> Result<(), EmbeddingError> {
+        let header = verified_artifact_header(path, expected_checksum)?;
+        if header.schema != 2 || !header.normalized {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        if header.corpus_digest != *expected_corpus_digest {
+            return Err(EmbeddingError::CorpusMismatch);
+        }
+        if header.count != expected_count {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        Ok(())
+    }
+}
+
+fn verified_artifact_header(
+    path: &Path,
+    expected_checksum: &ContentDigest,
+) -> Result<VectorHeader, EmbeddingError> {
+    let file = File::open(path).map_err(io_error)?;
+    let length = file.metadata().map_err(io_error)?.len();
+    if length > MAX_ARTIFACT_BYTES as u64 || length < (MAGIC.len() + CHECKSUM_LEN) as u64 {
+        return Err(EmbeddingError::TooLarge);
+    }
+    let body_length = length - CHECKSUM_LEN as u64;
+    let mut reader = BufReader::new(file);
+    if verify_reader_checksum(&mut reader, body_length)? != *expected_checksum {
+        return Err(EmbeddingError::ChecksumMismatch);
+    }
+    reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
+    let mut reader = BinaryReader::new(
+        &mut reader,
+        usize::try_from(body_length).map_err(|_| EmbeddingError::TooLarge)?,
+    );
+    read_vector_header(&mut reader)
+}
+
+impl VectorArtifact {
     fn from_provider_with_selected_order<P: EmbeddingProvider + ?Sized>(
         provider: &mut P,
         chunks: &[Chunk],
@@ -2603,6 +2677,177 @@ impl VectorArtifact {
         result
     }
 
+    /// Embeds only delta chunks and streams them together with a persisted predecessor.
+    ///
+    /// This keeps memory proportional to the delta plus one predecessor row.
+    #[allow(clippy::too_many_lines)] // The streaming merge is one ordered binary pass.
+    pub(crate) fn write_provider_appending_artifact_with_observations<
+        P: EmbeddingProvider + ?Sized,
+    >(
+        provider: &mut P,
+        chunks: &[Chunk],
+        request: IncrementalVectorArtifact<'_>,
+    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
+        let IncrementalVectorArtifact {
+            model_id,
+            model_revision,
+            corpus_digest,
+            previous_corpus_digest,
+            previous_path,
+            path,
+        } = request;
+        if previous_path == path {
+            return Err(EmbeddingError::Io(
+                "incremental vector destination must differ from its predecessor".into(),
+            ));
+        }
+        let source = File::open(previous_path).map_err(io_error)?;
+        let source_length = source.metadata().map_err(io_error)?.len();
+        if source_length > MAX_ARTIFACT_BYTES as u64
+            || source_length < (MAGIC.len() + CHECKSUM_LEN) as u64
+        {
+            return Err(EmbeddingError::TooLarge);
+        }
+        let body_length = source_length - CHECKSUM_LEN as u64;
+        let mut source = BufReader::new(source);
+        verify_reader_checksum(&mut source, body_length)?;
+        source.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        let mut source = BinaryReader::new(
+            &mut source,
+            usize::try_from(body_length).map_err(|_| EmbeddingError::TooLarge)?,
+        );
+        let header = read_vector_header(&mut source)?;
+        if header.schema != 2
+            || !header.normalized
+            || header.model_id != model_id
+            || header.model_revision != model_revision
+            || header.corpus_digest != *previous_corpus_digest
+            || provider
+                .embedding_dimension()
+                .is_some_and(|dimension| dimension != header.dimension)
+        {
+            return Err(EmbeddingError::ModelMismatch);
+        }
+
+        let (embedded, mut observations) = if chunks.is_empty() {
+            (None, VectorBuildObservations::default())
+        } else {
+            let refs = chunks.iter().collect::<Vec<_>>();
+            let inference_order = provider.inference_order(&refs)?;
+            let (artifact, observations) = Self::from_provider_with_observations_and_order(
+                provider,
+                chunks,
+                model_id,
+                model_revision,
+                corpus_digest.clone(),
+                inference_order.as_deref(),
+            )?;
+            if artifact.dimension != header.dimension {
+                return Err(EmbeddingError::DimensionMismatch {
+                    expected: header.dimension,
+                    actual: artifact.dimension,
+                });
+            }
+            (Some(artifact), observations)
+        };
+        let embedded_count = embedded.as_ref().map_or(0, |artifact| artifact.ids.len());
+        let count = header
+            .count
+            .checked_add(embedded_count)
+            .ok_or(EmbeddingError::TooLarge)?;
+        u32::try_from(count).map_err(|_| EmbeddingError::TooLarge)?;
+        let added_bytes = embedded.as_ref().map_or(Ok(0_usize), encoded_rows_len)?;
+        let expected_length = usize::try_from(source_length)
+            .map_err(|_| EmbeddingError::TooLarge)?
+            .checked_add(added_bytes)
+            .filter(|length| *length <= MAX_ARTIFACT_BYTES)
+            .ok_or(EmbeddingError::TooLarge)?;
+
+        let destination = File::create(path).map_err(io_error)?;
+        let mut artifact = DigestingWriter::new(BufWriter::new(destination));
+        let checksum = {
+            let mut body = DigestingWriter::new(&mut artifact);
+            write_vector_header(
+                &mut body,
+                2,
+                header.dimension,
+                count,
+                model_id,
+                model_revision,
+                true,
+                corpus_digest,
+            )?;
+            let mut previous_row = read_vector_row(&mut source, header.dimension)?;
+            let mut previous_id: Option<ChunkId> = None;
+            let mut embedded_row = 0_usize;
+            let mut written = 0_usize;
+            while previous_row.is_some() || embedded_row < embedded_count {
+                let take_previous = embedded.as_ref().is_none_or(|embedded| {
+                    embedded_row == embedded.ids.len()
+                        || previous_row
+                            .as_ref()
+                            .is_some_and(|(id, _)| id < &embedded.ids[embedded_row])
+                });
+                if take_previous {
+                    let (id, vector) = previous_row.take().expect("previous row is present");
+                    if previous_id.as_ref().is_some_and(|previous| previous >= &id) {
+                        return Err(EmbeddingError::InvalidHeader);
+                    }
+                    validate_vector(&vector, true)?;
+                    write_vector_row(&mut body, &id, &vector)?;
+                    previous_id = Some(id);
+                    previous_row = read_vector_row(&mut source, header.dimension)?;
+                } else {
+                    let embedded = embedded.as_ref().expect("embedded row is present");
+                    if previous_row
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &embedded.ids[embedded_row])
+                    {
+                        return Err(EmbeddingError::Provider(
+                            "incremental vector delta contains an existing chunk id".into(),
+                        ));
+                    }
+                    let start = embedded_row
+                        .checked_mul(header.dimension)
+                        .ok_or(EmbeddingError::TooLarge)?;
+                    let end = start
+                        .checked_add(header.dimension)
+                        .ok_or(EmbeddingError::TooLarge)?;
+                    write_vector_row(
+                        &mut body,
+                        &embedded.ids[embedded_row],
+                        &embedded.values[start..end],
+                    )?;
+                    embedded_row += 1;
+                }
+                written += 1;
+            }
+            if written != count || !source.is_empty() {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            let (_, checksum, body_length) = body.finish();
+            if body_length != (expected_length - CHECKSUM_LEN) as u64 {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            checksum
+        };
+        artifact.write_all(&checksum).map_err(io_error)?;
+        artifact.flush().map_err(io_error)?;
+        let (_, digest, length) = artifact.finish();
+        if length != expected_length as u64 {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        observations.reused_vectors = header.count;
+        observations.embedded_vectors = embedded_count;
+        Ok((
+            digest_from_bytes(&digest)?,
+            length,
+            count,
+            header.dimension,
+            observations,
+        ))
+    }
+
     /// Builds an artifact using an optional provider-selected inference order.
     ///
     /// The returned rows are always restored to ascending stable chunk ID,
@@ -2989,62 +3234,32 @@ impl VectorArtifact {
 
     fn decode_body<R: Read>(reader: R, body_length: usize) -> Result<Self, EmbeddingError> {
         let mut reader = BinaryReader::new(reader, body_length);
-        let magic = reader.array::<8>()?;
-        if magic != MAGIC {
-            return Err(EmbeddingError::InvalidHeader);
-        }
-        let schema = u16::try_from(reader.u32()?).map_err(|_| EmbeddingError::InvalidHeader)?;
-        if schema == 1 {
-            return Err(EmbeddingError::UnsupportedSchema(schema));
-        }
-        if schema != 2 {
-            return Err(EmbeddingError::InvalidHeader);
-        }
-        let dimension = usize::try_from(reader.u32()?).map_err(|_| EmbeddingError::TooLarge)?;
-        if dimension == 0 || dimension > MAX_ARTIFACT_BYTES / std::mem::size_of::<f32>() {
-            return Err(EmbeddingError::TooLarge);
-        }
-        let count = usize::try_from(reader.u32()?).map_err(|_| EmbeddingError::TooLarge)?;
-        if count > MAX_ARTIFACT_BYTES / 2 {
-            return Err(EmbeddingError::TooLarge);
-        }
-        let model_id_len = reader.u32()?;
-        let model_id = reader.string(model_id_len)?;
-        let model_revision_len = reader.u32()?;
-        let model_revision = reader.string(model_revision_len)?;
-        let normalized = match reader.byte()? {
-            0 => false,
-            1 => true,
-            _ => return Err(EmbeddingError::InvalidHeader),
-        };
-        let corpus_digest = digest_from_bytes(&reader.array::<32>()?)?;
-        let mut ids = Vec::with_capacity(count);
-        let value_count = count
-            .checked_mul(dimension)
+        let header = read_vector_header(&mut reader)?;
+        let mut ids = Vec::with_capacity(header.count);
+        let value_count = header
+            .count
+            .checked_mul(header.dimension)
             .ok_or(EmbeddingError::TooLarge)?;
         let mut values = Vec::with_capacity(value_count);
-        for _ in 0..count {
-            let chunk_id_len = u32::from(reader.u16()?);
-            let chunk_id = ChunkId::try_from(reader.string(chunk_id_len)?)
-                .map_err(|_| EmbeddingError::InvalidHeader)?;
-            for _ in 0..dimension {
-                values.push(f32::from_le_bytes(reader.array::<4>()?));
-            }
+        for _ in 0..header.count {
+            let (chunk_id, vector) =
+                read_vector_row(&mut reader, header.dimension)?.ok_or(EmbeddingError::Truncated)?;
             if ids.last().is_some_and(|last| last >= &chunk_id) {
                 return Err(EmbeddingError::InvalidHeader);
             }
             ids.push(chunk_id);
+            values.extend(vector);
         }
         if !reader.is_empty() {
             return Err(EmbeddingError::InvalidHeader);
         }
         let artifact = Self {
-            schema,
-            model_id,
-            model_revision,
-            dimension,
-            normalized,
-            corpus_digest,
+            schema: header.schema,
+            model_id: header.model_id,
+            model_revision: header.model_revision,
+            dimension: header.dimension,
+            normalized: header.normalized,
+            corpus_digest: header.corpus_digest,
             ids,
             values,
         };
@@ -3319,6 +3534,141 @@ impl<R: Read> BinaryReader<R> {
     }
 }
 
+struct VectorHeader {
+    schema: u16,
+    model_id: String,
+    model_revision: String,
+    dimension: usize,
+    count: usize,
+    normalized: bool,
+    corpus_digest: ContentDigest,
+}
+
+fn read_vector_header<R: Read>(
+    reader: &mut BinaryReader<R>,
+) -> Result<VectorHeader, EmbeddingError> {
+    if reader.array::<8>()? != MAGIC {
+        return Err(EmbeddingError::InvalidHeader);
+    }
+    let schema = u16::try_from(reader.u32()?).map_err(|_| EmbeddingError::InvalidHeader)?;
+    if schema == 1 {
+        return Err(EmbeddingError::UnsupportedSchema(schema));
+    }
+    if schema != 2 {
+        return Err(EmbeddingError::InvalidHeader);
+    }
+    let dimension = usize::try_from(reader.u32()?).map_err(|_| EmbeddingError::TooLarge)?;
+    if dimension == 0 || dimension > MAX_ARTIFACT_BYTES / std::mem::size_of::<f32>() {
+        return Err(EmbeddingError::TooLarge);
+    }
+    let count = usize::try_from(reader.u32()?).map_err(|_| EmbeddingError::TooLarge)?;
+    if count > MAX_ARTIFACT_BYTES / 2 {
+        return Err(EmbeddingError::TooLarge);
+    }
+    let model_id_len = reader.u32()?;
+    let model_id = reader.string(model_id_len)?;
+    let model_revision_len = reader.u32()?;
+    let model_revision = reader.string(model_revision_len)?;
+    let normalized = match reader.byte()? {
+        0 => false,
+        1 => true,
+        _ => return Err(EmbeddingError::InvalidHeader),
+    };
+    let corpus_digest = digest_from_bytes(&reader.array::<32>()?)?;
+    Ok(VectorHeader {
+        schema,
+        model_id,
+        model_revision,
+        dimension,
+        count,
+        normalized,
+        corpus_digest,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_vector_header(
+    writer: &mut impl Write,
+    schema: u16,
+    dimension: usize,
+    count: usize,
+    model_id: &str,
+    model_revision: &str,
+    normalized: bool,
+    corpus_digest: &ContentDigest,
+) -> Result<(), EmbeddingError> {
+    let schema = u32::from(schema);
+    let dimension = u32::try_from(dimension).map_err(|_| EmbeddingError::TooLarge)?;
+    let count = u32::try_from(count).map_err(|_| EmbeddingError::TooLarge)?;
+    let model_id_len = u32::try_from(model_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    let model_revision_len =
+        u32::try_from(model_revision.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    writer.write_all(MAGIC).map_err(io_error)?;
+    writer
+        .write_all(&schema.to_le_bytes())
+        .and_then(|()| writer.write_all(&dimension.to_le_bytes()))
+        .and_then(|()| writer.write_all(&count.to_le_bytes()))
+        .and_then(|()| writer.write_all(&model_id_len.to_le_bytes()))
+        .and_then(|()| writer.write_all(model_id.as_bytes()))
+        .and_then(|()| writer.write_all(&model_revision_len.to_le_bytes()))
+        .and_then(|()| writer.write_all(model_revision.as_bytes()))
+        .and_then(|()| writer.write_all(&[u8::from(normalized)]))
+        .map_err(io_error)?;
+    writer
+        .write_all(&digest_bytes(corpus_digest)?)
+        .map_err(io_error)
+}
+
+fn read_vector_row<R: Read>(
+    reader: &mut BinaryReader<R>,
+    dimension: usize,
+) -> Result<Option<(ChunkId, Vec<f32>)>, EmbeddingError> {
+    if reader.is_empty() {
+        return Ok(None);
+    }
+    let chunk_id_len = u32::from(reader.u16()?);
+    let chunk_id = ChunkId::try_from(reader.string(chunk_id_len)?)
+        .map_err(|_| EmbeddingError::InvalidHeader)?;
+    let mut vector = Vec::with_capacity(dimension);
+    for _ in 0..dimension {
+        vector.push(f32::from_le_bytes(reader.array::<4>()?));
+    }
+    Ok(Some((chunk_id, vector)))
+}
+
+fn write_vector_row(
+    writer: &mut impl Write,
+    chunk_id: &ChunkId,
+    vector: &[f32],
+) -> Result<(), EmbeddingError> {
+    let id = chunk_id.as_str().as_bytes();
+    let id_len = u16::try_from(id.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    writer
+        .write_all(&id_len.to_le_bytes())
+        .and_then(|()| writer.write_all(id))
+        .map_err(io_error)?;
+    for value in vector {
+        writer.write_all(&value.to_le_bytes()).map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn encoded_rows_len(artifact: &VectorArtifact) -> Result<usize, EmbeddingError> {
+    let vector_bytes = artifact
+        .dimension
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or(EmbeddingError::TooLarge)?;
+    artifact.ids.iter().try_fold(0_usize, |length, id| {
+        let id_len = id.as_str().len();
+        u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
+        length
+            .checked_add(2)
+            .and_then(|length| length.checked_add(id_len))
+            .and_then(|length| length.checked_add(vector_bytes))
+            .ok_or(EmbeddingError::TooLarge)
+    })
+}
+
 fn verify_reader_checksum<R: Read>(
     reader: &mut R,
     body_length: u64,
@@ -3351,6 +3701,7 @@ fn io_error(error: std::io::Error) -> EmbeddingError {
     EmbeddingError::Io(error.to_string())
 }
 
+#[cfg(any(test, feature = "semantic-fastembed"))]
 fn digest_file(path: &Path) -> Result<ContentDigest, EmbeddingError> {
     let mut reader = BufReader::new(File::open(path).map_err(io_error)?);
     let mut digest = Sha256::new();

@@ -481,10 +481,15 @@ mod tests {
     #[test]
     fn tool_build_errors_include_hint() {
         let root = fixture_path("broken-missing-lisp");
-        let response = build_vescpkg_tool(&BuildVescpkgParams {
-            root: root.display().to_string(),
-            timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
-        });
+        let response = build_vescpkg_tool_with_runner(
+            &BuildVescpkgParams {
+                root: root.display().to_string(),
+                timeout_secs: DEFAULT_BUILD_TIMEOUT_SECS,
+            },
+            &RealVescToolRunner,
+            None,
+            Some(&fixture_sandbox_roots()),
+        );
 
         let err = response.error.expect("structured error");
         assert!(

@@ -136,12 +136,15 @@ pub fn validate_package_layout_json_with_sandbox(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::fixture_path;
+    use crate::test_support::{fixture_path, fixture_sandbox_roots};
 
     #[test]
     fn tool_validate_refloat_fixture_ok() {
         let root = fixture_path("refloat-minimal");
-        let response = validate_package_layout_tool(&root.display().to_string());
+        let response = validate_package_layout_tool_with_sandbox(
+            &root.display().to_string(),
+            Some(&fixture_sandbox_roots()),
+        );
 
         assert!(response.ok, "issues: {:?}", response.issues);
         assert!(response.issues.is_empty());
@@ -151,7 +154,10 @@ mod tests {
     #[test]
     fn tool_validate_broken_fixture_fails() {
         let root = fixture_path("broken-missing-lisp");
-        let response = validate_package_layout_tool(&root.display().to_string());
+        let response = validate_package_layout_tool_with_sandbox(
+            &root.display().to_string(),
+            Some(&fixture_sandbox_roots()),
+        );
 
         assert!(!response.ok);
         assert!(response.error.is_none());

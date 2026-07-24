@@ -13,10 +13,13 @@ pub mod full_history;
 pub mod git;
 pub mod ingest;
 
+pub(crate) use self::full_history::history_content_key_for_chunk;
 use self::ingest::{SourceInventory, SourceRejection};
 
 /// The first corpus schema supported by this crate.
 pub const CORPUS_SCHEMA_V1: SchemaVersion = SchemaVersion { major: 1, minor: 0 };
+/// Corpus-manifest schema with compact inventory counts.
+pub const CORPUS_MANIFEST_SCHEMA_V2: SchemaVersion = SchemaVersion { major: 1, minor: 1 };
 /// The first artifact schema supported by this crate.
 pub const ARTIFACT_SCHEMA_V1: SchemaVersion = SchemaVersion { major: 1, minor: 0 };
 
@@ -615,9 +618,20 @@ pub fn validate_chunk_adjacency(chunks: &[Chunk]) -> Result<(), CorpusError> {
 pub struct CorpusManifest {
     pub schema: SchemaVersion,
     pub corpus_version: CorpusVersion,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub documents: Vec<DocumentId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chunks: Vec<ChunkId>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub document_count: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub chunk_count: usize,
     pub content_digest: ContentDigest,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip callback receives a reference.
+const fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl CorpusManifest {
@@ -646,8 +660,41 @@ impl CorpusManifest {
             corpus_version,
             documents,
             chunks,
+            document_count: 0,
+            chunk_count: 0,
             content_digest,
         }
+    }
+
+    /// Creates a compact manifest from a streamed index inventory.
+    #[must_use]
+    pub const fn from_inventory(
+        corpus_version: CorpusVersion,
+        document_count: usize,
+        chunk_count: usize,
+        content_digest: ContentDigest,
+    ) -> Self {
+        Self {
+            schema: CORPUS_MANIFEST_SCHEMA_V2,
+            corpus_version,
+            documents: Vec::new(),
+            chunks: Vec::new(),
+            document_count,
+            chunk_count,
+            content_digest,
+        }
+    }
+
+    /// Returns the number of distinct documents represented by the corpus.
+    #[must_use]
+    pub fn document_count(&self) -> usize {
+        self.document_count.max(self.documents.len())
+    }
+
+    /// Returns the number of distinct chunks represented by the corpus.
+    #[must_use]
+    pub fn chunk_count(&self) -> usize {
+        self.chunk_count.max(self.chunks.len())
     }
 
     /// Validates uniqueness and the supported corpus schema before activation.
@@ -659,6 +706,12 @@ impl CorpusManifest {
         self.schema.ensure_major(CORPUS_SCHEMA_V1, "corpus")?;
         if self.documents.windows(2).any(|pair| pair[0] == pair[1])
             || self.chunks.windows(2).any(|pair| pair[0] == pair[1])
+            || (!self.documents.is_empty()
+                && self.document_count != 0
+                && self.document_count != self.documents.len())
+            || (!self.chunks.is_empty()
+                && self.chunk_count != 0
+                && self.chunk_count != self.chunks.len())
         {
             return Err(CorpusError::InvalidValue {
                 kind: "manifest duplicate id",

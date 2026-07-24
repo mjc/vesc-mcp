@@ -128,7 +128,7 @@ fn record_snapshot(
 }
 
 fn snapshot_memberships(root: &Path) -> SnapshotMemberships {
-    let default = fs::read(root.join("default-snapshot.json"))
+    let default = crate::read_default_snapshot(root)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<KnowledgeSnapshotManifest>(&bytes).ok());
     let mut memberships = SnapshotMemberships::new();

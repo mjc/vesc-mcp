@@ -40,7 +40,9 @@ to configured roots plus the connected client's advertised local roots.
 
 Feedback write tools are only advertised when `[feedback] path` is configured
 and writes are explicitly enabled. HTTP writes additionally require configured
-authentication. If a user challenges an MCP-derived answer, investigate with
+authentication. Corrections record VESC facts or conclusions that the calling
+model or user got wrong; they are not general-purpose edits for service
+configuration, code, or unrelated conversation. If a user challenges an MCP-derived answer, investigate with
 narrower searches and resource reads first. Use `correct_vesc_knowledge` only
 after registered VESC resources support the correction and the user either
 explicitly asks to record it or confirms after being asked. Set `authorization`

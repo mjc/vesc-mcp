@@ -1,5 +1,9 @@
 # Knowledge feedback and correction design
 
+Corrections are for VESC facts or conclusions that the calling model or user
+got wrong. They are not a generic correction channel for service configuration,
+code, or unrelated conversation.
+
 Status: implemented by VESCM-183 and its child implementation issues.
 
 ## Goal

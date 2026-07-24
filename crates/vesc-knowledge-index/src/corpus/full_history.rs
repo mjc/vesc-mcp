@@ -53,6 +53,58 @@ struct PendingChange {
     id: gix::ObjectId,
 }
 
+enum HistoryContents<'a> {
+    All(BTreeMap<ContentDigest, Chunk>),
+    Delta {
+        previous_contains:
+            &'a mut dyn FnMut(&Chunk, &ContentDigest) -> Result<bool, GitHistoryError>,
+        chunks: BTreeMap<ContentDigest, Chunk>,
+    },
+}
+
+impl HistoryContents<'_> {
+    fn insert(
+        &mut self,
+        key: ContentDigest,
+        chunk: Chunk,
+        reachable_revisions: &BTreeSet<gix::ObjectId>,
+        observations: &mut GitHistoryRefreshObservations,
+    ) -> Result<(), GitHistoryError> {
+        match self {
+            Self::All(contents) => {
+                if let Some(existing) = contents.get_mut(&key) {
+                    observations.reused_contents = observations.reused_contents.saturating_add(1);
+                    let existing_is_reachable =
+                        gix::ObjectId::from_hex(existing.revision.as_str().as_bytes())
+                            .is_ok_and(|id| reachable_revisions.contains(&id));
+                    if !existing_is_reachable {
+                        *existing = chunk;
+                    }
+                } else {
+                    contents.insert(key, chunk);
+                }
+            }
+            Self::Delta {
+                previous_contains,
+                chunks,
+            } => {
+                if chunks.contains_key(&key) || previous_contains(&chunk, &key)? {
+                    observations.reused_contents = observations.reused_contents.saturating_add(1);
+                } else {
+                    chunks.insert(key, chunk);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn into_chunks(self) -> Vec<Chunk> {
+        match self {
+            Self::All(chunks) | Self::Delta { chunks, .. } => chunks.into_values().collect(),
+        }
+    }
+}
+
 /// Reuse cached Git chunks when every configured tip is a fast-forward.
 ///
 /// Returns `Ok(None)` when the cached tips cannot safely seed the current
@@ -87,6 +139,54 @@ fn ingest_git_history_fast_forward_from_chunks(
     previous_tips: &[GitHistoryTip],
     cached_chunks: impl IntoIterator<Item = Chunk>,
 ) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
+    let repositories = sources
+        .iter()
+        .map(|source| source.repository_id.clone())
+        .collect::<BTreeSet<_>>();
+    let contents = cached_chunks
+        .into_iter()
+        .filter(|chunk| {
+            chunk.source_kind == SourceKind::GitBlob
+                && repositories.contains(&chunk.repository)
+                && previous_tips
+                    .iter()
+                    .any(|tip| tip.repository == chunk.repository)
+        })
+        .map(|chunk| {
+            (
+                history_content_key_for_chunk(&chunk)
+                    .expect("filtered Git-history chunk has a content key"),
+                chunk,
+            )
+        })
+        .collect();
+    ingest_git_history_fast_forward_with_contents(
+        sources,
+        previous_tips,
+        HistoryContents::All(contents),
+    )
+}
+
+pub(crate) fn ingest_git_history_fast_forward_delta(
+    sources: &[GitCorpusSource],
+    previous_tips: &[GitHistoryTip],
+    previous_contains: &mut dyn FnMut(&Chunk, &ContentDigest) -> Result<bool, GitHistoryError>,
+) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
+    ingest_git_history_fast_forward_with_contents(
+        sources,
+        previous_tips,
+        HistoryContents::Delta {
+            previous_contains,
+            chunks: BTreeMap::new(),
+        },
+    )
+}
+
+fn ingest_git_history_fast_forward_with_contents(
+    sources: &[GitCorpusSource],
+    previous_tips: &[GitHistoryTip],
+    mut contents: HistoryContents<'_>,
+) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     let tips = previous_tips
         .iter()
         .map(|tip| (tip.repository.clone(), tip.revision.clone()))
@@ -98,22 +198,12 @@ fn ingest_git_history_fast_forward_from_chunks(
     if repositories.len() != sources.len() {
         return Ok(None);
     }
-
-    let mut contents = cached_chunks
-        .into_iter()
-        .filter(|chunk| {
-            chunk.source_kind == SourceKind::GitBlob
-                && repositories.contains(&chunk.repository)
-                && tips.contains_key(&chunk.repository)
-        })
-        .map(|chunk| {
-            let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());
-            (
-                history_content_key(&chunk.repository, &chunk.path, &embedding_key),
-                chunk,
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    if tips
+        .keys()
+        .any(|repository| !repositories.contains(repository))
+    {
+        return Ok(None);
+    }
     let mut observations = GitHistoryRefreshObservations::default();
     let mut ordered_sources = sources.iter().collect::<Vec<_>>();
     ordered_sources.sort_by(|left, right| {
@@ -175,7 +265,7 @@ fn ingest_git_history_fast_forward_from_chunks(
         }
         processed.push((source, reachable_revisions));
     }
-    Ok(Some((contents.into_values().collect(), observations)))
+    Ok(Some((contents.into_chunks(), observations)))
 }
 
 fn same_corpus_contract(left: &GitCorpusSource, right: &GitCorpusSource) -> bool {
@@ -216,7 +306,7 @@ fn ingest_commit_changes(
     source: &GitCorpusSource,
     commit: &ReachableCommit,
     reachable_revisions: &BTreeSet<gix::ObjectId>,
-    contents: &mut BTreeMap<ContentDigest, Chunk>,
+    contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
 ) -> Result<(), GitHistoryError> {
     let current_commit = repo
@@ -276,7 +366,7 @@ fn ingest_upsert(
     reachable_revisions: &BTreeSet<gix::ObjectId>,
     path: &str,
     id: gix::ObjectId,
-    contents: &mut BTreeMap<ContentDigest, Chunk>,
+    contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
 ) -> Result<(), GitHistoryError> {
     let size = repo
@@ -311,17 +401,7 @@ fn ingest_upsert(
     for chunk in chunks {
         let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());
         let key = history_content_key(&source.repository_id, path, &embedding_key);
-        if let Some(existing) = contents.get_mut(&key) {
-            observations.reused_contents = observations.reused_contents.saturating_add(1);
-            let existing_is_reachable =
-                gix::ObjectId::from_hex(existing.revision.as_str().as_bytes())
-                    .is_ok_and(|id| reachable_revisions.contains(&id));
-            if !existing_is_reachable {
-                *existing = chunk;
-            }
-        } else {
-            contents.insert(key, chunk);
-        }
+        contents.insert(key, chunk, reachable_revisions, observations)?;
     }
     #[cfg(feature = "coz-profile")]
     coz::progress!("git_history_ingested_blob");
@@ -342,6 +422,13 @@ fn history_content_key(
     identity.push('\0');
     identity.push_str(embedding_key.as_str());
     ContentDigest::of(identity.as_bytes())
+}
+
+pub(crate) fn history_content_key_for_chunk(chunk: &Chunk) -> Option<ContentDigest> {
+    (chunk.source_kind == SourceKind::GitBlob).then(|| {
+        let embedding_key = ContentDigest::of(embedding_text(chunk).as_bytes());
+        history_content_key(&chunk.repository, &chunk.path, &embedding_key)
+    })
 }
 
 fn collect_change(

@@ -2,6 +2,7 @@
 /.direnv/
 /.codex-direnv.stderr.*
 /result
+/result-profile*
 *.swp
 *.swo
 .DS_Store

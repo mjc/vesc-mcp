@@ -8,16 +8,24 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tantivy::collector::{Count, TopDocs};
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, TermQuery, TermSetQuery};
+use tantivy::merge_policy::NoMergePolicy;
+use tantivy::query::{
+    AllQuery, BooleanQuery, EnableScoring, Occur, Query, TermQuery, TermSetQuery,
+};
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
+use tantivy::termdict::TermMerger;
+use tantivy::tokenizer::{TextAnalyzer, TokenStream};
 use tantivy::{Index, IndexReader, IndexWriter, TantivyDocument, Term};
 
 use crate::corpus::{Chunk, ChunkId, ContentDigest, DocumentId, SourceKind, TrustTier};
 use crate::{Category, RepositoryId, Revision};
 
 pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-stored-chunks-descriptor-v4";
+const INDEX_WRITER_MEMORY_BYTES: usize = 128 * 1024 * 1024;
+const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;
+const MAX_INCREMENTAL_SEGMENTS: usize = 32;
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -139,6 +147,97 @@ struct LexicalFields {
     chunk_json: Field,
 }
 
+/// Exact lookup over persisted Git-history content identities.
+pub struct HistoryContentLookup {
+    reader: IndexReader,
+    fields: LexicalFields,
+    path_analyzer: TextAnalyzer,
+    cached_path: Option<(RepositoryId, String, BTreeSet<ContentDigest>)>,
+}
+
+impl HistoryContentLookup {
+    /// Returns whether the previous lexical index already contains this history identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError::Search`] when Tantivy cannot execute the exact lookup.
+    pub fn contains(&mut self, chunk: &Chunk, key: &ContentDigest) -> Result<bool, LexicalError> {
+        let cached = self
+            .cached_path
+            .as_ref()
+            .is_some_and(|(repository, path, _)| {
+                repository == &chunk.repository && path == &chunk.path
+            });
+        if !cached {
+            let searcher = self.reader.searcher();
+            let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.fields.repository, chunk.repository.as_str()),
+                    IndexRecordOption::Basic,
+                )),
+            )];
+            let mut path_terms = Vec::new();
+            let mut path_tokens = self.path_analyzer.token_stream(&chunk.path);
+            while path_tokens.advance() {
+                path_terms.push(path_tokens.token().text.clone());
+            }
+            if path_terms.is_empty() {
+                return Err(LexicalError::Artifact(
+                    "Git-history path has no searchable terms".into(),
+                ));
+            }
+            clauses.extend(path_terms.into_iter().map(|term| {
+                (
+                    Occur::Must,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(self.fields.path, &term),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>,
+                )
+            }));
+            let query = BooleanQuery::new(clauses);
+            let weight = query
+                .weight(EnableScoring::disabled_from_searcher(&searcher))
+                .map_err(LexicalError::Search)?;
+            let mut keys = BTreeSet::new();
+            for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
+                let mut documents = Vec::new();
+                weight
+                    .for_each(segment, &mut |doc, _| documents.push(doc))
+                    .map_err(LexicalError::Search)?;
+                for doc_id in documents {
+                    let segment_ord = u32::try_from(segment_ord).map_err(|_| {
+                        LexicalError::Artifact("lexical segment count is too large".into())
+                    })?;
+                    let address = tantivy::DocAddress::new(segment_ord, doc_id);
+                    let document = searcher
+                        .doc::<TantivyDocument>(address)
+                        .map_err(LexicalError::Search)?;
+                    let json = document
+                        .get_first(self.fields.chunk_json)
+                        .and_then(|value| value.as_str())
+                        .ok_or(LexicalError::MissingChunkId)?;
+                    let candidate: Chunk = serde_json::from_str(json)
+                        .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+                    if candidate.source_kind == SourceKind::GitBlob
+                        && candidate.repository == chunk.repository
+                        && candidate.path == chunk.path
+                        && let Some(key) = crate::corpus::history_content_key_for_chunk(&candidate)
+                    {
+                        keys.insert(key);
+                    }
+                }
+            }
+            self.cached_path = Some((chunk.repository.clone(), chunk.path.clone(), keys));
+        }
+        Ok(self
+            .cached_path
+            .as_ref()
+            .is_some_and(|(_, _, keys)| keys.contains(key)))
+    }
+}
+
 impl LexicalIndex {
     /// Builds an in-memory Tantivy index from chunks.
     ///
@@ -153,7 +252,9 @@ impl LexicalIndex {
     fn build_owned(chunks: Vec<Chunk>) -> Result<Self, LexicalError> {
         let (schema, fields) = schema();
         let index = Index::create_in_ram(schema);
-        let mut writer = index.writer(15_000_000).map_err(LexicalError::Writer)?;
+        let mut writer = index
+            .writer_with_num_threads(1, IN_MEMORY_WRITER_MEMORY_BYTES)
+            .map_err(LexicalError::Writer)?;
         for chunk in &chunks {
             add_chunk(&writer, fields, chunk);
         }
@@ -199,6 +300,78 @@ impl LexicalIndex {
         path: &Path,
     ) -> Result<(ContentDigest, u64), LexicalError> {
         Self::write_persisted_index(chunks, path)?;
+        Self::write_descriptor(path)
+    }
+
+    /// Clones immutable Tantivy segments and indexes only new chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when the prior index cannot be cloned or the
+    /// delta cannot be committed.
+    pub fn write_incremental_search_artifact_with_digest<'a>(
+        previous: &Path,
+        chunks: impl IntoIterator<Item = &'a Chunk>,
+        path: &Path,
+    ) -> Result<(ContentDigest, u64), LexicalError> {
+        clone_persisted_index(previous, path)?;
+        let (schema, fields) = schema();
+        let index = Index::open_in_dir(persisted_index_path(path)).map_err(LexicalError::Writer)?;
+        if index.schema() != schema {
+            return Err(LexicalError::Artifact(
+                "persisted lexical index schema does not match".into(),
+            ));
+        }
+        let mut writer = index
+            .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
+            .map_err(LexicalError::Writer)?;
+        writer.set_merge_policy(Box::new(NoMergePolicy));
+        for chunk in chunks {
+            add_chunk(&writer, fields, chunk);
+            #[cfg(feature = "coz-profile")]
+            coz::progress!("lexical_indexed_chunk");
+        }
+        writer.commit().map_err(LexicalError::Commit)?;
+        let mut segments = index
+            .searchable_segment_metas()
+            .map_err(LexicalError::Commit)?;
+        if segments.len() > MAX_INCREMENTAL_SEGMENTS {
+            segments.sort_unstable_by_key(tantivy::SegmentMeta::num_docs);
+            let smallest = segments
+                .iter()
+                .take(2)
+                .map(tantivy::SegmentMeta::id)
+                .collect::<Vec<_>>();
+            writer
+                .merge(&smallest)
+                .wait()
+                .map_err(LexicalError::Commit)?;
+            writer
+                .wait_merging_threads()
+                .map_err(LexicalError::Commit)?;
+        }
+        Self::write_descriptor(path)
+    }
+
+    /// Opens the exact Git-history key lookup without deserializing stored chunks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when the persisted artifact is incompatible.
+    pub fn open_history_content_lookup(path: &Path) -> Result<HistoryContentLookup, LexicalError> {
+        let index = Self::open_persisted_index(path, BTreeMap::new())?;
+        let path_analyzer = index.index.tokenizers().get("default").ok_or_else(|| {
+            LexicalError::Artifact("default path tokenizer is unavailable".into())
+        })?;
+        Ok(HistoryContentLookup {
+            reader: index.reader,
+            fields: index.fields,
+            path_analyzer,
+            cached_path: None,
+        })
+    }
+
+    fn write_descriptor(path: &Path) -> Result<(ContentDigest, u64), LexicalError> {
         let file = File::create(path).map_err(|error| LexicalError::Io(error.to_string()))?;
         let mut writer = DigestingWriter::new(BufWriter::new(file));
         serde_json::to_writer(&mut writer, &LexicalDescriptor { schema: 2 })
@@ -239,6 +412,29 @@ impl LexicalIndex {
         Self::open_persisted_index(path, BTreeMap::new())
     }
 
+    /// Streams the sorted unique document and chunk IDs from a persisted index.
+    ///
+    /// The digest is identical to [`crate::CorpusManifest::new`] without
+    /// materializing either complete ID inventory.
+    pub(crate) fn corpus_inventory(
+        path: &Path,
+    ) -> Result<(usize, usize, ContentDigest), LexicalError> {
+        let index = Self::open_persisted_index(path, BTreeMap::new())?;
+        let searcher = index.reader.searcher();
+        let mut writer = DigestingWriter::new(std::io::sink());
+        let document_count = write_unique_terms(&searcher, index.fields.document_id, &mut writer)?;
+        let chunk_count = write_unique_terms(&searcher, index.fields.chunk_id, &mut writer)?;
+        let live_documents = usize::try_from(searcher.num_docs())
+            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
+        if live_documents != chunk_count {
+            return Err(LexicalError::Artifact(
+                "lexical index contains duplicate or missing chunk documents".into(),
+            ));
+        }
+        let (digest, _) = writer.finish();
+        Ok((document_count, chunk_count, digest))
+    }
+
     fn open_persisted_index(
         path: &Path,
         chunks: BTreeMap<ChunkId, Chunk>,
@@ -270,7 +466,9 @@ impl LexicalIndex {
         fs::create_dir_all(&index_path).map_err(|error| LexicalError::Io(error.to_string()))?;
         let (schema, fields) = schema();
         let index = Index::create_in_dir(index_path, schema).map_err(LexicalError::Writer)?;
-        let mut writer = index.writer(15_000_000).map_err(LexicalError::Writer)?;
+        let mut writer = index
+            .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
+            .map_err(LexicalError::Writer)?;
         for chunk in chunks {
             add_chunk(&writer, fields, chunk);
             #[cfg(feature = "coz-profile")]
@@ -686,6 +884,85 @@ fn persisted_index_path(path: &Path) -> PathBuf {
     path.with_extension("tantivy")
 }
 
+fn clone_persisted_index(previous: &Path, path: &Path) -> Result<(), LexicalError> {
+    let source = persisted_index_path(previous);
+    let destination = persisted_index_path(path);
+    if previous == path || source == destination {
+        return Err(LexicalError::Artifact(
+            "incremental lexical destination must differ from its predecessor".into(),
+        ));
+    }
+    if !source.is_dir() {
+        return Err(LexicalError::Artifact(
+            "persisted lexical predecessor is missing".into(),
+        ));
+    }
+    fs::create_dir(&destination).map_err(|error| {
+        LexicalError::Io(format!(
+            "failed to create new lexical destination {}: {error}",
+            destination.display()
+        ))
+    })?;
+    for entry in fs::read_dir(source).map_err(|error| LexicalError::Io(error.to_string()))? {
+        let entry = entry.map_err(|error| LexicalError::Io(error.to_string()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        if !file_type.is_file() {
+            return Err(LexicalError::Artifact(
+                "persisted lexical index contains a non-file entry".into(),
+            ));
+        }
+        let name = entry.file_name();
+        if name.to_string_lossy().ends_with(".lock") {
+            continue;
+        }
+        let target = destination.join(&name);
+        if name == "meta.json" || name == ".managed.json" {
+            fs::copy(entry.path(), target).map_err(|error| LexicalError::Io(error.to_string()))?;
+        } else if fs::hard_link(entry.path(), &target).is_err() {
+            if target.exists() {
+                return Err(LexicalError::Artifact(format!(
+                    "incremental lexical target already exists: {}",
+                    target.display()
+                )));
+            }
+            fs::copy(entry.path(), target).map_err(|error| LexicalError::Io(error.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_unique_terms(
+    searcher: &tantivy::Searcher,
+    field: Field,
+    writer: &mut impl Write,
+) -> Result<usize, LexicalError> {
+    let readers = searcher
+        .segment_readers()
+        .iter()
+        .map(|reader| reader.inverted_index(field))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(LexicalError::Search)?;
+    let streams = readers
+        .iter()
+        .map(|reader| reader.terms().stream())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| LexicalError::Io(error.to_string()))?;
+    let mut terms = TermMerger::new(streams);
+    let mut count = 0_usize;
+    while terms.advance() {
+        writer
+            .write_all(terms.key())
+            .and_then(|()| writer.write_all(&[0]))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| LexicalError::Artifact("lexical term count is too large".into()))?;
+    }
+    Ok(count)
+}
+
 fn morphology_aliases(text: &str) -> String {
     text.split(|character: char| !character.is_ascii_alphabetic())
         .filter_map(|word| word.strip_suffix("ence"))
@@ -817,6 +1094,26 @@ mod tests {
         Chunk::from_document(&document, 0, text.into(), Vec::new(), None).expect("chunk")
     }
 
+    fn git_chunk(title: &str, text: &str, identifier: &str) -> Chunk {
+        let mut chunk = chunk(title, text, identifier);
+        chunk.source_kind = SourceKind::GitBlob;
+        chunk
+    }
+
+    fn git_chunk_at_path(path: &str, text: &str) -> Chunk {
+        let document = NormalizedDocument::new(
+            path,
+            SourceKind::GitBlob,
+            RepositoryId::try_from("repo").expect("repo"),
+            Revision::try_from("rev").expect("revision"),
+            path,
+            "text/plain",
+            text,
+        )
+        .expect("document");
+        Chunk::from_document(&document, 0, text.into(), Vec::new(), None).expect("chunk")
+    }
+
     #[test]
     fn exact_identifier_is_top_one() {
         let index = LexicalIndex::build(&[
@@ -943,6 +1240,186 @@ mod tests {
             LexicalIndex::open_artifact(&path),
             Err(LexicalError::Artifact(_))
         ));
+    }
+
+    #[test]
+    fn incremental_artifact_reuses_old_index_and_adds_only_delta_chunks() {
+        let previous_chunk = git_chunk("Old", "old history", "old_identifier");
+        let delta_chunk = git_chunk("New", "new history", "new_identifier");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = temp.path().join("previous.json");
+        let next = temp.path().join("next.json");
+
+        LexicalIndex::write_search_artifact_with_digest([&previous_chunk], &previous)
+            .expect("write previous");
+        let mut lookup =
+            LexicalIndex::open_history_content_lookup(&previous).expect("history lookup");
+        assert!(
+            lookup
+                .contains(
+                    &previous_chunk,
+                    &crate::corpus::history_content_key_for_chunk(&previous_chunk)
+                        .expect("history key")
+                )
+                .expect("contains")
+        );
+        assert!(
+            !lookup
+                .contains(
+                    &delta_chunk,
+                    &crate::corpus::history_content_key_for_chunk(&delta_chunk)
+                        .expect("history key")
+                )
+                .expect("contains")
+        );
+
+        LexicalIndex::write_incremental_search_artifact_with_digest(
+            &previous,
+            [&delta_chunk],
+            &next,
+        )
+        .expect("write incremental");
+        let index = LexicalIndex::open_artifact(&next).expect("open incremental");
+        assert_eq!(
+            index
+                .search("old_identifier", &LexicalFilters::default(), 1)
+                .expect("old search")
+                .len(),
+            1
+        );
+        assert_eq!(
+            index
+                .search("new_identifier", &LexicalFilters::default(), 1)
+                .expect("new search")
+                .len(),
+            1
+        );
+        assert_eq!(
+            LexicalIndex::read_artifact_chunks(&next)
+                .expect("stored chunks")
+                .len(),
+            2
+        );
+        let (documents, chunks, digest) =
+            LexicalIndex::corpus_inventory(&next).expect("stream inventory");
+        let expected = crate::CorpusManifest::new(
+            crate::CorpusVersion::try_from("test-v1").expect("corpus version"),
+            vec![
+                previous_chunk.document_id.clone(),
+                delta_chunk.document_id.clone(),
+            ],
+            vec![
+                previous_chunk.chunk_id.clone(),
+                delta_chunk.chunk_id.clone(),
+            ],
+        );
+        assert_eq!(documents, expected.document_count());
+        assert_eq!(chunks, expected.chunk_count());
+        assert_eq!(digest, expected.content_digest);
+    }
+
+    #[test]
+    fn history_content_lookup_uses_the_index_path_tokenizer() {
+        let underscored = git_chunk_at_path("src/full_history.rs", "underscored");
+        let hyphenated = git_chunk_at_path("docs/foo-bar.md", "hyphenated");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let artifact = temp.path().join("lexical.json");
+        LexicalIndex::write_search_artifact_with_digest([&underscored, &hyphenated], &artifact)
+            .expect("write artifact");
+        let mut lookup =
+            LexicalIndex::open_history_content_lookup(&artifact).expect("history lookup");
+
+        for chunk in [&underscored, &hyphenated] {
+            let key =
+                crate::corpus::history_content_key_for_chunk(chunk).expect("history content key");
+            assert!(lookup.contains(chunk, &key).expect("contains"));
+        }
+    }
+
+    #[test]
+    fn incremental_artifact_rejects_existing_or_same_destination() {
+        let previous_chunk = git_chunk("Old", "old history", "old_identifier");
+        let delta_chunk = git_chunk("New", "new history", "new_identifier");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = temp.path().join("previous.json");
+        let occupied = temp.path().join("occupied.json");
+
+        LexicalIndex::write_search_artifact_with_digest([&previous_chunk], &previous)
+            .expect("write previous");
+        LexicalIndex::write_search_artifact_with_digest([&delta_chunk], &occupied)
+            .expect("write occupied");
+
+        assert!(
+            LexicalIndex::write_incremental_search_artifact_with_digest(
+                &previous,
+                [&delta_chunk],
+                &previous,
+            )
+            .is_err()
+        );
+        assert!(
+            LexicalIndex::write_incremental_search_artifact_with_digest(
+                &previous,
+                [&delta_chunk],
+                &occupied,
+            )
+            .is_err()
+        );
+
+        let index = LexicalIndex::open_artifact(&previous).expect("predecessor remains valid");
+        assert_eq!(
+            index
+                .search("old_identifier", &LexicalFilters::default(), 1)
+                .expect("old search")
+                .len(),
+            1
+        );
+        assert!(
+            index
+                .search("new_identifier", &LexicalFilters::default(), 1)
+                .expect("new search")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn repeated_incremental_artifacts_bound_segment_count_without_mutating_predecessors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = temp.path().join("generation-0.json");
+        let original = git_chunk("Original", "original history", "original_identifier");
+        LexicalIndex::write_search_artifact_with_digest([&original], &first)
+            .expect("write original");
+        let mut previous = first.clone();
+
+        for generation in 1..=(MAX_INCREMENTAL_SEGMENTS + 2) {
+            let next = temp.path().join(format!("generation-{generation}.json"));
+            let delta = git_chunk(
+                &format!("Generation {generation}"),
+                &format!("history {generation}"),
+                &format!("identifier_{generation}"),
+            );
+            LexicalIndex::write_incremental_search_artifact_with_digest(&previous, [&delta], &next)
+                .expect("write incremental generation");
+            previous = next;
+        }
+
+        let latest =
+            Index::open_in_dir(persisted_index_path(&previous)).expect("open latest sidecar");
+        assert!(
+            latest
+                .searchable_segment_ids()
+                .expect("latest segments")
+                .len()
+                <= MAX_INCREMENTAL_SEGMENTS
+        );
+        let original = LexicalIndex::open_artifact(&first).expect("original remains readable");
+        assert_eq!(
+            original
+                .search("original_identifier", &LexicalFilters::default(), 1)
+                .expect("original search")
+                .len(),
+            1
+        );
     }
 
     #[test]

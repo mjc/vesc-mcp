@@ -221,10 +221,9 @@ impl KnowledgeConfig {
             return None;
         }
         let layout = KnowledgeDataLayout::new(self.data_root.clone()?);
-        let alias: DefaultSnapshotAlias = serde_json::from_slice(
-            &std::fs::read(layout.root().as_path().join("default-snapshot.json")).ok()?,
-        )
-        .ok()?;
+        let alias: DefaultSnapshotAlias =
+            serde_json::from_slice(&crate::read_default_snapshot(layout.root().as_path()).ok()?)
+                .ok()?;
         let snapshot: StoredSnapshotManifest =
             serde_json::from_slice(&std::fs::read(layout.snapshot(&alias.id)).ok()?).ok()?;
         if snapshot.id != alias.id {

@@ -5,9 +5,10 @@ use std::process::Command;
 use tempfile::tempdir;
 use vesc_knowledge_index::corpus::git::{GitCorpusPolicy, GitCorpusSource};
 use vesc_knowledge_index::{
-    Chunk, FakeEmbeddingProvider, GitHistoryRefreshObservations, GitHistoryTip, LicenseStatus,
-    RepositoryId, Revision, TrustTier, VectorArtifact, build_git_history_artifacts_incrementally,
-    ingest_git_history_fast_forward,
+    Chunk, ContentDigest, FakeEmbeddingProvider, GitHistoryRefreshObservations, GitHistoryTip,
+    LexicalIndex, LicenseStatus, PreviousGitHistoryArtifact, RepositoryId, Revision, TrustTier,
+    VectorArtifact, build_git_history_artifacts_from_previous,
+    build_git_history_artifacts_incrementally, ingest_git_history_fast_forward,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -49,6 +50,32 @@ fn fixture() -> (tempfile::TempDir, PathBuf) {
     git(&work, &["add", "."]);
     git(&work, &["commit", "-qm", "third"]);
     (root, work)
+}
+
+fn add_tokenized_path_history(work: &Path) {
+    fs::write(
+        work.join("src/full_history.rs"),
+        "pub fn underscored_path() {}\n",
+    )
+    .expect("underscored path");
+    fs::write(work.join("foo-bar.md"), "hyphenated path\n").expect("hyphenated path");
+    git(work, &["add", "."]);
+    git(work, &["commit", "-qm", "tokenized paths"]);
+}
+
+fn assert_cold_equivalent_lexical(incremental: &Path, cold: &Path) {
+    let mut incremental_chunks =
+        LexicalIndex::read_artifact_chunks(incremental).expect("incremental chunks");
+    let mut cold_chunks = LexicalIndex::read_artifact_chunks(cold).expect("cold chunks");
+    incremental_chunks.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+    cold_chunks.sort_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+    assert!(
+        incremental_chunks
+            .windows(2)
+            .all(|pair| pair[0].chunk_id != pair[1].chunk_id),
+        "incremental lexical artifact contains duplicate chunk IDs"
+    );
+    assert_eq!(incremental_chunks, cold_chunks);
 }
 
 fn source(path: PathBuf, repository: &str) -> GitCorpusSource {
@@ -161,8 +188,8 @@ fn full_history_build_with_provider_writes_matching_vectors() {
 #[test]
 fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
     let (_root, work) = fixture();
+    add_tokenized_path_history(&work);
     let first_source = at_head(source(work.clone(), "fixture"), &work);
-    let (first_contents, _) = cold_history(std::slice::from_ref(&first_source));
     let first_artifacts = tempdir().expect("first artifact root");
     let mut first_provider = FakeEmbeddingProvider::new(8);
     let first = build_git_history_artifacts_incrementally(
@@ -175,28 +202,37 @@ fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
         None,
     )
     .expect("first semantic history build");
-    let first_vector = VectorArtifact::open_artifact(
-        &first_artifacts
-            .path()
-            .join("generations")
-            .join(&first.artifacts.generation)
-            .join("vectors.bin"),
-    )
-    .expect("first vector artifact");
+    let first_generation = first_artifacts
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let first_vector_path = first_generation.join("vectors.bin");
+    let first_vector_bytes = fs::read(&first_vector_path).expect("first vector bytes");
 
     fs::write(work.join("new.md"), "a new semantic passage\n").expect("new passage");
-    git(&work, &["add", "new.md"]);
+    fs::write(
+        work.join("src/full_history.rs"),
+        "pub fn underscored_path_v2() {}\n",
+    )
+    .expect("changed underscored path");
+    fs::write(work.join("foo-bar.md"), "changed hyphenated path\n")
+        .expect("changed hyphenated path");
+    git(&work, &["add", "."]);
     git(&work, &["commit", "-qm", "new passage"]);
     let second_source = at_head(source(work.clone(), "fixture"), &work);
     let second_artifacts = tempdir().expect("second artifact root");
     let mut second_provider = FakeEmbeddingProvider::new(8);
-    let second = build_git_history_artifacts_incrementally(
+    let second = build_git_history_artifacts_from_previous(
         second_artifacts.path(),
-        &[second_source],
-        Some(snapshot_tips(&[first_source])),
-        Some(first_contents),
+        std::slice::from_ref(&second_source),
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(&[first_source]),
+            lexical_path: first_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest.clone(),
+            vector_checksum: first.artifacts.manifest.vector_checksum.clone(),
+            vector_path: Some(first_vector_path.clone()),
+        }),
         Some((&mut second_provider, "fake", "test-revision")),
-        Some(first_vector),
         None,
     )
     .expect("incremental semantic history build");
@@ -213,6 +249,154 @@ fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
         observations.embedded_vectors,
         second.artifacts.chunk_count - first.artifacts.chunk_count
     );
+    assert!(second.artifacts.manifest.corpus.documents.is_empty());
+    assert!(second.artifacts.manifest.corpus.chunks.is_empty());
+    assert_eq!(
+        fs::read(&first_vector_path).expect("unchanged predecessor"),
+        first_vector_bytes
+    );
+
+    let cold_artifacts = tempdir().expect("cold artifact root");
+    let mut cold_provider = FakeEmbeddingProvider::new(8);
+    let cold = build_git_history_artifacts_incrementally(
+        cold_artifacts.path(),
+        &[second_source],
+        None,
+        None,
+        Some((&mut cold_provider, "fake", "test-revision")),
+        None,
+        None,
+    )
+    .expect("cold semantic history build");
+    assert_eq!(
+        second.artifacts.manifest.corpus,
+        cold.artifacts.manifest.corpus
+    );
+    let second_generation = second_artifacts
+        .path()
+        .join("generations")
+        .join(&second.artifacts.generation);
+    let cold_generation = cold_artifacts
+        .path()
+        .join("generations")
+        .join(&cold.artifacts.generation);
+    assert_eq!(
+        VectorArtifact::open_artifact(&second_generation.join("vectors.bin"))
+            .expect("incremental vectors"),
+        VectorArtifact::open_artifact(&cold_generation.join("vectors.bin")).expect("cold vectors")
+    );
+    assert_cold_equivalent_lexical(
+        &second_generation.join("lexical.json"),
+        &cold_generation.join("lexical.json"),
+    );
+}
+
+#[test]
+fn corrupt_previous_vector_falls_back_to_a_complete_build() {
+    let (_root, work) = fixture();
+    let first_source = at_head(source(work.clone(), "fixture"), &work);
+    let first_artifacts = tempdir().expect("first artifact root");
+    let mut first_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_incrementally(
+        first_artifacts.path(),
+        std::slice::from_ref(&first_source),
+        None,
+        None,
+        Some((&mut first_provider, "fake", "test-revision")),
+        None,
+        None,
+    )
+    .expect("first build");
+    let first_generation = first_artifacts
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let original_vector_path = first_generation.join("vectors.bin");
+    let original_vector_bytes = fs::read(&original_vector_path).expect("original vectors");
+    let corrupt_vector_path = first_artifacts.path().join("corrupt-vectors.bin");
+    let mut corrupt_vector_bytes = original_vector_bytes.clone();
+    corrupt_vector_bytes[16] ^= 0xff;
+    fs::write(&corrupt_vector_path, corrupt_vector_bytes).expect("corrupt copy");
+
+    fs::write(work.join("new.md"), "a new semantic passage\n").expect("new passage");
+    git(&work, &["add", "new.md"]);
+    git(&work, &["commit", "-qm", "new passage"]);
+    let second_source = at_head(source(work.clone(), "fixture"), &work);
+    let second_artifacts = tempdir().expect("second artifact root");
+    let mut second_provider = FakeEmbeddingProvider::new(8);
+    let second = build_git_history_artifacts_from_previous(
+        second_artifacts.path(),
+        &[second_source],
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(&[first_source]),
+            lexical_path: first_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: first.artifacts.manifest.vector_checksum,
+            vector_path: Some(corrupt_vector_path),
+        }),
+        Some((&mut second_provider, "fake", "test-revision")),
+        None,
+    )
+    .expect("fallback build");
+
+    assert!(!second.reused_snapshot);
+    assert_eq!(
+        second
+            .artifacts
+            .observations
+            .vector_build
+            .expect("vector observations")
+            .reused_vectors,
+        0
+    );
+    assert_eq!(
+        fs::read(original_vector_path).expect("original predecessor"),
+        original_vector_bytes
+    );
+}
+
+#[test]
+fn mismatched_lexical_inventory_falls_back_to_a_complete_build() {
+    let (_root, work) = fixture();
+    let first_source = at_head(source(work.clone(), "fixture"), &work);
+    let first_artifacts = tempdir().expect("first artifact root");
+    let first = build_git_history_artifacts_incrementally(
+        first_artifacts.path(),
+        std::slice::from_ref(&first_source),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("first build");
+    let first_generation = first_artifacts
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let mismatched_digest = ContentDigest::of(b"wrong inventory");
+
+    fs::write(work.join("new.md"), "a new passage\n").expect("new passage");
+    git(&work, &["add", "new.md"]);
+    git(&work, &["commit", "-qm", "new passage"]);
+    let second_source = at_head(source(work.clone(), "fixture"), &work);
+    let second_artifacts = tempdir().expect("second artifact root");
+    let second = build_git_history_artifacts_from_previous(
+        second_artifacts.path(),
+        &[second_source],
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(&[first_source]),
+            lexical_path: first_generation.join("lexical.json"),
+            corpus_digest: mismatched_digest,
+            vector_checksum: None,
+            vector_path: None,
+        }),
+        None,
+        None,
+    )
+    .expect("fallback build");
+
+    assert!(!second.reused_snapshot);
 }
 
 #[test]

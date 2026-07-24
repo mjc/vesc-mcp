@@ -30,7 +30,7 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 ];
 
 /// Version of the reviewed default code-corpus path and resource policy.
-pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v1";
+pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v2";
 
 /// Reviewed path and media-type selection for one immutable repository snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -575,6 +575,8 @@ fn media_type(path: &str) -> &'static str {
 }
 
 pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
+    const MAX_IDENTIFIERS: usize = 32;
+
     let mut values = BTreeSet::new();
     values.insert(path.to_owned());
     if let Some(stem) = Path::new(path).file_stem().and_then(|stem| stem.to_str()) {
@@ -591,7 +593,7 @@ pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
                 .is_some_and(u8::is_ascii_alphabetic)
         {
             values.insert(token.to_owned());
-            if values.len() == 4096 {
+            if values.len() == MAX_IDENTIFIERS {
                 break;
             }
         }
@@ -614,7 +616,7 @@ fn elapsed_us(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::glob_matches;
+    use super::{glob_matches, identifiers};
 
     #[test]
     fn managed_repository_globs_match_paths_without_crossing_single_stars() {
@@ -625,5 +627,19 @@ mod tests {
         assert!(glob_matches("*.pro", "vesc_tool.pro"));
         assert!(!glob_matches("src/*.rs", "src/nested/mod.rs"));
         assert!(!glob_matches("**/*.md", "docs/guide.rs"));
+    }
+
+    #[test]
+    fn git_chunk_identifiers_are_bounded() {
+        let content = (0..100)
+            .map(|index| format!("identifier_{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let identifiers = identifiers("src/motor_control.c", &content);
+
+        assert!(identifiers.len() <= 32);
+        assert!(identifiers.contains("src/motor_control.c"));
+        assert!(identifiers.contains("motor_control"));
     }
 }

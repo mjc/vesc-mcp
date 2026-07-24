@@ -136,6 +136,29 @@ impl KnowledgeSnapshotManifest {
             semantic,
         })
     }
+
+    fn has_valid_identity(&self) -> bool {
+        if self.schema != SNAPSHOT_SCHEMA
+            || self.repositories.is_empty()
+            || self
+                .repositories
+                .windows(2)
+                .any(|pair| pair[0].repository >= pair[1].repository)
+        {
+            return false;
+        }
+        let identity = SnapshotIdentity {
+            schema: self.schema,
+            profile: self.profile,
+            repositories: &self.repositories,
+            component_versions: &self.component_versions,
+            semantic: self.semantic.as_ref(),
+        };
+        serde_json::to_vec(&identity)
+            .ok()
+            .and_then(|identity| KnowledgeSnapshotId::new(hex_sha256(&identity)).ok())
+            .is_some_and(|id| id == self.id)
+    }
 }
 
 #[derive(Serialize)]
@@ -444,7 +467,12 @@ impl KnowledgeSnapshotStore {
     ///
     /// Returns an error when the alias is missing, corrupt, or has a mismatched identity.
     pub fn default_manifest(&self) -> Result<KnowledgeSnapshotManifest, SnapshotError> {
-        read_and_validate_manifest(&self.default_alias_path())
+        let manifest: KnowledgeSnapshotManifest =
+            serde_json::from_slice(&crate::read_default_snapshot(self.layout.root().as_path())?)?;
+        if !manifest.has_valid_identity() {
+            return Err(SnapshotError::IdentityMismatch);
+        }
+        Ok(manifest)
     }
 
     #[must_use]
@@ -472,7 +500,7 @@ impl KnowledgeSnapshotStore {
     }
 
     fn default_alias_path(&self) -> PathBuf {
-        self.layout.root().as_path().join("default-snapshot.json")
+        crate::default_snapshot_path(self.layout.root().as_path())
     }
 
     fn load_default(
@@ -650,10 +678,6 @@ fn build_snapshot_artifact(
         }
         SnapshotProfile::CompleteHistory => {
             let previous = load_previous_snapshot(layout, manifest);
-            let (previous_tips, previous_chunks, previous_vectors) = previous
-                .map_or((None, None, None), |previous| {
-                    (Some(previous.tips), Some(previous.chunks), previous.vectors)
-                });
             let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
                 (
                     provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
@@ -661,13 +685,19 @@ fn build_snapshot_artifact(
                     semantic.model.model_revision.as_str(),
                 )
             });
-            let summary = vesc_knowledge_index::build_git_history_artifacts_incrementally(
+            let summary = vesc_knowledge_index::build_git_history_artifacts_from_previous(
                 artifact_path,
                 sources,
-                previous_tips,
-                previous_chunks,
+                previous.map(
+                    |previous| vesc_knowledge_index::PreviousGitHistoryArtifact {
+                        tips: previous.tips,
+                        lexical_path: previous.lexical_path,
+                        corpus_digest: previous.artifact.corpus_digest,
+                        vector_checksum: previous.artifact.vector_checksum,
+                        vector_path: previous.vector_path,
+                    },
+                ),
                 semantic_build,
-                previous_vectors,
                 vector_checkpoint_path.as_deref(),
             )
             .map_err(|error| SnapshotError::Build(error.to_string()))?;
@@ -691,41 +721,36 @@ fn build_snapshot_artifact(
 
 struct PreviousSnapshotArtifacts {
     tips: Vec<vesc_knowledge_index::GitHistoryTip>,
-    chunks: Vec<vesc_knowledge_index::Chunk>,
-    vectors: Option<vesc_knowledge_index::VectorArtifact>,
+    lexical_path: PathBuf,
+    artifact: vesc_knowledge_index::PreviousArtifactSummary,
+    vector_path: Option<PathBuf>,
 }
 
 fn load_previous_snapshot(
     layout: &KnowledgeDataLayout,
     current: &KnowledgeSnapshotManifest,
 ) -> Option<PreviousSnapshotArtifacts> {
-    let previous =
-        read_and_validate_manifest(&layout.root().as_path().join("default-snapshot.json")).ok()?;
-    if previous.profile != SnapshotProfile::CompleteHistory
-        || previous.component_versions != current.component_versions
-    {
+    let previous: KnowledgeSnapshotManifest =
+        serde_json::from_slice(&crate::read_default_snapshot(layout.root().as_path()).ok()?)
+            .ok()?;
+    if !previous.has_valid_identity() {
+        return None;
+    }
+    if !previous_snapshot_is_incrementally_compatible(&previous, current) {
         return None;
     }
 
     let artifact_root = layout.artifact(&previous.id);
-    let artifact = vesc_knowledge_index::inspect_manifest(
+    let artifact = vesc_knowledge_index::inspect_previous_artifact(
         &vesc_knowledge_index::active_manifest_path(&artifact_root),
     )
     .ok()?;
-    let lexical = vesc_knowledge_index::active_generation_path(&artifact_root)
-        .ok()?
+    let lexical = artifact_root
+        .join("generations")
+        .join(artifact.generation.as_str())
         .join("lexical.json");
-    let chunks = vesc_knowledge_index::LexicalIndex::read_artifact_chunks(&lexical).ok()?;
-    let vectors = (previous.semantic == current.semantic)
-        .then(|| {
-            artifact.vector_checksum.as_ref()?;
-            let vectors = vesc_knowledge_index::VectorArtifact::open_artifact(
-                &lexical.with_file_name("vectors.bin"),
-            )
-            .ok()?;
-            (vectors.corpus_digest == artifact.corpus.content_digest).then_some(vectors)
-        })
-        .flatten();
+    let vector_path = (previous.semantic == current.semantic && artifact.vector_checksum.is_some())
+        .then(|| lexical.with_file_name("vectors.bin"));
     let tips = previous
         .repositories
         .iter()
@@ -744,9 +769,34 @@ fn load_previous_snapshot(
         .collect::<Option<Vec<_>>>()?;
     Some(PreviousSnapshotArtifacts {
         tips,
-        chunks,
-        vectors,
+        lexical_path: lexical,
+        artifact,
+        vector_path,
     })
+}
+
+fn previous_snapshot_is_incrementally_compatible(
+    previous: &KnowledgeSnapshotManifest,
+    current: &KnowledgeSnapshotManifest,
+) -> bool {
+    previous.profile == SnapshotProfile::CompleteHistory
+        && component_versions_are_incrementally_compatible(
+            &previous.component_versions,
+            &current.component_versions,
+        )
+        && previous.repositories.iter().all(|repository| {
+            current.repositories.iter().any(|candidate| {
+                candidate.repository == repository.repository
+                    && candidate.policy_digest == repository.policy_digest
+            })
+        })
+}
+
+fn component_versions_are_incrementally_compatible(
+    previous: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> bool {
+    previous == current
 }
 
 fn load_prepared(
@@ -799,23 +849,12 @@ fn validate_snapshot_artifact(
     path: &Path,
     snapshot: &KnowledgeSnapshotManifest,
 ) -> Result<(), SnapshotError> {
-    let artifact =
-        vesc_knowledge_index::inspect_manifest(&vesc_knowledge_index::active_manifest_path(path))
-            .map_err(|error| SnapshotError::Build(error.to_string()))?;
-    let lexical = vesc_knowledge_index::active_generation_path(path)
-        .map_err(|error| SnapshotError::Build(error.to_string()))?
-        .join("lexical.json");
-    drop(
-        vesc_knowledge_index::LexicalIndex::open_search_artifact(&lexical)
-            .map_err(|error| SnapshotError::Build(error.to_string()))?,
-    );
-    if snapshot.semantic.is_some() {
-        let vectors = lexical.with_file_name("vectors.bin");
-        if artifact.vector_checksum.is_none() || !vectors.is_file() {
-            return Err(SnapshotError::Build(
-                "semantic snapshot vector artifact is unavailable".into(),
-            ));
-        }
+    let artifact = vesc_knowledge_index::validate_active_generation(path)
+        .map_err(|error| SnapshotError::Build(error.to_string()))?;
+    if snapshot.semantic.is_some() && artifact.vector_checksum.is_none() {
+        return Err(SnapshotError::Build(
+            "semantic snapshot vector artifact is unavailable".into(),
+        ));
     }
     Ok(())
 }
@@ -969,12 +1008,7 @@ fn semantic_provider(
 
 fn read_and_validate_manifest(path: &Path) -> Result<KnowledgeSnapshotManifest, SnapshotError> {
     let manifest: KnowledgeSnapshotManifest = serde_json::from_slice(&fs::read(path)?)?;
-    let expected = KnowledgeSnapshotManifest::with_profile(
-        manifest.repositories.clone(),
-        manifest.semantic.clone(),
-        manifest.profile,
-    )?;
-    if manifest != expected {
+    if !manifest.has_valid_identity() {
         return Err(SnapshotError::IdentityMismatch);
     }
     Ok(manifest)
@@ -1294,6 +1328,58 @@ max_total_bytes = 10485760
     }
 
     #[test]
+    fn incremental_snapshot_compatibility_rejects_removal_and_policy_changes() {
+        let one = RepositoryId::new("one").expect("valid id");
+        let two = RepositoryId::new("two").expect("valid id");
+        let previous = KnowledgeSnapshotManifest::with_profile(
+            vec![
+                selected(one.clone(), "a".repeat(40)),
+                selected(two.clone(), "b".repeat(40)),
+            ],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("previous manifest");
+        let added = KnowledgeSnapshotManifest::with_profile(
+            vec![
+                selected(one.clone(), "c".repeat(40)),
+                selected(two.clone(), "b".repeat(40)),
+                selected(
+                    RepositoryId::new("three").expect("valid id"),
+                    "d".repeat(40),
+                ),
+            ],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("added manifest");
+        let removed = KnowledgeSnapshotManifest::with_profile(
+            vec![selected(one.clone(), "c".repeat(40))],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("removed manifest");
+        let mut changed = vec![selected(one, "c".repeat(40)), selected(two, "b".repeat(40))];
+        changed[0].policy_digest = "changed-policy".into();
+        let changed = KnowledgeSnapshotManifest::with_profile(
+            changed,
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("changed manifest");
+
+        assert!(previous_snapshot_is_incrementally_compatible(
+            &previous, &added
+        ));
+        assert!(!previous_snapshot_is_incrementally_compatible(
+            &previous, &removed
+        ));
+        assert!(!previous_snapshot_is_incrementally_compatible(
+            &previous, &changed
+        ));
+    }
+
+    #[test]
     fn semantic_snapshot_configuration_requires_a_complete_model_contract() {
         let root = tempfile::tempdir().expect("data root");
         let layout = KnowledgeDataLayout::new(
@@ -1310,6 +1396,46 @@ max_total_bytes = 10485760
             .expect("incomplete semantic configuration");
 
         assert!(error.to_string().contains("configured together"));
+    }
+
+    #[test]
+    fn corpus_manifest_schema_upgrade_requires_a_new_snapshot() {
+        let mut previous = vesc_knowledge_index::artifact_component_versions();
+        previous.insert("corpus-schema".into(), "1.0".into());
+        let current = vesc_knowledge_index::artifact_component_versions();
+
+        assert!(!component_versions_are_incrementally_compatible(
+            &previous, &current
+        ));
+    }
+
+    #[test]
+    fn snapshot_identity_validation_uses_stored_component_versions() {
+        let mut manifest = KnowledgeSnapshotManifest::with_profile(
+            vec![selected(
+                RepositoryId::new("one").expect("valid id"),
+                "a".repeat(40),
+            )],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("manifest");
+        manifest
+            .component_versions
+            .insert("corpus-schema".into(), "1.0".into());
+        let identity = SnapshotIdentity {
+            schema: manifest.schema,
+            profile: manifest.profile,
+            repositories: &manifest.repositories,
+            component_versions: &manifest.component_versions,
+            semantic: manifest.semantic.as_ref(),
+        };
+        manifest.id = KnowledgeSnapshotId::new(hex_sha256(
+            &serde_json::to_vec(&identity).expect("identity JSON"),
+        ))
+        .expect("snapshot id");
+
+        assert!(manifest.has_valid_identity());
     }
 
     #[cfg(feature = "semantic-fastembed")]
@@ -1695,7 +1821,7 @@ max_total_bytes = 10485760
     }
 
     #[tokio::test]
-    async fn failed_default_refresh_keeps_the_last_valid_snapshot_searchable() {
+    async fn failed_default_refresh_keeps_a_legacy_snapshot_searchable() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let (_work, remote, _first, _second) = fixture_remote(temp.path());
         let data_root = temp.path().join("data");
@@ -1716,6 +1842,11 @@ max_total_bytes = 10485760
             .prepare_default(&repositories)
             .await
             .expect("initial default");
+        fs::rename(
+            crate::default_snapshot_path(&data_root),
+            data_root.join(crate::LEGACY_DEFAULT_SNAPSHOT_FILE),
+        )
+        .expect("preserve only legacy default pointer");
 
         let stale = store
             .prepare_default(&fixture_registry(&data_root, "refs/heads/missing"))

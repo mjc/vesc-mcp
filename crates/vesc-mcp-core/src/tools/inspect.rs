@@ -243,7 +243,10 @@ mod tests {
     #[test]
     fn inspect_refloat_minimal_fixture() {
         let path = fixture_path("refloat-minimal").join("pkgdesc.qml");
-        let response = inspect_pkgdesc(&path.display().to_string());
+        let response = inspect_pkgdesc_with_sandbox(
+            &path.display().to_string(),
+            Some(&fixture_sandbox_roots()),
+        );
 
         assert!(response.ok);
         assert_eq!(response.dialect.as_deref(), Some("vesc_tool"));
@@ -255,7 +258,10 @@ mod tests {
     #[test]
     fn inspect_native_lib_minimal_fixture() {
         let path = fixture_path("native-lib-minimal/package/pkgdesc.qml");
-        let response = inspect_pkgdesc(&path.display().to_string());
+        let response = inspect_pkgdesc_with_sandbox(
+            &path.display().to_string(),
+            Some(&fixture_sandbox_roots()),
+        );
 
         assert!(response.ok);
         assert_eq!(response.dialect.as_deref(), Some("vesc_tool"));
@@ -278,7 +284,10 @@ mod tests {
     #[test]
     fn inspect_vescpkg_golden_reads_name_and_imports() {
         let path = fixture_path("golden/native-lib-minimal.vescpkg");
-        let response = inspect_vescpkg(&path.display().to_string());
+        let response = inspect_vescpkg_with_sandbox(
+            &path.display().to_string(),
+            Some(&fixture_sandbox_roots()),
+        );
 
         assert!(response.ok);
         let inspection = response.inspection.expect("inspection fields");
