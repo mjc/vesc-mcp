@@ -25,10 +25,12 @@ else
 fi
 profile_root=${VESC_MCP_PROFILE_ROOT:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/profiles"}
 timeout_secs=${VESC_MCP_PROFILE_TIMEOUT_SECS:-600}
+memory_high=${VESC_MCP_PROFILE_MEMORY_HIGH:-2G}
+memory_max=${VESC_MCP_PROFILE_MEMORY_MAX:-3G}
 scope=(
   systemd-run --user --scope --quiet
-  -p MemoryHigh=2G
-  -p MemoryMax=3G
+  -p MemoryHigh="$memory_high"
+  -p MemoryMax="$memory_max"
   -p MemorySwapMax=0
   -p CPUWeight=10
   -p IOWeight=10
@@ -82,6 +84,8 @@ new_output_dir() {
     echo "git_dirty=$(test -n "$(git status --short)" && echo true || echo false)"
     echo "profile_package=$(readlink -f "$profile_package")"
     echo "profile_binary=$(readlink -f "$profile_binary")"
+    echo "memory_high=$memory_high"
+    echo "memory_max=$memory_max"
   } >"$output_dir/provenance.env"
   echo "profile output: $output_dir" >&2
 }
