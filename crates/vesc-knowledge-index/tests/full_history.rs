@@ -489,10 +489,30 @@ fn historical_chunks_keep_only_passage_local_identifiers() {
         .find(|chunk| chunk.text.contains("omega_unique"))
         .expect("omega passage");
 
-    assert!(alpha.identifiers.contains("alpha_unique"));
-    assert!(!alpha.identifiers.contains("omega_unique"));
-    assert!(omega.identifiers.contains("omega_unique"));
-    assert!(!omega.identifiers.contains("alpha_unique"));
+    assert!(
+        alpha
+            .identifiers
+            .iter()
+            .any(|identifier| identifier == "alpha_unique")
+    );
+    assert!(
+        !alpha
+            .identifiers
+            .iter()
+            .any(|identifier| identifier == "omega_unique")
+    );
+    assert!(
+        omega
+            .identifiers
+            .iter()
+            .any(|identifier| identifier == "omega_unique")
+    );
+    assert!(
+        !omega
+            .identifiers
+            .iter()
+            .any(|identifier| identifier == "alpha_unique")
+    );
 }
 
 #[test]

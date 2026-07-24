@@ -16,7 +16,13 @@ command=${1:-}
 }
 shift
 
-profile_package=${VESC_MCP_PROFILE_PACKAGE:-"$repo_root/result-profile"}
+if [[ -v VESC_MCP_PROFILE_PACKAGE ]]; then
+  profile_package=$VESC_MCP_PROFILE_PACKAGE
+  profile_package_is_default=false
+else
+  profile_package="$repo_root/result-profile"
+  profile_package_is_default=true
+fi
 profile_root=${VESC_MCP_PROFILE_ROOT:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/profiles"}
 timeout_secs=${VESC_MCP_PROFILE_TIMEOUT_SECS:-600}
 scope=(
@@ -34,8 +40,24 @@ stop_service() {
   fi
 }
 
+load_service_args() {
+  if (($#)); then
+    service_args=("$@")
+  else
+    service_args=(--http)
+  fi
+}
+
 load_profile_binary() {
   local wrapper=$profile_package/bin/vesc-mcp-server
+  if [[ $profile_package_is_default == true ]]; then
+    local expected_package
+    expected_package=$(nix eval --raw .#vesc-mcp-migraphx-profile.outPath)
+    if [[ $(readlink -f "$profile_package") != "$expected_package" ]]; then
+      echo "stale profiling binary; run '$0 build' before profiling" >&2
+      exit 1
+    fi
+  fi
   [[ -x $wrapper ]] || {
     echo "missing profiling binary; run '$0 build'" >&2
     exit 1
@@ -77,6 +99,7 @@ case "$command" in
     config=${1:?usage: $0 prepare-time CONFIG DATA_ROOT}
     data_root=${2:?usage: $0 prepare-time CONFIG DATA_ROOT}
     shift 2
+    load_service_args "$@"
     new_output_dir prepare-time
     exec "${scope[@]}" env \
       VESC_MCP_CONFIG="$config" \
@@ -137,14 +160,16 @@ case "$command" in
           echo "preparation failed" >&2
           exit 1
         fi
-      ' bash "$@"
+      ' bash "${service_args[@]}"
     ;;
   heaptrack)
     stop_service
     load_profile_binary
+    load_service_args "$@"
     new_output_dir heaptrack
     exec "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
-      heaptrack --record-only -o "$output_dir/heaptrack" "$profile_binary" "$@"
+      heaptrack --record-only -o "$output_dir/heaptrack" \
+      "$profile_binary" "${service_args[@]}"
     ;;
   heaptrack-report)
     stop_service
@@ -157,11 +182,12 @@ case "$command" in
   coz)
     stop_service
     load_profile_binary
+    load_service_args "$@"
     new_output_dir coz
     exec "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       coz run --output "$output_dir/profile.coz" \
       --source-scope '/build/source/crates/vesc-knowledge-index/src/%' \
-      --- "$profile_binary" "$@"
+      --- "$profile_binary" "${service_args[@]}"
     ;;
   coz-report)
     stop_service
@@ -213,11 +239,12 @@ case "$command" in
   flamegraph)
     stop_service
     load_profile_binary
+    load_service_args "$@"
     new_output_dir flamegraph
     set +e
     "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       perf record -F 99 -g --call-graph fp -o "$output_dir/perf.data" \
-      -- "$profile_binary" "$@"
+      -- "$profile_binary" "${service_args[@]}"
     profile_status=$?
     set -e
     [[ $profile_status == 0 || $profile_status == 124 ]] || exit "$profile_status"

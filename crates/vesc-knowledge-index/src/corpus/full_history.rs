@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::chunking::{ChunkingConfig, chunk_document};
 use super::git::{
     CachedGitBlob, Candidate, GitCorpusPolicy, GitCorpusSource, GitIngestionError,
-    GitIngestionObservations, document_from_git_blob, identifiers, is_selected, load_git_blob,
-    validate_policy,
+    GitIngestionObservations, document_from_git_blob, identifier_values, is_selected,
+    load_git_blob, validate_policy,
 };
 use super::{Chunk, ContentDigest, RepositoryId, Revision, SourceKind};
 use crate::semantic::embedding_text;
@@ -396,7 +396,7 @@ fn ingest_upsert(
     let mut chunks = chunk_document(&document, ChunkingConfig::default())
         .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
     for chunk in &mut chunks {
-        chunk.identifiers = identifiers(path, &chunk.text);
+        chunk.identifiers = identifier_values(path, &chunk.text);
     }
     for chunk in chunks {
         let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());

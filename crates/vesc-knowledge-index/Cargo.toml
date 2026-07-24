@@ -19,6 +19,7 @@ semantic-fastembed-online = ["semantic-fastembed", "fastembed/hf-hub-rustls-tls"
 coz-profile = ["dep:coz"]
 
 [dependencies]
+compact_str.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

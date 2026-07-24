@@ -3886,11 +3886,11 @@ dependencies = [
 [[package]]
 name = "tantivy-fst"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d60769b80ad7953d8a7b2c70cdfe722bbcdcac6bccc8ac934c40c034d866fc18"
+source = "git+https://github.com/mjc/fst?rev=6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7#6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7"
 dependencies = [
  "byteorder",
  "regex-syntax",
+ "smallvec",
  "utf8-ranges",
 ]
 
@@ -4490,6 +4490,7 @@ dependencies = [
 name = "vesc-knowledge-index"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "coz",
  "fastembed",
  "gix",

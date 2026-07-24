@@ -129,7 +129,12 @@ mod tests {
     fn lexical_search_preserves_exact_identifier() {
         let hits = search_lexical_knowledge("lbm_add_extension", None, 1).expect("search");
         assert_eq!(
-            hits[0].chunk.identifiers.iter().next().map(String::as_str),
+            hits[0]
+                .chunk
+                .identifiers
+                .iter()
+                .next()
+                .map(compact_str::CompactString::as_str),
             Some("lbm_add_extension")
         );
         assert!(hits[0].exact_identifier);

@@ -17,6 +17,7 @@ authors = ["mjc"]
 
 [workspace.dependencies]
 anyhow = "1"
+compact_str = { version = "0.9", features = ["serde"] }
 rmcp = { version = "2.2", features = ["server", "transport-io"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 schemars = "1"
@@ -44,6 +45,7 @@ url = "2"
 
 [patch.crates-io]
 fastembed = { path = "vendor/fastembed" }
+tantivy-fst = { git = "https://github.com/mjc/fst", rev = "6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

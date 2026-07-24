@@ -592,7 +592,11 @@ pub fn embedding_text(chunk: &Chunk) -> String {
 pub(crate) fn embedding_identifiers(chunk: &Chunk) -> Vec<&str> {
     const MAX_IDENTIFIERS: usize = 32;
     if chunk.identifiers.len() <= MAX_IDENTIFIERS {
-        return chunk.identifiers.iter().map(String::as_str).collect();
+        return chunk
+            .identifiers
+            .iter()
+            .map(compact_str::CompactString::as_str)
+            .collect();
     }
     let local = chunk
         .text
@@ -602,7 +606,7 @@ pub(crate) fn embedding_identifiers(chunk: &Chunk) -> Vec<&str> {
     chunk
         .identifiers
         .iter()
-        .map(String::as_str)
+        .map(compact_str::CompactString::as_str)
         .filter(|identifier| {
             local.contains(identifier) || identifier_semantic_alias(identifier).is_some()
         })
@@ -648,7 +652,10 @@ fn embedding_text_capacity(chunk: &Chunk) -> usize {
         capacity = capacity
             .saturating_add("Identifiers: ".len())
             .saturating_add(joined_capacity(
-                chunk.identifiers.iter().map(String::len),
+                chunk
+                    .identifiers
+                    .iter()
+                    .map(compact_str::CompactString::len),
                 ", ".len(),
             ))
             .saturating_add(1);
@@ -4129,7 +4136,7 @@ mod tests {
     fn embedding_text_includes_retrieval_metadata() {
         let mut chunk = chunks().remove(0);
         chunk.heading_path.push("Package lifecycle".into());
-        chunk.identifiers.insert("priority.package".into());
+        chunk.identifiers.push("priority.package".into());
         chunk.tags.insert("persistence".into());
 
         let text = embedding_text(&chunk);
@@ -4143,7 +4150,7 @@ mod tests {
     #[test]
     fn embedding_text_adds_domain_aliases_for_numeric_values() {
         let mut chunk = chunks().remove(0);
-        chunk.identifiers.insert("lbm_enc_i32".into());
+        chunk.identifiers.push("lbm_enc_i32".into());
 
         let text = embedding_text(&chunk);
 
@@ -4154,11 +4161,11 @@ mod tests {
     fn embedding_text_drops_document_wide_identifier_noise() {
         let mut chunk = chunks().remove(0);
         chunk.text = "target_function();".into();
-        chunk.identifiers.insert("target_function".into());
+        chunk.identifiers.push("target_function".into());
         for index in 0..100 {
             chunk
                 .identifiers
-                .insert(format!("unrelated_identifier_{index}"));
+                .push(format!("unrelated_identifier_{index}").into());
         }
 
         let text = embedding_text(&chunk);

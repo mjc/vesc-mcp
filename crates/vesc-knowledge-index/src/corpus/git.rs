@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use compact_str::CompactString;
 use gix::bstr::ByteSlice;
 
 use super::ingest::{IngestionReport, SourceInventory, SourceRejection, normalize_text_ref};
@@ -575,12 +576,21 @@ fn media_type(path: &str) -> &'static str {
 }
 
 pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
+    identifier_values(path, content)
+        .into_iter()
+        .map(CompactString::into_string)
+        .collect()
+}
+
+pub(super) fn identifier_values(path: &str, content: &str) -> Vec<CompactString> {
     const MAX_IDENTIFIERS: usize = 32;
 
-    let mut values = BTreeSet::new();
-    values.insert(path.to_owned());
-    if let Some(stem) = Path::new(path).file_stem().and_then(|stem| stem.to_str()) {
-        values.insert(stem.to_owned());
+    let mut values = Vec::with_capacity(MAX_IDENTIFIERS);
+    values.push(CompactString::new(path));
+    if let Some(stem) = Path::new(path).file_stem().and_then(|stem| stem.to_str())
+        && !values.iter().any(|value| value.as_str() == stem)
+    {
+        values.push(CompactString::new(stem));
     }
     for token in
         content.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
@@ -591,13 +601,15 @@ pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
                 .as_bytes()
                 .first()
                 .is_some_and(u8::is_ascii_alphabetic)
+            && !values.iter().any(|value| value.as_str() == token)
         {
-            values.insert(token.to_owned());
+            values.push(CompactString::new(token));
             if values.len() == MAX_IDENTIFIERS {
                 break;
             }
         }
     }
+    values.sort_unstable();
     values
 }
 
@@ -616,7 +628,7 @@ fn elapsed_us(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{glob_matches, identifiers};
+    use super::{glob_matches, identifier_values};
 
     #[test]
     fn managed_repository_globs_match_paths_without_crossing_single_stars() {
@@ -636,10 +648,37 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
-        let identifiers = identifiers("src/motor_control.c", &content);
+        let identifiers = identifier_values("src/motor_control.c", &content);
 
         assert!(identifiers.len() <= 32);
-        assert!(identifiers.contains("src/motor_control.c"));
-        assert!(identifiers.contains("motor_control"));
+        assert!(identifiers.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            identifiers
+                .iter()
+                .any(|value| value == "src/motor_control.c")
+        );
+        assert!(identifiers.iter().any(|value| value == "motor_control"));
+    }
+
+    #[test]
+    fn short_git_chunk_identifiers_are_inline_strings() {
+        let identifiers = identifier_values("src/motor.c", "motor_speed motor_current");
+        let serialized = serde_json::to_value(&identifiers).expect("identifiers serialize");
+
+        assert!(
+            identifiers
+                .iter()
+                .filter(|value| value.len() <= 24)
+                .all(|value| !value.is_heap_allocated())
+        );
+        assert_eq!(
+            serialized,
+            serde_json::json!(["motor", "motor_current", "motor_speed", "src/motor.c"])
+        );
+        assert_eq!(
+            serde_json::from_value::<Vec<compact_str::CompactString>>(serialized)
+                .expect("legacy JSON identifiers deserialize"),
+            identifiers
+        );
     }
 }

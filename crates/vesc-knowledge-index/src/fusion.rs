@@ -467,7 +467,11 @@ mod tests {
 
         assert_eq!(hits[0].chunk.chunk_id, first.chunk_id);
         assert_eq!(
-            hits[1].chunk.identifiers.first().map(String::as_str),
+            hits[1]
+                .chunk
+                .identifiers
+                .first()
+                .map(compact_str::CompactString::as_str),
             Some("second_id")
         );
     }

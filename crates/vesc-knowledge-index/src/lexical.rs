@@ -792,12 +792,7 @@ fn term_coverage(chunk: &Chunk, terms: &[String]) -> usize {
         "{} {} {} {} {}",
         chunk.title,
         chunk.path,
-        chunk
-            .identifiers
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" "),
+        chunk.identifiers.join(" "),
         chunk.heading_path.join(" "),
         chunk.text
     )
@@ -1126,7 +1121,11 @@ mod tests {
             .expect("search");
 
         assert_eq!(
-            hits[0].chunk.identifiers.first().map(String::as_str),
+            hits[0]
+                .chunk
+                .identifiers
+                .first()
+                .map(compact_str::CompactString::as_str),
             Some("write_nvm")
         );
         assert!(hits[0].exact_identifier);

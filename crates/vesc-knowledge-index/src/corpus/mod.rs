@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -493,7 +494,7 @@ pub struct Chunk {
     pub byte_count: u64,
     pub category: Option<Category>,
     pub tags: BTreeSet<String>,
-    pub identifiers: BTreeSet<String>,
+    pub identifiers: Vec<CompactString>,
     #[serde(default)]
     pub legacy_ids: Vec<String>,
     pub trust_tier: TrustTier,
@@ -546,7 +547,11 @@ impl Chunk {
             source_span,
             category: document.category,
             tags: document.tags.clone(),
-            identifiers: document.identifiers.clone(),
+            identifiers: document
+                .identifiers
+                .iter()
+                .map(CompactString::from)
+                .collect(),
             legacy_ids: document.legacy_ids.clone(),
             trust_tier: document.trust_tier,
             resource_uri: Some(resource_uri),
