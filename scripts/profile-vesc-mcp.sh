@@ -69,6 +69,9 @@ load_profile_binary() {
     [[ $setup_line == exec\ * ]] && break
     eval "$setup_line"
   done <"$wrapper"
+  if [[ -n ${VESC_MCP_PROFILE_DATA_ROOT:-} ]]; then
+    export ORT_MIGRAPHX_MODEL_CACHE_PATH="$VESC_MCP_PROFILE_DATA_ROOT/migraphx-cache"
+  fi
   profile_binary=$profile_package/bin/.vesc-mcp-server-wrapped
   [[ -x $profile_binary ]] || {
     echo "missing wrapped profiling binary: $profile_binary" >&2
@@ -86,6 +89,7 @@ new_output_dir() {
     echo "profile_binary=$(readlink -f "$profile_binary")"
     echo "memory_high=$memory_high"
     echo "memory_max=$memory_max"
+    echo "data_root=${VESC_MCP_PROFILE_DATA_ROOT:-}"
   } >"$output_dir/provenance.env"
   echo "profile output: $output_dir" >&2
 }
