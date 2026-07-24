@@ -175,6 +175,57 @@ case "$command" in
     load_profile_binary
     load_service_args "$@"
     new_output_dir heaptrack
+    if [[ -n ${VESC_MCP_PROFILE_DATA_ROOT:-} ]]; then
+      exec "${scope[@]}" env \
+        VESC_MCP_PROFILE_OUTPUT="$output_dir" \
+        VESC_MCP_PROFILE_BINARY="$profile_binary" \
+        VESC_MCP_PROFILE_TIMEOUT_SECS="$timeout_secs" \
+        bash -c '
+          set -euo pipefail
+          status="$VESC_MCP_PROFILE_DATA_ROOT/preparation-status.json"
+          initial_status_stamp=$(stat -c %y "$status" 2>/dev/null || true)
+          heaptrack --record-only -o "$VESC_MCP_PROFILE_OUTPUT/heaptrack" \
+            "$VESC_MCP_PROFILE_BINARY" "$@" &
+          profiler_pid=$!
+          cleanup() {
+            kill -INT "$profiler_pid" 2>/dev/null || return 0
+            wait "$profiler_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          deadline=$((SECONDS + VESC_MCP_PROFILE_TIMEOUT_SECS))
+          while true; do
+            status_stamp=$(stat -c %y "$status" 2>/dev/null || true)
+            if [[ $status_stamp != "$initial_status_stamp" ]] \
+              && grep -Eq '\''"state":"(ready|stale|failed)"'\'' "$status"; then
+              break
+            fi
+            kill -0 "$profiler_pid" 2>/dev/null || {
+              wait "$profiler_pid" || true
+              echo "heaptrack exited before preparation finished" >&2
+              exit 1
+            }
+            (( SECONDS < deadline )) || {
+              echo "heaptrack preparation timed out after ${VESC_MCP_PROFILE_TIMEOUT_SECS}s" >&2
+              exit 124
+            }
+            sleep 0.1
+          done
+          kill -INT "$profiler_pid"
+          wait "$profiler_pid" || true
+          trap - EXIT
+          cp "$status" "$VESC_MCP_PROFILE_OUTPUT/preparation-status.json"
+          trace="$VESC_MCP_PROFILE_OUTPUT/heaptrack.zst"
+          [[ -s $trace && $(stat -c %s "$trace") -ge 1000000 ]] || {
+            echo "heaptrack produced an invalid or undersized trace" >&2
+            exit 1
+          }
+          if grep -q '\''"state":"failed"'\'' "$status"; then
+            echo "preparation failed" >&2
+            exit 1
+          fi
+        ' bash "${service_args[@]}"
+      exit
+    fi
     exec "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       heaptrack --record-only -o "$output_dir/heaptrack" \
       "$profile_binary" "${service_args[@]}"
