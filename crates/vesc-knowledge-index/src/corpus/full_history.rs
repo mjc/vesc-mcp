@@ -11,7 +11,7 @@ use super::git::{
     identifier_values, is_selected, load_git_blob, validate_policy,
 };
 use super::{Chunk, ContentDigest, RepositoryId, Revision, SourceKind};
-use crate::semantic::{embedding_text, embedding_text_from_parts};
+use crate::semantic::{embedding_text, embedding_text_digest_from_parts};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHistoryTip {
@@ -459,14 +459,13 @@ fn ingest_upsert(
         observations.candidate_chunks = observations.candidate_chunks.saturating_add(1);
         observations.candidate_identifier_count_histogram[identifiers.len()] =
             observations.candidate_identifier_count_histogram[identifiers.len()].saturating_add(1);
-        let embedding_text = embedding_text_from_parts(
+        let embedding_key = embedding_text_digest_from_parts(
             &document.title,
             draft.headings().iter().copied(),
             identifiers,
             &document.tags,
             draft.text(),
         );
-        let embedding_key = ContentDigest::of(embedding_text.as_bytes());
         let key = history_content_key(&source.repository_id, path, &embedding_key);
         contents.insert_draft(key, &drafts, index, reachable_revisions, observations)?;
     }
@@ -576,7 +575,7 @@ mod tests {
         let mut identifier_buffer = [""; MAX_IDENTIFIERS];
         let identifiers = identifier_refs(&document.path, draft.text(), &mut identifier_buffer);
         assert_eq!(identifiers.len(), MAX_IDENTIFIERS);
-        let borrowed_embedding = embedding_text_from_parts(
+        let borrowed_embedding = crate::semantic::embedding_text_from_parts(
             &document.title,
             draft.headings().iter().copied(),
             identifiers,

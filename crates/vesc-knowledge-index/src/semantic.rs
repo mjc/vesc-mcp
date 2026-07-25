@@ -574,43 +574,70 @@ pub(crate) fn embedding_text_from_parts<'heading>(
         tags,
         content,
     ));
+    visit_embedding_text_parts(title, headings, identifiers, tags, content, |part| {
+        text.push_str(part);
+    });
+    text
+}
+
+pub(crate) fn embedding_text_digest_from_parts<'heading>(
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[&str],
+    tags: &BTreeSet<String>,
+    content: &str,
+) -> ContentDigest {
+    let mut digest = Sha256::new();
+    visit_embedding_text_parts(title, headings, identifiers, tags, content, |part| {
+        digest.update(part.as_bytes());
+    });
+    ContentDigest::from_sha256(digest.finalize().into())
+}
+
+fn visit_embedding_text_parts<'heading>(
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[&str],
+    tags: &BTreeSet<String>,
+    content: &str,
+    mut visit: impl FnMut(&str),
+) {
     if !title.is_empty() {
-        text.push_str("Title: ");
-        text.push_str(title);
-        text.push('\n');
+        visit("Title: ");
+        visit(title);
+        visit("\n");
     }
     if headings.clone().next().is_some() {
-        text.push_str("Headings: ");
-        append_joined(&mut text, headings, " / ");
-        text.push('\n');
+        visit("Headings: ");
+        visit_joined(&mut visit, headings, " / ");
+        visit("\n");
     }
     if !identifiers.is_empty() {
-        text.push_str("Identifiers: ");
-        append_joined(&mut text, identifiers.iter().copied(), ", ");
-        text.push('\n');
+        visit("Identifiers: ");
+        visit_joined(&mut visit, identifiers.iter().copied(), ", ");
+        visit("\n");
         if identifiers
             .iter()
             .any(|identifier| identifier_semantic_alias(identifier).is_some())
         {
-            text.push_str("Concepts: ");
-            append_joined(
-                &mut text,
+            visit("Concepts: ");
+            visit_joined(
+                &mut visit,
                 identifiers
                     .iter()
                     .filter_map(|identifier| identifier_semantic_alias(identifier)),
                 "; ",
             );
-            text.push('\n');
+            visit("\n");
         }
     }
     if !tags.is_empty() {
-        text.push_str("Tags: ");
-        append_joined(&mut text, tags.iter().map(String::as_str), ", ");
-        text.push('\n');
+        visit("Tags: ");
+        visit_joined(&mut visit, tags.iter().map(String::as_str), ", ");
+        visit("\n");
     }
-    text.push_str("Content: ");
-    text.push_str(content);
-    text
+    visit("Content: ");
+    visit(content);
 }
 
 const MAX_EMBEDDING_IDENTIFIERS: usize = 32;
@@ -715,15 +742,15 @@ fn embedding_text_capacity<'heading>(
     capacity
 }
 
-fn append_joined<'a, I>(output: &mut String, values: I, separator: &str)
+fn visit_joined<'a, I>(visit: &mut impl FnMut(&str), values: I, separator: &str)
 where
     I: Iterator<Item = &'a str>,
 {
     for (index, value) in values.enumerate() {
         if index > 0 {
-            output.push_str(separator);
+            visit(separator);
         }
-        output.push_str(value);
+        visit(value);
     }
 }
 
@@ -4914,6 +4941,31 @@ mod tests {
         assert!(text.contains("Identifiers: priority.package"));
         assert!(text.contains("Tags: persistence"));
         assert!(text.ends_with("Content: alpha"));
+    }
+
+    #[test]
+    fn streamed_embedding_digest_matches_materialized_text() {
+        let headings = ["Package lifecycle", "Native library"];
+        let identifiers = ["lbm_enc_i32", "vesc_c_if"];
+        let tags = BTreeSet::from(["firmware".to_owned(), "package".to_owned()]);
+        let text = embedding_text_from_parts(
+            "Native package",
+            headings.iter().copied(),
+            &identifiers,
+            &tags,
+            "Decode and encode values.",
+        );
+
+        assert_eq!(
+            embedding_text_digest_from_parts(
+                "Native package",
+                headings.iter().copied(),
+                &identifiers,
+                &tags,
+                "Decode and encode values.",
+            ),
+            ContentDigest::of(text.as_bytes()),
+        );
     }
 
     #[test]

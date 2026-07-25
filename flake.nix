@@ -15,6 +15,15 @@
     rust-overlay,
     flake-utils,
   }: let
+    migraphxOnnxruntime = pkgs:
+      (pkgs.onnxruntime.override {rocmSupport = true;}).overrideAttrs {
+        src = pkgs.fetchFromGitHub {
+          owner = "mjc";
+          repo = "onnxruntime";
+          rev = "82e68f7d55f633dd06d485ba49b20de0179592f2";
+          hash = "sha256-5+gOFEbIBcmt8d2SrUw2u6GgPmEjvv1vKU7t+24RiF4=";
+        };
+      };
     packageFor = system: accelerated: profiling: let
       pkgs = import nixpkgs {
         inherit system;
@@ -32,7 +41,7 @@
         + pkgs.lib.optionalString profiling ",coz-profile";
       semanticRuntime =
         if accelerated
-        then pkgs.onnxruntime.override {rocmSupport = true;}
+        then migraphxOnnxruntime pkgs
         else pkgs.onnxruntime;
       semanticModel = pkgs.linkFarm "jina-embeddings-v2-base-code-quantized" (
         map
@@ -195,7 +204,7 @@
         # supported AMD configuration.
         rocmOnnxruntime =
           if pkgs.stdenv.isLinux
-          then pkgs.onnxruntime.override {rocmSupport = true;}
+          then migraphxOnnxruntime pkgs
           else null;
       in {
         packages =

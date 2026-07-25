@@ -573,6 +573,20 @@ pub struct Chunk {
     pub content_digest: ContentDigest,
 }
 
+pub(crate) struct ChunkIdentity {
+    content_digest: ContentDigest,
+    chunk_id: ChunkId,
+}
+
+impl ChunkIdentity {
+    pub(crate) fn from_sha256(content_digest: ContentDigest, chunk_digest: [u8; 32]) -> Self {
+        Self {
+            content_digest,
+            chunk_id: ChunkId::from_sha256(chunk_digest),
+        }
+    }
+}
+
 impl Chunk {
     /// Builds a stable chunk from normalized document metadata and passage text.
     ///
@@ -586,13 +600,38 @@ impl Chunk {
         heading_path: Vec<String>,
         source_span: Option<SourceSpan>,
     ) -> Result<Self, CorpusError> {
-        if text.trim().is_empty() {
-            return Err(CorpusError::EmptyValue { kind: "chunk text" });
-        }
         let content_digest = ContentDigest::of(text.as_bytes());
         let anchor = heading_path.join("/");
         let chunk_id =
             ChunkId::from_identity(&document.document_id, ordinal, &anchor, &content_digest);
+        Self::from_document_identity(
+            document,
+            ordinal,
+            text,
+            heading_path,
+            source_span,
+            ChunkIdentity {
+                content_digest,
+                chunk_id,
+            },
+        )
+    }
+
+    pub(crate) fn from_document_identity(
+        document: &NormalizedDocument,
+        ordinal: u32,
+        text: String,
+        heading_path: Vec<String>,
+        source_span: Option<SourceSpan>,
+        identity: ChunkIdentity,
+    ) -> Result<Self, CorpusError> {
+        if text.trim().is_empty() {
+            return Err(CorpusError::EmptyValue { kind: "chunk text" });
+        }
+        let ChunkIdentity {
+            content_digest,
+            chunk_id,
+        } = identity;
         let resource_uri = ResourceUri::try_from(format!("vesc://knowledge/chunk/{chunk_id}"))?;
         Ok(Self {
             schema: CORPUS_SCHEMA_V1,
@@ -932,16 +971,17 @@ impl ChunkId {
         ))
     }
 
-    fn from_heading_identity(
+    pub(crate) fn heading_identity_digest(
         document: &DocumentId,
         ordinal: u32,
         headings: &[&str],
         digest: &ContentDigest,
-    ) -> Self {
+    ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"vesc-mcp/chunk/v1");
         update_digest_part(&mut hasher, document.as_ref().as_bytes());
-        update_digest_part(&mut hasher, ordinal.to_string().as_bytes());
+        let (ordinal_bytes, ordinal_start) = decimal_u32(ordinal);
+        update_digest_part(&mut hasher, &ordinal_bytes[ordinal_start..]);
         let anchor_len = headings
             .iter()
             .map(|heading| heading.len())
@@ -955,7 +995,39 @@ impl ChunkId {
             hasher.update(heading.as_bytes());
         }
         update_digest_part(&mut hasher, digest.encoded().as_bytes());
-        Self(prefixed_hex("chunk-", hasher.finalize().as_ref()))
+        hasher.finalize().into()
+    }
+
+    pub(crate) fn from_sha256(digest: [u8; 32]) -> Self {
+        Self(prefixed_hex("chunk-", &digest))
+    }
+}
+
+const fn decimal_u32(mut value: u32) -> ([u8; 10], usize) {
+    let mut bytes = [b'0'; 10];
+    let mut start = bytes.len() - 1;
+    while value >= 10 {
+        bytes[start] = decimal_digit(value % 10);
+        value /= 10;
+        start -= 1;
+    }
+    bytes[start] = decimal_digit(value);
+    (bytes, start)
+}
+
+const fn decimal_digit(value: u32) -> u8 {
+    match value {
+        0 => b'0',
+        1 => b'1',
+        2 => b'2',
+        3 => b'3',
+        4 => b'4',
+        5 => b'5',
+        6 => b'6',
+        7 => b'7',
+        8 => b'8',
+        9 => b'9',
+        _ => unreachable!(),
     }
 }
 
@@ -1060,6 +1132,14 @@ mod tests {
     #[test]
     fn content_digest_stores_only_digest_bytes() {
         assert_eq!(std::mem::size_of::<ContentDigest>(), 32);
+    }
+
+    #[test]
+    fn stack_decimal_keeps_chunk_identity_encoding() {
+        for value in [0, 1, 9, 10, 99, 100, u32::MAX] {
+            let (bytes, start) = decimal_u32(value);
+            assert_eq!(&bytes[start..], value.to_string().as_bytes());
+        }
     }
 
     #[test]

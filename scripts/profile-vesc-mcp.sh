@@ -50,6 +50,14 @@ load_service_args() {
   fi
 }
 
+load_preparation_args() {
+  if (($#)); then
+    service_args=("$@")
+  else
+    service_args=(--refresh-repositories)
+  fi
+}
+
 load_profile_binary() {
   local wrapper=$profile_package/bin/vesc-mcp-server
   if [[ $profile_package_is_default == true ]]; then
@@ -173,7 +181,7 @@ case "$command" in
   heaptrack)
     stop_service
     load_profile_binary
-    load_service_args "$@"
+    load_preparation_args "$@"
     new_output_dir heaptrack
     if [[ -n ${VESC_MCP_PROFILE_DATA_ROOT:-} ]]; then
       exec "${scope[@]}" env \
@@ -212,7 +220,9 @@ case "$command" in
           stop_capture() {
             local finished_profiler profiler_status forced=false
             [[ -n $profiler_pid ]] || return 0
-            [[ -z $server_pid ]] || kill -TERM "$server_pid" 2>/dev/null || true
+            if kill -0 "$profiler_pid" 2>/dev/null; then
+              [[ -z $server_pid ]] || kill -TERM "$server_pid" 2>/dev/null || true
+            fi
             if ! wait_until_dead "$profiler_pid" 200; then
               [[ -z $server_pid ]] || kill -KILL "$server_pid" 2>/dev/null || true
               kill -INT "$profiler_pid" 2>/dev/null || true
@@ -275,10 +285,6 @@ case "$command" in
             }
             sleep 0.1
           done
-          kill -0 "$server_pid" 2>/dev/null || {
-            echo "heaptrack debuggee exited before capture finalization" >&2
-            exit 1
-          }
           capture_status=0
           stop_capture || capture_status=$?
           trap - EXIT
@@ -318,7 +324,7 @@ case "$command" in
   coz)
     stop_service
     load_profile_binary
-    load_service_args "$@"
+    load_preparation_args "$@"
     new_output_dir coz
     exec "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       coz run --output "$output_dir/profile.coz" \
@@ -375,7 +381,7 @@ case "$command" in
   flamegraph)
     stop_service
     load_profile_binary
-    load_service_args "$@"
+    load_preparation_args "$@"
     new_output_dir flamegraph
     set +e
     "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \

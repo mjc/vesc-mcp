@@ -9,7 +9,8 @@ use vesc_mcp_core::managed_git::ManagedGitStore;
 use vesc_mcp_core::managed_repositories::{DataRoot, KnowledgeDataLayout, RepositoryPolicy};
 use vesc_mcp_core::managed_snapshots::{KnowledgeSnapshotStore, SnapshotDisposition};
 use vesc_mcp_core::preparation_status::{
-    KnowledgePreparationStatus, PreparationPhase, PreparationState, write_preparation_status,
+    KnowledgePreparationStatus, PreparationPhase, PreparationState, read_preparation_status,
+    write_preparation_status,
 };
 
 struct PreparationReporter {
@@ -168,7 +169,7 @@ async fn async_main() -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--http") {
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
-            synchronize_managed_repositories(startup_policy),
+            synchronize_managed_repositories_in_child(repository_refresh_args(&args)),
         )
         .await?;
         return Ok(());
@@ -192,6 +193,70 @@ where
         }
     });
     server.serve().await
+}
+
+fn repository_refresh_args(args: &[String]) -> Vec<String> {
+    let mut refresh_args = vec!["--refresh-repositories".to_owned()];
+    refresh_args.extend(
+        args.iter()
+            .filter(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--skip-repository-refresh"
+                        | "--skip-eager-index"
+                        | "--require-fresh-repositories"
+                )
+            })
+            .cloned(),
+    );
+    refresh_args
+}
+
+async fn synchronize_managed_repositories_in_child(args: Vec<String>) -> anyhow::Result<()> {
+    let config = McpConfig::load();
+    let data_root = config.knowledge.data_root.as_ref();
+    let repositories_total = config.knowledge.repositories.iter().len();
+    let executable = match env::current_exe() {
+        Ok(executable) => executable,
+        Err(error) => {
+            publish_child_preparation_failure(data_root, repositories_total);
+            return Err(error.into());
+        }
+    };
+    let status = match tokio::process::Command::new(executable)
+        .args(args)
+        .kill_on_drop(true)
+        .status()
+        .await
+    {
+        Ok(status) => status,
+        Err(error) => {
+            publish_child_preparation_failure(data_root, repositories_total);
+            return Err(error.into());
+        }
+    };
+    if !status.success() {
+        publish_child_preparation_failure(data_root, repositories_total);
+        anyhow::bail!("managed repository preparation process exited with {status}");
+    }
+    Ok(())
+}
+
+fn publish_child_preparation_failure(data_root: Option<&DataRoot>, repositories_total: usize) {
+    let Some(data_root) = data_root else {
+        return;
+    };
+    let completed = read_preparation_status(data_root.as_path())
+        .map_or(0, |status| status.repositories_completed)
+        .min(repositories_total);
+    let status = KnowledgePreparationStatus::finished(
+        PreparationState::Failed,
+        completed,
+        repositories_total,
+    );
+    if let Err(error) = write_preparation_status(data_root.as_path(), &status) {
+        tracing::warn!(%error, "could not publish failed child preparation status");
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -383,7 +448,10 @@ mod tests {
     use vesc_mcp_core::config::SemanticIngestionProvider;
     use vesc_mcp_core::managed_repositories::DataRoot;
 
-    use super::{PreparationReporter, StartupPolicy, migraphx_cache_path, run_http};
+    use super::{
+        PreparationReporter, StartupPolicy, migraphx_cache_path, publish_child_preparation_failure,
+        repository_refresh_args, run_http,
+    };
 
     #[test]
     fn migraphx_cache_uses_the_configured_data_root() {
@@ -426,6 +494,55 @@ mod tests {
                 eager_index: false,
                 allow_offline_restart: false,
             }
+        );
+    }
+
+    #[test]
+    fn http_preparation_child_forwards_only_startup_policy() {
+        let args = [
+            "--http".to_owned(),
+            "--skip-repository-refresh".to_owned(),
+            "--benchmark-search".to_owned(),
+            "--skip-eager-index".to_owned(),
+            "--require-fresh-repositories".to_owned(),
+        ];
+
+        assert_eq!(
+            repository_refresh_args(&args),
+            [
+                "--refresh-repositories",
+                "--skip-repository-refresh",
+                "--skip-eager-index",
+                "--require-fresh-repositories",
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_preparation_child_publishes_terminal_status() {
+        let root = tempfile::tempdir().expect("data root");
+        let data_root = DataRoot::new(root.path().to_owned()).expect("absolute data root");
+        vesc_mcp_core::preparation_status::write_preparation_status(
+            root.path(),
+            &vesc_mcp_core::preparation_status::KnowledgePreparationStatus::preparing(
+                vesc_mcp_core::preparation_status::PreparationPhase::Indexing,
+                2,
+                4,
+            ),
+        )
+        .expect("preparing status");
+
+        publish_child_preparation_failure(Some(&data_root), 4);
+
+        assert_eq!(
+            vesc_mcp_core::preparation_status::read_preparation_status(root.path()),
+            Some(
+                vesc_mcp_core::preparation_status::KnowledgePreparationStatus::finished(
+                    vesc_mcp_core::preparation_status::PreparationState::Failed,
+                    2,
+                    4,
+                )
+            ),
         );
     }
 

@@ -37,7 +37,7 @@ tokenizers = { version = "0.22.2", default-features = false, features = ["onig"]
 rayon = "1.11"
 coz = "0.1.3"
 flate2 = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net", "process"] }
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -46,7 +46,7 @@ url = "2"
 [patch.crates-io]
 fastembed = { path = "vendor/fastembed" }
 tantivy = { git = "https://github.com/mjc/tantivy", rev = "90e49469104f25fce13003a012daba75818efe22" }
-tantivy-fst = { git = "https://github.com/mjc/fst", rev = "6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7" }
+tantivy-fst = { git = "https://github.com/mjc/fst", rev = "5a97f46f815b099b0be4763753973c2cb94ab2a2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

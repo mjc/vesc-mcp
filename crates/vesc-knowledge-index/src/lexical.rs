@@ -253,8 +253,9 @@ impl LexicalIndex {
         let mut writer = index
             .writer_with_num_threads(1, IN_MEMORY_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
+        let mut chunk_json = Vec::new();
         for chunk in &chunks {
-            add_chunk(&writer, fields, chunk);
+            add_chunk(&writer, fields, chunk, &mut chunk_json);
         }
         writer.commit().map_err(LexicalError::Commit)?;
         let reader = index.reader().map_err(LexicalError::Writer)?;
@@ -324,8 +325,9 @@ impl LexicalIndex {
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
+        let mut chunk_json = Vec::new();
         for chunk in chunks {
-            add_chunk(&writer, fields, chunk);
+            add_chunk(&writer, fields, chunk, &mut chunk_json);
             #[cfg(feature = "coz-profile")]
             coz::progress!("lexical_indexed_chunk");
         }
@@ -469,8 +471,9 @@ impl LexicalIndex {
         let mut writer = index
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
+        let mut chunk_json = Vec::new();
         for chunk in chunks {
-            add_chunk(&writer, fields, chunk);
+            add_chunk(&writer, fields, chunk, &mut chunk_json);
             #[cfg(feature = "coz-profile")]
             coz::progress!("lexical_indexed_chunk");
         }
@@ -842,23 +845,18 @@ fn schema() -> (Schema, LexicalFields) {
     )
 }
 
-fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk) {
+fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk, chunk_json: &mut Vec<u8>) {
     writer
-        .add_document(tantivy_document(fields, chunk))
+        .add_document(tantivy_document(fields, chunk, chunk_json))
         .expect("in-memory lexical document is valid");
 }
 
-fn tantivy_document(fields: LexicalFields, chunk: &Chunk) -> TantivyDocument {
+fn tantivy_document(
+    fields: LexicalFields,
+    chunk: &Chunk,
+    chunk_json_buffer: &mut Vec<u8>,
+) -> TantivyDocument {
     let field_value_count = 10_usize.saturating_add(chunk.identifiers.len().saturating_mul(2));
-    let mut document = TantivyDocument::with_capacities(1024, field_value_count);
-    document.add_text(fields.title, &chunk.title);
-    document.add_text(fields.path, &chunk.path);
-    for identifier in &chunk.identifiers {
-        document.add_text(fields.identifiers, identifier);
-    }
-    for identifier in &chunk.identifiers {
-        document.add_text(fields.identifiers_raw, identifier);
-    }
     let heading_bytes = chunk.heading_path.iter().map(String::len).sum::<usize>();
     let mut body = String::with_capacity(
         heading_bytes
@@ -878,19 +876,50 @@ fn tantivy_document(fields: LexicalFields, chunk: &Chunk) -> TantivyDocument {
     body.reserve(1 + aliases.len());
     body.push(' ');
     body.push_str(&aliases);
-    document.add_text(fields.body, body);
     let mut tags = String::new();
     append_separated(&mut tags, chunk.tags.iter().map(String::as_str), " ");
+    chunk_json_buffer.clear();
+    serde_json::to_writer(&mut *chunk_json_buffer, chunk).expect("validated chunk serializes");
+    let chunk_json =
+        std::str::from_utf8(chunk_json_buffer).expect("JSON serialization always produces UTF-8");
+    let category = chunk.category.map_or("", category_label);
+    let trust_tier = trust_label(chunk.trust_tier);
+    let identifier_bytes = chunk
+        .identifiers
+        .iter()
+        .map(compact_str::CompactString::len)
+        .sum::<usize>()
+        .saturating_mul(2);
+    let node_data_capacity = field_value_count
+        .saturating_mul(5)
+        .saturating_add(chunk.title.len())
+        .saturating_add(chunk.path.len())
+        .saturating_add(identifier_bytes)
+        .saturating_add(body.len())
+        .saturating_add(tags.len())
+        .saturating_add(chunk.chunk_id.as_str().len())
+        .saturating_add(chunk.document_id.as_str().len())
+        .saturating_add(category.len())
+        .saturating_add(chunk.repository.as_str().len())
+        .saturating_add(trust_tier.len())
+        .saturating_add(chunk_json.len());
+    let mut document = TantivyDocument::with_capacities(node_data_capacity, field_value_count);
+    document.add_text(fields.title, &chunk.title);
+    document.add_text(fields.path, &chunk.path);
+    for identifier in &chunk.identifiers {
+        document.add_text(fields.identifiers, identifier);
+    }
+    for identifier in &chunk.identifiers {
+        document.add_text(fields.identifiers_raw, identifier);
+    }
+    document.add_text(fields.body, body);
     document.add_text(fields.tags, tags);
     document.add_text(fields.chunk_id, chunk.chunk_id.as_str());
     document.add_text(fields.document_id, chunk.document_id.as_str());
-    document.add_text(fields.category, chunk.category.map_or("", category_label));
+    document.add_text(fields.category, category);
     document.add_text(fields.repository, chunk.repository.as_str());
-    document.add_text(fields.trust_tier, trust_label(chunk.trust_tier));
-    document.add_text(
-        fields.chunk_json,
-        serde_json::to_string(chunk).expect("validated chunk serializes"),
-    );
+    document.add_text(fields.trust_tier, trust_tier);
+    document.add_text(fields.chunk_json, chunk_json);
     document
 }
 
@@ -1169,8 +1198,9 @@ mod tests {
         chunk.identifiers.push("read_nvm".into());
         chunk.identifiers.push("erase_nvm".into());
         let (_schema, fields) = schema();
+        let mut chunk_json = Vec::new();
 
-        let document = tantivy_document(fields, &chunk);
+        let document = tantivy_document(fields, &chunk, &mut chunk_json);
         let field_ids = document
             .field_values()
             .map(|(field, _)| field.field_id())
@@ -1178,6 +1208,12 @@ mod tests {
 
         assert_eq!(field_ids.len(), 10 + 2 * chunk.identifiers.len());
         assert!(field_ids.is_sorted());
+        assert_eq!(
+            document
+                .get_first(fields.chunk_json)
+                .and_then(|value| value.as_str()),
+            Some(serde_json::to_string(&chunk).expect("chunk JSON").as_str()),
+        );
     }
 
     #[test]

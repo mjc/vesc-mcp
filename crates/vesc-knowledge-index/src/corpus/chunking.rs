@@ -6,7 +6,7 @@ use compact_str::CompactString;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 
-use super::{Chunk, ChunkId, ContentDigest, NormalizedDocument, SourceSpan};
+use super::{Chunk, ChunkId, ChunkIdentity, ContentDigest, NormalizedDocument, SourceSpan};
 use crate::corpus::CorpusError;
 
 /// Starting chunk limits for the v1 corpus.
@@ -127,7 +127,9 @@ pub(crate) struct ChunkDraft<'a> {
     text: Range<usize>,
     headings: HeadingRefs<'a>,
     source_span: Option<SourceSpan>,
-    chunk_id: ChunkId,
+    ordinal: u32,
+    content_digest: ContentDigest,
+    chunk_identity: [u8; 32],
 }
 
 impl ChunkDraft<'_> {
@@ -164,12 +166,9 @@ impl ChunkDrafts<'_> {
         identifiers: Option<Vec<CompactString>>,
     ) -> Result<Chunk, CorpusError> {
         let draft = &self.chunks[index];
-        let mut chunk = Chunk::from_document(
+        let mut chunk = Chunk::from_document_identity(
             draft.document,
-            u32::try_from(index).map_err(|_| CorpusError::InvalidValue {
-                kind: "chunk ordinal",
-                value: index.to_string(),
-            })?,
+            draft.ordinal,
             draft.text().to_owned(),
             draft
                 .headings()
@@ -177,15 +176,18 @@ impl ChunkDrafts<'_> {
                 .map(|heading| (*heading).to_owned())
                 .collect(),
             draft.source_span,
+            ChunkIdentity::from_sha256(draft.content_digest.clone(), draft.chunk_identity),
         )?;
-        debug_assert_eq!(chunk.chunk_id, draft.chunk_id);
         if let Some(identifiers) = identifiers {
             chunk.identifiers = identifiers;
         }
         chunk.previous_chunk = index
             .checked_sub(1)
-            .map(|previous| self.chunks[previous].chunk_id.clone());
-        chunk.next_chunk = self.chunks.get(index + 1).map(|next| next.chunk_id.clone());
+            .map(|previous| ChunkId::from_sha256(self.chunks[previous].chunk_identity));
+        chunk.next_chunk = self
+            .chunks
+            .get(index + 1)
+            .map(|next| ChunkId::from_sha256(next.chunk_identity));
         Ok(chunk)
     }
 }
@@ -211,18 +213,15 @@ pub(crate) fn chunk_document_drafts(
             vec![(0..document.content.len(), headings, document.source_span)],
         );
     }
-    let pieces = split_block_ranges(&document.content, false, config);
-    let descriptors = pieces
-        .into_iter()
-        .map(|text| {
-            let span = if text.start == 0 && text.end == document.content.len() {
-                document.source_span
-            } else {
-                Some(source_span(&document.content, text.start, text.end))
-            };
-            (text, headings.clone(), span)
-        })
-        .collect();
+    let mut descriptors = Vec::new();
+    visit_block_ranges(&document.content, false, config, |text| {
+        let span = if text.start == 0 && text.end == document.content.len() {
+            document.source_span
+        } else {
+            Some(source_span(&document.content, text.start, text.end))
+        };
+        descriptors.push((text, headings.clone(), span));
+    });
     finish_drafts(document, descriptors)
 }
 
@@ -237,11 +236,11 @@ fn chunk_markdown_drafts(
         if text.trim().is_empty() {
             continue;
         }
-        for piece in split_block_ranges(text, block.code, config) {
+        visit_block_ranges(text, block.code, config, |piece| {
             let text = block.start + piece.start..block.start + piece.end;
             let span = Some(source_span(&document.content, text.start, text.end));
             descriptors.push((text, block.headings.clone(), span));
-        }
+        });
     }
     finish_drafts(document, descriptors)
 }
@@ -257,7 +256,7 @@ fn finish_drafts<'a>(
             value: ordinal.to_string(),
         })?;
         let content_digest = ContentDigest::of(document.content[text.clone()].as_bytes());
-        let chunk_id = ChunkId::from_heading_identity(
+        let chunk_identity = ChunkId::heading_identity_digest(
             &document.document_id,
             ordinal,
             headings.as_slice(),
@@ -268,7 +267,9 @@ fn finish_drafts<'a>(
             text,
             headings,
             source_span,
-            chunk_id,
+            ordinal,
+            content_digest,
+            chunk_identity,
         });
     }
     Ok(ChunkDrafts { chunks })
@@ -365,17 +366,19 @@ fn push_block<'a>(
     }
 }
 
-fn split_block_ranges(text: &str, code: bool, config: ChunkingConfig) -> Vec<Range<usize>> {
+fn visit_block_ranges(
+    text: &str,
+    code: bool,
+    config: ChunkingConfig,
+    mut visit: impl FnMut(Range<usize>),
+) {
     let char_count = text.chars().count();
-    if code {
-        return single_range(text.len());
-    }
-    if char_count <= config.target_chars {
-        return single_range(text.len());
+    if code || char_count <= config.target_chars {
+        visit(0..text.len());
+        return;
     }
 
     let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let mut pieces = Vec::new();
     let mut start_char = 0;
     while start_char < chars.len() {
         let remaining = chars.len() - start_char;
@@ -397,16 +400,10 @@ fn split_block_ranges(text: &str, code: bool, config: ChunkingConfig) -> Vec<Ran
             chars[end_char].0
         };
         if !text[byte_start..byte_end].trim().is_empty() {
-            pieces.push(byte_start..byte_end);
+            visit(byte_start..byte_end);
         }
         start_char = end_char;
     }
-    pieces
-}
-
-#[allow(clippy::single_range_in_vec_init)] // This is intentionally one chunk boundary, not bytes.
-fn single_range(end: usize) -> Vec<Range<usize>> {
-    Vec::from([0..end])
 }
 
 fn source_span(source: &str, start: usize, end: usize) -> SourceSpan {
@@ -434,5 +431,50 @@ const fn validate_config(config: ChunkingConfig) -> Result<(), ChunkingError> {
         Err(ChunkingError::InvalidConfig)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::corpus::{RepositoryId, Revision, SourceKind};
+
+    #[test]
+    fn draft_identity_matches_materialized_chunk_contract() {
+        let document = NormalizedDocument::new(
+            "Title",
+            SourceKind::Markdown,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("revision").expect("revision"),
+            "docs/example.md",
+            "text/markdown",
+            "# Heading\n\npassage",
+        )
+        .expect("document");
+        let drafts =
+            chunk_markdown_drafts(&document, ChunkingConfig::default()).expect("chunk drafts");
+        let materialized = drafts.materialize(0, None).expect("materialized chunk");
+        let direct = Chunk::from_document(
+            &document,
+            0,
+            materialized.text.clone(),
+            materialized.heading_path.clone(),
+            materialized.source_span,
+        )
+        .expect("direct chunk");
+
+        assert_eq!(materialized.chunk_id, direct.chunk_id);
+        assert_eq!(materialized.content_digest, direct.content_digest);
+    }
+
+    #[test]
+    fn short_block_visits_one_inline_range() {
+        let mut ranges = Vec::new();
+        visit_block_ranges("short", false, ChunkingConfig::default(), |range| {
+            ranges.push(range);
+        });
+
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], 0..5);
     }
 }

@@ -3881,7 +3881,7 @@ dependencies = [
 [[package]]
 name = "tantivy-fst"
 version = "0.5.0"
-source = "git+https://github.com/mjc/fst?rev=6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7#6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7"
+source = "git+https://github.com/mjc/fst?rev=5a97f46f815b099b0be4763753973c2cb94ab2a2#5a97f46f815b099b0be4763753973c2cb94ab2a2"
 dependencies = [
  "byteorder",
  "regex-syntax",
