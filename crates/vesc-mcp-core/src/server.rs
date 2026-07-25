@@ -1,5 +1,6 @@
 //! MCP service definition and tool routing.
 
+use anyhow::{Context, anyhow, bail};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -16,7 +17,9 @@ use rmcp::{
 };
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::{Arc, RwLock};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::config::{
     KnowledgeConfig, McpConfig, allowed_package_roots_with_client_roots, validate_sandbox_file,
@@ -36,7 +39,10 @@ use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json_wi
 use crate::tools::list_source_versions::{
     ListVescSourceVersionsParams, list_vesc_source_versions_json,
 };
-use crate::tools::prepare_knowledge::{PrepareVescKnowledgeParams, prepare_vesc_knowledge_json};
+use crate::tools::prepare_knowledge::{
+    PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, PrepareVescKnowledgeParams,
+    prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
+};
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
 };
@@ -119,18 +125,151 @@ struct SharedMcpState {
     catalog_watcher: Arc<CatalogSourceWatcher>,
     catalog_root: PathBuf,
     knowledge: KnowledgeConfig,
+    knowledge_preparer: KnowledgePreparer,
     feedback: Option<FeedbackStore>,
     feedback_writes_enabled: bool,
+}
+
+#[derive(Clone, Debug)]
+enum KnowledgePreparer {
+    InProcess,
+    Isolated(Result<PathBuf, Arc<str>>),
+}
+
+impl KnowledgePreparer {
+    fn isolated() -> Self {
+        Self::Isolated(std::env::current_exe().map_err(|error| Arc::from(error.to_string())))
+    }
+
+    async fn prepare(
+        &self,
+        params: &PrepareVescKnowledgeParams,
+        config: &KnowledgeConfig,
+    ) -> String {
+        match self {
+            Self::InProcess => prepare_vesc_knowledge_json(params, config).await,
+            Self::Isolated(executable) => {
+                let result = match executable {
+                    Ok(executable) => prepare_knowledge_in_child(executable, params, config).await,
+                    Err(error) => Err(anyhow!(
+                        "knowledge preparation process is unavailable: {error}"
+                    )),
+                };
+                result.unwrap_or_else(|error| {
+                    prepare_vesc_knowledge_failure_json(&format!("{error:#}"))
+                })
+            }
+        }
+    }
+}
+
+async fn prepare_knowledge_in_child(
+    executable: &std::path::Path,
+    params: &PrepareVescKnowledgeParams,
+    config: &KnowledgeConfig,
+) -> anyhow::Result<String> {
+    let deadline = tokio::time::Instant::now() + preparation_process_timeout(params);
+    let request = serde_json::to_vec(&PrepareKnowledgeChildRequest::new(params.clone(), config))
+        .context("could not serialize knowledge preparation request")?;
+    let mut child = tokio::process::Command::new(executable)
+        .arg(PREPARE_KNOWLEDGE_CHILD_ARG)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .context("could not start knowledge preparation process")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("knowledge preparation process has no request input")?;
+    stdin
+        .write_all(&request)
+        .await
+        .context("could not send knowledge preparation request")?;
+    drop(stdin);
+    let stdout = child
+        .stdout
+        .take()
+        .context("knowledge preparation process has no response output")?;
+    let mut response = String::new();
+    let read = tokio::time::timeout_at(
+        deadline,
+        BufReader::new(stdout)
+            .take(
+                u64::try_from(PREPARATION_RESPONSE_MAX_BYTES + 1)
+                    .expect("preparation response bound fits u64"),
+            )
+            .read_line(&mut response),
+    )
+    .await;
+    let bytes = if let Ok(read) = read {
+        read.context("could not read knowledge preparation response")?
+    } else {
+        terminate_child(&mut child).await?;
+        bail!("knowledge preparation process timed out");
+    };
+    if bytes == 0 {
+        let status = child
+            .wait()
+            .await
+            .context("could not wait for knowledge preparation process")?;
+        bail!("knowledge preparation process exited with {status} without a response");
+    }
+    terminate_child(&mut child).await?;
+    validate_preparation_response(response)
+}
+
+const PREPARATION_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+
+fn validate_preparation_response(mut response: String) -> anyhow::Result<String> {
+    if response.len() > PREPARATION_RESPONSE_MAX_BYTES || !response.ends_with('\n') {
+        bail!("knowledge preparation process returned an invalid response frame");
+    }
+    response.pop();
+    if response.ends_with('\r') {
+        response.pop();
+    }
+    serde_json::from_str::<serde_json::Value>(&response)
+        .context("knowledge preparation process returned invalid JSON")?;
+    Ok(response)
+}
+
+async fn terminate_child(child: &mut tokio::process::Child) -> anyhow::Result<()> {
+    if child
+        .try_wait()
+        .context("could not inspect knowledge preparation process")?
+        .is_none()
+    {
+        child
+            .kill()
+            .await
+            .context("could not terminate knowledge preparation process")?;
+    }
+    Ok(())
+}
+
+fn preparation_process_timeout(params: &PrepareVescKnowledgeParams) -> std::time::Duration {
+    const CHILD_EXIT_GRACE_SECS: u64 = 5;
+    std::time::Duration::from_secs(
+        params
+            .timeout_secs
+            .unwrap_or(120)
+            .min(600)
+            .saturating_add(CHILD_EXIT_GRACE_SECS),
+    )
 }
 
 impl SharedMcpState {
     fn new() -> Self {
         let config = McpConfig::load();
-        Self::with_config(
+        let mut state = Self::with_config(
             config.knowledge.clone(),
             config.feedback.path.as_deref().map(FeedbackStore::new),
             config.feedback.writes_enabled,
-        )
+        );
+        state.knowledge_preparer = KnowledgePreparer::isolated();
+        state
     }
 
     fn with_config(
@@ -149,6 +288,7 @@ impl SharedMcpState {
             catalog_watcher: Arc::new(CatalogSourceWatcher::new()),
             catalog_root: crate::workspace::catalog_root(),
             knowledge,
+            knowledge_preparer: KnowledgePreparer::InProcess,
             feedback_writes_enabled: writes_enabled && feedback.is_some(),
             feedback,
         }
@@ -479,7 +619,10 @@ impl VescMcpService {
         &self,
         Parameters(params): Parameters<PrepareVescKnowledgeParams>,
     ) -> String {
-        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
+        self.state
+            .knowledge_preparer
+            .prepare(&params, &self.state.knowledge)
+            .await
     }
 }
 
@@ -816,7 +959,10 @@ impl HttpMcpService {
         &self,
         Parameters(params): Parameters<PrepareVescKnowledgeParams>,
     ) -> String {
-        prepare_vesc_knowledge_json(&params, &self.state.knowledge).await
+        self.state
+            .knowledge_preparer
+            .prepare(&params, &self.state.knowledge)
+            .await
     }
 }
 
@@ -1319,6 +1465,45 @@ mod tests {
                     .any(|tool| tool == name)
             );
         }
+    }
+
+    #[test]
+    fn default_service_isolates_knowledge_preparation() {
+        assert!(matches!(
+            SharedMcpState::new().knowledge_preparer,
+            KnowledgePreparer::Isolated(_)
+        ));
+    }
+
+    #[test]
+    fn preparation_child_timeout_is_bounded() {
+        assert_eq!(
+            preparation_process_timeout(&PrepareVescKnowledgeParams::default()),
+            std::time::Duration::from_secs(125)
+        );
+        assert_eq!(
+            preparation_process_timeout(&PrepareVescKnowledgeParams {
+                timeout_secs: Some(u64::MAX),
+                ..PrepareVescKnowledgeParams::default()
+            }),
+            std::time::Duration::from_secs(605)
+        );
+    }
+
+    #[test]
+    fn preparation_child_response_is_bounded_and_newline_framed() {
+        assert_eq!(
+            validate_preparation_response("{\"ok\":true}\n".into()).expect("valid frame"),
+            "{\"ok\":true}"
+        );
+        assert!(validate_preparation_response("{\"ok\":true}".into()).is_err());
+        assert!(
+            validate_preparation_response(format!(
+                "\"{}\"\n",
+                "x".repeat(PREPARATION_RESPONSE_MAX_BYTES)
+            ))
+            .is_err()
+        );
     }
 
     #[test]

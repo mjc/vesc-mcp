@@ -24,8 +24,8 @@ use crate::managed_repositories::{
 
 const SNAPSHOT_SCHEMA: u16 = 1;
 
-// Keep the process inside one indexing working set. Different MCP requests can
-// ask for different snapshots, so per-snapshot locks are not enough here.
+// Avoid queueing duplicate build tasks inside one process. The filesystem lock
+// below extends the same one-working-set limit across preparation children.
 static SNAPSHOT_BUILD_GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
 
 fn snapshot_build_gate() -> Arc<tokio::sync::Semaphore> {
@@ -531,6 +531,11 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
         manifest: KnowledgeSnapshotManifest,
     ) -> Result<PreparedSnapshot, SnapshotError> {
+        if let Some(prepared) =
+            load_reusable_snapshot(&self.layout, &manifest, SnapshotDisposition::Reused)?
+        {
+            return Ok(prepared);
+        }
         let build_permit = snapshot_build_gate()
             .acquire_owned()
             .await
@@ -582,6 +587,10 @@ fn build_or_reuse(
     manifest: &KnowledgeSnapshotManifest,
     semantic: Option<&SnapshotSemanticConfig>,
 ) -> Result<PreparedSnapshot, SnapshotError> {
+    if let Some(prepared) = load_reusable_snapshot(layout, manifest, SnapshotDisposition::Reused)? {
+        return Ok(prepared);
+    }
+    let _build_lock = acquire_snapshot_build_lock(layout)?;
     let snapshots = layout.root().as_path().join("snapshots");
     fs::create_dir_all(&snapshots)?;
     fs::create_dir_all(layout.root().as_path().join("artifacts"))?;
@@ -596,24 +605,11 @@ fn build_or_reuse(
 
     let snapshot_path = layout.snapshot(&manifest.id);
     let artifact_path = layout.artifact(&manifest.id);
-    if snapshot_path.is_file() {
-        let cached = read_and_validate_manifest(&snapshot_path)?;
-        if cached != *manifest {
-            return Err(SnapshotError::IdentityMismatch);
-        }
-        match validate_snapshot_artifact(&artifact_path, &cached) {
-            Ok(()) => {
-                FileExt::unlock(&lock)?;
-                return Ok(PreparedSnapshot {
-                    manifest: cached,
-                    artifact_path,
-                    disposition: SnapshotDisposition::Reused,
-                });
-            }
-            Err(error) => {
-                tracing::warn!(%error, "repairing incomplete managed snapshot artifact");
-            }
-        }
+    if let Some(prepared) =
+        load_reusable_snapshot(layout, manifest, SnapshotDisposition::Deduplicated)?
+    {
+        FileExt::unlock(&lock)?;
+        return Ok(prepared);
     }
 
     let sources = manifest
@@ -644,6 +640,58 @@ fn build_or_reuse(
         artifact_path,
         disposition: SnapshotDisposition::Built,
     })
+}
+
+fn load_reusable_snapshot(
+    layout: &KnowledgeDataLayout,
+    manifest: &KnowledgeSnapshotManifest,
+    disposition: SnapshotDisposition,
+) -> Result<Option<PreparedSnapshot>, SnapshotError> {
+    let snapshot_path = layout.snapshot(&manifest.id);
+    if !snapshot_path.is_file() {
+        return Ok(None);
+    }
+    let cached = read_and_validate_manifest(&snapshot_path)?;
+    if cached != *manifest {
+        return Err(SnapshotError::IdentityMismatch);
+    }
+    let artifact_path = layout.artifact(&manifest.id);
+    match validate_snapshot_artifact(&artifact_path, &cached) {
+        Ok(()) => Ok(Some(PreparedSnapshot {
+            manifest: cached,
+            artifact_path,
+            disposition,
+        })),
+        Err(error) => {
+            tracing::warn!(%error, "repairing incomplete managed snapshot artifact");
+            Ok(None)
+        }
+    }
+}
+
+fn snapshot_build_lock_path(layout: &KnowledgeDataLayout) -> PathBuf {
+    layout
+        .root()
+        .as_path()
+        .join("snapshots")
+        .join(".build.lock")
+}
+
+fn acquire_snapshot_build_lock(
+    layout: &KnowledgeDataLayout,
+) -> Result<std::fs::File, SnapshotError> {
+    let path = snapshot_build_lock_path(layout);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    lock.lock_exclusive()?;
+    Ok(lock)
 }
 
 fn build_snapshot_artifact(
@@ -1152,6 +1200,19 @@ mod tests {
         SearchMode, SearchResponseDetail, SearchVescKnowledgeFilters, SearchVescKnowledgeParams,
         search_vesc_knowledge_tool_with_config,
     };
+
+    #[test]
+    fn snapshot_build_lock_is_shared_by_all_snapshots() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(temp.path().join("data")).expect("absolute data root"),
+        );
+
+        assert_eq!(
+            snapshot_build_lock_path(&layout),
+            temp.path().join("data/snapshots/.build.lock")
+        );
+    }
 
     fn run_git(cwd: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -1821,6 +1882,45 @@ max_total_bytes = 10485760
             build.await.expect("snapshot task").disposition,
             SnapshotDisposition::Built
         );
+    }
+
+    #[tokio::test]
+    async fn reusable_snapshot_bypasses_the_global_working_set() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first, _second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let id = RepositoryId::new("fixture").expect("repository id");
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                &id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+        let store = KnowledgeSnapshotStore::new(layout);
+        store
+            .prepare(&repositories, &BTreeMap::new())
+            .await
+            .expect("initial snapshot");
+        let held = snapshot_build_gate()
+            .acquire_owned()
+            .await
+            .expect("snapshot build gate");
+
+        let reused = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            store.prepare(&repositories, &BTreeMap::new()),
+        )
+        .await
+        .expect("reuse must not wait for another build")
+        .expect("reused snapshot");
+
+        assert_eq!(reused.disposition, SnapshotDisposition::Reused);
+        drop(held);
     }
 
     #[tokio::test]

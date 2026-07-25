@@ -12,6 +12,10 @@ use vesc_mcp_core::preparation_status::{
     KnowledgePreparationStatus, PreparationPhase, PreparationState, read_preparation_status,
     write_preparation_status,
 };
+use vesc_mcp_core::tools::prepare_knowledge::{
+    PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, knowledge_config_fingerprint,
+    prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
+};
 
 struct PreparationReporter {
     data_root: PathBuf,
@@ -90,7 +94,12 @@ enum RuntimeProfile {
 
 impl RuntimeProfile {
     fn from_args(args: &[String]) -> Self {
-        if args.iter().any(|arg| arg == "--refresh-repositories") {
+        if args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--refresh-repositories" | PREPARE_KNOWLEDGE_CHILD_ARG
+            )
+        }) {
             Self::Preparation
         } else {
             Self::Serving { worker_threads: 2 }
@@ -193,6 +202,25 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         synchronize_managed_repositories(startup_policy).await?;
         return Ok(());
     }
+    if args.iter().any(|arg| arg == PREPARE_KNOWLEDGE_CHILD_ARG) {
+        let request =
+            serde_json::from_reader::<_, PrepareKnowledgeChildRequest>(std::io::stdin().lock())?;
+        let config = McpConfig::load();
+        if request.config_fingerprint != knowledge_config_fingerprint(&config.knowledge) {
+            println!(
+                "{}",
+                prepare_vesc_knowledge_failure_json(
+                    "knowledge configuration changed; restart the MCP service"
+                )
+            );
+            return Ok(());
+        }
+        println!(
+            "{}",
+            prepare_vesc_knowledge_json(&request.params, &config.knowledge).await
+        );
+        return Ok(());
+    }
     if args.iter().any(|arg| arg == "--http") {
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
@@ -202,7 +230,13 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    synchronize_managed_repositories(startup_policy).await?;
+    tokio::spawn(async move {
+        if let Err(error) =
+            synchronize_managed_repositories_in_child(repository_refresh_args(&args)).await
+        {
+            tracing::error!(%error, "managed repository preparation failed");
+        }
+    });
     vesc_mcp_core::server::run_stdio_server().await
 }
 
@@ -252,6 +286,9 @@ async fn synchronize_managed_repositories_in_child(args: Vec<String>) -> anyhow:
     };
     let status = match tokio::process::Command::new(executable)
         .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
         .kill_on_drop(true)
         .status()
         .await
@@ -528,6 +565,10 @@ mod tests {
     fn preparation_and_serving_use_bounded_runtime_threads() {
         assert_eq!(
             RuntimeProfile::from_args(&["--refresh-repositories".into()]),
+            RuntimeProfile::Preparation
+        );
+        assert_eq!(
+            RuntimeProfile::from_args(&["--prepare-knowledge".into()]),
             RuntimeProfile::Preparation
         );
         assert_eq!(

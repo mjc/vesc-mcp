@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::config::KnowledgeConfig;
 use crate::managed_git::ManagedGitError;
@@ -11,6 +13,7 @@ use crate::managed_snapshots::{
 };
 
 const VERSION_HINT: &str = "call list_vesc_source_versions and select configured refs";
+pub const PREPARE_KNOWLEDGE_CHILD_ARG: &str = "--prepare-knowledge";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PrepareVescKnowledgeParams {
@@ -20,6 +23,34 @@ pub struct PrepareVescKnowledgeParams {
     /// Maximum preparation time; defaults to 120 seconds and is capped at 600.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PrepareKnowledgeChildRequest {
+    pub params: PrepareVescKnowledgeParams,
+    pub config_fingerprint: String,
+}
+
+impl PrepareKnowledgeChildRequest {
+    #[must_use]
+    pub fn new(params: PrepareVescKnowledgeParams, config: &KnowledgeConfig) -> Self {
+        Self {
+            params,
+            config_fingerprint: knowledge_config_fingerprint(config),
+        }
+    }
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn knowledge_config_fingerprint(config: &KnowledgeConfig) -> String {
+    let digest = Sha256::digest(format!("{config:?}"));
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(fingerprint, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    fingerprint
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -89,6 +120,13 @@ pub async fn prepare_vesc_knowledge_json(
     config: &KnowledgeConfig,
 ) -> String {
     serde_json::to_string(&prepare_vesc_knowledge_tool(params, config).await)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":{"code":"serialization","message":"response serialization failed","hint":"retry the request"}}"#.to_owned())
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn prepare_vesc_knowledge_failure_json(message: &str) -> String {
+    serde_json::to_string(&failure("not_ready", message))
         .unwrap_or_else(|_| r#"{"ok":false,"error":{"code":"serialization","message":"response serialization failed","hint":"retry the request"}}"#.to_owned())
 }
 
