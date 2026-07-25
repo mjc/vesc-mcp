@@ -83,6 +83,34 @@ impl Drop for PreparationReporter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeProfile {
+    Preparation,
+    Serving { worker_threads: usize },
+}
+
+impl RuntimeProfile {
+    fn from_args(args: &[String]) -> Self {
+        if args.iter().any(|arg| arg == "--refresh-repositories") {
+            Self::Preparation
+        } else {
+            Self::Serving { worker_threads: 2 }
+        }
+    }
+
+    fn build(self) -> std::io::Result<tokio::runtime::Runtime> {
+        let mut builder = match self {
+            Self::Preparation => tokio::runtime::Builder::new_current_thread(),
+            Self::Serving { worker_threads } => {
+                let mut builder = tokio::runtime::Builder::new_multi_thread();
+                builder.worker_threads(worker_threads);
+                builder
+            }
+        };
+        builder.enable_all().build()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StartupPolicy {
     refresh: bool,
     eager_index: bool,
@@ -143,14 +171,13 @@ fn configure_migraphx_cache() -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     configure_migraphx_cache()?;
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    RuntimeProfile::from_args(&args)
         .build()?
-        .block_on(async_main())
+        .block_on(async_main(args))
 }
 
-async fn async_main() -> anyhow::Result<()> {
-    let args: Vec<_> = env::args().skip(1).collect();
+async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--benchmark-search") {
         run_benchmark(&args)?;
         return Ok(());
@@ -449,8 +476,8 @@ mod tests {
     use vesc_mcp_core::managed_repositories::DataRoot;
 
     use super::{
-        PreparationReporter, StartupPolicy, migraphx_cache_path, publish_child_preparation_failure,
-        repository_refresh_args, run_http,
+        PreparationReporter, RuntimeProfile, StartupPolicy, migraphx_cache_path,
+        publish_child_preparation_failure, repository_refresh_args, run_http,
     };
 
     #[test]
@@ -494,6 +521,22 @@ mod tests {
                 eager_index: false,
                 allow_offline_restart: false,
             }
+        );
+    }
+
+    #[test]
+    fn preparation_and_serving_use_bounded_runtime_threads() {
+        assert_eq!(
+            RuntimeProfile::from_args(&["--refresh-repositories".into()]),
+            RuntimeProfile::Preparation
+        );
+        assert_eq!(
+            RuntimeProfile::from_args(&["--http".into()]),
+            RuntimeProfile::Serving { worker_threads: 2 }
+        );
+        assert_eq!(
+            RuntimeProfile::from_args(&[]),
+            RuntimeProfile::Serving { worker_threads: 2 }
         );
     }
 
