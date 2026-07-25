@@ -1002,6 +1002,16 @@ fn cached_artifact<T>(
     Ok(value)
 }
 
+#[cfg(any(feature = "semantic-fastembed", test))]
+fn evict_cached_artifact<T>(cache: &'static ArtifactCache<T>) {
+    if let Some(cache) = cache.get() {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
+
 fn active_artifact_summary(
     root: &Path,
 ) -> Result<Arc<vesc_knowledge_index::PreviousArtifactSummary>, String> {
@@ -1140,7 +1150,7 @@ fn initialize_semantic_model(
                 model_dir,
                 None,
                 profile,
-                Some(vesc_knowledge_index::default_semantic_intra_threads()),
+                Some(semantic_query_intra_threads()),
             )
             .map_err(|error| format!("semantic provider unavailable: {error}"))?;
         state.entry = Some(CachedSemanticProvider {
@@ -1156,6 +1166,11 @@ fn initialize_semantic_model(
     }
     cache.wake.notify_one();
     Ok(state)
+}
+
+#[cfg(any(feature = "semantic-fastembed", test))]
+const fn semantic_query_intra_threads() -> usize {
+    1
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -1178,6 +1193,7 @@ fn reap_idle_semantic_model() {
         let remaining = entry.idle_timeout.saturating_sub(entry.last_used.elapsed());
         if remaining.is_zero() {
             state.entry = None;
+            evict_cached_artifact(&VECTOR_ARTIFACT_CACHE);
             continue;
         }
         let (next, _) = cache
@@ -1864,6 +1880,24 @@ mod tests {
         .expect("new generation");
 
         assert_eq!(*value, 8);
+    }
+
+    #[test]
+    fn artifact_cache_evicts_idle_generation() {
+        let cache: &'static ArtifactCache<usize> = Box::leak(Box::new(OnceLock::new()));
+        let value =
+            cached_artifact(cache, Path::new("vectors.bin"), || Ok(7)).expect("cached value");
+        let retained = Arc::downgrade(&value);
+        drop(value);
+
+        evict_cached_artifact(cache);
+
+        assert!(retained.upgrade().is_none());
+    }
+
+    #[test]
+    fn semantic_queries_use_one_inference_thread() {
+        assert_eq!(semantic_query_intra_threads(), 1);
     }
 
     #[test]
