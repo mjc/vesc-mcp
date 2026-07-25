@@ -126,10 +126,13 @@ impl HistoryContents<'_> {
         Ok(())
     }
 
-    fn into_chunks(self) -> Vec<Chunk> {
-        match self {
-            Self::All(chunks) | Self::Delta { chunks, .. } => chunks.into_values().collect(),
-        }
+    fn into_chunks(self, spare_capacity: usize) -> Vec<Chunk> {
+        let chunks = match self {
+            Self::All(chunks) | Self::Delta { chunks, .. } => chunks,
+        };
+        let mut output = Vec::with_capacity(chunks.len().saturating_add(spare_capacity));
+        output.extend(chunks.into_values());
+        output
     }
 }
 
@@ -167,6 +170,7 @@ pub fn ingest_git_history_fast_forward(
         sources,
         previous_tips,
         cached_chunks.iter().cloned(),
+        0,
     )
 }
 
@@ -174,14 +178,21 @@ pub(crate) fn ingest_git_history_fast_forward_owned(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     cached_chunks: Vec<Chunk>,
+    spare_capacity: usize,
 ) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
-    ingest_git_history_fast_forward_from_chunks(sources, previous_tips, cached_chunks)
+    ingest_git_history_fast_forward_from_chunks(
+        sources,
+        previous_tips,
+        cached_chunks,
+        spare_capacity,
+    )
 }
 
 fn ingest_git_history_fast_forward_from_chunks(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     cached_chunks: impl IntoIterator<Item = Chunk>,
+    spare_capacity: usize,
 ) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     let repositories = sources
         .iter()
@@ -208,6 +219,7 @@ fn ingest_git_history_fast_forward_from_chunks(
         sources,
         previous_tips,
         HistoryContents::All(contents),
+        spare_capacity,
     )
 }
 
@@ -227,6 +239,7 @@ pub(crate) fn ingest_git_history_fast_forward_delta(
             previous_contains,
             chunks: BTreeMap::new(),
         },
+        0,
     )
 }
 
@@ -234,6 +247,7 @@ fn ingest_git_history_fast_forward_with_contents(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     mut contents: HistoryContents<'_>,
+    spare_capacity: usize,
 ) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     let tips = previous_tips
         .iter()
@@ -320,7 +334,7 @@ fn ingest_git_history_fast_forward_with_contents(
         }
         processed.push((source, reachable_revisions));
     }
-    Ok(Some((contents.into_chunks(), observations)))
+    Ok(Some((contents.into_chunks(spare_capacity), observations)))
 }
 
 fn same_corpus_contract(left: &GitCorpusSource, right: &GitCorpusSource) -> bool {
@@ -541,6 +555,13 @@ fn pending_path(change: &PendingChange) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_chunks_keep_requested_spare_capacity() {
+        let chunks = HistoryContents::All(BTreeMap::new()).into_chunks(3);
+
+        assert!(chunks.capacity() >= 3);
+    }
 
     #[test]
     fn history_content_key_keeps_its_wire_value() {

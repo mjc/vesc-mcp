@@ -467,18 +467,20 @@ pub fn build_git_history_artifacts_incrementally(
 ) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
     let started = Instant::now();
     let ingestion_started = Instant::now();
+    let embedded_chunk_count = embedded_entries().len();
     let incremental = previous_tips
         .zip(previous_chunks)
         .map_or(Ok(None), |(tips, chunks)| {
-            ingest_git_history_fast_forward_owned(sources, &tips, chunks)
+            ingest_git_history_fast_forward_owned(sources, &tips, chunks, embedded_chunk_count)
         })?;
     let (history_chunks, refresh, reused_snapshot) = if let Some((chunks, refresh)) = incremental {
         (chunks, refresh, true)
     } else {
-        let (chunks, refresh) = ingest_git_history_fast_forward_owned(sources, &[], Vec::new())?
-            .ok_or_else(|| {
-                LifecycleError::Contract("cold Git history ingestion was rejected".into())
-            })?;
+        let (chunks, refresh) =
+            ingest_git_history_fast_forward_owned(sources, &[], Vec::new(), embedded_chunk_count)?
+                .ok_or_else(|| {
+                    LifecycleError::Contract("cold Git history ingestion was rejected".into())
+                })?;
         (chunks, refresh, false)
     };
     let mut observations = BuildObservations::default();
@@ -625,9 +627,10 @@ fn build_git_history_reindexing(
     let started = Instant::now();
     let ingestion_started = Instant::now();
     let (history_chunks, refresh) =
-        ingest_git_history_fast_forward_owned(sources, &[], Vec::new())?.ok_or_else(|| {
-            LifecycleError::Contract("cold Git history ingestion was rejected".into())
-        })?;
+        ingest_git_history_fast_forward_owned(sources, &[], Vec::new(), embedded_entries().len())?
+            .ok_or_else(|| {
+                LifecycleError::Contract("cold Git history ingestion was rejected".into())
+            })?;
     let mut observations = BuildObservations::default();
     observations.record_duration(BuildPhase::Ingestion, elapsed_us(ingestion_started));
     observations.git_ingestion = Some(refresh.git.clone());
@@ -675,8 +678,12 @@ fn stage_git_history_chunks(
     started: Instant,
     observations: BuildObservations,
 ) -> Result<BuildSummary, LifecycleError> {
-    let mut chunks = embedded_catalog_chunks()?;
-    chunks.extend(history_chunks);
+    let mut chunks = history_chunks;
+    let embedded = embedded_catalog_chunks()?;
+    let embedded_len = embedded.len();
+    debug_assert!(chunks.capacity() >= chunks.len().saturating_add(embedded_len));
+    chunks.extend(embedded);
+    chunks.rotate_right(embedded_len);
     let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
         provider,
         model_id,

@@ -4031,7 +4031,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "tokenizers"
 version = "0.22.2"
-source = "git+https://github.com/mjc/tokenizers?rev=6c434085ac73811995658ac9032bbfbd7516d992#6c434085ac73811995658ac9032bbfbd7516d992"
+source = "git+https://github.com/mjc/tokenizers?rev=db0bbaae10d1880625035626a59d02f22b8c1896#db0bbaae10d1880625035626a59d02f22b8c1896"
 dependencies = [
  "ahash",
  "aho-corasick",
