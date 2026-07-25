@@ -543,22 +543,45 @@ pub trait EmbeddingProvider {
 /// and tags rather than in the short body summary. Keep those fields in the
 /// semantic input so vector retrieval sees the same corpus concepts that the
 /// lexical fields expose.
+#[must_use]
 pub fn embedding_text(chunk: &Chunk) -> String {
     let mut identifier_buffer = [""; MAX_EMBEDDING_IDENTIFIERS];
     let identifiers = embedding_identifiers(chunk, &mut identifier_buffer);
-    let mut text = String::with_capacity(embedding_text_capacity(chunk, identifiers));
-    if !chunk.title.is_empty() {
+    embedding_text_with_identifiers(chunk, identifiers)
+}
+
+pub(crate) fn embedding_text_with_identifiers(chunk: &Chunk, identifiers: &[&str]) -> String {
+    embedding_text_from_parts(
+        &chunk.title,
+        chunk.heading_path.iter().map(String::as_str),
+        identifiers,
+        &chunk.tags,
+        &chunk.text,
+    )
+}
+
+pub(crate) fn embedding_text_from_parts<'heading>(
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[&str],
+    tags: &BTreeSet<String>,
+    content: &str,
+) -> String {
+    let mut text = String::with_capacity(embedding_text_capacity(
+        title,
+        headings.clone(),
+        identifiers,
+        tags,
+        content,
+    ));
+    if !title.is_empty() {
         text.push_str("Title: ");
-        text.push_str(&chunk.title);
+        text.push_str(title);
         text.push('\n');
     }
-    if !chunk.heading_path.is_empty() {
+    if headings.clone().next().is_some() {
         text.push_str("Headings: ");
-        append_joined(
-            &mut text,
-            chunk.heading_path.iter().map(String::as_str),
-            " / ",
-        );
+        append_joined(&mut text, headings, " / ");
         text.push('\n');
     }
     if !identifiers.is_empty() {
@@ -580,13 +603,13 @@ pub fn embedding_text(chunk: &Chunk) -> String {
             text.push('\n');
         }
     }
-    if !chunk.tags.is_empty() {
+    if !tags.is_empty() {
         text.push_str("Tags: ");
-        append_joined(&mut text, chunk.tags.iter().map(String::as_str), ", ");
+        append_joined(&mut text, tags.iter().map(String::as_str), ", ");
         text.push('\n');
     }
     text.push_str("Content: ");
-    text.push_str(&chunk.text);
+    text.push_str(content);
     text
 }
 
@@ -638,21 +661,24 @@ fn elapsed_us(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-fn embedding_text_capacity(chunk: &Chunk, identifiers: &[&str]) -> usize {
-    let mut capacity = "Content: ".len().saturating_add(chunk.text.len());
-    if !chunk.title.is_empty() {
+fn embedding_text_capacity<'heading>(
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[&str],
+    tags: &BTreeSet<String>,
+    content: &str,
+) -> usize {
+    let mut capacity = "Content: ".len().saturating_add(content.len());
+    if !title.is_empty() {
         capacity = capacity
             .saturating_add("Title: ".len())
-            .saturating_add(chunk.title.len())
+            .saturating_add(title.len())
             .saturating_add(1);
     }
-    if !chunk.heading_path.is_empty() {
+    if headings.clone().next().is_some() {
         capacity = capacity
             .saturating_add("Headings: ".len())
-            .saturating_add(joined_capacity(
-                chunk.heading_path.iter().map(String::len),
-                " / ".len(),
-            ))
+            .saturating_add(joined_capacity(headings.map(str::len), 3))
             .saturating_add(1);
     }
     if !identifiers.is_empty() {
@@ -680,13 +706,10 @@ fn embedding_text_capacity(chunk: &Chunk, identifiers: &[&str]) -> usize {
                 .saturating_add(1);
         }
     }
-    if !chunk.tags.is_empty() {
+    if !tags.is_empty() {
         capacity = capacity
             .saturating_add("Tags: ".len())
-            .saturating_add(joined_capacity(
-                chunk.tags.iter().map(String::len),
-                ", ".len(),
-            ))
+            .saturating_add(joined_capacity(tags.iter().map(String::len), 2))
             .saturating_add(1);
     }
     capacity
@@ -1124,7 +1147,12 @@ impl FastEmbedProvider {
         };
         let model_path = root.join("model.onnx");
         let model_digest = digest_file(&model_path)?;
-        validate_migraphx_model_digest(model_digest.as_str(), &profile, execution_provider)?;
+        let encoded_model_digest = model_digest.encoded();
+        validate_migraphx_model_digest(
+            encoded_model_digest.as_str(),
+            &profile,
+            execution_provider,
+        )?;
         let model = fastembed::UserDefinedEmbeddingModel::new(
             model_path,
             fastembed::TokenizerFiles {
@@ -1993,7 +2021,7 @@ impl VectorCheckpoint {
                     )
                 })
                 .map_err(|error| EmbeddingError::Io(error.to_string()))?;
-            file.write_all(&digest_bytes(corpus_digest)?)
+            file.write_all(&digest_bytes(corpus_digest))
                 .and_then(|()| file.write_all(&vec![0_u8; completed_len]))
                 .map_err(|error| EmbeddingError::Io(error.to_string()))?;
             file.set_len(expected_len)
@@ -2247,10 +2275,12 @@ fn reconciliation_checkpoint_identity(
     model_revision: &str,
 ) -> Result<ContentDigest, EmbeddingError> {
     let mut digest = Sha256::new();
+    let encoded_corpus_digest = corpus_digest.encoded();
+    let encoded_previous_checksum = previous_checksum.encoded();
     for bytes in [
         b"vesc-reconciliation-checkpoint-v1".as_slice(),
-        corpus_digest.as_str().as_bytes(),
-        previous_checksum.as_str().as_bytes(),
+        encoded_corpus_digest.as_bytes(),
+        encoded_previous_checksum.as_bytes(),
         model_id.as_bytes(),
         model_revision.as_bytes(),
     ] {
@@ -3612,7 +3642,7 @@ impl VectorArtifact {
             .and_then(|()| writer.write_all(&[u8::from(self.normalized)]))
             .map_err(io_error)?;
         writer
-            .write_all(&digest_bytes(&self.corpus_digest)?)
+            .write_all(&digest_bytes(&self.corpus_digest))
             .map_err(io_error)?;
         for (chunk_id, vector) in self
             .ids
@@ -4116,7 +4146,7 @@ fn write_vector_header(
         .and_then(|()| writer.write_all(&[u8::from(normalized)]))
         .map_err(io_error)?;
     writer
-        .write_all(&digest_bytes(corpus_digest)?)
+        .write_all(&digest_bytes(corpus_digest))
         .map_err(io_error)
 }
 
@@ -4236,37 +4266,13 @@ fn read_error(error: std::io::Error) -> EmbeddingError {
     }
 }
 
-fn digest_bytes(digest: &ContentDigest) -> Result<[u8; 32], EmbeddingError> {
-    let hex = digest
-        .as_str()
-        .strip_prefix("sha256:")
-        .ok_or(EmbeddingError::InvalidHeader)?;
-    let mut bytes = [0_u8; 32];
-    for (index, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
-        bytes[index] = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
-    }
-    Ok(bytes)
+const fn digest_bytes(digest: &ContentDigest) -> [u8; 32] {
+    *digest.as_bytes()
 }
 
 fn digest_from_bytes(bytes: &[u8]) -> Result<ContentDigest, EmbeddingError> {
-    if bytes.len() != 32 {
-        return Err(EmbeddingError::InvalidHeader);
-    }
-    let mut value = String::from("sha256:");
-    for byte in bytes {
-        value.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
-        value.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
-    }
-    ContentDigest::try_from(value).map_err(|_| EmbeddingError::InvalidHeader)
-}
-
-const fn hex_digit(byte: u8) -> Result<u8, EmbeddingError> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(EmbeddingError::InvalidHeader),
-    }
+    let bytes = <[u8; 32]>::try_from(bytes).map_err(|_| EmbeddingError::InvalidHeader)?;
+    Ok(ContentDigest::from_sha256(bytes))
 }
 
 #[cfg(test)]

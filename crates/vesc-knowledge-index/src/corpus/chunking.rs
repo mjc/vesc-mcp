@@ -1,9 +1,12 @@
 //! Deterministic Markdown passage chunking.
 
+use std::ops::Range;
+
+use compact_str::CompactString;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 
-use super::{Chunk, NormalizedDocument, SourceSpan};
+use super::{Chunk, ChunkId, ContentDigest, NormalizedDocument, SourceSpan};
 use crate::corpus::CorpusError;
 
 /// Starting chunk limits for the v1 corpus.
@@ -49,46 +52,7 @@ pub fn chunk_markdown(
     document: &NormalizedDocument,
     config: ChunkingConfig,
 ) -> Result<Vec<Chunk>, ChunkingError> {
-    validate_config(config)?;
-    let blocks = markdown_blocks(&document.content);
-    let mut chunks = Vec::new();
-    for mut block in blocks {
-        let text = &document.content[block.start..block.end];
-        if text.trim().is_empty() {
-            continue;
-        }
-        let pieces = split_block(text, block.code, config);
-        let last_piece = pieces.len().saturating_sub(1);
-        let mut offset = block.start;
-        for (index, piece) in pieces.into_iter().enumerate() {
-            let piece_start = offset;
-            let piece_end = piece_start + piece.len();
-            offset = piece_end;
-            let span = Some(source_span(&document.content, piece_start, piece_end));
-            let heading_path = if index == last_piece {
-                std::mem::take(&mut block.heading_path)
-            } else {
-                block.heading_path.clone()
-            };
-            let chunk = Chunk::from_document(
-                document,
-                u32::try_from(chunks.len()).map_err(|_| CorpusError::InvalidValue {
-                    kind: "chunk ordinal",
-                    value: chunks.len().to_string(),
-                })?,
-                piece,
-                heading_path,
-                span,
-            )?;
-            chunks.push(chunk);
-        }
-    }
-    for index in 0..chunks.len().saturating_sub(1) {
-        let (left, right) = chunks.split_at_mut(index + 1);
-        left[index].next_chunk = Some(right[0].chunk_id.clone());
-        right[0].previous_chunk = Some(left[index].chunk_id.clone());
-    }
-    Ok(chunks)
+    materialize_all(&chunk_markdown_drafts(document, config)?)
 }
 
 /// Chunks a normalized document according to its media type.
@@ -105,71 +69,218 @@ pub fn chunk_document(
     document: &NormalizedDocument,
     config: ChunkingConfig,
 ) -> Result<Vec<Chunk>, ChunkingError> {
-    if document.media_type != "text/markdown" {
-        validate_config(config)?;
-        let mut heading_path = document
-            .path
-            .split_once('#')
-            .map(|(_, anchor)| vec![anchor.to_owned()])
-            .unwrap_or_default();
-        if document.content.chars().count() <= config.hard_max_chars {
-            return Ok(vec![Chunk::from_document(
-                document,
-                0,
-                document.content.clone(),
-                heading_path,
-                document.source_span,
-            )?]);
+    materialize_all(&chunk_document_drafts(document, config)?)
+}
+
+const MAX_HEADING_DEPTH: usize = 6;
+
+#[derive(Debug, Clone)]
+enum HeadingRefs<'a> {
+    Inline {
+        titles: [&'a str; MAX_HEADING_DEPTH],
+        len: usize,
+    },
+    Overflow(Vec<&'a str>),
+}
+
+impl<'a> HeadingRefs<'a> {
+    const fn empty() -> Self {
+        Self::Inline {
+            titles: [""; MAX_HEADING_DEPTH],
+            len: 0,
         }
-        let pieces = split_block(&document.content, false, config);
-        let mut chunks = Vec::with_capacity(pieces.len());
-        let last_piece = pieces.len().saturating_sub(1);
-        let mut search_start = 0;
-        for (ordinal, piece) in pieces.into_iter().enumerate() {
-            let Some(relative_start) = document.content[search_start..].find(&piece) else {
-                return Err(ChunkingError::Contract(CorpusError::InvalidValue {
-                    kind: "structured chunk boundary",
-                    value: document.path.clone(),
-                }));
-            };
-            let start = search_start + relative_start;
-            let end = start + piece.len();
-            search_start = end;
-            let piece_heading_path = if ordinal == last_piece {
-                std::mem::take(&mut heading_path)
-            } else {
-                heading_path.clone()
-            };
-            chunks.push(Chunk::from_document(
-                document,
-                u32::try_from(ordinal).map_err(|_| CorpusError::InvalidValue {
-                    kind: "chunk ordinal",
-                    value: ordinal.to_string(),
-                })?,
-                piece,
-                piece_heading_path,
-                Some(source_span(&document.content, start, end)),
-            )?);
-        }
-        for index in 0..chunks.len().saturating_sub(1) {
-            let (left, right) = chunks.split_at_mut(index + 1);
-            left[index].next_chunk = Some(right[0].chunk_id.clone());
-            right[0].previous_chunk = Some(left[index].chunk_id.clone());
-        }
-        return Ok(chunks);
     }
-    chunk_markdown(document, config)
+
+    fn as_slice(&self) -> &[&'a str] {
+        match self {
+            Self::Inline { titles, len } => &titles[..*len],
+            Self::Overflow(titles) => titles,
+        }
+    }
+
+    fn from_stack(headings: &[(u8, &'a str)]) -> Self {
+        if headings.len() > MAX_HEADING_DEPTH {
+            return Self::Overflow(headings.iter().map(|(_, title)| *title).collect());
+        }
+        let mut titles = [""; MAX_HEADING_DEPTH];
+        for (output, (_, title)) in titles.iter_mut().zip(headings) {
+            *output = title;
+        }
+        Self::Inline {
+            titles,
+            len: headings.len(),
+        }
+    }
 }
 
 #[derive(Debug)]
-struct Block {
+struct Block<'a> {
     start: usize,
     end: usize,
     code: bool,
-    heading_path: Vec<String>,
+    headings: HeadingRefs<'a>,
 }
 
-fn markdown_blocks(source: &str) -> Vec<Block> {
+#[derive(Debug)]
+pub(crate) struct ChunkDraft<'a> {
+    document: &'a NormalizedDocument,
+    text: Range<usize>,
+    headings: HeadingRefs<'a>,
+    source_span: Option<SourceSpan>,
+    chunk_id: ChunkId,
+}
+
+impl ChunkDraft<'_> {
+    pub(crate) const fn document(&self) -> &NormalizedDocument {
+        self.document
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.document.content[self.text.clone()]
+    }
+
+    pub(crate) fn headings(&self) -> &[&str] {
+        self.headings.as_slice()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ChunkDrafts<'a> {
+    chunks: Vec<ChunkDraft<'a>>,
+}
+
+impl ChunkDrafts<'_> {
+    pub(crate) const fn len(&self) -> usize {
+        self.chunks.len()
+    }
+
+    pub(crate) fn get(&self, index: usize) -> &ChunkDraft<'_> {
+        &self.chunks[index]
+    }
+
+    pub(crate) fn materialize(
+        &self,
+        index: usize,
+        identifiers: Option<Vec<CompactString>>,
+    ) -> Result<Chunk, CorpusError> {
+        let draft = &self.chunks[index];
+        let mut chunk = Chunk::from_document(
+            draft.document,
+            u32::try_from(index).map_err(|_| CorpusError::InvalidValue {
+                kind: "chunk ordinal",
+                value: index.to_string(),
+            })?,
+            draft.text().to_owned(),
+            draft
+                .headings()
+                .iter()
+                .map(|heading| (*heading).to_owned())
+                .collect(),
+            draft.source_span,
+        )?;
+        debug_assert_eq!(chunk.chunk_id, draft.chunk_id);
+        if let Some(identifiers) = identifiers {
+            chunk.identifiers = identifiers;
+        }
+        chunk.previous_chunk = index
+            .checked_sub(1)
+            .map(|previous| self.chunks[previous].chunk_id.clone());
+        chunk.next_chunk = self.chunks.get(index + 1).map(|next| next.chunk_id.clone());
+        Ok(chunk)
+    }
+}
+
+pub(crate) fn chunk_document_drafts(
+    document: &NormalizedDocument,
+    config: ChunkingConfig,
+) -> Result<ChunkDrafts<'_>, ChunkingError> {
+    if document.media_type == "text/markdown" {
+        return chunk_markdown_drafts(document, config);
+    }
+    validate_config(config)?;
+    let headings = document
+        .path
+        .split_once('#')
+        .map_or_else(HeadingRefs::empty, |(_, anchor)| HeadingRefs::Inline {
+            titles: [anchor, "", "", "", "", ""],
+            len: 1,
+        });
+    if document.content.chars().count() <= config.hard_max_chars {
+        return finish_drafts(
+            document,
+            vec![(0..document.content.len(), headings, document.source_span)],
+        );
+    }
+    let pieces = split_block_ranges(&document.content, false, config);
+    let descriptors = pieces
+        .into_iter()
+        .map(|text| {
+            let span = if text.start == 0 && text.end == document.content.len() {
+                document.source_span
+            } else {
+                Some(source_span(&document.content, text.start, text.end))
+            };
+            (text, headings.clone(), span)
+        })
+        .collect();
+    finish_drafts(document, descriptors)
+}
+
+fn chunk_markdown_drafts(
+    document: &NormalizedDocument,
+    config: ChunkingConfig,
+) -> Result<ChunkDrafts<'_>, ChunkingError> {
+    validate_config(config)?;
+    let mut descriptors = Vec::new();
+    for block in markdown_blocks(&document.content) {
+        let text = &document.content[block.start..block.end];
+        if text.trim().is_empty() {
+            continue;
+        }
+        for piece in split_block_ranges(text, block.code, config) {
+            let text = block.start + piece.start..block.start + piece.end;
+            let span = Some(source_span(&document.content, text.start, text.end));
+            descriptors.push((text, block.headings.clone(), span));
+        }
+    }
+    finish_drafts(document, descriptors)
+}
+
+fn finish_drafts<'a>(
+    document: &'a NormalizedDocument,
+    descriptors: Vec<(Range<usize>, HeadingRefs<'a>, Option<SourceSpan>)>,
+) -> Result<ChunkDrafts<'a>, ChunkingError> {
+    let mut chunks = Vec::with_capacity(descriptors.len());
+    for (ordinal, (text, headings, source_span)) in descriptors.into_iter().enumerate() {
+        let ordinal = u32::try_from(ordinal).map_err(|_| CorpusError::InvalidValue {
+            kind: "chunk ordinal",
+            value: ordinal.to_string(),
+        })?;
+        let content_digest = ContentDigest::of(document.content[text.clone()].as_bytes());
+        let chunk_id = ChunkId::from_heading_identity(
+            &document.document_id,
+            ordinal,
+            headings.as_slice(),
+            &content_digest,
+        );
+        chunks.push(ChunkDraft {
+            document,
+            text,
+            headings,
+            source_span,
+            chunk_id,
+        });
+    }
+    Ok(ChunkDrafts { chunks })
+}
+
+fn materialize_all(drafts: &ChunkDrafts<'_>) -> Result<Vec<Chunk>, ChunkingError> {
+    (0..drafts.len())
+        .map(|index| drafts.materialize(index, None).map_err(ChunkingError::from))
+        .collect()
+}
+
+fn markdown_blocks(source: &str) -> Vec<Block<'_>> {
     let mut code_ranges = Vec::new();
     let mut code_start = None;
     for (event, range) in Parser::new_ext(source, Options::all()).into_offset_iter() {
@@ -186,7 +297,7 @@ fn markdown_blocks(source: &str) -> Vec<Block> {
 
     let mut blocks = Vec::new();
     let mut start = None;
-    let mut headings: Vec<(u8, String)> = Vec::new();
+    let mut headings: Vec<(u8, &str)> = Vec::new();
     let mut in_code = false;
     let mut heading_only = false;
     let mut line_start = 0;
@@ -202,7 +313,7 @@ fn markdown_blocks(source: &str) -> Vec<Block> {
             }
             let level =
                 u8::try_from(trimmed.bytes().take_while(|byte| *byte == b'#').count()).unwrap_or(6);
-            let title = trimmed[usize::from(level)..].trim().to_owned();
+            let title = trimmed[usize::from(level)..].trim();
             while headings.last().is_some_and(|(old, _)| *old >= level) {
                 headings.pop();
             }
@@ -231,36 +342,36 @@ fn markdown_blocks(source: &str) -> Vec<Block> {
             start: 0,
             end: source.len(),
             code: false,
-            heading_path: Vec::new(),
+            headings: HeadingRefs::empty(),
         });
     }
     blocks
 }
 
-fn push_block(
-    blocks: &mut Vec<Block>,
+fn push_block<'a>(
+    blocks: &mut Vec<Block<'a>>,
     start: usize,
     end: usize,
     code: bool,
-    headings: &[(u8, String)],
+    headings: &[(u8, &'a str)],
 ) {
     if start < end {
         blocks.push(Block {
             start,
             end,
             code,
-            heading_path: headings.iter().map(|(_, title)| title.clone()).collect(),
+            headings: HeadingRefs::from_stack(headings),
         });
     }
 }
 
-fn split_block(text: &str, code: bool, config: ChunkingConfig) -> Vec<String> {
+fn split_block_ranges(text: &str, code: bool, config: ChunkingConfig) -> Vec<Range<usize>> {
     let char_count = text.chars().count();
     if code {
-        return vec![text.to_owned()];
+        return single_range(text.len());
     }
     if char_count <= config.target_chars {
-        return vec![text.to_owned()];
+        return single_range(text.len());
     }
 
     let chars: Vec<(usize, char)> = text.char_indices().collect();
@@ -285,13 +396,17 @@ fn split_block(text: &str, code: bool, config: ChunkingConfig) -> Vec<String> {
         } else {
             chars[end_char].0
         };
-        let piece = text[byte_start..byte_end].to_owned();
-        if !piece.trim().is_empty() {
-            pieces.push(piece);
+        if !text[byte_start..byte_end].trim().is_empty() {
+            pieces.push(byte_start..byte_end);
         }
         start_char = end_char;
     }
     pieces
+}
+
+#[allow(clippy::single_range_in_vec_init)] // This is intentionally one chunk boundary, not bytes.
+fn single_range(end: usize) -> Vec<Range<usize>> {
+    Vec::from([0..end])
 }
 
 fn source_span(source: &str, start: usize, end: usize) -> SourceSpan {

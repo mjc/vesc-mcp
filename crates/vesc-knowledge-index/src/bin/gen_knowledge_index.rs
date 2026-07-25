@@ -155,7 +155,7 @@ fn run_window_quality(args: &[String]) {
         .collect::<std::collections::BTreeSet<_>>();
     suite
         .validate_for_corpus(
-            corpus_digest.as_ref(),
+            &corpus_digest.to_string(),
             manifest.corpus.document_count(),
             chunks.len(),
             &chunk_ids,
@@ -1156,7 +1156,7 @@ fn run_bakeoff_with_fastembed(args: &[String]) {
         .collect::<std::collections::BTreeSet<_>>();
     suite
         .validate_for_corpus(
-            corpus_digest.as_ref(),
+            &corpus_digest.to_string(),
             corpus_documents,
             chunks.len(),
             &chunk_ids,

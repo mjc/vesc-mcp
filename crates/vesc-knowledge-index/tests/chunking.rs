@@ -94,6 +94,20 @@ fn split_heading_path_is_preserved_on_every_piece() {
 }
 
 #[test]
+fn deep_heading_paths_keep_all_recognized_levels() {
+    let content =
+        "# one\n## two\n### three\n#### four\n##### five\n###### six\n####### seven\nbody\n";
+    let chunks =
+        vesc_knowledge_index::chunk_markdown(&document(content), ChunkingConfig::default())
+            .expect("chunks");
+
+    assert_eq!(
+        chunks.last().expect("last chunk").heading_path,
+        ["one", "two", "three", "four", "five", "six", "seven"]
+    );
+}
+
+#[test]
 fn structured_record_remains_one_semantic_chunk() {
     let document = NormalizedDocument::new(
         "Commands: public_commands[0]",

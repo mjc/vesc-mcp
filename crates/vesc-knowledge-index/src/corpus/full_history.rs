@@ -2,14 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::chunking::{ChunkingConfig, chunk_document};
+use sha2::{Digest, Sha256};
+
+use super::chunking::{ChunkDrafts, ChunkingConfig, chunk_document_drafts};
 use super::git::{
     CachedGitBlob, Candidate, GitCorpusPolicy, GitCorpusSource, GitIngestionError,
-    GitIngestionObservations, document_from_git_blob, identifier_values, is_selected,
-    load_git_blob, validate_policy,
+    GitIngestionObservations, MAX_IDENTIFIERS, document_from_git_blob, identifier_refs,
+    identifier_values, is_selected, load_git_blob, validate_policy,
 };
 use super::{Chunk, ContentDigest, RepositoryId, Revision, SourceKind};
-use crate::semantic::embedding_text;
+use crate::semantic::{embedding_text, embedding_text_from_parts};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHistoryTip {
@@ -18,14 +20,35 @@ pub struct GitHistoryTip {
 }
 
 /// Work performed by one refresh. These counters do not affect artifact identity.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHistoryRefreshObservations {
     pub reachable_commits: usize,
     pub reused_commits: usize,
     pub ingested_commits: usize,
     pub ingested_blobs: usize,
     pub reused_contents: usize,
+    pub candidate_chunks: usize,
+    pub materialized_chunks: usize,
+    pub candidate_identifier_count_histogram: [u64; MAX_IDENTIFIERS + 1],
+    pub materialized_identifier_count_histogram: [u64; MAX_IDENTIFIERS + 1],
     pub git: GitIngestionObservations,
+}
+
+impl Default for GitHistoryRefreshObservations {
+    fn default() -> Self {
+        Self {
+            reachable_commits: 0,
+            reused_commits: 0,
+            ingested_commits: 0,
+            ingested_blobs: 0,
+            reused_contents: 0,
+            candidate_chunks: 0,
+            materialized_chunks: 0,
+            candidate_identifier_count_histogram: [0; MAX_IDENTIFIERS + 1],
+            materialized_identifier_count_histogram: [0; MAX_IDENTIFIERS + 1],
+            git: GitIngestionObservations::default(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,19 +80,22 @@ enum HistoryContents<'a> {
     All(BTreeMap<ContentDigest, Chunk>),
     Delta {
         previous_contains:
-            &'a mut dyn FnMut(&Chunk, &ContentDigest) -> Result<bool, GitHistoryError>,
+            &'a mut dyn FnMut(&RepositoryId, &str, &ContentDigest) -> Result<bool, GitHistoryError>,
         chunks: BTreeMap<ContentDigest, Chunk>,
     },
 }
 
 impl HistoryContents<'_> {
-    fn insert(
+    fn insert_draft(
         &mut self,
         key: ContentDigest,
-        chunk: Chunk,
+        drafts: &ChunkDrafts<'_>,
+        index: usize,
         reachable_revisions: &BTreeSet<gix::ObjectId>,
         observations: &mut GitHistoryRefreshObservations,
     ) -> Result<(), GitHistoryError> {
+        let draft = drafts.get(index);
+        let document = draft.document();
         match self {
             Self::All(contents) => {
                 if let Some(existing) = contents.get_mut(&key) {
@@ -78,20 +104,22 @@ impl HistoryContents<'_> {
                         gix::ObjectId::from_hex(existing.revision.as_str().as_bytes())
                             .is_ok_and(|id| reachable_revisions.contains(&id));
                     if !existing_is_reachable {
-                        *existing = chunk;
+                        *existing = materialize_history_chunk(drafts, index, observations)?;
                     }
                 } else {
-                    contents.insert(key, chunk);
+                    contents.insert(key, materialize_history_chunk(drafts, index, observations)?);
                 }
             }
             Self::Delta {
                 previous_contains,
                 chunks,
             } => {
-                if chunks.contains_key(&key) || previous_contains(&chunk, &key)? {
+                if chunks.contains_key(&key)
+                    || previous_contains(&document.repository, &document.path, &key)?
+                {
                     observations.reused_contents = observations.reused_contents.saturating_add(1);
                 } else {
-                    chunks.insert(key, chunk);
+                    chunks.insert(key, materialize_history_chunk(drafts, index, observations)?);
                 }
             }
         }
@@ -103,6 +131,22 @@ impl HistoryContents<'_> {
             Self::All(chunks) | Self::Delta { chunks, .. } => chunks.into_values().collect(),
         }
     }
+}
+
+fn materialize_history_chunk(
+    drafts: &ChunkDrafts<'_>,
+    index: usize,
+    observations: &mut GitHistoryRefreshObservations,
+) -> Result<Chunk, GitHistoryError> {
+    let draft = drafts.get(index);
+    let identifiers = identifier_values(&draft.document().path, draft.text());
+    observations.materialized_identifier_count_histogram[identifiers.len()] =
+        observations.materialized_identifier_count_histogram[identifiers.len()].saturating_add(1);
+    let chunk = drafts
+        .materialize(index, Some(identifiers))
+        .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
+    observations.materialized_chunks = observations.materialized_chunks.saturating_add(1);
+    Ok(chunk)
 }
 
 /// Reuse cached Git chunks when every configured tip is a fast-forward.
@@ -170,7 +214,11 @@ fn ingest_git_history_fast_forward_from_chunks(
 pub(crate) fn ingest_git_history_fast_forward_delta(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
-    previous_contains: &mut dyn FnMut(&Chunk, &ContentDigest) -> Result<bool, GitHistoryError>,
+    previous_contains: &mut dyn FnMut(
+        &RepositoryId,
+        &str,
+        &ContentDigest,
+    ) -> Result<bool, GitHistoryError>,
 ) -> Result<Option<(Vec<Chunk>, GitHistoryRefreshObservations)>, GitHistoryError> {
     ingest_git_history_fast_forward_with_contents(
         sources,
@@ -402,15 +450,25 @@ fn ingest_upsert(
         &source.license,
         blob,
     )?;
-    let mut chunks = chunk_document(&document, ChunkingConfig::default())
+    let drafts = chunk_document_drafts(&document, ChunkingConfig::default())
         .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-    for chunk in &mut chunks {
-        chunk.identifiers = identifier_values(path, &chunk.text);
-    }
-    for chunk in chunks {
-        let embedding_key = ContentDigest::of(embedding_text(&chunk).as_bytes());
+    for index in 0..drafts.len() {
+        let draft = drafts.get(index);
+        let mut identifier_buffer = [""; MAX_IDENTIFIERS];
+        let identifiers = identifier_refs(path, draft.text(), &mut identifier_buffer);
+        observations.candidate_chunks = observations.candidate_chunks.saturating_add(1);
+        observations.candidate_identifier_count_histogram[identifiers.len()] =
+            observations.candidate_identifier_count_histogram[identifiers.len()].saturating_add(1);
+        let embedding_text = embedding_text_from_parts(
+            &document.title,
+            draft.headings().iter().copied(),
+            identifiers,
+            &document.tags,
+            draft.text(),
+        );
+        let embedding_key = ContentDigest::of(embedding_text.as_bytes());
         let key = history_content_key(&source.repository_id, path, &embedding_key);
-        contents.insert(key, chunk, reachable_revisions, observations)?;
+        contents.insert_draft(key, &drafts, index, reachable_revisions, observations)?;
     }
     #[cfg(feature = "coz-profile")]
     coz::progress!("git_history_ingested_blob");
@@ -422,15 +480,14 @@ fn history_content_key(
     path: &str,
     embedding_key: &ContentDigest,
 ) -> ContentDigest {
-    let mut identity = String::with_capacity(
-        repository.as_str().len() + path.len() + embedding_key.as_str().len() + 2,
-    );
-    identity.push_str(repository.as_str());
-    identity.push('\0');
-    identity.push_str(path);
-    identity.push('\0');
-    identity.push_str(embedding_key.as_str());
-    ContentDigest::of(identity.as_bytes())
+    let encoded_embedding_key = embedding_key.encoded();
+    let mut digest = Sha256::new();
+    digest.update(repository.as_str().as_bytes());
+    digest.update([0]);
+    digest.update(path.as_bytes());
+    digest.update([0]);
+    digest.update(encoded_embedding_key.as_bytes());
+    ContentDigest::from_sha256(digest.finalize().into())
 }
 
 pub(crate) fn history_content_key_for_chunk(chunk: &Chunk) -> Option<ContentDigest> {
@@ -480,4 +537,61 @@ fn push_upsert(
 
 fn pending_path(change: &PendingChange) -> &str {
     &change.path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_content_key_keeps_its_wire_value() {
+        let repository = RepositoryId::try_from("repo").expect("repository");
+        let embedding_key = ContentDigest::of(b"embedding");
+
+        assert_eq!(
+            history_content_key(&repository, "src/main.c", &embedding_key).to_string(),
+            "sha256:48ac550de4d56ed17b3a974d757bc9a6d10131ac5afce180ea5071f9f7675342"
+        );
+    }
+
+    #[test]
+    fn borrowed_identifiers_keep_the_materialized_history_key() {
+        let content = (0..40)
+            .map(|index| format!("identifier_{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let document = super::super::NormalizedDocument::new(
+            "Identifiers",
+            SourceKind::GitBlob,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("a".repeat(40)).expect("revision"),
+            "src/identifiers.rs",
+            "text/x-rust",
+            content,
+        )
+        .expect("document");
+        let drafts =
+            chunk_document_drafts(&document, ChunkingConfig::default()).expect("chunk drafts");
+        let draft = drafts.get(0);
+        let mut identifier_buffer = [""; MAX_IDENTIFIERS];
+        let identifiers = identifier_refs(&document.path, draft.text(), &mut identifier_buffer);
+        assert_eq!(identifiers.len(), MAX_IDENTIFIERS);
+        let borrowed_embedding = embedding_text_from_parts(
+            &document.title,
+            draft.headings().iter().copied(),
+            identifiers,
+            &document.tags,
+            draft.text(),
+        );
+        let borrowed_key = history_content_key(
+            &document.repository,
+            &document.path,
+            &ContentDigest::of(borrowed_embedding.as_bytes()),
+        );
+        let chunk = drafts
+            .materialize(0, Some(identifier_values(&document.path, draft.text())))
+            .expect("materialized chunk");
+
+        assert_eq!(Some(borrowed_key), history_content_key_for_chunk(&chunk));
+    }
 }

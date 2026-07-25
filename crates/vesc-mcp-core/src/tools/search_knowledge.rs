@@ -1197,7 +1197,7 @@ fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>,
         .map_err(|_| "configured vector artifact unavailable".to_string())?;
     let vector_path = root
         .join("generations")
-        .join(artifact.generation.as_str())
+        .join(artifact.generation.to_string())
         .join("vectors.bin");
     let vector = cached_artifact(&VECTOR_ARTIFACT_CACHE, &vector_path, || {
         let vector = VectorArtifact::open_artifact(&vector_path)
@@ -1404,7 +1404,7 @@ fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
     active_artifact_summary(root)
         .map(|artifact| {
             root.join("generations")
-                .join(artifact.generation.as_str())
+                .join(artifact.generation.to_string())
                 .join("lexical.json")
         })
         .map_err(|_| "configured lexical artifact unavailable".to_string())

@@ -561,14 +561,27 @@ pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
 }
 
 pub(super) fn identifier_values(path: &str, content: &str) -> Vec<CompactString> {
-    const MAX_IDENTIFIERS: usize = 32;
+    let mut buffer = [""; MAX_IDENTIFIERS];
+    identifier_refs(path, content, &mut buffer)
+        .iter()
+        .map(|value| CompactString::new(value))
+        .collect()
+}
 
-    let mut values = Vec::with_capacity(MAX_IDENTIFIERS);
-    values.push(CompactString::new(path));
+pub(super) const MAX_IDENTIFIERS: usize = 32;
+
+pub(super) fn identifier_refs<'input, 'buffer>(
+    path: &'input str,
+    content: &'input str,
+    buffer: &'buffer mut [&'input str; MAX_IDENTIFIERS],
+) -> &'buffer [&'input str] {
+    let mut length = 1;
+    buffer[0] = path;
     if let Some(stem) = Path::new(path).file_stem().and_then(|stem| stem.to_str())
-        && !values.iter().any(|value| value.as_str() == stem)
+        && !buffer[..length].contains(&stem)
     {
-        values.push(CompactString::new(stem));
+        buffer[length] = stem;
+        length += 1;
     }
     for token in
         content.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
@@ -579,16 +592,17 @@ pub(super) fn identifier_values(path: &str, content: &str) -> Vec<CompactString>
                 .as_bytes()
                 .first()
                 .is_some_and(u8::is_ascii_alphabetic)
-            && !values.iter().any(|value| value.as_str() == token)
+            && !buffer[..length].contains(&token)
         {
-            values.push(CompactString::new(token));
-            if values.len() == MAX_IDENTIFIERS {
+            buffer[length] = token;
+            length += 1;
+            if length == MAX_IDENTIFIERS {
                 break;
             }
         }
     }
-    values.sort_unstable();
-    values
+    buffer[..length].sort_unstable();
+    &buffer[..length]
 }
 
 fn source_rejection(path: &str, code: &str, message: &str) -> SourceRejection {
@@ -607,7 +621,8 @@ fn elapsed_us(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        GitCorpusPolicy, GitIngestionError, glob_matches, identifier_values, validate_policy,
+        GitCorpusPolicy, GitIngestionError, glob_matches, identifier_refs, identifier_values,
+        validate_policy,
     };
 
     #[test]
@@ -695,5 +710,26 @@ mod tests {
                 .expect("existing JSON identifiers deserialize"),
             identifiers
         );
+    }
+
+    #[test]
+    fn identifier_refs_borrow_from_path_and_content() {
+        let path = String::from("src/motor.c");
+        let content = String::from("motor_speed motor_current");
+        let mut buffer = [""; 32];
+        let identifiers = identifier_refs(&path, &content, &mut buffer);
+
+        assert_eq!(
+            identifiers,
+            ["motor", "motor_current", "motor_speed", "src/motor.c"]
+        );
+        for identifier in identifiers {
+            let start = identifier.as_ptr() as usize;
+            let in_path =
+                (path.as_ptr() as usize..path.as_ptr() as usize + path.len()).contains(&start);
+            let in_content = (content.as_ptr() as usize..content.as_ptr() as usize + content.len())
+                .contains(&start);
+            assert!(in_path || in_content);
+        }
     }
 }

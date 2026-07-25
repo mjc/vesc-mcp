@@ -707,6 +707,11 @@ fn build_snapshot_artifact(
                 reused_snapshot = summary.reused_snapshot,
                 reused_commits = summary.refresh.reused_commits,
                 ingested_commits = summary.refresh.ingested_commits,
+                reused_contents = summary.refresh.reused_contents,
+                candidate_chunks = summary.refresh.candidate_chunks,
+                materialized_chunks = summary.refresh.materialized_chunks,
+                candidate_identifier_count_histogram = ?summary.refresh.candidate_identifier_count_histogram,
+                materialized_identifier_count_histogram = ?summary.refresh.materialized_identifier_count_histogram,
                 "prepared managed Git history snapshot"
             );
             if let Some(vectors) = summary.artifacts.observations.vector_build {
@@ -796,7 +801,7 @@ fn load_previous_snapshot_candidate(
     }
     let lexical = artifact_root
         .join("generations")
-        .join(artifact.generation.as_str())
+        .join(artifact.generation.to_string())
         .join("lexical.json");
     let lexical_format_compatible = previous.component_versions.get("lexical-format")
         == current.component_versions.get("lexical-format");
@@ -1557,7 +1562,7 @@ max_total_bytes = 10485760
 
         assert_eq!(previous.tips[0].revision.as_str(), "b".repeat(40));
         assert_eq!(
-            previous.artifact.generation.as_str(),
+            previous.artifact.generation.to_string(),
             fallback_build.generation
         );
 
@@ -1574,7 +1579,7 @@ max_total_bytes = 10485760
 
         assert_eq!(previous.tips[0].revision.as_str(), "b".repeat(40));
         assert_eq!(
-            previous.artifact.generation.as_str(),
+            previous.artifact.generation.to_string(),
             fallback_build.generation
         );
     }

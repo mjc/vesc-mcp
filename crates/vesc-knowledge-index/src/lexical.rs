@@ -96,15 +96,8 @@ impl<W> DigestingWriter<W> {
     }
 
     fn finish(self) -> (ContentDigest, u64) {
-        let digest = self.digest.finalize();
-        let mut encoded = String::with_capacity("sha256:".len() + digest.len() * 2);
-        encoded.push_str("sha256:");
-        for byte in digest {
-            encoded.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
-            encoded.push(char::from(b"0123456789abcdef"[(byte & 0x0f) as usize]));
-        }
         (
-            ContentDigest::try_from(encoded).expect("sha256 digest is valid"),
+            ContentDigest::from_sha256(self.digest.finalize().into()),
             self.bytes,
         )
     }
@@ -161,24 +154,29 @@ impl HistoryContentLookup {
     /// # Errors
     ///
     /// Returns [`LexicalError::Search`] when Tantivy cannot execute the exact lookup.
-    pub fn contains(&mut self, chunk: &Chunk, key: &ContentDigest) -> Result<bool, LexicalError> {
-        let cached = self
-            .cached_path
-            .as_ref()
-            .is_some_and(|(repository, path, _)| {
-                repository == &chunk.repository && path == &chunk.path
-            });
+    pub fn contains(
+        &mut self,
+        repository: &RepositoryId,
+        path: &str,
+        key: &ContentDigest,
+    ) -> Result<bool, LexicalError> {
+        let cached =
+            self.cached_path
+                .as_ref()
+                .is_some_and(|(cached_repository, cached_path, _)| {
+                    cached_repository == repository && cached_path == path
+                });
         if !cached {
             let searcher = self.reader.searcher();
             let mut clauses: Vec<(Occur, Box<dyn Query>)> = vec![(
                 Occur::Must,
                 Box::new(TermQuery::new(
-                    Term::from_field_text(self.fields.repository, chunk.repository.as_str()),
+                    Term::from_field_text(self.fields.repository, repository.as_str()),
                     IndexRecordOption::Basic,
                 )),
             )];
             let mut path_terms = Vec::new();
-            let mut path_tokens = self.path_analyzer.token_stream(&chunk.path);
+            let mut path_tokens = self.path_analyzer.token_stream(path);
             while path_tokens.advance() {
                 path_terms.push(path_tokens.token().text.clone());
             }
@@ -221,15 +219,15 @@ impl HistoryContentLookup {
                     let candidate: Chunk = serde_json::from_str(json)
                         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
                     if candidate.source_kind == SourceKind::GitBlob
-                        && candidate.repository == chunk.repository
-                        && candidate.path == chunk.path
+                        && candidate.repository == *repository
+                        && candidate.path == path
                         && let Some(key) = crate::corpus::history_content_key_for_chunk(&candidate)
                     {
                         keys.insert(key);
                     }
                 }
             }
-            self.cached_path = Some((chunk.repository.clone(), chunk.path.clone(), keys));
+            self.cached_path = Some((repository.clone(), path.to_owned(), keys));
         }
         Ok(self
             .cached_path
@@ -845,36 +843,68 @@ fn schema() -> (Schema, LexicalFields) {
 }
 
 fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk) {
-    let mut document = TantivyDocument::default();
+    writer
+        .add_document(tantivy_document(fields, chunk))
+        .expect("in-memory lexical document is valid");
+}
+
+fn tantivy_document(fields: LexicalFields, chunk: &Chunk) -> TantivyDocument {
+    let field_value_count = 10_usize.saturating_add(chunk.identifiers.len().saturating_mul(2));
+    let mut document = TantivyDocument::with_capacities(1024, field_value_count);
     document.add_text(fields.title, &chunk.title);
     document.add_text(fields.path, &chunk.path);
     for identifier in &chunk.identifiers {
         document.add_text(fields.identifiers, identifier);
+    }
+    for identifier in &chunk.identifiers {
         document.add_text(fields.identifiers_raw, identifier);
     }
-    let body = format!("{} {}", chunk.heading_path.join(" "), chunk.text);
-    document.add_text(fields.body, format!("{body} {}", morphology_aliases(&body)));
-    document.add_text(
-        fields.tags,
-        chunk.tags.iter().cloned().collect::<Vec<_>>().join(" "),
+    let heading_bytes = chunk.heading_path.iter().map(String::len).sum::<usize>();
+    let mut body = String::with_capacity(
+        heading_bytes
+            .saturating_add(chunk.heading_path.len())
+            .saturating_add(chunk.text.len()),
     );
+    append_separated(
+        &mut body,
+        chunk.heading_path.iter().map(String::as_str),
+        " ",
+    );
+    if !body.is_empty() {
+        body.push(' ');
+    }
+    body.push_str(&chunk.text);
+    let aliases = morphology_aliases(&body);
+    body.reserve(1 + aliases.len());
+    body.push(' ');
+    body.push_str(&aliases);
+    document.add_text(fields.body, body);
+    let mut tags = String::new();
+    append_separated(&mut tags, chunk.tags.iter().map(String::as_str), " ");
+    document.add_text(fields.tags, tags);
     document.add_text(fields.chunk_id, chunk.chunk_id.as_str());
     document.add_text(fields.document_id, chunk.document_id.as_str());
-    document.add_text(
-        fields.category,
-        chunk
-            .category
-            .map_or(String::new(), |category| category_label(category).into()),
-    );
+    document.add_text(fields.category, chunk.category.map_or("", category_label));
     document.add_text(fields.repository, chunk.repository.as_str());
     document.add_text(fields.trust_tier, trust_label(chunk.trust_tier));
     document.add_text(
         fields.chunk_json,
         serde_json::to_string(chunk).expect("validated chunk serializes"),
     );
-    writer
-        .add_document(document)
-        .expect("in-memory lexical document is valid");
+    document
+}
+
+fn append_separated<'a>(
+    output: &mut String,
+    values: impl Iterator<Item = &'a str>,
+    separator: &str,
+) {
+    for value in values {
+        if !output.is_empty() {
+            output.push_str(separator);
+        }
+        output.push_str(value);
+    }
 }
 
 fn persisted_index_path(path: &Path) -> PathBuf {
@@ -1134,6 +1164,23 @@ mod tests {
     }
 
     #[test]
+    fn staged_tantivy_document_has_exact_ordered_field_capacity() {
+        let mut chunk = chunk("NVM", "write persistent bytes", "write_nvm");
+        chunk.identifiers.push("read_nvm".into());
+        chunk.identifiers.push("erase_nvm".into());
+        let (_schema, fields) = schema();
+
+        let document = tantivy_document(fields, &chunk);
+        let field_ids = document
+            .field_values()
+            .map(|(field, _)| field.field_id())
+            .collect::<Vec<_>>();
+
+        assert_eq!(field_ids.len(), 10 + 2 * chunk.identifiers.len());
+        assert!(field_ids.is_sorted());
+    }
+
+    #[test]
     fn domain_aliases_expand_conceptual_queries() {
         let terms = query_terms("how do I persist package data");
 
@@ -1258,7 +1305,8 @@ mod tests {
         assert!(
             lookup
                 .contains(
-                    &previous_chunk,
+                    &previous_chunk.repository,
+                    &previous_chunk.path,
                     &crate::corpus::history_content_key_for_chunk(&previous_chunk)
                         .expect("history key")
                 )
@@ -1267,7 +1315,8 @@ mod tests {
         assert!(
             !lookup
                 .contains(
-                    &delta_chunk,
+                    &delta_chunk.repository,
+                    &delta_chunk.path,
                     &crate::corpus::history_content_key_for_chunk(&delta_chunk)
                         .expect("history key")
                 )
@@ -1333,7 +1382,11 @@ mod tests {
         for chunk in [&underscored, &hyphenated] {
             let key =
                 crate::corpus::history_content_key_for_chunk(chunk).expect("history content key");
-            assert!(lookup.contains(chunk, &key).expect("contains"));
+            assert!(
+                lookup
+                    .contains(&chunk.repository, &chunk.path, &key)
+                    .expect("contains")
+            );
         }
     }
 

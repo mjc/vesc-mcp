@@ -45,7 +45,7 @@ url = "2"
 
 [patch.crates-io]
 fastembed = { path = "vendor/fastembed" }
-tantivy = { git = "https://github.com/mjc/tantivy", rev = "86127d25ecdf2105466e84057dda68b0342fed83" }
+tantivy = { git = "https://github.com/mjc/tantivy", rev = "90e49469104f25fce13003a012daba75818efe22" }
 tantivy-fst = { git = "https://github.com/mjc/fst", rev = "6a7f4b7fb4ff1589b2b0223a87968c90d6ed69f7" }
 
 [workspace.lints.rust]

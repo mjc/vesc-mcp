@@ -197,7 +197,7 @@ version = "3.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
 dependencies = [
- "darling 0.23.0",
+ "darling 0.20.11",
  "ident_case",
  "prettyplease",
  "proc-macro2",
@@ -784,7 +784,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2733,7 +2733,7 @@ checksum = "d7b497d21a8b6fbb4b5a544f8fadb77e801a09ae0add9e411d31c6f89e3c1e90"
 [[package]]
 name = "ownedbytes"
 version = "0.9.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "stable_deref_trait",
 ]
@@ -2944,7 +2944,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3794,7 +3794,7 @@ dependencies = [
 [[package]]
 name = "tantivy"
 version = "0.26.1"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "aho-corasick",
  "arc-swap",
@@ -3846,7 +3846,7 @@ dependencies = [
 [[package]]
 name = "tantivy-bitpacker"
 version = "0.10.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "bitpacking",
 ]
@@ -3854,7 +3854,7 @@ dependencies = [
 [[package]]
 name = "tantivy-columnar"
 version = "0.7.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "downcast-rs",
  "fastdivide",
@@ -3869,7 +3869,7 @@ dependencies = [
 [[package]]
 name = "tantivy-common"
 version = "0.11.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -3892,7 +3892,7 @@ dependencies = [
 [[package]]
 name = "tantivy-query-grammar"
 version = "0.26.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "fnv",
  "nom",
@@ -3904,7 +3904,7 @@ dependencies = [
 [[package]]
 name = "tantivy-sstable"
 version = "0.7.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "futures-util",
  "itertools",
@@ -3917,7 +3917,7 @@ dependencies = [
 [[package]]
 name = "tantivy-stacker"
 version = "0.7.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "murmurhash32",
  "tantivy-common",
@@ -3926,7 +3926,7 @@ dependencies = [
 [[package]]
 name = "tantivy-tokenizer-api"
 version = "0.7.0"
-source = "git+https://github.com/mjc/tantivy?rev=86127d25ecdf2105466e84057dda68b0342fed83#86127d25ecdf2105466e84057dda68b0342fed83"
+source = "git+https://github.com/mjc/tantivy?rev=90e49469104f25fce13003a012daba75818efe22#90e49469104f25fce13003a012daba75818efe22"
 dependencies = [
  "serde",
 ]
@@ -3938,10 +3938,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4726,7 +4726,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

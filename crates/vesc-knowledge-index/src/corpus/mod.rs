@@ -115,18 +115,28 @@ string_id!(Revision, "revision");
 
 /// A SHA-256 digest with an explicit algorithm prefix.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ContentDigest(String);
+pub struct ContentDigest([u8; 32]);
 
 impl ContentDigest {
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
-        let digest = Sha256::digest(bytes);
-        Self(prefixed_hex("sha256:", digest.as_ref()))
+        Self(Sha256::digest(bytes).into())
     }
 
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    pub(crate) const fn from_sha256(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn encoded(&self) -> EncodedContentDigest {
+        let mut encoded = [0_u8; 71];
+        encoded[..7].copy_from_slice(b"sha256:");
+        encode_hex(&self.0, &mut encoded[7..]);
+        EncodedContentDigest(encoded)
     }
 }
 
@@ -134,19 +144,10 @@ impl TryFrom<String> for ContentDigest {
     type Error = CorpusError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        let Some(hex) = value.strip_prefix("sha256:") else {
-            return Err(CorpusError::InvalidValue {
-                kind: "content digest",
-                value,
-            });
-        };
-        if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(CorpusError::InvalidValue {
-                kind: "content digest",
-                value,
-            });
-        }
-        Ok(Self(value))
+        parse_content_digest(&value).ok_or(CorpusError::InvalidValue {
+            kind: "content digest",
+            value,
+        })
     }
 }
 
@@ -154,19 +155,16 @@ impl TryFrom<&str> for ContentDigest {
     type Error = CorpusError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Self::try_from(value.to_owned())
-    }
-}
-
-impl AsRef<str> for ContentDigest {
-    fn as_ref(&self) -> &str {
-        self.as_str()
+        parse_content_digest(value).ok_or_else(|| CorpusError::InvalidValue {
+            kind: "content digest",
+            value: value.to_owned(),
+        })
     }
 }
 
 impl fmt::Display for ContentDigest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        f.write_str(self.encoded().as_str())
     }
 }
 
@@ -175,7 +173,7 @@ impl Serialize for ContentDigest {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(self.as_str())
+        serializer.serialize_str(self.encoded().as_str())
     }
 }
 
@@ -184,8 +182,81 @@ impl<'de> Deserialize<'de> for ContentDigest {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        Self::try_from(value).map_err(serde::de::Error::custom)
+        deserializer.deserialize_str(ContentDigestVisitor)
+    }
+}
+
+struct ContentDigestVisitor;
+
+impl serde::de::Visitor<'_> for ContentDigestVisitor {
+    type Value = ContentDigest;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a sha256: digest string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        parse_content_digest(value).ok_or_else(|| {
+            E::custom(CorpusError::InvalidValue {
+                kind: "content digest",
+                value: value.to_owned(),
+            })
+        })
+    }
+
+    fn visit_borrowed_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(value)
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        parse_content_digest(&value).ok_or_else(|| {
+            E::custom(CorpusError::InvalidValue {
+                kind: "content digest",
+                value,
+            })
+        })
+    }
+}
+
+pub(crate) struct EncodedContentDigest([u8; 71]);
+
+impl EncodedContentDigest {
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("content digest encoding is ASCII")
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; 71] {
+        &self.0
+    }
+}
+
+fn parse_content_digest(value: &str) -> Option<ContentDigest> {
+    let hex = value.strip_prefix("sha256:")?;
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0_u8; 32];
+    for (output, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
+        *output = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
+    }
+    Some(ContentDigest(bytes))
+}
+
+const fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -656,8 +727,7 @@ impl CorpusManifest {
             digest_input.update(id.as_ref().as_bytes());
             digest_input.update([0]);
         }
-        let digest = digest_input.finalize();
-        let content_digest = ContentDigest(prefixed_hex("sha256:", digest.as_ref()));
+        let content_digest = ContentDigest::from_sha256(digest_input.finalize().into());
         Self {
             schema: CORPUS_SCHEMA_V1,
             corpus_version,
@@ -827,6 +897,7 @@ impl DocumentId {
         path: &str,
         digest: &ContentDigest,
     ) -> Self {
+        let encoded_digest = digest.encoded();
         Self(digest_id(
             "doc-",
             b"vesc-mcp/document/v1",
@@ -834,7 +905,7 @@ impl DocumentId {
                 repository.as_ref(),
                 revision.as_ref(),
                 path,
-                digest.as_ref(),
+                encoded_digest.as_str(),
             ],
         ))
     }
@@ -848,6 +919,7 @@ impl ChunkId {
         anchor: &str,
         digest: &ContentDigest,
     ) -> Self {
+        let encoded_digest = digest.encoded();
         Self(digest_id(
             "chunk-",
             b"vesc-mcp/chunk/v1",
@@ -855,9 +927,35 @@ impl ChunkId {
                 document.as_ref(),
                 &ordinal.to_string(),
                 anchor,
-                digest.as_ref(),
+                encoded_digest.as_str(),
             ],
         ))
+    }
+
+    fn from_heading_identity(
+        document: &DocumentId,
+        ordinal: u32,
+        headings: &[&str],
+        digest: &ContentDigest,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"vesc-mcp/chunk/v1");
+        update_digest_part(&mut hasher, document.as_ref().as_bytes());
+        update_digest_part(&mut hasher, ordinal.to_string().as_bytes());
+        let anchor_len = headings
+            .iter()
+            .map(|heading| heading.len())
+            .sum::<usize>()
+            .saturating_add(headings.len().saturating_sub(1));
+        hasher.update((anchor_len as u64).to_be_bytes());
+        for (index, heading) in headings.iter().enumerate() {
+            if index != 0 {
+                hasher.update(b"/");
+            }
+            hasher.update(heading.as_bytes());
+        }
+        update_digest_part(&mut hasher, digest.encoded().as_bytes());
+        Self(prefixed_hex("chunk-", hasher.finalize().as_ref()))
     }
 }
 
@@ -865,11 +963,15 @@ fn digest_id(prefix: &str, domain: &[u8], parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(domain);
     for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part.as_bytes());
+        update_digest_part(&mut hasher, part.as_bytes());
     }
     let digest = hasher.finalize();
     prefixed_hex(prefix, digest.as_ref())
+}
+
+fn update_digest_part(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 fn prefixed_hex(prefix: &str, bytes: &[u8]) -> String {
@@ -881,6 +983,15 @@ fn prefixed_hex(prefix: &str, bytes: &[u8]) -> String {
         output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+fn encode_hex(bytes: &[u8], output: &mut [u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    debug_assert_eq!(output.len(), bytes.len() * 2);
+    for (byte, pair) in bytes.iter().zip(output.chunks_exact_mut(2)) {
+        pair[0] = HEX[(byte >> 4) as usize];
+        pair[1] = HEX[(byte & 0x0f) as usize];
+    }
 }
 
 #[cfg(test)]
@@ -930,17 +1041,36 @@ mod tests {
 
         assert_eq!(
             (
-                document.content_digest.as_str(),
+                document.content_digest.to_string(),
                 document.document_id.as_str(),
-                chunk.content_digest.as_str(),
+                chunk.content_digest.to_string(),
                 chunk.chunk_id.as_str(),
             ),
             (
-                "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+                "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73"
+                    .to_owned(),
                 "doc-ffe1dfa7013b387d4155eb776bddadde3b05b1161348e0892547994293c16a51",
-                "sha256:0886b051075687c18a9ae5075383feb8400fbe4328c6e4bd45b77b30f1e73b54",
+                "sha256:0886b051075687c18a9ae5075383feb8400fbe4328c6e4bd45b77b30f1e73b54"
+                    .to_owned(),
                 "chunk-d9b489956a5b05bf266eae32b4121f06bbcb2dc7f123be5a07535057bc8e8487",
             )
+        );
+    }
+
+    #[test]
+    fn content_digest_stores_only_digest_bytes() {
+        assert_eq!(std::mem::size_of::<ContentDigest>(), 32);
+    }
+
+    #[test]
+    fn content_digest_deserializes_from_reader() {
+        let json = br#""sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73""#;
+        let digest: ContentDigest =
+            serde_json::from_reader(json.as_slice()).expect("reader-backed digest");
+
+        assert_eq!(
+            digest.to_string(),
+            "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73"
         );
     }
 

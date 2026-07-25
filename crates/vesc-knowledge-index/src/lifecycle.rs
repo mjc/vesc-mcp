@@ -562,8 +562,8 @@ pub fn build_git_history_artifacts_from_previous(
     let ingestion_started = Instant::now();
     let (incremental, lookup_failed) = {
         let mut lookup_failed = false;
-        let mut previous_contains = |chunk: &crate::Chunk, key: &ContentDigest| {
-            lookup.contains(chunk, key).map_err(|error| {
+        let mut previous_contains = |repository: &RepositoryId, path: &str, key: &ContentDigest| {
+            lookup.contains(repository, path, key).map_err(|error| {
                 lookup_failed = true;
                 GitHistoryError::Invalid(error.to_string())
             })
@@ -1229,7 +1229,9 @@ pub fn active_generation_path(root: &Path) -> Result<PathBuf, LifecycleError> {
     let pointer: ActiveManifestPointer =
         serde_json::from_reader(BufReader::new(File::open(path)?))?;
     pointer.validate()?;
-    Ok(root.join("generations").join(pointer.generation.as_str()))
+    Ok(root
+        .join("generations")
+        .join(pointer.generation.to_string()))
 }
 
 fn read_selected_manifest(pointer_path: &Path) -> Result<(ContentDigest, Vec<u8>), LifecycleError> {
@@ -1241,7 +1243,7 @@ fn read_selected_manifest(pointer_path: &Path) -> Result<(ContentDigest, Vec<u8>
         .ok_or_else(|| LifecycleError::Contract("active manifest has no root".into()))?;
     let manifest_path = root
         .join("generations")
-        .join(pointer.generation.as_str())
+        .join(pointer.generation.to_string())
         .join("manifest.json");
     let bytes = fs::read(manifest_path)?;
     if ContentDigest::of(&bytes) != pointer.manifest_checksum {
@@ -1260,7 +1262,9 @@ fn read_selected_manifest(pointer_path: &Path) -> Result<(ContentDigest, Vec<u8>
 /// vector artifact is absent, corrupt, or inconsistent.
 pub fn validate_active_generation(root: &Path) -> Result<PreviousArtifactSummary, LifecycleError> {
     let artifact = inspect_previous_artifact(&active_manifest_path(root))?;
-    let generation_root = root.join("generations").join(artifact.generation.as_str());
+    let generation_root = root
+        .join("generations")
+        .join(artifact.generation.to_string());
     let lexical_path = generation_root.join("lexical.json");
     let expected_lexical = artifact.lexical_checksum.as_ref().ok_or_else(|| {
         LifecycleError::Contract("managed artifact has no lexical checksum".into())
@@ -1364,7 +1368,7 @@ mod tests {
 
         let pointer: ActiveManifestPointer =
             serde_json::from_slice(&first_bytes).expect("active pointer");
-        assert_eq!(pointer.generation.as_str(), first.generation);
+        assert_eq!(pointer.generation.to_string(), first.generation);
         let generation_manifest = first_root
             .path()
             .join("generations")

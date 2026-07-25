@@ -147,6 +147,47 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
 }
 
 #[test]
+fn repeated_history_materializes_only_distinct_chunks() {
+    let (_root, work) = fixture();
+    fs::write(work.join("repeat.md"), "# Repeat\n\nalpha\n").expect("alpha");
+    git(&work, &["add", "repeat.md"]);
+    git(&work, &["commit", "-qm", "repeat alpha"]);
+    fs::write(work.join("repeat.md"), "# Repeat\n\nbeta\n").expect("beta");
+    git(&work, &["commit", "-qam", "repeat beta"]);
+    fs::write(work.join("repeat.md"), "# Repeat\n\nalpha\n").expect("alpha again");
+    git(&work, &["commit", "-qam", "repeat alpha again"]);
+    let source = at_head(source(work.clone(), "fixture"), &work);
+
+    let (contents, observations) = cold_history(&[source]);
+    let repeated = contents
+        .iter()
+        .filter(|chunk| chunk.path == "repeat.md")
+        .collect::<Vec<_>>();
+
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(observations.reused_contents, 1);
+    assert_eq!(
+        observations.candidate_chunks,
+        observations.materialized_chunks + 1
+    );
+    assert_eq!(
+        observations
+            .candidate_identifier_count_histogram
+            .iter()
+            .sum::<u64>(),
+        observations.candidate_chunks as u64
+    );
+    assert_eq!(
+        observations
+            .materialized_identifier_count_histogram
+            .iter()
+            .sum::<u64>(),
+        observations.materialized_chunks as u64
+    );
+    assert!(repeated.iter().all(|chunk| !chunk.identifiers.is_empty()));
+}
+
+#[test]
 fn binary_blobs_do_not_become_search_chunks() {
     let (_root, work) = fixture();
     fs::write(work.join("firmware.rs"), [0_u8, 1, 2, 3]).expect("binary fixture");
