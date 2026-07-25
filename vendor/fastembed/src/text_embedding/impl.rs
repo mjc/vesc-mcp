@@ -370,7 +370,7 @@ impl TextEmbedding {
             .map(|batch| {
                 // Encode the texts in the batch
                 let inputs = batch.iter().map(|text| text.as_ref()).collect();
-                let encodings = self.tokenizer.encode_batch(inputs, true).map_err(|e| {
+                let encodings = self.tokenizer.encode_batch_fast(inputs, true).map_err(|e| {
                     anyhow::Error::msg(e.to_string()).context("Failed to encode the batch.")
                 })?;
 

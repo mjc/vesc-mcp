@@ -1267,7 +1267,7 @@ impl FastEmbedProvider {
             let configured = self
                 .model
                 .tokenizer
-                .encode_batch(inputs.clone(), true)
+                .encode_batch_fast(inputs.clone(), true)
                 .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
             // Encode untruncated inputs one at a time.  A long-context model
             // can otherwise allocate one large padded tensor for the whole
@@ -1275,7 +1275,7 @@ impl FastEmbedProvider {
             // windowing before inference starts.
             for (configured, input) in configured.iter().zip(batch.iter()) {
                 let untruncated = untruncated_tokenizer
-                    .encode(input.as_str(), true)
+                    .encode_fast(input.as_str(), true)
                     .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
                 let real = configured
                     .get_attention_mask()
@@ -1402,7 +1402,7 @@ impl FastEmbedProvider {
         let configured = self
             .model
             .tokenizer
-            .encode_batch(inputs, true)
+            .encode_batch_fast(inputs, true)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         lengths.extend(configured.iter().map(|encoding| {
             encoding
@@ -1444,9 +1444,19 @@ impl FastEmbedProvider {
         tokenizer
             .with_truncation(None)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
+        let special_tokens = tokenizer
+            .encode_fast("", true)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?
+            .len();
         texts
             .par_iter()
-            .map(|text| bounded_document_windows(&tokenizer, text, self.profile.max_length))
+            .map(|text| {
+                if ascii_input_fits_model_window(text, self.profile.max_length, special_tokens) {
+                    Ok(vec![(text.clone(), 1)])
+                } else {
+                    bounded_document_windows(&tokenizer, text, self.profile.max_length)
+                }
+            })
             .collect()
     }
 
@@ -1457,7 +1467,7 @@ impl FastEmbedProvider {
             .with_truncation(None)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         let encodings = tokenizer
-            .encode_batch(texts.to_vec(), true)
+            .encode_batch_fast(texts.to_vec(), true)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         if let Some(length) = encodings
             .iter()
@@ -1549,6 +1559,15 @@ impl FastEmbedProvider {
         token_counts.clear();
         Ok(())
     }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+const fn ascii_input_fits_model_window(
+    text: &str,
+    max_length: usize,
+    special_tokens: usize,
+) -> bool {
+    text.is_ascii() && text.len().saturating_add(special_tokens) <= max_length
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -4966,6 +4985,14 @@ mod tests {
             ),
             ContentDigest::of(text.as_bytes()),
         );
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn ascii_bytes_prove_short_inputs_fit_without_tokenizing_twice() {
+        assert!(ascii_input_fits_model_window("VESC", 6, 2));
+        assert!(!ascii_input_fits_model_window("VESC", 5, 2));
+        assert!(!ascii_input_fits_model_window("VËSC", 8, 2));
     }
 
     #[test]
