@@ -122,6 +122,16 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
     assert_eq!(cold.ingested_commits, 3);
     assert_eq!(cold.ingested_blobs, 3);
     assert_eq!(contents.len(), 3);
+    assert!(
+        contents
+            .iter()
+            .any(|chunk| chunk.text.contains("pub fn first()"))
+    );
+    assert!(
+        contents
+            .iter()
+            .any(|chunk| chunk.text.contains("pub fn second()"))
+    );
 
     let (reused, warm) = ingest_git_history_fast_forward(
         std::slice::from_ref(&source),

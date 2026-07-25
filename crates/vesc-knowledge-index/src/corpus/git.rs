@@ -503,59 +503,15 @@ fn path_is_under(path: &str, prefix: &str) -> bool {
 }
 
 fn glob_matches(pattern: &str, path: &str) -> bool {
-    let path_match = glob_matches_bytes(pattern.as_bytes(), path.as_bytes());
+    let pattern = pattern.as_bytes().as_bstr();
+    let mode = gix::glob::wildmatch::Mode::NO_MATCH_SLASH_LITERAL;
+    let path_match = gix::glob::wildmatch(pattern, path.as_bytes().as_bstr(), mode);
     path_match
-        || (!pattern.contains('/')
+        || (!pattern.contains(&b'/')
             && Path::new(path)
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| glob_matches_bytes(pattern.as_bytes(), name.as_bytes())))
-}
-
-fn glob_matches_bytes(pattern: &[u8], value: &[u8]) -> bool {
-    fn matches(
-        pattern: &[u8],
-        value: &[u8],
-        pattern_index: usize,
-        value_index: usize,
-        memo: &mut [Vec<Option<bool>>],
-    ) -> bool {
-        if let Some(result) = memo[pattern_index][value_index] {
-            return result;
-        }
-        let result = if pattern_index == pattern.len() {
-            value_index == value.len()
-        } else if pattern[pattern_index] == b'*' {
-            let double = pattern.get(pattern_index + 1) == Some(&b'*');
-            if double {
-                let mut next = pattern_index + 2;
-                while pattern.get(next) == Some(&b'*') {
-                    next += 1;
-                }
-                let skip_directory = pattern.get(next) == Some(&b'/')
-                    && matches(pattern, value, next + 1, value_index, memo);
-                skip_directory
-                    || matches(pattern, value, next, value_index, memo)
-                    || value_index < value.len()
-                        && matches(pattern, value, pattern_index, value_index + 1, memo)
-            } else {
-                matches(pattern, value, pattern_index + 1, value_index, memo)
-                    || value.get(value_index).is_some_and(|byte| *byte != b'/')
-                        && matches(pattern, value, pattern_index, value_index + 1, memo)
-            }
-        } else if pattern[pattern_index] == b'?' {
-            value.get(value_index).is_some_and(|byte| *byte != b'/')
-                && matches(pattern, value, pattern_index + 1, value_index + 1, memo)
-        } else {
-            value.get(value_index) == Some(&pattern[pattern_index])
-                && matches(pattern, value, pattern_index + 1, value_index + 1, memo)
-        };
-        memo[pattern_index][value_index] = Some(result);
-        result
-    }
-
-    let mut memo = vec![vec![None; value.len() + 1]; pattern.len() + 1];
-    matches(pattern, value, 0, 0, &mut memo)
+                .is_some_and(|name| gix::glob::wildmatch(pattern, name.as_bytes().as_bstr(), mode)))
 }
 
 fn media_type(path: &str) -> &'static str {
@@ -632,13 +588,33 @@ mod tests {
 
     #[test]
     fn managed_repository_globs_match_paths_without_crossing_single_stars() {
-        assert!(glob_matches("**/*.md", "README.md"));
-        assert!(glob_matches("**/*.md", "docs/guide.md"));
-        assert!(glob_matches("src/**/*.rs", "src/lib.rs"));
-        assert!(glob_matches("src/**/*.rs", "src/nested/mod.rs"));
-        assert!(glob_matches("*.pro", "vesc_tool.pro"));
-        assert!(!glob_matches("src/*.rs", "src/nested/mod.rs"));
-        assert!(!glob_matches("**/*.md", "docs/guide.rs"));
+        for (pattern, path, expected) in [
+            ("", "", true),
+            ("", "a", false),
+            ("*", "", true),
+            ("*", "name", true),
+            ("?", "a", true),
+            ("?", "/", false),
+            ("**", "src/nested/lib.rs", true),
+            ("**/*.md", "README.md", true),
+            ("**/*.md", "docs/guide.md", true),
+            ("a/**/b", "a/b", true),
+            ("a/**/b", "a/nested/deeper/b", true),
+            ("src/**/*.rs", "src/lib.rs", true),
+            ("src/**/*.rs", "src/nested/mod.rs", true),
+            ("src/?.rs", "src/a.rs", true),
+            ("src/?.rs", "src/ab.rs", false),
+            ("src/*.rs", "src/nested/mod.rs", false),
+            ("*.pro", "nested/vesc_tool.pro", true),
+            ("*.pro", "nested/vesc_tool.pri", false),
+            ("**/*.md", "docs/guide.rs", false),
+        ] {
+            assert_eq!(
+                glob_matches(pattern, path),
+                expected,
+                "pattern {pattern:?}, path {path:?}"
+            );
+        }
     }
 
     #[test]

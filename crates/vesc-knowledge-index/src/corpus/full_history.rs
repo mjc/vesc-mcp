@@ -247,21 +247,28 @@ fn ingest_git_history_fast_forward_with_contents(
         observations.reachable_commits =
             observations.reachable_commits.saturating_add(current.len());
         observations.reused_commits = observations.reused_commits.saturating_add(previous.len());
-        for commit in current
+        let mut commits = current
             .iter()
             .filter(|commit| !previous.contains(&commit.id))
-        {
-            ingest_commit_changes(
-                &repo,
-                source,
-                commit,
-                &reachable_revisions,
-                &mut contents,
-                &mut observations,
-            )?;
-            observations.ingested_commits = observations.ingested_commits.saturating_add(1);
-            #[cfg(feature = "coz-profile")]
-            coz::progress!("git_history_ingested_commit");
+            .peekable();
+        if commits.peek().is_some() {
+            let mut resource_cache = repo
+                .diff_resource_cache_for_tree_diff()
+                .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+            for commit in commits {
+                ingest_commit_changes(
+                    &repo,
+                    source,
+                    commit,
+                    &reachable_revisions,
+                    &mut resource_cache,
+                    &mut contents,
+                    &mut observations,
+                )?;
+                observations.ingested_commits = observations.ingested_commits.saturating_add(1);
+                #[cfg(feature = "coz-profile")]
+                coz::progress!("git_history_ingested_commit");
+            }
         }
         processed.push((source, reachable_revisions));
     }
@@ -306,6 +313,7 @@ fn ingest_commit_changes(
     source: &GitCorpusSource,
     commit: &ReachableCommit,
     reachable_revisions: &BTreeSet<gix::ObjectId>,
+    resource_cache: &mut gix::diff::blob::Platform,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
 ) -> Result<(), GitHistoryError> {
@@ -327,18 +335,19 @@ fn ingest_commit_changes(
         },
     )?;
     let mut pending = Vec::new();
-    previous
+    let diff = previous
         .changes()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?
         .options(|options| {
             options.track_path();
             options.track_rewrites(None);
         })
-        .for_each_to_obtain_tree(&current, |change| {
+        .for_each_to_obtain_tree_with_cache(&current, resource_cache, |change| {
             collect_change(change, &source.policy, &mut pending);
             Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
-        })
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        });
+    resource_cache.clear_resource_cache_keep_allocation();
+    diff.map_err(|error| GitHistoryError::Git(error.to_string()))?;
     pending.sort_by(|left, right| pending_path(left).cmp(pending_path(right)));
 
     let revision = Revision::try_from(commit.id.to_string())
