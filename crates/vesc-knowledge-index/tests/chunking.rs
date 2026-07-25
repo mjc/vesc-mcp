@@ -76,6 +76,24 @@ fn oversized_paragraph_splits_on_utf8_boundaries_and_links_adjacency() {
 }
 
 #[test]
+fn split_heading_path_is_preserved_on_every_piece() {
+    let content = format!("# Heading\n\n{}", "alpha beta gamma ".repeat(20));
+    let chunks = vesc_knowledge_index::chunk_markdown(
+        &document(&content),
+        ChunkingConfig {
+            target_chars: 20,
+            hard_max_chars: 30,
+            minimum_chars: 1,
+            ..ChunkingConfig::default()
+        },
+    )
+    .expect("chunks");
+
+    assert!(chunks.len() > 1);
+    assert!(chunks.iter().all(|chunk| chunk.heading_path == ["Heading"]));
+}
+
+#[test]
 fn structured_record_remains_one_semantic_chunk() {
     let document = NormalizedDocument::new(
         "Commands: public_commands[0]",
@@ -129,6 +147,7 @@ fn oversized_structured_record_splits_with_provenance() {
     assert!(chunks.len() > 1);
     assert!(chunks.iter().all(|chunk| chunk.char_count <= 24));
     assert!(chunks.iter().all(|chunk| chunk.source_span.is_some()));
+    assert!(chunks.iter().all(|chunk| chunk.heading_path == ["root"]));
     for pair in chunks.windows(2) {
         assert_eq!(pair[0].next_chunk.as_ref(), Some(&pair[1].chunk_id));
         assert_eq!(pair[1].previous_chunk.as_ref(), Some(&pair[0].chunk_id));

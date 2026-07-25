@@ -544,9 +544,9 @@ pub trait EmbeddingProvider {
 /// semantic input so vector retrieval sees the same corpus concepts that the
 /// lexical fields expose.
 pub fn embedding_text(chunk: &Chunk) -> String {
-    let capacity = embedding_text_capacity(chunk);
-    let mut text = String::with_capacity(capacity);
-    let identifiers = embedding_identifiers(chunk);
+    let mut identifier_buffer = [""; MAX_EMBEDDING_IDENTIFIERS];
+    let identifiers = embedding_identifiers(chunk, &mut identifier_buffer);
+    let mut text = String::with_capacity(embedding_text_capacity(chunk, identifiers));
     if !chunk.title.is_empty() {
         text.push_str("Title: ");
         text.push_str(&chunk.title);
@@ -590,29 +590,35 @@ pub fn embedding_text(chunk: &Chunk) -> String {
     text
 }
 
-pub(crate) fn embedding_identifiers(chunk: &Chunk) -> Vec<&str> {
-    const MAX_IDENTIFIERS: usize = 32;
-    if chunk.identifiers.len() <= MAX_IDENTIFIERS {
-        return chunk
-            .identifiers
-            .iter()
-            .map(compact_str::CompactString::as_str)
-            .collect();
+const MAX_EMBEDDING_IDENTIFIERS: usize = 32;
+
+fn embedding_identifiers<'chunk, 'buffer>(
+    chunk: &'chunk Chunk,
+    buffer: &'buffer mut [&'chunk str; MAX_EMBEDDING_IDENTIFIERS],
+) -> &'buffer [&'chunk str] {
+    if chunk.identifiers.len() <= MAX_EMBEDDING_IDENTIFIERS {
+        for (slot, identifier) in buffer.iter_mut().zip(&chunk.identifiers) {
+            *slot = identifier;
+        }
+        return &buffer[..chunk.identifiers.len()];
     }
     let local = chunk
         .text
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
         .filter(|token| !token.is_empty())
         .collect::<BTreeSet<_>>();
-    chunk
-        .identifiers
-        .iter()
-        .map(compact_str::CompactString::as_str)
-        .filter(|identifier| {
-            local.contains(identifier) || identifier_semantic_alias(identifier).is_some()
-        })
-        .take(MAX_IDENTIFIERS)
-        .collect()
+    let mut length = 0;
+    for identifier in &chunk.identifiers {
+        let identifier = identifier.as_str();
+        if local.contains(identifier) || identifier_semantic_alias(identifier).is_some() {
+            buffer[length] = identifier;
+            length += 1;
+            if length == MAX_EMBEDDING_IDENTIFIERS {
+                break;
+            }
+        }
+    }
+    &buffer[..length]
 }
 
 fn joined_capacity<I>(items: I, separator_len: usize) -> usize
@@ -632,7 +638,7 @@ fn elapsed_us(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-fn embedding_text_capacity(chunk: &Chunk) -> usize {
+fn embedding_text_capacity(chunk: &Chunk, identifiers: &[&str]) -> usize {
     let mut capacity = "Content: ".len().saturating_add(chunk.text.len());
     if !chunk.title.is_empty() {
         capacity = capacity
@@ -649,21 +655,17 @@ fn embedding_text_capacity(chunk: &Chunk) -> usize {
             ))
             .saturating_add(1);
     }
-    if !chunk.identifiers.is_empty() {
+    if !identifiers.is_empty() {
         capacity = capacity
             .saturating_add("Identifiers: ".len())
             .saturating_add(joined_capacity(
-                chunk
-                    .identifiers
-                    .iter()
-                    .map(compact_str::CompactString::len),
+                identifiers.iter().map(|identifier| identifier.len()),
                 ", ".len(),
             ))
             .saturating_add(1);
         let mut alias_count = 0_usize;
         let mut alias_bytes = 0_usize;
-        for alias in chunk
-            .identifiers
+        for alias in identifiers
             .iter()
             .filter_map(|identifier| identifier_semantic_alias(identifier))
         {
@@ -4916,6 +4918,17 @@ mod tests {
         let text = embedding_text(&chunk);
 
         assert!(text.contains("Concepts: encode integer or numeric values"));
+    }
+
+    #[test]
+    fn embedding_text_keeps_small_identifier_order() {
+        let mut chunk = chunks().remove(0);
+        chunk.identifiers = vec!["first".into(), "second".into()];
+
+        assert_eq!(
+            embedding_text(&chunk),
+            "Title: alpha\nIdentifiers: first, second\nContent: alpha"
+        );
     }
 
     #[test]

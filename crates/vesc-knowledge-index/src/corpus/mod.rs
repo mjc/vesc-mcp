@@ -121,7 +121,7 @@ impl ContentDigest {
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
         let digest = Sha256::digest(bytes);
-        Self(format!("sha256:{}", hex_bytes(digest.as_ref())))
+        Self(prefixed_hex("sha256:", digest.as_ref()))
     }
 
     #[must_use]
@@ -657,7 +657,7 @@ impl CorpusManifest {
             digest_input.update([0]);
         }
         let digest = digest_input.finalize();
-        let content_digest = ContentDigest(format!("sha256:{}", hex_bytes(digest.as_ref())));
+        let content_digest = ContentDigest(prefixed_hex("sha256:", digest.as_ref()));
         Self {
             schema: CORPUS_SCHEMA_V1,
             corpus_version,
@@ -827,17 +827,15 @@ impl DocumentId {
         path: &str,
         digest: &ContentDigest,
     ) -> Self {
-        Self(format!(
-            "doc-{}",
-            digest_hex(
-                b"vesc-mcp/document/v1",
-                &[
-                    repository.as_ref(),
-                    revision.as_ref(),
-                    path,
-                    digest.as_ref()
-                ]
-            )
+        Self(digest_id(
+            "doc-",
+            b"vesc-mcp/document/v1",
+            &[
+                repository.as_ref(),
+                revision.as_ref(),
+                path,
+                digest.as_ref(),
+            ],
         ))
     }
 }
@@ -850,22 +848,20 @@ impl ChunkId {
         anchor: &str,
         digest: &ContentDigest,
     ) -> Self {
-        Self(format!(
-            "chunk-{}",
-            digest_hex(
-                b"vesc-mcp/chunk/v1",
-                &[
-                    document.as_ref(),
-                    &ordinal.to_string(),
-                    anchor,
-                    digest.as_ref()
-                ],
-            )
+        Self(digest_id(
+            "chunk-",
+            b"vesc-mcp/chunk/v1",
+            &[
+                document.as_ref(),
+                &ordinal.to_string(),
+                anchor,
+                digest.as_ref(),
+            ],
         ))
     }
 }
 
-fn digest_hex(domain: &[u8], parts: &[&str]) -> String {
+fn digest_id(prefix: &str, domain: &[u8], parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(domain);
     for part in parts {
@@ -873,12 +869,13 @@ fn digest_hex(domain: &[u8], parts: &[&str]) -> String {
         hasher.update(part.as_bytes());
     }
     let digest = hasher.finalize();
-    hex_bytes(digest.as_ref())
+    prefixed_hex(prefix, digest.as_ref())
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
+fn prefixed_hex(prefix: &str, bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
+    let mut output = String::with_capacity(prefix.len() + bytes.len() * 2);
+    output.push_str(prefix);
     for byte in bytes {
         output.push(HEX[(byte >> 4) as usize] as char);
         output.push(HEX[(byte & 0x0f) as usize] as char);
@@ -913,6 +910,38 @@ mod tests {
         )
         .expect("document");
         assert_eq!(first.document_id, second.document_id);
+    }
+
+    #[test]
+    fn digest_document_and_chunk_ids_keep_their_wire_values() {
+        let document = NormalizedDocument::new(
+            "Title",
+            SourceKind::Markdown,
+            RepositoryId::try_from("vesc-mcp").expect("repo"),
+            Revision::try_from("abc").expect("revision"),
+            "docs/example.md",
+            "text/markdown",
+            "content",
+        )
+        .expect("document");
+        let chunk =
+            Chunk::from_document(&document, 7, "passage".into(), vec!["Heading".into()], None)
+                .expect("chunk");
+
+        assert_eq!(
+            (
+                document.content_digest.as_str(),
+                document.document_id.as_str(),
+                chunk.content_digest.as_str(),
+                chunk.chunk_id.as_str(),
+            ),
+            (
+                "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+                "doc-ffe1dfa7013b387d4155eb776bddadde3b05b1161348e0892547994293c16a51",
+                "sha256:0886b051075687c18a9ae5075383feb8400fbe4328c6e4bd45b77b30f1e73b54",
+                "chunk-d9b489956a5b05bf266eae32b4121f06bbcb2dc7f123be5a07535057bc8e8487",
+            )
+        );
     }
 
     #[test]

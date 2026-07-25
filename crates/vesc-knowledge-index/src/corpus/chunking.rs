@@ -52,18 +52,24 @@ pub fn chunk_markdown(
     validate_config(config)?;
     let blocks = markdown_blocks(&document.content);
     let mut chunks = Vec::new();
-    for block in blocks {
+    for mut block in blocks {
         let text = &document.content[block.start..block.end];
         if text.trim().is_empty() {
             continue;
         }
         let pieces = split_block(text, block.code, config);
+        let last_piece = pieces.len().saturating_sub(1);
         let mut offset = block.start;
-        for piece in pieces {
+        for (index, piece) in pieces.into_iter().enumerate() {
             let piece_start = offset;
             let piece_end = piece_start + piece.len();
             offset = piece_end;
             let span = Some(source_span(&document.content, piece_start, piece_end));
+            let heading_path = if index == last_piece {
+                std::mem::take(&mut block.heading_path)
+            } else {
+                block.heading_path.clone()
+            };
             let chunk = Chunk::from_document(
                 document,
                 u32::try_from(chunks.len()).map_err(|_| CorpusError::InvalidValue {
@@ -71,7 +77,7 @@ pub fn chunk_markdown(
                     value: chunks.len().to_string(),
                 })?,
                 piece,
-                block.heading_path.clone(),
+                heading_path,
                 span,
             )?;
             chunks.push(chunk);
@@ -101,7 +107,7 @@ pub fn chunk_document(
 ) -> Result<Vec<Chunk>, ChunkingError> {
     if document.media_type != "text/markdown" {
         validate_config(config)?;
-        let heading_path = document
+        let mut heading_path = document
             .path
             .split_once('#')
             .map(|(_, anchor)| vec![anchor.to_owned()])
@@ -117,6 +123,7 @@ pub fn chunk_document(
         }
         let pieces = split_block(&document.content, false, config);
         let mut chunks = Vec::with_capacity(pieces.len());
+        let last_piece = pieces.len().saturating_sub(1);
         let mut search_start = 0;
         for (ordinal, piece) in pieces.into_iter().enumerate() {
             let Some(relative_start) = document.content[search_start..].find(&piece) else {
@@ -128,6 +135,11 @@ pub fn chunk_document(
             let start = search_start + relative_start;
             let end = start + piece.len();
             search_start = end;
+            let piece_heading_path = if ordinal == last_piece {
+                std::mem::take(&mut heading_path)
+            } else {
+                heading_path.clone()
+            };
             chunks.push(Chunk::from_document(
                 document,
                 u32::try_from(ordinal).map_err(|_| CorpusError::InvalidValue {
@@ -135,7 +147,7 @@ pub fn chunk_document(
                     value: ordinal.to_string(),
                 })?,
                 piece,
-                heading_path.clone(),
+                piece_heading_path,
                 Some(source_span(&document.content, start, end)),
             )?);
         }
