@@ -47,6 +47,7 @@ url = "2"
 fastembed = { path = "vendor/fastembed" }
 tantivy = { git = "https://github.com/mjc/tantivy", rev = "90e49469104f25fce13003a012daba75818efe22" }
 tantivy-fst = { git = "https://github.com/mjc/fst", rev = "5a97f46f815b099b0be4763753973c2cb94ab2a2" }
+tokenizers = { git = "https://github.com/mjc/tokenizers", rev = "6c434085ac73811995658ac9032bbfbd7516d992" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
