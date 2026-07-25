@@ -382,7 +382,8 @@ pub(super) fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngesti
         let path = Path::new(prefix);
         if prefix.is_empty()
             || path.is_absolute()
-            || prefix.contains(['[', ']'])
+            || prefix.contains(['[', ']', '\\'])
+            || has_ambiguous_double_star(prefix)
             || path
                 .components()
                 .any(|component| !matches!(component, std::path::Component::Normal(_)))
@@ -393,6 +394,27 @@ pub(super) fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngesti
         }
     }
     Ok(())
+}
+
+fn has_ambiguous_double_star(pattern: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let mut index = 0;
+    while index + 1 < pattern.len() {
+        if pattern[index] != b'*' || pattern[index + 1] != b'*' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while pattern.get(index) == Some(&b'*') {
+            index += 1;
+        }
+        if start != 0 && pattern[start - 1] != b'/'
+            || index != pattern.len() && pattern[index] != b'/'
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn collect_tree(
@@ -584,7 +606,24 @@ fn elapsed_us(started: Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{glob_matches, identifier_values};
+    use super::{
+        GitCorpusPolicy, GitIngestionError, glob_matches, identifier_values, validate_policy,
+    };
+
+    #[test]
+    fn managed_repository_globs_reject_ambiguous_non_git_forms() {
+        for pattern in [r"src\*.rs", "src/prefix**/*.rs", "src/**suffix.rs"] {
+            let mut policy = GitCorpusPolicy::default();
+            policy.include_patterns.push(pattern.to_owned());
+            assert!(
+                matches!(
+                    validate_policy(&policy),
+                    Err(GitIngestionError::InvalidPolicy(_))
+                ),
+                "accepted ambiguous pattern {pattern:?}"
+            );
+        }
+    }
 
     #[test]
     fn managed_repository_globs_match_paths_without_crossing_single_stars() {
