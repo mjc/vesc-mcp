@@ -2783,32 +2783,6 @@ impl VectorArtifact {
             .enumerate()
             .filter_map(|(index, _)| (!checkpoint.is_complete(rows[index])).then_some(index))
             .collect::<Vec<_>>();
-        let missing_chunks = missing
-            .iter()
-            .map(|&index| &chunks[index])
-            .collect::<Vec<_>>();
-        let natural_order;
-        let inference_order = if missing.is_empty() {
-            Vec::new()
-        } else if let Some(order) = provider.inference_order(&missing_chunks)? {
-            if order.len() != missing.len() || order.iter().any(|&index| index >= missing.len()) {
-                return Err(EmbeddingError::Provider(
-                    "provider returned an invalid inference order".into(),
-                ));
-            }
-            let mut seen = vec![false; missing.len()];
-            for &index in &order {
-                if std::mem::replace(&mut seen[index], true) {
-                    return Err(EmbeddingError::Provider(
-                        "provider returned a duplicate inference index".into(),
-                    ));
-                }
-            }
-            order
-        } else {
-            natural_order = (0..missing.len()).collect::<Vec<_>>();
-            natural_order
-        };
 
         let mut observations = VectorBuildObservations {
             vector_finalization_us: elapsed_us(finalization_started),
@@ -2817,13 +2791,9 @@ impl VectorArtifact {
         let batch_size = provider.embedding_batch_size().get();
         let mut checkpoint_rows = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
         let mut checkpoint_vectors = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
-        for batch in inference_order.chunks(batch_size) {
+        for batch in missing.chunks(batch_size) {
             let input_started = Instant::now();
-            let source_indices = batch
-                .iter()
-                .map(|&index| missing[index])
-                .collect::<Vec<_>>();
-            let texts = source_indices
+            let texts = batch
                 .iter()
                 .map(|&index| embedding_text(&chunks[index]))
                 .collect::<Vec<_>>();
@@ -2862,9 +2832,9 @@ impl VectorArtifact {
                     return Err(error);
                 }
             };
-            if vectors.len() != source_indices.len() {
+            if vectors.len() != batch.len() {
                 return Err(EmbeddingError::DimensionMismatch {
-                    expected: source_indices.len(),
+                    expected: batch.len(),
                     actual: vectors.len(),
                 });
             }
@@ -2881,7 +2851,7 @@ impl VectorArtifact {
                     OutputNormalization::Unknown => normalize(vector)?,
                 }
             }
-            for (&source_index, vector) in source_indices.iter().zip(vectors) {
+            for (&source_index, vector) in batch.iter().zip(vectors) {
                 checkpoint_rows.push(rows[source_index]);
                 checkpoint_vectors.push(vector);
                 if checkpoint_rows.len() == VECTOR_CHECKPOINT_SYNC_ROWS {
@@ -2895,9 +2865,8 @@ impl VectorArtifact {
             observations.vector_finalization_us = observations
                 .vector_finalization_us
                 .saturating_add(elapsed_us(finalization_started));
-            observations.embedded_vectors = observations
-                .embedded_vectors
-                .saturating_add(source_indices.len());
+            observations.embedded_vectors =
+                observations.embedded_vectors.saturating_add(batch.len());
             #[cfg(feature = "coz-profile")]
             coz::progress!("semantic_inference_batch");
         }
@@ -4867,6 +4836,53 @@ mod tests {
 
         assert_eq!(restarted.embedded, 1);
         assert_eq!(observations.reused_vectors, 1);
+    }
+
+    #[test]
+    fn checkpointed_vector_build_skips_global_inference_ordering() {
+        struct NoGlobalOrder(RecordingProvider);
+
+        impl EmbeddingProvider for NoGlobalOrder {
+            fn embedding_dimension(&self) -> Option<usize> {
+                self.0.embedding_dimension()
+            }
+
+            fn inference_order(
+                &mut self,
+                _chunks: &[&Chunk],
+            ) -> Result<Option<Vec<usize>>, EmbeddingError> {
+                panic!("checkpointed builds must start embedding without a global prepass")
+            }
+
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                self.0.embed_documents(texts)
+            }
+
+            fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                self.0.embed_query(text)
+            }
+        }
+
+        let cache = tempfile::tempdir().expect("vector checkpoint");
+        let mut provider = NoGlobalOrder(RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        });
+        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+            &mut provider,
+            &chunks(),
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+            None,
+            &cache.path().join("vectors.bin"),
+        )
+        .expect("checkpointed artifact");
+
+        assert_eq!(observations.embedded_vectors, 2);
     }
 
     #[test]
