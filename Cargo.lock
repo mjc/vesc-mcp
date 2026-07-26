@@ -4484,6 +4484,7 @@ dependencies = [
  "coz",
  "fastembed",
  "gix",
+ "memchr",
  "ort",
  "pulldown-cmark",
  "rayon",

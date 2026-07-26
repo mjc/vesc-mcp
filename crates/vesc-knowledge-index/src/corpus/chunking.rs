@@ -214,11 +214,12 @@ pub(crate) fn chunk_document_drafts(
         );
     }
     let mut descriptors = Vec::new();
+    let mut source_spans = SourceSpanCursor::new(&document.content);
     visit_block_ranges(&document.content, false, config, |text| {
         let span = if text.start == 0 && text.end == document.content.len() {
             document.source_span
         } else {
-            Some(source_span(&document.content, text.start, text.end))
+            Some(source_spans.span(text.start, text.end))
         };
         descriptors.push((text, headings.clone(), span));
     });
@@ -231,6 +232,7 @@ fn chunk_markdown_drafts(
 ) -> Result<ChunkDrafts<'_>, ChunkingError> {
     validate_config(config)?;
     let mut descriptors = Vec::new();
+    let mut source_spans = SourceSpanCursor::new(&document.content);
     for block in markdown_blocks(&document.content) {
         let text = &document.content[block.start..block.end];
         if text.trim().is_empty() {
@@ -238,7 +240,7 @@ fn chunk_markdown_drafts(
         }
         visit_block_ranges(text, block.code, config, |piece| {
             let text = block.start + piece.start..block.start + piece.end;
-            let span = Some(source_span(&document.content, text.start, text.end));
+            let span = Some(source_spans.span(text.start, text.end));
             descriptors.push((text, block.headings.clone(), span));
         });
     }
@@ -406,20 +408,40 @@ fn visit_block_ranges(
     }
 }
 
-fn source_span(source: &str, start: usize, end: usize) -> SourceSpan {
-    let start_line = source[..start]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1;
-    let end_line = source[..end].bytes().filter(|byte| *byte == b'\n').count() + 1;
-    SourceSpan::new(
-        u32::try_from(start_line).unwrap_or(u32::MAX),
-        u32::try_from(end_line).unwrap_or(u32::MAX),
-        Some(start as u64),
-        Some(end as u64),
-    )
-    .expect("computed source span is ordered")
+struct SourceSpanCursor<'a> {
+    source: &'a [u8],
+    offset: usize,
+    line: u32,
+}
+
+impl<'a> SourceSpanCursor<'a> {
+    const fn new(source: &'a str) -> Self {
+        Self {
+            source: source.as_bytes(),
+            offset: 0,
+            line: 1,
+        }
+    }
+
+    fn span(&mut self, start: usize, end: usize) -> SourceSpan {
+        assert!(
+            start >= self.offset && end >= start,
+            "source spans must be ordered and non-overlapping"
+        );
+        let start_line = self.advance(start);
+        let end_line = self.advance(end);
+        SourceSpan::new(start_line, end_line, Some(start as u64), Some(end as u64))
+            .expect("computed source span is ordered")
+    }
+
+    fn advance(&mut self, end: usize) -> u32 {
+        let newlines = memchr::memchr_iter(b'\n', &self.source[self.offset..end]).count();
+        self.line = self
+            .line
+            .saturating_add(u32::try_from(newlines).unwrap_or(u32::MAX));
+        self.offset = end;
+        self.line
+    }
 }
 
 const fn validate_config(config: ChunkingConfig) -> Result<(), ChunkingError> {
@@ -476,5 +498,42 @@ mod tests {
 
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0], 0..5);
+    }
+
+    #[test]
+    fn source_span_cursor_matches_prefix_count_semantics() {
+        let source = "α first\n\nsecond\nγ third\n\nlast";
+        let ranges = ["α first\n", "second\n", "γ third\n", "last"].map(|text| {
+            let start = source.find(text).expect("range text");
+            start..start + text.len()
+        });
+        let mut cursor = SourceSpanCursor::new(source);
+
+        for range in ranges {
+            let expected = SourceSpan::new(
+                u32::try_from(
+                    source[..range.start]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count()
+                        + 1,
+                )
+                .unwrap_or(u32::MAX),
+                u32::try_from(
+                    source[..range.end]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count()
+                        + 1,
+                )
+                .unwrap_or(u32::MAX),
+                Some(range.start as u64),
+                Some(range.end as u64),
+            )
+            .expect("expected span");
+
+            assert_eq!(cursor.span(range.start, range.end), expected);
+        }
+        assert_eq!(cursor.offset, source.len());
     }
 }

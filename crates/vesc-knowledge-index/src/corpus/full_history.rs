@@ -1,6 +1,6 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
@@ -26,6 +26,7 @@ pub struct GitHistoryRefreshObservations {
     pub reused_commits: usize,
     pub ingested_commits: usize,
     pub ingested_blobs: usize,
+    pub reused_blobs: usize,
     pub reused_contents: usize,
     pub candidate_chunks: usize,
     pub materialized_chunks: usize,
@@ -41,6 +42,7 @@ impl Default for GitHistoryRefreshObservations {
             reused_commits: 0,
             ingested_commits: 0,
             ingested_blobs: 0,
+            reused_blobs: 0,
             reused_contents: 0,
             candidate_chunks: 0,
             materialized_chunks: 0,
@@ -74,6 +76,25 @@ struct ReachableCommit {
 struct PendingChange {
     path: String,
     id: gix::ObjectId,
+}
+
+#[derive(Default)]
+struct HistoryBlobDeduper {
+    path_ids: HashMap<String, usize>,
+    blobs: HashSet<(usize, gix::ObjectId)>,
+}
+
+impl HistoryBlobDeduper {
+    fn insert(&mut self, path: &str, id: gix::ObjectId) -> bool {
+        let path_id = if let Some(&path_id) = self.path_ids.get(path) {
+            path_id
+        } else {
+            let path_id = self.path_ids.len();
+            self.path_ids.insert(path.to_owned(), path_id);
+            path_id
+        };
+        self.blobs.insert((path_id, id))
+    }
 }
 
 enum HistoryContents<'a> {
@@ -317,6 +338,7 @@ fn ingest_git_history_fast_forward_with_contents(
             let mut resource_cache = repo
                 .diff_resource_cache_for_tree_diff()
                 .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+            let mut seen_blobs = HistoryBlobDeduper::default();
             for commit in commits {
                 ingest_commit_changes(
                     &repo,
@@ -324,6 +346,7 @@ fn ingest_git_history_fast_forward_with_contents(
                     commit,
                     &reachable_revisions,
                     &mut resource_cache,
+                    &mut seen_blobs,
                     &mut contents,
                     &mut observations,
                 )?;
@@ -370,12 +393,14 @@ fn reachable_commits(
     Ok(commits)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ingest_commit_changes(
     repo: &gix::Repository,
     source: &GitCorpusSource,
     commit: &ReachableCommit,
     reachable_revisions: &BTreeSet<gix::ObjectId>,
     resource_cache: &mut gix::diff::blob::Platform,
+    seen_blobs: &mut HistoryBlobDeduper,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
 ) -> Result<(), GitHistoryError> {
@@ -415,6 +440,10 @@ fn ingest_commit_changes(
     let revision = Revision::try_from(commit.id.to_string())
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     for PendingChange { path, id } in pending {
+        if !seen_blobs.insert(&path, id) {
+            observations.reused_blobs = observations.reused_blobs.saturating_add(1);
+            continue;
+        }
         ingest_upsert(
             repo,
             source,

@@ -165,10 +165,12 @@ fn repeated_history_materializes_only_distinct_chunks() {
         .collect::<Vec<_>>();
 
     assert_eq!(repeated.len(), 2);
-    assert_eq!(observations.reused_contents, 1);
+    assert_eq!(observations.ingested_blobs, 5);
+    assert_eq!(observations.reused_blobs, 1);
+    assert_eq!(observations.reused_contents, 0);
     assert_eq!(
         observations.candidate_chunks,
-        observations.materialized_chunks + 1
+        observations.materialized_chunks
     );
     assert_eq!(
         observations
@@ -211,6 +213,7 @@ fn full_history_build_with_provider_writes_matching_vectors() {
     let source = at_head(source(work.clone(), "fixture"), &work);
     let artifacts = tempdir().expect("artifact root");
     let mut provider = FakeEmbeddingProvider::new(8);
+    let checkpoint = artifacts.path().join("vector-checkpoint.bin");
 
     let summary = build_git_history_artifacts_incrementally(
         artifacts.path(),
@@ -219,10 +222,11 @@ fn full_history_build_with_provider_writes_matching_vectors() {
         None,
         Some((&mut provider, "fake", "test-revision")),
         None,
-        None,
+        Some(&checkpoint),
     )
     .expect("semantic history build");
 
+    assert!(checkpoint.is_file());
     let vector = VectorArtifact::open_artifact(
         &artifacts
             .path()

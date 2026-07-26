@@ -6,7 +6,7 @@ repo_root=$(cd -- "$script_dir/.." && pwd)
 cd "$repo_root"
 
 if [[ ${VESC_MCP_PROFILE_SHELL:-} != 1 ]]; then
-  exec nix develop -c env VESC_MCP_PROFILE_SHELL=1 "$0" "$@"
+  exec nix develop --max-jobs 1 --cores 1 --option builders '' -c env VESC_MCP_PROFILE_SHELL=1 "$0" "$@"
 fi
 
 command=${1:-}
@@ -24,7 +24,7 @@ else
   profile_package_is_default=true
 fi
 profile_root=${VESC_MCP_PROFILE_ROOT:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/profiles"}
-profile_migraphx_cache=${VESC_MCP_PROFILE_MIGRAPHX_CACHE_PATH:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/data/migraphx-cache"}
+profile_migraphx_cache=${VESC_MCP_PROFILE_MIGRAPHX_CACHE_PATH:-}
 timeout_secs=${VESC_MCP_PROFILE_TIMEOUT_SECS:-600}
 memory_high=${VESC_MCP_PROFILE_MEMORY_HIGH:-2G}
 memory_max=${VESC_MCP_PROFILE_MEMORY_MAX:-3G}
@@ -51,7 +51,45 @@ load_service_args() {
   fi
 }
 
+configure_profile_data() {
+  local config=$1
+  local data_root=$2
+  local configured_data_root
+  [[ -f $config ]] || {
+    echo "profile config does not exist: $config" >&2
+    exit 2
+  }
+  configured_data_root=$(python3 - "$config" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+with pathlib.Path(sys.argv[1]).open("rb") as config:
+    value = tomllib.load(config).get("knowledge", {}).get("data_root")
+if not isinstance(value, str) or not value:
+    raise SystemExit("profile config must set [knowledge] data_root")
+print(value)
+PY
+  )
+  config=$(realpath -m -- "$config")
+  data_root=$(realpath -m -- "$data_root")
+  configured_data_root=$(realpath -m -- "$configured_data_root")
+  [[ $configured_data_root == "$data_root" ]] || {
+    echo "profile config data_root does not match the monitored data root" >&2
+    exit 2
+  }
+  export VESC_MCP_CONFIG=$config
+  export VESC_MCP_PROFILE_DATA_ROOT=$data_root
+  profile_migraphx_cache=${VESC_MCP_PROFILE_MIGRAPHX_CACHE_PATH:-"$data_root/migraphx-cache"}
+}
+
 load_preparation_args() {
+  [[ ${1:-} == --profile-config && $# -ge 3 ]] || {
+    echo "usage: $0 $command --profile-config CONFIG DATA_ROOT [server args...]" >&2
+    exit 2
+  }
+  configure_profile_data "$2" "$3"
+  shift 3
   if (($#)); then
     service_args=("$@")
   else
@@ -107,16 +145,15 @@ new_output_dir() {
 case "$command" in
   build)
     stop_service
-    exec "${scope[@]}" env CARGO_BUILD_JOBS=1 \
-      nix build .#vesc-mcp-migraphx-profile --max-jobs 1 \
-      --out-link "$profile_package" -L
+    exec nix build .#vesc-mcp-migraphx-profile --max-jobs 1 --cores 1 --option builders "" --out-link "$profile_package" -L
     ;;
   prepare-time)
     stop_service
-    load_profile_binary
     config=${1:?usage: $0 prepare-time CONFIG DATA_ROOT}
     data_root=${2:?usage: $0 prepare-time CONFIG DATA_ROOT}
     shift 2
+    configure_profile_data "$config" "$data_root"
+    load_profile_binary
     load_service_args "$@"
     new_output_dir prepare-time
     exec "${scope[@]}" env \
@@ -179,11 +216,11 @@ case "$command" in
           exit 1
         fi
       ' bash "${service_args[@]}"
-    ;;
+  ;;
   heaptrack)
     stop_service
-    load_profile_binary
     load_preparation_args "$@"
+    load_profile_binary
     new_output_dir heaptrack
     if [[ -n ${VESC_MCP_PROFILE_DATA_ROOT:-} ]]; then
       exec "${scope[@]}" env \
@@ -322,11 +359,11 @@ case "$command" in
     "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       heaptrack_print "$trace" >"$report"
     echo "heaptrack report: $report" >&2
-    ;;
+  ;;
   coz)
     stop_service
-    load_profile_binary
     load_preparation_args "$@"
+    load_profile_binary
     new_output_dir coz
     exec "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       coz run --output "$output_dir/profile.coz" \
@@ -379,11 +416,11 @@ case "$command" in
       }
     ' "$trace" >"$report"
     echo "coz report: $report" >&2
-    ;;
+  ;;
   flamegraph)
     stop_service
-    load_profile_binary
     load_preparation_args "$@"
+    load_profile_binary
     new_output_dir flamegraph
     set +e
     "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \

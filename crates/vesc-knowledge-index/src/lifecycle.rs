@@ -925,18 +925,39 @@ fn stage_chunks(
             observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
             observations.record(BuildPhase::Writing, write_started);
             (Some(checksum), Some(bytes))
-        } else {
-            let (vector, vector_build) = if let Some(checkpoint_path) = semantic.checkpoint_path {
-                VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        } else if let Some(checkpoint_path) = semantic.checkpoint_path {
+            let semantic_started = Instant::now();
+            let (checksum, bytes, count, dimension, vector_build) =
+                VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
                     semantic.provider,
                     &chunks,
                     semantic.model_id,
                     semantic.model_revision,
-                    corpus.content_digest.clone(),
+                    &corpus.content_digest,
                     previous_vectors,
                     checkpoint_path,
-                )?
-            } else {
+                    &vector_path,
+                )?;
+            observations.embedding_input_bytes = vector_build.input_bytes;
+            observations
+                .record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
+            observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
+            observations.record_duration(
+                BuildPhase::VectorFinalization,
+                vector_build.vector_finalization_us,
+            );
+            observations.vector_build = Some(vector_build);
+            observations.vector_count = count;
+            observations.vector_dimension = Some(dimension);
+            observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
+            let writing_us = elapsed_us(semantic_started)
+                .saturating_sub(vector_build.embedding_input_us)
+                .saturating_sub(vector_build.provider_us)
+                .saturating_sub(vector_build.vector_finalization_us);
+            observations.record_duration(BuildPhase::Writing, writing_us);
+            (Some(checksum), Some(bytes))
+        } else {
+            let (vector, vector_build) =
                 VectorArtifact::from_provider_reusing_owned_with_observations(
                     semantic.provider,
                     &chunks,
@@ -944,8 +965,7 @@ fn stage_chunks(
                     semantic.model_revision,
                     corpus.content_digest.clone(),
                     previous_vectors,
-                )?
-            };
+                )?;
             observations.embedding_input_bytes = vector_build.input_bytes;
             observations
                 .record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);

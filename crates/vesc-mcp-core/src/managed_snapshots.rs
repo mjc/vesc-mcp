@@ -14,7 +14,7 @@ use vesc_knowledge_index::corpus::{
     LicenseStatus, RepositoryId as CorpusRepositoryId, Revision, TrustTier as CorpusTrustTier,
 };
 
-use crate::config::{KnowledgeConfig, SemanticIngestionProvider};
+use crate::config::{KnowledgeConfig, RetrievalMode, SemanticIngestionProvider};
 use crate::managed_git::{ManagedGitError, ManagedGitStore};
 pub use crate::managed_repositories::KnowledgeSnapshotId;
 use crate::managed_repositories::{
@@ -271,6 +271,10 @@ impl KnowledgeSnapshotStore {
     ///
     /// Returns an error when only part of the semantic model contract is configured.
     pub fn with_semantic_config(mut self, config: &KnowledgeConfig) -> Result<Self, SnapshotError> {
+        if config.mode == RetrievalMode::Lexical {
+            self.semantic = None;
+            return Ok(self);
+        }
         self.semantic = match (
             config.semantic_model_dir.clone(),
             config.semantic_model_id.clone(),
@@ -588,12 +592,14 @@ fn build_or_reuse(
     semantic: Option<&SnapshotSemanticConfig>,
 ) -> Result<PreparedSnapshot, SnapshotError> {
     if let Some(prepared) = load_reusable_snapshot(layout, manifest, SnapshotDisposition::Reused)? {
+        cleanup_abandoned_artifact_staging_if_idle(layout);
         return Ok(prepared);
     }
     let _build_lock = acquire_snapshot_build_lock(layout)?;
     let snapshots = layout.root().as_path().join("snapshots");
     fs::create_dir_all(&snapshots)?;
     fs::create_dir_all(layout.root().as_path().join("artifacts"))?;
+    remove_abandoned_artifact_staging(layout)?;
     let lock_path = snapshots.join(format!("{}.lock", manifest.id.as_str()));
     let lock = OpenOptions::new()
         .create(true)
@@ -680,6 +686,12 @@ fn snapshot_build_lock_path(layout: &KnowledgeDataLayout) -> PathBuf {
 fn acquire_snapshot_build_lock(
     layout: &KnowledgeDataLayout,
 ) -> Result<std::fs::File, SnapshotError> {
+    let lock = open_snapshot_build_lock(layout)?;
+    lock.lock_exclusive()?;
+    Ok(lock)
+}
+
+fn open_snapshot_build_lock(layout: &KnowledgeDataLayout) -> Result<std::fs::File, SnapshotError> {
     let path = snapshot_build_lock_path(layout);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -690,8 +702,46 @@ fn acquire_snapshot_build_lock(
         .read(true)
         .write(true)
         .open(path)?;
-    lock.lock_exclusive()?;
     Ok(lock)
+}
+
+fn cleanup_abandoned_artifact_staging_if_idle(layout: &KnowledgeDataLayout) {
+    let Ok(lock) = open_snapshot_build_lock(layout) else {
+        return;
+    };
+    if lock.try_lock_exclusive().is_err() {
+        return;
+    }
+    if let Err(error) = remove_abandoned_artifact_staging(layout) {
+        tracing::warn!(%error, "failed to remove abandoned artifact staging");
+    }
+    if let Err(error) = FileExt::unlock(&lock) {
+        tracing::warn!(%error, "failed to unlock snapshot build cleanup");
+    }
+}
+
+fn remove_abandoned_artifact_staging(layout: &KnowledgeDataLayout) -> Result<(), SnapshotError> {
+    let artifacts = layout.root().as_path().join("artifacts");
+    let entries = match fs::read_dir(&artifacts) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for artifact in entries {
+        let artifact = artifact?;
+        if !artifact.file_type()?.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(artifact.path())? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir()
+                && entry.file_name().to_string_lossy().starts_with(".tmp-")
+            {
+                fs::remove_dir_all(entry.path())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_snapshot_artifact(
@@ -755,6 +805,7 @@ fn build_snapshot_artifact(
                 reused_snapshot = summary.reused_snapshot,
                 reused_commits = summary.refresh.reused_commits,
                 ingested_commits = summary.refresh.ingested_commits,
+                reused_blobs = summary.refresh.reused_blobs,
                 reused_contents = summary.refresh.reused_contents,
                 candidate_chunks = summary.refresh.candidate_chunks,
                 materialized_chunks = summary.refresh.materialized_chunks,
@@ -1214,6 +1265,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn abandoned_artifact_staging_is_removed_without_touching_generations() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(temp.path().join("data")).expect("absolute data root"),
+        );
+        let artifact = layout.root().as_path().join("artifacts/snapshot");
+        let abandoned = artifact.join(".tmp-abandoned");
+        let generation = artifact.join("generations/current");
+        fs::create_dir_all(&abandoned).expect("abandoned staging");
+        fs::write(abandoned.join("partial.bin"), b"partial").expect("partial artifact");
+        fs::create_dir_all(&generation).expect("published generation");
+        fs::write(generation.join("manifest.json"), b"published").expect("published artifact");
+
+        remove_abandoned_artifact_staging(&layout).expect("cleanup staging");
+
+        assert!(!abandoned.exists());
+        assert!(generation.join("manifest.json").is_file());
+    }
+
     fn run_git(cwd: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .args(args)
@@ -1530,6 +1601,7 @@ max_total_bytes = 10485760
             DataRoot::new(root.path().to_path_buf()).expect("valid data root"),
         );
         let incomplete = KnowledgeConfig {
+            mode: crate::config::RetrievalMode::Auto,
             semantic_model_id: Some(vesc_knowledge_index::JINA_CODE_MODEL_ID.into()),
             ..KnowledgeConfig::default()
         };
@@ -1540,6 +1612,25 @@ max_total_bytes = 10485760
             .expect("incomplete semantic configuration");
 
         assert!(error.to_string().contains("configured together"));
+    }
+
+    #[test]
+    fn lexical_mode_does_not_configure_semantic_snapshots() {
+        let root = tempfile::tempdir().expect("data root");
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(root.path().to_path_buf()).expect("valid data root"),
+        );
+        let lexical = KnowledgeConfig {
+            mode: crate::config::RetrievalMode::Lexical,
+            semantic_model_id: Some(vesc_knowledge_index::JINA_CODE_MODEL_ID.into()),
+            ..KnowledgeConfig::default()
+        };
+
+        let store = KnowledgeSnapshotStore::new(layout)
+            .with_semantic_config(&lexical)
+            .expect("lexical mode ignores semantic configuration");
+
+        assert!(store.semantic.is_none());
     }
 
     #[test]
@@ -1704,6 +1795,7 @@ max_total_bytes = 10485760
             DataRoot::new(root.path().to_path_buf()).expect("valid data root"),
         );
         let config = KnowledgeConfig {
+            mode: crate::config::RetrievalMode::Auto,
             semantic_model_dir: Some(model.path().to_path_buf()),
             semantic_model_id: Some(vesc_knowledge_index::JINA_CODE_MODEL_ID.into()),
             semantic_model_revision: Some(vesc_knowledge_index::JINA_CODE_MODEL_REVISION.into()),

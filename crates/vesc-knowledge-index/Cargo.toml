@@ -27,6 +27,7 @@ sha2.workspace = true
 pulldown-cmark.workspace = true
 tantivy.workspace = true
 gix.workspace = true
+memchr.workspace = true
 fastembed = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
 thiserror.workspace = true

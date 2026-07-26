@@ -397,6 +397,12 @@ pub fn search_vesc_knowledge_tool_with_config(
     config: &KnowledgeConfig,
 ) -> SearchVescKnowledgeResponse {
     let mode = params.mode.unwrap_or_else(|| configured_mode(config));
+    if config.mode == RetrievalMode::Lexical && mode != SearchMode::Lexical {
+        return error_response(
+            mode,
+            "service is configured for lexical search; retry with mode \"lexical\"".into(),
+        );
+    }
     let (selected, selected_config) = match selected_search_config(params, config) {
         Ok(selected) => selected,
         Err(error) => return error_response(mode, error),
@@ -2006,19 +2012,53 @@ mod tests {
         assert!(response.results.len() <= 1);
     }
 
+    #[test]
+    fn configured_lexical_mode_rejects_semantic_request_override() {
+        let response = search_vesc_knowledge_tool_with_config(
+            &SearchVescKnowledgeParams {
+                query: "nvm".into(),
+                snapshot_id: None,
+                limit: 1,
+                mode: Some(SearchMode::Hybrid),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
+            },
+            &KnowledgeConfig {
+                mode: RetrievalMode::Lexical,
+                ..KnowledgeConfig::default()
+            },
+        );
+
+        assert!(!response.ok);
+        assert_eq!(response.mode, SearchMode::Hybrid);
+        assert!(response.results.is_empty());
+        assert!(response.error.as_deref().is_some_and(|error| {
+            error.contains("configured for lexical search")
+                && error.contains("retry with mode \"lexical\"")
+        }));
+    }
+
     #[cfg(not(feature = "semantic-fastembed"))]
     #[test]
     fn explicit_hybrid_without_a_model_returns_structured_error() {
-        let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
-            query: "nvm".into(),
-            snapshot_id: None,
-            limit: 1,
-            mode: Some(SearchMode::Hybrid),
-            filters: SearchVescKnowledgeFilters::default(),
-            max_response_bytes: None,
-            max_context_bytes: None,
-            detail: SearchResponseDetail::Full,
-        });
+        let response = search_vesc_knowledge_tool_with_config(
+            &SearchVescKnowledgeParams {
+                query: "nvm".into(),
+                snapshot_id: None,
+                limit: 1,
+                mode: Some(SearchMode::Hybrid),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
+            },
+            &KnowledgeConfig {
+                mode: RetrievalMode::Auto,
+                ..KnowledgeConfig::default()
+            },
+        );
 
         assert!(!response.ok);
         assert_eq!(response.mode, SearchMode::Hybrid);
@@ -2030,16 +2070,22 @@ mod tests {
 
     #[test]
     fn auto_semantic_failure_recommends_explicit_lexical_retry() {
-        let response = search_vesc_knowledge_tool(&SearchVescKnowledgeParams {
-            query: "nvm".into(),
-            snapshot_id: None,
-            limit: 1,
-            mode: Some(SearchMode::Auto),
-            filters: SearchVescKnowledgeFilters::default(),
-            max_response_bytes: None,
-            max_context_bytes: None,
-            detail: SearchResponseDetail::Full,
-        });
+        let response = search_vesc_knowledge_tool_with_config(
+            &SearchVescKnowledgeParams {
+                query: "nvm".into(),
+                snapshot_id: None,
+                limit: 1,
+                mode: Some(SearchMode::Auto),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
+            },
+            &KnowledgeConfig {
+                mode: RetrievalMode::Auto,
+                ..KnowledgeConfig::default()
+            },
+        );
 
         assert!(!response.ok);
         assert!(response.results.is_empty());

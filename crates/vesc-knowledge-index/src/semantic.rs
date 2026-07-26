@@ -17,10 +17,11 @@ use sha2::{Digest, Sha256};
 use crate::corpus::{Chunk, ChunkId, ContentDigest};
 
 const MAGIC: &[u8] = b"VESCRAG1";
-const VECTOR_CHECKPOINT_MAGIC: &[u8] = b"VESCVC01";
+const VECTOR_CHECKPOINT_MAGIC: &[u8] = b"VESCVC02";
 const CHECKSUM_LEN: usize = 32;
 const MAX_ARTIFACT_BYTES: usize = 1024 * 1024 * 1024;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_VECTOR_DIMENSION: usize = STREAM_BUFFER_BYTES / std::mem::size_of::<f32>();
 const VECTOR_CHECKPOINT_SYNC_ROWS: usize = 256;
 
 /// Conservative outer batch size for the production embedding build.
@@ -1985,6 +1986,26 @@ pub struct SemanticHit {
     pub similarity: f32,
 }
 
+fn validate_model_metadata(model_id: &str, model_revision: &str) -> Result<(), EmbeddingError> {
+    if model_id.trim().is_empty() || model_revision.trim().is_empty() {
+        return Err(EmbeddingError::InvalidHeader);
+    }
+    Ok(())
+}
+
+fn vector_checkpoint_identity(
+    corpus_digest: &ContentDigest,
+    model_id: &str,
+    model_revision: &str,
+) -> ContentDigest {
+    let mut digest = Sha256::new();
+    digest.update(b"vesc-vector-checkpoint-v2");
+    digest.update(corpus_digest.as_bytes());
+    digest.update(ContentDigest::of(model_id.as_bytes()).as_bytes());
+    digest.update(ContentDigest::of(model_revision.as_bytes()).as_bytes());
+    ContentDigest::from_sha256(digest.finalize().into())
+}
+
 struct VectorCheckpoint {
     file: File,
     dimension: usize,
@@ -1998,7 +2019,7 @@ impl VectorCheckpoint {
         path: &Path,
         dimension: usize,
         count: usize,
-        corpus_digest: &ContentDigest,
+        identity_digest: &ContentDigest,
     ) -> Result<Self, EmbeddingError> {
         let parent = path.parent().ok_or_else(|| {
             EmbeddingError::Io("vector checkpoint path has no parent directory".into())
@@ -2045,7 +2066,7 @@ impl VectorCheckpoint {
             reset = &header[..8] != VECTOR_CHECKPOINT_MAGIC
                 || stored_dimension != dimension
                 || stored_count != count
-                || digest_from_bytes(&header[16..48]).ok().as_ref() != Some(corpus_digest);
+                || digest_from_bytes(&header[16..48]).ok().as_ref() != Some(identity_digest);
         }
         if reset {
             file.set_len(0)
@@ -2067,7 +2088,7 @@ impl VectorCheckpoint {
                     )
                 })
                 .map_err(|error| EmbeddingError::Io(error.to_string()))?;
-            file.write_all(&digest_bytes(corpus_digest))
+            file.write_all(&digest_bytes(identity_digest))
                 .and_then(|()| file.write_all(&vec![0_u8; completed_len]))
                 .map_err(|error| EmbeddingError::Io(error.to_string()))?;
             file.set_len(expected_len)
@@ -2093,26 +2114,32 @@ impl VectorCheckpoint {
         row < self.count && self.completed[row / 8] & (1 << (row % 8)) != 0
     }
 
-    fn read_values(&mut self, output: &mut [f32]) -> Result<(), EmbeddingError> {
-        let expected = self
-            .count
-            .checked_mul(self.dimension)
-            .ok_or(EmbeddingError::TooLarge)?;
-        if output.len() != expected || (0..self.count).any(|row| !self.is_complete(row)) {
+    fn try_for_each_value_row(
+        &mut self,
+        mut visit: impl FnMut(usize, &[f32], &[u8]) -> Result<(), EmbeddingError>,
+    ) -> Result<(), EmbeddingError> {
+        if (0..self.count).any(|row| !self.is_complete(row)) {
             return Err(EmbeddingError::InvalidHeader);
+        }
+        if self.count == 0 {
+            return Ok(());
         }
         self.file
             .seek(SeekFrom::Start(self.values_offset))
             .map_err(|error| EmbeddingError::Io(error.to_string()))?;
-        let mut bytes = vec![0_u8; STREAM_BUFFER_BYTES];
-        for values in output.chunks_mut(STREAM_BUFFER_BYTES / std::mem::size_of::<f32>()) {
-            let byte_count = std::mem::size_of_val(values);
-            self.file
-                .read_exact(&mut bytes[..byte_count])
-                .map_err(|error| EmbeddingError::Io(error.to_string()))?;
-            for (value, bytes) in values.iter_mut().zip(bytes[..byte_count].chunks_exact(4)) {
+        let row_bytes = self
+            .dimension
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(EmbeddingError::TooLarge)?;
+        let mut reader = BufReader::with_capacity(STREAM_BUFFER_BYTES, &mut self.file);
+        let mut bytes = vec![0_u8; row_bytes];
+        let mut values = vec![0.0_f32; self.dimension];
+        for row in 0..self.count {
+            reader.read_exact(&mut bytes).map_err(read_error)?;
+            for (value, bytes) in values.iter_mut().zip(bytes.chunks_exact(4)) {
                 *value = f32::from_le_bytes(bytes.try_into().expect("four-byte checkpoint value"));
             }
+            visit(row, &values, &bytes)?;
         }
         Ok(())
     }
@@ -2148,6 +2175,51 @@ impl VectorCheckpoint {
             return Err(EmbeddingError::InvalidHeader);
         }
         self.completed[row / 8] &= !(1 << (row % 8));
+        self.persist_completed()
+    }
+
+    fn validate_completed_rows(&mut self) -> Result<(), EmbeddingError> {
+        let row_bytes = self
+            .dimension
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(EmbeddingError::TooLarge)?;
+        if self.count == 0 {
+            return Ok(());
+        }
+        let mut bytes = vec![0_u8; row_bytes];
+        let mut vector = vec![0.0_f32; self.dimension];
+        let mut changed = false;
+        let mut row = 0;
+        while row < self.count {
+            while row < self.count && !self.is_complete(row) {
+                row += 1;
+            }
+            if row == self.count {
+                break;
+            }
+            self.file
+                .seek(SeekFrom::Start(self.row_offset(row)?))
+                .map_err(io_error)?;
+            while row < self.count && self.is_complete(row) {
+                self.file.read_exact(&mut bytes).map_err(read_error)?;
+                for (value, bytes) in vector.iter_mut().zip(bytes.chunks_exact(4)) {
+                    *value =
+                        f32::from_le_bytes(bytes.try_into().expect("four-byte checkpoint value"));
+                }
+                if validate_vector(&vector, true).is_err() {
+                    self.completed[row / 8] &= !(1 << (row % 8));
+                    changed = true;
+                }
+                row += 1;
+            }
+        }
+        if changed {
+            self.persist_completed()?;
+        }
+        Ok(())
+    }
+
+    fn persist_completed(&mut self) -> Result<(), EmbeddingError> {
         self.file
             .seek(SeekFrom::Start(48))
             .and_then(|_| self.file.write_all(&self.completed))
@@ -2206,6 +2278,13 @@ impl VectorCheckpoint {
     }
 }
 
+struct CompletedVectorCheckpoint {
+    order: Vec<usize>,
+    dimension: usize,
+    checkpoint: VectorCheckpoint,
+    observations: VectorBuildObservations,
+}
+
 fn flush_checkpoint_batch(
     checkpoint: &mut VectorCheckpoint,
     rows: &mut Vec<usize>,
@@ -2220,6 +2299,206 @@ fn flush_checkpoint_batch(
     #[cfg(feature = "coz-profile")]
     coz::progress!("semantic_checkpoint_batch");
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
+    provider: &mut P,
+    chunks: &[Chunk],
+    model_id: &str,
+    model_revision: &str,
+    corpus_digest: &ContentDigest,
+    previous: Option<VectorArtifact>,
+    checkpoint_path: &Path,
+) -> Result<CompletedVectorCheckpoint, EmbeddingError> {
+    let finalization_started = Instant::now();
+    validate_model_metadata(model_id, model_revision)?;
+    let provider_dimension = provider.embedding_dimension();
+    let previous = previous.filter(|artifact| {
+        artifact.is_reusable_previous(model_id, model_revision, provider_dimension)
+    });
+    let dimension = previous
+        .as_ref()
+        .map(|artifact| artifact.dimension)
+        .or(provider_dimension)
+        .ok_or(EmbeddingError::InvalidHeader)?;
+    if dimension == 0 {
+        return Err(EmbeddingError::InvalidHeader);
+    }
+    if dimension > MAX_VECTOR_DIMENSION {
+        return Err(EmbeddingError::TooLarge);
+    }
+    encoded_artifact_len(chunks, dimension, model_id, model_revision)?;
+
+    let mut order = (0..chunks.len()).collect::<Vec<_>>();
+    order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
+    if order
+        .windows(2)
+        .any(|pair| chunks[pair[0]].chunk_id >= chunks[pair[1]].chunk_id)
+    {
+        return Err(EmbeddingError::InvalidHeader);
+    }
+    let mut rows = vec![0_usize; chunks.len()];
+    for (row, &index) in order.iter().enumerate() {
+        rows[index] = row;
+    }
+    let checkpoint_identity = vector_checkpoint_identity(corpus_digest, model_id, model_revision);
+    let mut checkpoint = VectorCheckpoint::open(
+        checkpoint_path,
+        dimension,
+        chunks.len(),
+        &checkpoint_identity,
+    )?;
+    checkpoint.validate_completed_rows()?;
+    if let Some(artifact) = previous.as_ref() {
+        let mut copied_rows = Vec::with_capacity(256);
+        let mut copied_vectors = Vec::with_capacity(256);
+        for (index, chunk) in chunks.iter().enumerate() {
+            let row = rows[index];
+            if checkpoint.is_complete(row) {
+                continue;
+            }
+            let Ok(previous_row) = artifact.ids.binary_search(&chunk.chunk_id) else {
+                continue;
+            };
+            let start = previous_row
+                .checked_mul(dimension)
+                .ok_or(EmbeddingError::TooLarge)?;
+            copied_rows.push(row);
+            copied_vectors.push(&artifact.values[start..start + dimension]);
+            if copied_rows.len() == 256 {
+                checkpoint.write_batch(&copied_rows, &copied_vectors)?;
+                copied_rows.clear();
+                copied_vectors.clear();
+            }
+        }
+        if !copied_rows.is_empty() {
+            checkpoint.write_batch(&copied_rows, &copied_vectors)?;
+        }
+    }
+    drop(previous);
+    let missing = chunks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| (!checkpoint.is_complete(rows[index])).then_some(index))
+        .collect::<Vec<_>>();
+
+    let mut observations = VectorBuildObservations {
+        vector_finalization_us: elapsed_us(finalization_started),
+        ..VectorBuildObservations::default()
+    };
+    let batch_size = provider.embedding_batch_size().get();
+    let mut checkpoint_rows = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
+    let mut checkpoint_vectors = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
+    for batch in missing.chunks(batch_size) {
+        let input_started = Instant::now();
+        let texts = batch
+            .iter()
+            .map(|&index| embedding_text(&chunks[index]))
+            .collect::<Vec<_>>();
+        observations.embedding_input_us = observations
+            .embedding_input_us
+            .saturating_add(elapsed_us(input_started));
+        observations.input_bytes = observations.input_bytes.saturating_add(
+            texts
+                .iter()
+                .map(String::len)
+                .try_fold(0_u64, |total, len| {
+                    u64::try_from(len)
+                        .ok()
+                        .and_then(|len| total.checked_add(len))
+                })
+                .unwrap_or(u64::MAX),
+        );
+
+        let provider_started = Instant::now();
+        let vectors = {
+            #[cfg(feature = "coz-profile")]
+            coz::scope!("semantic_provider_batch");
+            provider.embed_documents(&texts)
+        };
+        observations.provider_us = observations
+            .provider_us
+            .saturating_add(elapsed_us(provider_started));
+        let mut vectors = match vectors {
+            Ok(vectors) => vectors,
+            Err(error) => {
+                flush_checkpoint_batch(
+                    &mut checkpoint,
+                    &mut checkpoint_rows,
+                    &mut checkpoint_vectors,
+                )?;
+                return Err(error);
+            }
+        };
+        if vectors.len() != batch.len() {
+            flush_checkpoint_batch(
+                &mut checkpoint,
+                &mut checkpoint_rows,
+                &mut checkpoint_vectors,
+            )?;
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: batch.len(),
+                actual: vectors.len(),
+            });
+        }
+        let finalization_started = Instant::now();
+        for vector in &mut vectors {
+            if vector.len() != dimension {
+                flush_checkpoint_batch(
+                    &mut checkpoint,
+                    &mut checkpoint_rows,
+                    &mut checkpoint_vectors,
+                )?;
+                return Err(EmbeddingError::DimensionMismatch {
+                    expected: dimension,
+                    actual: vector.len(),
+                });
+            }
+            let result = match provider.output_normalization() {
+                OutputNormalization::Guaranteed => validate_vector(vector, true),
+                OutputNormalization::Unknown => normalize(vector),
+            };
+            if let Err(error) = result {
+                flush_checkpoint_batch(
+                    &mut checkpoint,
+                    &mut checkpoint_rows,
+                    &mut checkpoint_vectors,
+                )?;
+                return Err(error);
+            }
+        }
+        for (&source_index, vector) in batch.iter().zip(vectors) {
+            checkpoint_rows.push(rows[source_index]);
+            checkpoint_vectors.push(vector);
+            if checkpoint_rows.len() == VECTOR_CHECKPOINT_SYNC_ROWS {
+                flush_checkpoint_batch(
+                    &mut checkpoint,
+                    &mut checkpoint_rows,
+                    &mut checkpoint_vectors,
+                )?;
+            }
+        }
+        observations.vector_finalization_us = observations
+            .vector_finalization_us
+            .saturating_add(elapsed_us(finalization_started));
+        observations.embedded_vectors = observations.embedded_vectors.saturating_add(batch.len());
+        #[cfg(feature = "coz-profile")]
+        coz::progress!("semantic_inference_batch");
+    }
+    flush_checkpoint_batch(
+        &mut checkpoint,
+        &mut checkpoint_rows,
+        &mut checkpoint_vectors,
+    )?;
+
+    observations.reused_vectors = chunks.len().saturating_sub(observations.embedded_vectors);
+    Ok(CompletedVectorCheckpoint {
+        order,
+        dimension,
+        checkpoint,
+        observations,
+    })
 }
 
 fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized, C: Borrow<Chunk>>(
@@ -2706,199 +2985,91 @@ impl VectorArtifact {
         Ok((artifact, observations))
     }
 
-    /// Builds an artifact while durably checkpointing each completed inference batch.
+    /// Builds and writes an artifact directly from its durable checkpoint.
     ///
-    /// Completed rows are written in final artifact order and reused after a restart.
+    /// Only one vector row is resident while writing the final artifact.
     ///
     /// # Errors
     ///
     /// Returns [`EmbeddingError`] when the checkpoint, provider output, or final
     /// artifact is invalid.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    pub fn from_provider_reusing_with_checkpoint_observations<P: EmbeddingProvider + ?Sized>(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_provider_reusing_checkpoint_artifact_with_observations<
+        P: EmbeddingProvider + ?Sized,
+    >(
         provider: &mut P,
         chunks: &[Chunk],
         model_id: impl Into<String>,
         model_revision: impl Into<String>,
-        corpus_digest: ContentDigest,
+        corpus_digest: &ContentDigest,
         previous: Option<Self>,
         checkpoint_path: &Path,
-    ) -> Result<(Self, VectorBuildObservations), EmbeddingError> {
+        path: &Path,
+    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
+        if checkpoint_path == path {
+            return Err(EmbeddingError::Io(
+                "vector destination must differ from its checkpoint".into(),
+            ));
+        }
         let model_id = model_id.into();
         let model_revision = model_revision.into();
-        let provider_dimension = provider.embedding_dimension();
-        let previous = previous.filter(|artifact| {
-            artifact.is_reusable_previous(&model_id, &model_revision, provider_dimension)
-        });
-        let dimension = previous
-            .as_ref()
-            .map(|artifact| artifact.dimension)
-            .or(provider_dimension)
-            .ok_or(EmbeddingError::InvalidHeader)?;
-        encoded_artifact_len(chunks, dimension, &model_id, &model_revision)?;
-
-        let mut order = (0..chunks.len()).collect::<Vec<_>>();
-        order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
-        let mut rows = vec![0_usize; chunks.len()];
-        let ids = order
-            .iter()
-            .enumerate()
-            .map(|(row, &index)| {
-                rows[index] = row;
-                chunks[index].chunk_id.clone()
-            })
-            .collect::<Vec<_>>();
-        let mut checkpoint =
-            VectorCheckpoint::open(checkpoint_path, dimension, chunks.len(), &corpus_digest)?;
-        let finalization_started = Instant::now();
-        if let Some(artifact) = previous.as_ref() {
-            let mut copied_rows = Vec::with_capacity(256);
-            let mut copied_vectors = Vec::with_capacity(256);
-            for (index, chunk) in chunks.iter().enumerate() {
-                let row = rows[index];
-                if checkpoint.is_complete(row) {
-                    continue;
-                }
-                let Ok(previous_row) = artifact.ids.binary_search(&chunk.chunk_id) else {
-                    continue;
-                };
-                let start = previous_row
-                    .checked_mul(dimension)
-                    .ok_or(EmbeddingError::TooLarge)?;
-                copied_rows.push(row);
-                copied_vectors.push(&artifact.values[start..start + dimension]);
-                if copied_rows.len() == 256 {
-                    checkpoint.write_batch(&copied_rows, &copied_vectors)?;
-                    copied_rows.clear();
-                    copied_vectors.clear();
-                }
-            }
-            if !copied_rows.is_empty() {
-                checkpoint.write_batch(&copied_rows, &copied_vectors)?;
-            }
-        }
-        drop(previous);
-        let missing = chunks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, _)| (!checkpoint.is_complete(rows[index])).then_some(index))
-            .collect::<Vec<_>>();
-
-        let mut observations = VectorBuildObservations {
-            vector_finalization_us: elapsed_us(finalization_started),
-            ..VectorBuildObservations::default()
-        };
-        let batch_size = provider.embedding_batch_size().get();
-        let mut checkpoint_rows = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
-        let mut checkpoint_vectors = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
-        for batch in missing.chunks(batch_size) {
-            let input_started = Instant::now();
-            let texts = batch
-                .iter()
-                .map(|&index| embedding_text(&chunks[index]))
-                .collect::<Vec<_>>();
-            observations.embedding_input_us = observations
-                .embedding_input_us
-                .saturating_add(elapsed_us(input_started));
-            observations.input_bytes = observations.input_bytes.saturating_add(
-                texts
-                    .iter()
-                    .map(String::len)
-                    .try_fold(0_u64, |total, len| {
-                        u64::try_from(len)
-                            .ok()
-                            .and_then(|len| total.checked_add(len))
-                    })
-                    .unwrap_or(u64::MAX),
-            );
-
-            let provider_started = Instant::now();
-            let vectors = {
-                #[cfg(feature = "coz-profile")]
-                coz::scope!("semantic_provider_batch");
-                provider.embed_documents(&texts)
-            };
-            observations.provider_us = observations
-                .provider_us
-                .saturating_add(elapsed_us(provider_started));
-            let mut vectors = match vectors {
-                Ok(vectors) => vectors,
-                Err(error) => {
-                    flush_checkpoint_batch(
-                        &mut checkpoint,
-                        &mut checkpoint_rows,
-                        &mut checkpoint_vectors,
-                    )?;
-                    return Err(error);
-                }
-            };
-            if vectors.len() != batch.len() {
-                return Err(EmbeddingError::DimensionMismatch {
-                    expected: batch.len(),
-                    actual: vectors.len(),
-                });
-            }
-            let finalization_started = Instant::now();
-            for vector in &mut vectors {
-                if vector.len() != dimension {
-                    return Err(EmbeddingError::DimensionMismatch {
-                        expected: dimension,
-                        actual: vector.len(),
-                    });
-                }
-                match provider.output_normalization() {
-                    OutputNormalization::Guaranteed => validate_vector(vector, true)?,
-                    OutputNormalization::Unknown => normalize(vector)?,
-                }
-            }
-            for (&source_index, vector) in batch.iter().zip(vectors) {
-                checkpoint_rows.push(rows[source_index]);
-                checkpoint_vectors.push(vector);
-                if checkpoint_rows.len() == VECTOR_CHECKPOINT_SYNC_ROWS {
-                    flush_checkpoint_batch(
-                        &mut checkpoint,
-                        &mut checkpoint_rows,
-                        &mut checkpoint_vectors,
-                    )?;
-                }
-            }
-            observations.vector_finalization_us = observations
-                .vector_finalization_us
-                .saturating_add(elapsed_us(finalization_started));
-            observations.embedded_vectors =
-                observations.embedded_vectors.saturating_add(batch.len());
-            #[cfg(feature = "coz-profile")]
-            coz::progress!("semantic_inference_batch");
-        }
-        flush_checkpoint_batch(
-            &mut checkpoint,
-            &mut checkpoint_rows,
-            &mut checkpoint_vectors,
-        )?;
-
-        observations.reused_vectors = chunks.len().saturating_sub(observations.embedded_vectors);
-        let value_count = chunks
-            .len()
-            .checked_mul(dimension)
-            .ok_or(EmbeddingError::TooLarge)?;
-        let finalization_started = Instant::now();
-        let mut values = vec![0.0_f32; value_count];
-        checkpoint.read_values(&mut values)?;
-        observations.vector_finalization_us = observations
-            .vector_finalization_us
-            .saturating_add(elapsed_us(finalization_started));
-        let artifact = Self {
-            schema: 2,
-            model_id,
-            model_revision,
+        let CompletedVectorCheckpoint {
+            order,
             dimension,
-            normalized: true,
+            mut checkpoint,
+            observations,
+        } = complete_vector_checkpoint(
+            provider,
+            chunks,
+            &model_id,
+            &model_revision,
             corpus_digest,
-            ids,
-            values,
+            previous,
+            checkpoint_path,
+        )?;
+        let expected_length = encoded_artifact_len_from_ids(
+            order.iter().map(|&index| &chunks[index].chunk_id),
+            dimension,
+            &model_id,
+            &model_revision,
+        )?;
+        let destination = File::create(path).map_err(io_error)?;
+        let mut artifact = DigestingWriter::new(BufWriter::new(destination));
+        let checksum = {
+            let mut body = DigestingWriter::new(&mut artifact);
+            write_vector_header(
+                &mut body,
+                2,
+                dimension,
+                order.len(),
+                &model_id,
+                &model_revision,
+                true,
+                corpus_digest,
+            )?;
+            checkpoint.try_for_each_value_row(|row, vector, bytes| {
+                validate_vector(vector, true)?;
+                write_vector_row_bytes(&mut body, &chunks[order[row]].chunk_id, bytes)
+            })?;
+            let (_, checksum, body_length) = body.finish();
+            if body_length != (expected_length - CHECKSUM_LEN) as u64 {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            checksum
         };
-        artifact.validate()?;
-        Ok((artifact, observations))
+        artifact.write_all(&checksum).map_err(io_error)?;
+        artifact.flush().map_err(io_error)?;
+        let (_, digest, length) = artifact.finish();
+        if length != expected_length as u64 {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        Ok((
+            digest_from_bytes(&digest)?,
+            length,
+            order.len(),
+            dimension,
+            observations,
+        ))
     }
 
     /// Builds an artifact while consuming the compatible predecessor after rows are copied.
@@ -4210,6 +4381,20 @@ fn write_vector_row(
     Ok(())
 }
 
+fn write_vector_row_bytes(
+    writer: &mut impl Write,
+    chunk_id: &ChunkId,
+    vector: &[u8],
+) -> Result<(), EmbeddingError> {
+    let id = chunk_id.as_str().as_bytes();
+    let id_len = u16::try_from(id.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    writer
+        .write_all(&id_len.to_le_bytes())
+        .and_then(|()| writer.write_all(id))
+        .and_then(|()| writer.write_all(vector))
+        .map_err(io_error)
+}
+
 fn encoded_rows_len(artifact: &VectorArtifact) -> Result<usize, EmbeddingError> {
     let vector_bytes = artifact
         .dimension
@@ -4370,6 +4555,30 @@ mod tests {
 
     fn chunks() -> Vec<Chunk> {
         ["alpha", "beta"].into_iter().map(chunk).collect()
+    }
+
+    fn checkpointed_artifact<P: EmbeddingProvider + ?Sized>(
+        provider: &mut P,
+        chunks: &[Chunk],
+        model_id: &str,
+        model_revision: &str,
+        corpus_digest: &ContentDigest,
+        previous: Option<VectorArtifact>,
+        checkpoint_path: &Path,
+    ) -> Result<(VectorArtifact, VectorBuildObservations), EmbeddingError> {
+        let artifact_path = checkpoint_path.with_extension("artifact.bin");
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                provider,
+                chunks,
+                model_id,
+                model_revision,
+                corpus_digest,
+                previous,
+                checkpoint_path,
+                &artifact_path,
+            )?;
+        Ok((VectorArtifact::open_artifact(&artifact_path)?, observations))
     }
 
     #[test]
@@ -4707,12 +4916,12 @@ mod tests {
             dimension: 4,
             embedded: 0,
         };
-        VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        checkpointed_artifact(
             &mut first,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &cache.path().join("vectors.bin"),
         )
@@ -4722,12 +4931,12 @@ mod tests {
             dimension: 4,
             embedded: 0,
         };
-        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        let (_, observations) = checkpointed_artifact(
             &mut restarted,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &cache.path().join("vectors.bin"),
         )
@@ -4735,6 +4944,282 @@ mod tests {
 
         assert_eq!(restarted.embedded, 0);
         assert_eq!(observations.reused_vectors, chunks.len());
+    }
+
+    #[test]
+    fn checkpoint_model_identity_prevents_same_dimension_reuse() {
+        let root = tempfile::tempdir().expect("vector checkpoint");
+        let checkpoint = root.path().join("vectors.checkpoint");
+        let chunks = chunks();
+        let corpus_digest = ContentDigest::of(b"same corpus");
+        let mut first = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+            &mut first,
+            &chunks,
+            "first-model",
+            "first-revision",
+            &corpus_digest,
+            None,
+            &checkpoint,
+            &root.path().join("first.bin"),
+        )
+        .expect("first model artifact");
+
+        let mut changed = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                &mut changed,
+                &chunks,
+                "second-model",
+                "second-revision",
+                &corpus_digest,
+                None,
+                &checkpoint,
+                &root.path().join("second.bin"),
+            )
+            .expect("changed model artifact");
+
+        assert_eq!(changed.embedded, chunks.len());
+        assert_eq!(observations.reused_vectors, 0);
+    }
+
+    #[test]
+    fn streaming_checkpoint_rejects_invalid_header_before_creating_artifact() {
+        let root = tempfile::tempdir().expect("vector artifact");
+        let chunks = chunks();
+        let corpus_digest = ContentDigest::of(b"corpus");
+        for (model_id, model_revision) in [("", "revision"), ("model", " \t")] {
+            let path = root
+                .path()
+                .join(format!("{model_id:?}-{model_revision:?}.bin"));
+            let mut provider = RecordingProvider {
+                dimension: 4,
+                embedded: 0,
+            };
+
+            assert_eq!(
+                VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                    &mut provider,
+                    &chunks,
+                    model_id,
+                    model_revision,
+                    &corpus_digest,
+                    None,
+                    &root.path().join("checkpoint.bin"),
+                    &path,
+                )
+                .expect_err("blank metadata"),
+                EmbeddingError::InvalidHeader
+            );
+            assert!(!path.exists());
+            assert_eq!(provider.embedded, 0);
+        }
+    }
+
+    #[test]
+    fn streaming_checkpoint_rejects_duplicate_chunk_ids_before_creating_artifact() {
+        let root = tempfile::tempdir().expect("vector artifact");
+        let chunks = vec![chunk("duplicate"), chunk("duplicate")];
+        let path = root.path().join("vectors.bin");
+        let mut provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+
+        assert_eq!(
+            VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                &mut provider,
+                &chunks,
+                "model",
+                "revision",
+                &ContentDigest::of(b"corpus"),
+                None,
+                &root.path().join("checkpoint.bin"),
+                &path,
+            )
+            .expect_err("duplicate chunk ids"),
+            EmbeddingError::InvalidHeader
+        );
+        assert!(!path.exists());
+        assert_eq!(provider.embedded, 0);
+    }
+
+    #[test]
+    fn streaming_checkpoint_reembeds_a_corrupt_completed_row() {
+        let root = tempfile::tempdir().expect("vector artifact");
+        let checkpoint_path = root.path().join("checkpoint.bin");
+        let chunks = chunks();
+        let corpus_digest = ContentDigest::of(b"corpus");
+        let mut first = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+            &mut first,
+            &chunks,
+            "model",
+            "revision",
+            &corpus_digest,
+            None,
+            &checkpoint_path,
+            &root.path().join("first.bin"),
+        )
+        .expect("first artifact");
+        let values_offset = 48 + chunks.len().div_ceil(8);
+        let mut checkpoint = OpenOptions::new()
+            .write(true)
+            .open(&checkpoint_path)
+            .expect("open checkpoint");
+        checkpoint
+            .seek(SeekFrom::Start(values_offset as u64))
+            .and_then(|_| checkpoint.write_all(&[0_u8; 16]))
+            .expect("corrupt completed row");
+
+        let mut restarted = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                &mut restarted,
+                &chunks,
+                "model",
+                "revision",
+                &corpus_digest,
+                None,
+                &checkpoint_path,
+                &root.path().join("restarted.bin"),
+            )
+            .expect("repair corrupt checkpoint");
+
+        assert_eq!(restarted.embedded, 1);
+        assert_eq!(observations.embedded_vectors, 1);
+        assert_eq!(observations.reused_vectors, chunks.len() - 1);
+    }
+
+    #[test]
+    fn checkpoint_keeps_valid_rows_before_a_malformed_provider_batch() {
+        struct MalformedSecondBatchProvider {
+            calls: usize,
+        }
+
+        impl EmbeddingProvider for MalformedSecondBatchProvider {
+            fn embedding_dimension(&self) -> Option<usize> {
+                Some(4)
+            }
+
+            fn embedding_batch_size(&self) -> EmbeddingBatchSize {
+                EmbeddingBatchSize::new(1).expect("nonzero batch size")
+            }
+
+            fn embed_documents(
+                &mut self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                self.calls += 1;
+                if self.calls == 2 {
+                    return Ok(vec![vec![1.0, 0.0]]);
+                }
+                FakeEmbeddingProvider::new(4).embed_documents(texts)
+            }
+
+            fn embed_query(&mut self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                FakeEmbeddingProvider::new(4).embed_query(text)
+            }
+        }
+
+        let root = tempfile::tempdir().expect("vector checkpoint");
+        let checkpoint = root.path().join("vectors.checkpoint");
+        let chunks = chunks();
+        let corpus_digest = ContentDigest::of(b"corpus");
+        let mut malformed = MalformedSecondBatchProvider { calls: 0 };
+        VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+            &mut malformed,
+            &chunks,
+            "model",
+            "revision",
+            &corpus_digest,
+            None,
+            &checkpoint,
+            &root.path().join("malformed.bin"),
+        )
+        .expect_err("second batch has the wrong dimension");
+
+        let mut restarted = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let (_, _, _, _, observations) =
+            VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                &mut restarted,
+                &chunks,
+                "model",
+                "revision",
+                &corpus_digest,
+                None,
+                &checkpoint,
+                &root.path().join("restarted.bin"),
+            )
+            .expect("resume after malformed batch");
+
+        assert_eq!(restarted.embedded, 1);
+        assert_eq!(observations.reused_vectors, 1);
+    }
+
+    #[test]
+    fn checkpointed_streaming_write_matches_materialized_artifact() {
+        let root = tempfile::tempdir().expect("vector artifacts");
+        let chunks = chunks();
+        let corpus_digest = ContentDigest::of(b"corpus");
+        let mut materialized_provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let materialized = VectorArtifact::from_provider(
+            &mut materialized_provider,
+            &chunks,
+            "fake",
+            "test",
+            corpus_digest.clone(),
+        )
+        .expect("materialized artifact");
+        let materialized_path = root.path().join("materialized.bin");
+        let expected = materialized
+            .write_artifact_with_digest(&materialized_path)
+            .expect("write materialized artifact");
+
+        let mut streaming_provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let streaming_path = root.path().join("streaming.bin");
+        let (checksum, bytes, count, dimension, observations) =
+            VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                &mut streaming_provider,
+                &chunks,
+                "fake",
+                "test",
+                &corpus_digest,
+                None,
+                &root.path().join("streaming-checkpoint.bin"),
+                &streaming_path,
+            )
+            .expect("stream checkpoint artifact");
+
+        assert_eq!((checksum, bytes), expected);
+        assert_eq!(count, chunks.len());
+        assert_eq!(dimension, 4);
+        assert_eq!(observations.embedded_vectors, chunks.len());
+        assert_eq!(
+            std::fs::read(streaming_path).expect("streaming bytes"),
+            std::fs::read(materialized_path).expect("materialized bytes")
+        );
     }
 
     #[test]
@@ -4772,12 +5257,12 @@ mod tests {
             dimension: 4,
             embedded: 0,
         };
-        VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        checkpointed_artifact(
             &mut first,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &checkpoint,
         )
@@ -4787,12 +5272,12 @@ mod tests {
             dimension: 4,
             embedded: 0,
         });
-        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        let (_, observations) = checkpointed_artifact(
             &mut restarted,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &checkpoint,
         )
@@ -4808,12 +5293,12 @@ mod tests {
         let cache_path = cache.path().join("vectors.bin");
         let chunks = chunks();
         let mut interrupted = InterruptedProvider { calls: 0 };
-        VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        checkpointed_artifact(
             &mut interrupted,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &cache_path,
         )
@@ -4823,12 +5308,12 @@ mod tests {
             dimension: 4,
             embedded: 0,
         };
-        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        let (_, observations) = checkpointed_artifact(
             &mut restarted,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &cache_path,
         )
@@ -4871,12 +5356,12 @@ mod tests {
             dimension: 4,
             embedded: 0,
         });
-        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        let (_, observations) = checkpointed_artifact(
             &mut provider,
             &chunks(),
             "fake",
             "test",
-            ContentDigest::of(b"corpus"),
+            &ContentDigest::of(b"corpus"),
             None,
             &cache.path().join("vectors.bin"),
         )
@@ -4896,12 +5381,12 @@ mod tests {
             embedded: 0,
         };
 
-        let (_, observations) = VectorArtifact::from_provider_reusing_with_checkpoint_observations(
+        let (_, observations) = checkpointed_artifact(
             &mut provider,
             &chunks,
             "fake",
             "test",
-            ContentDigest::of(b"first"),
+            &ContentDigest::of(b"first"),
             None,
             &cache_path,
         )
@@ -4941,6 +5426,40 @@ mod tests {
         assert_eq!(provider.embedded, chunks.len());
         assert_eq!(observations.reused_vectors, 0);
         assert_eq!(observations.embedded_vectors, chunks.len());
+    }
+
+    #[test]
+    fn checkpointed_streaming_rejects_invalid_dimensions_before_allocating() {
+        let root = tempfile::tempdir().expect("vector artifact");
+        for (dimension, expected) in [
+            (0, EmbeddingError::InvalidHeader),
+            (MAX_VECTOR_DIMENSION + 1, EmbeddingError::TooLarge),
+        ] {
+            let checkpoint = root.path().join(format!("checkpoint-{dimension}.bin"));
+            let artifact = root.path().join(format!("artifact-{dimension}.bin"));
+            let mut provider = RecordingProvider {
+                dimension,
+                embedded: 0,
+            };
+
+            assert_eq!(
+                VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
+                    &mut provider,
+                    &[],
+                    "model",
+                    "revision",
+                    &ContentDigest::of(b"empty corpus"),
+                    None,
+                    &checkpoint,
+                    &artifact,
+                )
+                .expect_err("invalid dimension"),
+                expected
+            );
+            assert!(!checkpoint.exists());
+            assert!(!artifact.exists());
+            assert_eq!(provider.embedded, 0);
+        }
     }
 
     #[test]
