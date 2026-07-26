@@ -24,6 +24,7 @@ else
   profile_package_is_default=true
 fi
 profile_root=${VESC_MCP_PROFILE_ROOT:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/profiles"}
+profile_migraphx_cache=${VESC_MCP_PROFILE_MIGRAPHX_CACHE_PATH:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/data/migraphx-cache"}
 timeout_secs=${VESC_MCP_PROFILE_TIMEOUT_SECS:-600}
 memory_high=${VESC_MCP_PROFILE_MEMORY_HIGH:-2G}
 memory_max=${VESC_MCP_PROFILE_MEMORY_MAX:-3G}
@@ -78,7 +79,7 @@ load_profile_binary() {
     eval "$setup_line"
   done <"$wrapper"
   if [[ -n ${VESC_MCP_PROFILE_DATA_ROOT:-} ]]; then
-    export ORT_MIGRAPHX_MODEL_CACHE_PATH="$VESC_MCP_PROFILE_DATA_ROOT/migraphx-cache"
+    export ORT_MIGRAPHX_MODEL_CACHE_PATH="$profile_migraphx_cache"
   fi
   profile_binary=$profile_package/bin/.vesc-mcp-server-wrapped
   [[ -x $profile_binary ]] || {
@@ -98,6 +99,7 @@ new_output_dir() {
     echo "memory_high=$memory_high"
     echo "memory_max=$memory_max"
     echo "data_root=${VESC_MCP_PROFILE_DATA_ROOT:-}"
+    echo "migraphx_cache=$profile_migraphx_cache"
   } >"$output_dir/provenance.env"
   echo "profile output: $output_dir" >&2
 }

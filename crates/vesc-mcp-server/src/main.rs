@@ -108,7 +108,7 @@ impl RuntimeProfile {
 
     fn build(self) -> std::io::Result<tokio::runtime::Runtime> {
         let mut builder = match self {
-            Self::Preparation => tokio::runtime::Builder::new_current_thread(),
+            Self::Preparation => tokio::runtime::Builder::new_multi_thread(),
             Self::Serving { worker_threads } => {
                 let mut builder = tokio::runtime::Builder::new_multi_thread();
                 builder.worker_threads(worker_threads);
@@ -562,10 +562,18 @@ mod tests {
     }
 
     #[test]
-    fn preparation_and_serving_use_bounded_runtime_threads() {
+    fn preparation_is_multithreaded_and_serving_is_bounded() {
         assert_eq!(
             RuntimeProfile::from_args(&["--refresh-repositories".into()]),
             RuntimeProfile::Preparation
+        );
+        assert_eq!(
+            RuntimeProfile::Preparation
+                .build()
+                .expect("preparation runtime")
+                .handle()
+                .runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::MultiThread
         );
         assert_eq!(
             RuntimeProfile::from_args(&["--prepare-knowledge".into()]),
