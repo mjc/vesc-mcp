@@ -46,4 +46,9 @@ path = "src/bin/reranker_bench.rs"
 required-features = ["semantic-fastembed"]
 
 [dev-dependencies]
+gungraun.workspace = true
 serde_json.workspace = true
+
+[[bench]]
+name = "corpus_pipeline"
+harness = false

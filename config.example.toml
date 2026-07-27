@@ -27,6 +27,8 @@ enable_flash = false
 [knowledge]
 # Retrieval modes: lexical, auto, hybrid.
 mode = "lexical"
+# Opt in to cloning, fetching, and indexing the repositories below.
+managed_git = false
 # Persistent managed-source state. Must be absolute. When omitted, systemd's
 # STATE_DIRECTORY, then the platform/XDG per-user data directory is used.
 # data_root = "/var/lib/vesc-mcp"
@@ -35,8 +37,9 @@ max_query_bytes = 4096
 max_response_bytes = 65536
 max_passage_bytes = 8192
 
-# Managed source repositories are optional. Release startup/explicit refresh
-# fetches them with gix and atomically publishes one combined history default.
+# Managed source repositories are optional. With managed_git enabled, release
+# startup/explicit refresh fetches them with gix and atomically publishes one
+# combined history default.
 # [[knowledge.repositories]]
 # id = "vesc-tool"
 # remote_url = "https://github.com/vedderb/vesc_tool.git"
@@ -47,6 +50,8 @@ max_passage_bytes = 8192
 # trust_tier = "official" # official, community, or untrusted
 # license = "GPL-3.0-or-later"
 # attribution = "VESC Project"
+# Per-file limit is checked before blob hydration. Count and total limits bound
+# one build (the full cold history or the changed incremental delta).
 # max_file_bytes = 1048576
 # max_files = 100000
 # max_total_bytes = 1073741824

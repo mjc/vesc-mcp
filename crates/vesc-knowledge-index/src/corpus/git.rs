@@ -18,6 +18,7 @@ const DEFAULT_EXTENSIONS: &[&str] = &[
     "yaml", "yml",
 ];
 const DEFAULT_FILENAMES: &[&str] = &["CMakeLists.txt", "Kconfig", "Makefile"];
+pub(crate) const MAX_REJECTION_SAMPLES: usize = 64;
 const DEFAULT_EXCLUDES: &[&str] = &[
     ".git",
     "build",
@@ -31,7 +32,75 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 ];
 
 /// Version of the reviewed default code-corpus path and resource policy.
-pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v2";
+pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v3";
+
+/// Working-set limits for one repository ingestion pass.
+///
+/// A cold history build applies the file-count and total-byte limits to its
+/// complete candidate set. A fast-forward build applies them only to the new
+/// delta, so incremental refresh remains incremental. `max_file_bytes` is
+/// checked again before every later Git-blob hydration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GitCorpusLimits {
+    file_bytes: u64,
+    files: usize,
+    total_bytes: u64,
+}
+
+impl GitCorpusLimits {
+    /// Construct a nonzero, internally consistent limit set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitIngestionError::InvalidPolicy`] when any limit is zero or
+    /// the per-file limit exceeds the total-byte limit.
+    pub fn new(
+        max_file_bytes: u64,
+        max_files: usize,
+        max_total_bytes: u64,
+    ) -> Result<Self, GitIngestionError> {
+        if max_file_bytes == 0
+            || max_files == 0
+            || max_total_bytes == 0
+            || max_file_bytes > max_total_bytes
+        {
+            return Err(GitIngestionError::InvalidPolicy(
+                "Git corpus limits must be nonzero and max_file_bytes must not exceed max_total_bytes"
+                    .into(),
+            ));
+        }
+        Ok(Self {
+            file_bytes: max_file_bytes,
+            files: max_files,
+            total_bytes: max_total_bytes,
+        })
+    }
+
+    #[must_use]
+    pub const fn max_file_bytes(self) -> u64 {
+        self.file_bytes
+    }
+
+    #[must_use]
+    pub const fn max_files(self) -> usize {
+        self.files
+    }
+
+    #[must_use]
+    pub const fn max_total_bytes(self) -> u64 {
+        self.total_bytes
+    }
+}
+
+impl Default for GitCorpusLimits {
+    fn default() -> Self {
+        Self {
+            file_bytes: u64::MAX,
+            files: usize::MAX,
+            total_bytes: u64::MAX,
+        }
+    }
+}
 
 /// Reviewed path and media-type selection for one immutable repository snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +111,7 @@ pub struct GitCorpusPolicy {
     pub exclude_patterns: Vec<String>,
     pub extensions: BTreeSet<String>,
     pub filenames: BTreeSet<String>,
+    pub limits: GitCorpusLimits,
 }
 
 impl Default for GitCorpusPolicy {
@@ -53,6 +123,7 @@ impl Default for GitCorpusPolicy {
             exclude_patterns: Vec::new(),
             extensions: DEFAULT_EXTENSIONS.iter().map(ToString::to_string).collect(),
             filenames: DEFAULT_FILENAMES.iter().map(ToString::to_string).collect(),
+            limits: GitCorpusLimits::default(),
         }
     }
 }
@@ -106,6 +177,57 @@ pub(super) enum CachedGitBlob {
     },
 }
 
+pub(super) struct GitCorpusBudget {
+    limits: GitCorpusLimits,
+    files: usize,
+    bytes: u64,
+}
+
+struct TreeCollection {
+    budget: GitCorpusBudget,
+    visited_files: usize,
+    candidates: Vec<Candidate>,
+    rejected: Vec<SourceRejection>,
+    rejection_count: u64,
+}
+
+impl GitCorpusBudget {
+    pub(super) const fn new(limits: GitCorpusLimits) -> Self {
+        Self {
+            limits,
+            files: 0,
+            bytes: 0,
+        }
+    }
+
+    pub(super) const fn reserve(&mut self, size: u64) -> Result<(), (&'static str, &'static str)> {
+        if size > self.limits.file_bytes {
+            return Err((
+                "oversized",
+                "Git blob exceeds the configured per-file byte limit",
+            ));
+        }
+        if self.files >= self.limits.files {
+            return Err(("file_limit", "Git corpus exceeds the configured file limit"));
+        }
+        let Some(bytes) = self.bytes.checked_add(size) else {
+            return Err((
+                "total_bytes",
+                "Git corpus exceeds the configured total byte limit",
+            ));
+        };
+        if bytes > self.limits.total_bytes {
+            return Err((
+                "total_bytes",
+                "Git corpus exceeds the configured total byte limit",
+            ));
+        }
+        self.files += 1;
+        self.bytes = bytes;
+        Ok(())
+    }
+}
+
 /// Aggregate Git-ingestion work, retained for profiling rather than artifact identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +242,8 @@ pub struct GitIngestionObservations {
     pub blob_bytes_loaded: u64,
     pub binary_rejection_count: u64,
     pub encoding_rejection_count: u64,
+    #[serde(default)]
+    pub rejection_count: u64,
     #[serde(default)]
     pub blob_cache_hits: u64,
 }
@@ -148,6 +272,7 @@ impl GitIngestionObservations {
         self.encoding_rejection_count = self
             .encoding_rejection_count
             .saturating_add(other.encoding_rejection_count);
+        self.rejection_count = self.rejection_count.saturating_add(other.rejection_count);
         self.blob_cache_hits = self.blob_cache_hits.saturating_add(other.blob_cache_hits);
     }
 }
@@ -201,21 +326,26 @@ fn ingest_git_commit_inner(
     let tree = commit
         .tree()
         .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
-    let mut candidates = Vec::new();
-    let mut rejected = Vec::new();
-    let mut visited_files = 0_usize;
+    let mut collection = TreeCollection {
+        budget: GitCorpusBudget::new(policy.limits),
+        visited_files: 0,
+        candidates: Vec::new(),
+        rejected: Vec::new(),
+        rejection_count: 0,
+    };
     let tree_walk_started = Instant::now();
-    collect_tree(
-        &tree,
-        "",
-        policy,
-        &mut visited_files,
-        &mut candidates,
-        &mut rejected,
-    )?;
+    collect_tree(&tree, "", policy, &mut collection)?;
+    let TreeCollection {
+        mut candidates,
+        rejected,
+        rejection_count,
+        visited_files,
+        ..
+    } = collection;
     let mut observations = GitIngestionObservations {
         tree_walk_us: elapsed_us(tree_walk_started),
         candidate_count: u64::try_from(candidates.len()).unwrap_or(u64::MAX),
+        rejection_count,
         ..GitIngestionObservations::default()
     };
     let candidate_sort_started = Instant::now();
@@ -230,16 +360,20 @@ fn ingest_git_commit_inner(
         git_observations: None,
     };
     for candidate in candidates {
-        let blob = load_git_blob(&repo, &candidate, &mut observations, true)?;
+        let blob = load_git_blob(&repo, &candidate, policy.limits, &mut observations, true)?;
         let digest = if let CachedGitBlob::Text { digest, .. } = &blob {
             digest.clone()
         } else {
             let CachedGitBlob::Rejected { code, message } = blob else {
                 unreachable!()
             };
-            report
-                .rejected
-                .push(source_rejection(&candidate.path, code, message));
+            record_rejection(
+                &mut report.rejected,
+                &mut observations.rejection_count,
+                &candidate.path,
+                code,
+                message,
+            );
             continue;
         };
         let metadata_started = Instant::now();
@@ -278,9 +412,16 @@ fn ingest_git_commit_inner(
 pub(super) fn load_git_blob(
     repo: &gix::Repository,
     candidate: &Candidate,
+    limits: GitCorpusLimits,
     observations: &mut GitIngestionObservations,
     extract_identifiers: bool,
 ) -> Result<CachedGitBlob, GitIngestionError> {
+    if candidate.size > limits.file_bytes {
+        return Ok(CachedGitBlob::Rejected {
+            code: "oversized",
+            message: "Git blob exceeds the configured per-file byte limit",
+        });
+    }
     let blob_load_started = Instant::now();
     let object = repo
         .find_object(candidate.id)
@@ -421,9 +562,7 @@ fn collect_tree(
     tree: &gix::Tree<'_>,
     prefix: &str,
     policy: &GitCorpusPolicy,
-    visited_files: &mut usize,
-    candidates: &mut Vec<Candidate>,
-    rejected: &mut Vec<SourceRejection>,
+    collection: &mut TreeCollection,
 ) -> Result<(), GitIngestionError> {
     for entry in tree.iter() {
         let entry = entry.map_err(|error| GitIngestionError::ReadTree(error.to_string()))?;
@@ -443,17 +582,19 @@ fn collect_tree(
                         .object()
                         .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?
                         .into_tree();
-                    collect_tree(&subtree, &path, policy, visited_files, candidates, rejected)?;
+                    collect_tree(&subtree, &path, policy, collection)?;
                 }
             }
             gix::object::tree::EntryKind::Blob | gix::object::tree::EntryKind::BlobExecutable => {
-                *visited_files = visited_files.saturating_add(1);
+                collection.visited_files = collection.visited_files.saturating_add(1);
                 if !is_selected(&path, policy) {
-                    rejected.push(source_rejection(
+                    record_rejection(
+                        &mut collection.rejected,
+                        &mut collection.rejection_count,
                         &path,
                         "unsupported",
                         "path or media type is outside the configured corpus policy",
-                    ));
+                    );
                     continue;
                 }
                 let size = entry
@@ -461,19 +602,31 @@ fn collect_tree(
                     .header()
                     .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?
                     .size();
-                candidates.push(Candidate {
+                if let Err((code, message)) = collection.budget.reserve(size) {
+                    record_rejection(
+                        &mut collection.rejected,
+                        &mut collection.rejection_count,
+                        &path,
+                        code,
+                        message,
+                    );
+                    continue;
+                }
+                collection.candidates.push(Candidate {
                     path,
                     id: entry.object_id(),
                     size,
                 });
             }
             gix::object::tree::EntryKind::Link | gix::object::tree::EntryKind::Commit => {
-                *visited_files = visited_files.saturating_add(1);
-                rejected.push(source_rejection(
+                collection.visited_files = collection.visited_files.saturating_add(1);
+                record_rejection(
+                    &mut collection.rejected,
+                    &mut collection.rejection_count,
                     &path,
                     "unsupported",
                     "symlinks and Gitlinks are metadata and are not followed",
-                ));
+                );
             }
         }
     }
@@ -568,7 +721,7 @@ pub(super) fn identifier_values(path: &str, content: &str) -> Vec<CompactString>
         .collect()
 }
 
-pub(super) const MAX_IDENTIFIERS: usize = 32;
+pub(crate) const MAX_IDENTIFIERS: usize = 32;
 
 pub(super) fn identifier_refs<'input, 'buffer>(
     path: &'input str,
@@ -611,6 +764,19 @@ fn source_rejection(path: &str, code: &str, message: &str) -> SourceRejection {
         code: code.to_owned(),
         message: message.to_owned(),
         required: false,
+    }
+}
+
+fn record_rejection(
+    samples: &mut Vec<SourceRejection>,
+    count: &mut u64,
+    path: &str,
+    code: &str,
+    message: &str,
+) {
+    *count = count.saturating_add(1);
+    if samples.len() < MAX_REJECTION_SAMPLES {
+        samples.push(source_rejection(path, code, message));
     }
 }
 

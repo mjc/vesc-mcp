@@ -20,8 +20,8 @@
         src = pkgs.fetchFromGitHub {
           owner = "mjc";
           repo = "onnxruntime";
-          rev = "82e68f7d55f633dd06d485ba49b20de0179592f2";
-          hash = "sha256-5+gOFEbIBcmt8d2SrUw2u6GgPmEjvv1vKU7t+24RiF4=";
+          rev = "c9ef1ac8df0ea0c1fb950eb1972fbcd6dfe9d1d8";
+          hash = "sha256-ziwXPFF1kBaIStZhfl4VG2HkRivyb0Vg2/n0dx8iB94=";
         };
       };
     packageFor = system: accelerated: profiling: let
@@ -198,6 +198,16 @@
           export VESC_GIT_BIN="${pkgs.git}/bin/git"
           export VESC_TIME_BIN="${pkgs.time}/bin/time"
         '';
+        gungraunRunner = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "gungraun-runner";
+          version = "0.19.4";
+          src = pkgs.fetchCrate {
+            inherit pname version;
+            hash = "sha256-DrIbeUVI+fhrp87rzIxYRvAlPSJ3ksa6cHHNFg4I+zE=";
+          };
+          cargoLock.lockFile = "${src}/Cargo.lock";
+          doCheck = false;
+        };
         # Current ONNX Runtime releases build MIGraphX for AMD. The ROCm
         # execution provider is no longer present in the upstream 1.26
         # source, so keep this name for the shell output while using nixpkgs'
@@ -251,12 +261,14 @@
                 ]
                 ++ lib.optionals stdenv.isLinux [
                   coz
+                  gungraunRunner
                   heaptrack
                   inferno
                   perf
                   procps
                   rocmPackages.rocm-runtime
                   rocmPackages.rocminfo
+                  valgrind
                   vulkan-tools
                   zstd
                 ];
@@ -280,6 +292,7 @@
                 hyperfine
                 time
                 coz
+                gungraunRunner
                 heaptrack
                 procps
                 python3Packages.onnx
@@ -287,6 +300,7 @@
                 rocmOnnxruntime
                 rocmPackages.rocm-runtime
                 rocmPackages.rocminfo
+                valgrind
                 zstd
               ];
               shellHook =

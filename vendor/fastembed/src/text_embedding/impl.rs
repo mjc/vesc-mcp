@@ -99,6 +99,7 @@ impl TextEmbedding {
             max_length,
             intra_threads,
             graph_optimization_level,
+            dimension_overrides,
         } = options;
 
         let session = {
@@ -110,6 +111,12 @@ impl TextEmbedding {
                 intra_threads,
                 graph_optimization_level,
             )?;
+
+            for (name, size) in dimension_overrides {
+                session_builder = session_builder
+                    .with_dimension_override(name, size)
+                    .map_err(builder_error)?;
+            }
 
             for external_initializer_file in model.external_initializers {
                 session_builder = session_builder

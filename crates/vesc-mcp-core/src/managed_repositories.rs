@@ -1,5 +1,6 @@
 //! Validated repository registry and portable on-disk knowledge layout.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -316,6 +317,34 @@ impl RepositoryRegistry {
         self.repositories.iter()
     }
 
+    pub fn enabled(&self) -> impl Iterator<Item = &KnowledgeRepository> {
+        self.repositories
+            .iter()
+            .filter(|repository| repository.policy() != RepositoryPolicy::Disabled)
+    }
+
+    #[must_use]
+    pub fn enabled_len(&self) -> usize {
+        self.enabled().count()
+    }
+
+    #[must_use]
+    pub fn has_enabled(&self) -> bool {
+        self.enabled().next().is_some()
+    }
+
+    #[must_use]
+    pub fn excluding(&self, excluded: &BTreeSet<RepositoryId>) -> Self {
+        Self {
+            repositories: self
+                .repositories
+                .iter()
+                .filter(|repository| !excluded.contains(repository.id()))
+                .cloned()
+                .collect(),
+        }
+    }
+
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.repositories.is_empty()
@@ -343,6 +372,10 @@ impl<'de> Deserialize<'de> for RepositoryRegistry {
 }
 
 fn validate_remote_url(value: &str) -> Result<(), ManagedRepositoryError> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if Path::new(value).is_absolute() {
+        return Ok(());
+    }
     let authority = value
         .strip_prefix("https://")
         .and_then(|rest| rest.split('/').next());
@@ -543,6 +576,7 @@ impl KnowledgeDataLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
 
     const REPOSITORIES: &str = r#"
@@ -676,6 +710,36 @@ max_total_bytes = 268435456
                 .map(|repository| repository.id().as_str())
                 .collect::<Vec<_>>(),
             ["refloat", "vesc-tool"]
+        );
+    }
+
+    #[test]
+    fn enabled_repository_view_excludes_disabled_policies() {
+        let registry: RepositoryRegistry = toml::from_str(
+            &REPOSITORIES
+                .replace("policy = \"required\"", "policy = \"disabled\"")
+                .replace("policy = \"optional\"", "policy = \"disabled\""),
+        )
+        .expect("disabled registry");
+
+        assert_eq!(registry.iter().len(), 2);
+        assert_eq!(registry.enabled_len(), 0);
+        assert!(registry.enabled().next().is_none());
+    }
+
+    #[test]
+    fn snapshot_registry_excludes_unavailable_optional_repositories() {
+        let registry: RepositoryRegistry = toml::from_str(REPOSITORIES).expect("valid registry");
+        let excluded = BTreeSet::from([RepositoryId::new("refloat").expect("repository id")]);
+
+        let available = registry.excluding(&excluded);
+
+        assert_eq!(
+            available
+                .enabled()
+                .map(|repository| repository.id().as_str())
+                .collect::<Vec<_>>(),
+            ["vesc-tool"]
         );
     }
 

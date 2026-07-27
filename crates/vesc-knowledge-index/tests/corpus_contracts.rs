@@ -1,10 +1,14 @@
 use std::collections::BTreeSet;
 
 use vesc_knowledge_index::{
-    Category, Chunk, ContentDigest, CorpusManifest, CorpusVersion, IndexEntry, LicenseStatus,
-    NormalizedDocument, RepositoryId, ResourceUri, Revision, SchemaVersion, SourceInventory,
-    SourceKind, SourceRef, SourceSpan, TrustTier, validate_chunk_adjacency,
+    Category, Chunk, ChunkId, ContentDigest, CorpusManifest, CorpusVersion, IndexEntry,
+    LicenseStatus, NormalizedDocument, RepositoryId, ResourceUri, Revision, SchemaVersion,
+    SourceInventory, SourceKind, SourceRef, SourceSpan, TrustTier, validate_chunk_adjacency,
 };
+
+fn chunk_id(value: u8) -> ChunkId {
+    ChunkId::try_from(format!("chunk-{value:064x}")).expect("chunk")
+}
 
 #[test]
 fn catalog_entry_conversion_preserves_exact_name_and_id() {
@@ -43,10 +47,7 @@ fn manifest_json_is_byte_stable() {
             "doc-b".try_into().expect("doc"),
             "doc-a".try_into().expect("doc"),
         ],
-        vec![
-            "chunk-b".try_into().expect("chunk"),
-            "chunk-a".try_into().expect("chunk"),
-        ],
+        vec![chunk_id(2), chunk_id(1)],
     );
     let second = CorpusManifest::new(
         CorpusVersion::try_from("v1").expect("version"),
@@ -54,10 +55,7 @@ fn manifest_json_is_byte_stable() {
             "doc-a".try_into().expect("doc"),
             "doc-b".try_into().expect("doc"),
         ],
-        vec![
-            "chunk-a".try_into().expect("chunk"),
-            "chunk-b".try_into().expect("chunk"),
-        ],
+        vec![chunk_id(1), chunk_id(2)],
     );
 
     assert_eq!(first.validate(), Ok(()));
@@ -94,10 +92,7 @@ fn manifest_rejects_duplicate_chunk_ids() {
     let manifest = CorpusManifest::new(
         CorpusVersion::try_from("v1").expect("version"),
         vec!["doc-a".try_into().expect("doc")],
-        vec![
-            "chunk-a".try_into().expect("chunk"),
-            "chunk-a".try_into().expect("chunk"),
-        ],
+        vec![chunk_id(1), chunk_id(1)],
     );
     assert!(manifest.validate().is_err());
 }

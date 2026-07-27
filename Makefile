@@ -2,7 +2,7 @@ CARGO ?= cargo
 
 .DEFAULT_GOAL := check
 
-.PHONY: check lint test fmt clippy feature-boundaries doc clean coverage coverage-html coverage-summary
+.PHONY: check lint test fmt clippy feature-boundaries doc clean coverage coverage-html coverage-summary bench bench-memory
 
 COVERAGE_FLAGS = --workspace --profile ci --features vesc-mcp-core/test-fixtures
 COVERAGE_IGNORE = $(shell awk 'substr($$0, 1, 1) != sprintf("%c", 35) { print; exit }' .config/coverage-exclude.regex)
@@ -27,6 +27,12 @@ coverage-html:
 
 coverage-summary:
 	@bash scripts/coverage-summary.sh '$(LCOV_INFO)'
+
+bench:
+	$(CARGO) bench -p vesc-knowledge-index --bench corpus_pipeline
+
+bench-memory:
+	$(CARGO) bench -p vesc-knowledge-index --bench corpus_pipeline -- --tools=dhat,massif
 
 fmt:
 	$(CARGO) fmt --all --check

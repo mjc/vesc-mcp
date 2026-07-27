@@ -1,6 +1,6 @@
 //! Reproducible corpus and lexical artifact lifecycle helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -10,18 +10,20 @@ use serde::{Deserialize, Serialize, de::IgnoredAny};
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document};
 use crate::corpus::full_history::{
-    GitHistoryError, GitHistoryRefreshObservations, GitHistoryTip,
-    ingest_git_history_fast_forward_delta, ingest_git_history_fast_forward_owned,
+    CachedGitHistory, GitHistoryBuildPlan, GitHistoryError, GitHistoryRefreshObservations,
+    GitHistoryTip, plan_git_history_fast_forward_delta, plan_git_history_fast_forward_owned,
 };
 use crate::corpus::git::{
-    GitCorpusSource, GitIngestionError, GitIngestionObservations, ingest_git_commit,
+    GitCorpusSource, GitIngestionError, GitIngestionObservations, MAX_IDENTIFIERS,
+    MAX_REJECTION_SAMPLES, ingest_git_commit,
 };
 use crate::corpus::ingest::{SourceInventory, SourceRejection, SourceSpec, ingest_allowlisted};
 use crate::corpus::{
     ARTIFACT_SCHEMA_V1, ArtifactManifest, ContentDigest, CorpusManifest, CorpusVersion,
     NormalizedDocument, RepositoryId, Revision, SchemaVersion,
 };
-use crate::semantic::{IncrementalVectorArtifact, ReconciledVectorArtifact};
+use crate::lexical::EmbeddingTextHydrator;
+use crate::semantic::ReconciledVectorArtifact;
 use crate::{
     EmbeddingError, EmbeddingProvider, LexicalError, LexicalIndex, VectorArtifact,
     VectorBuildObservations, embedded_entries,
@@ -85,6 +87,8 @@ pub struct BuildObservations {
     pub documents: usize,
     pub chunks: usize,
     pub embedding_input_bytes: u64,
+    #[serde(default)]
+    pub embedding_git_blob_loads: usize,
     pub vector_count: usize,
     pub vector_dimension: Option<usize>,
     pub artifact_bytes: u64,
@@ -96,6 +100,8 @@ pub struct BuildObservations {
     pub vector_build: Option<VectorBuildObservations>,
     #[serde(default)]
     pub git_ingestion: Option<GitIngestionObservations>,
+    #[serde(default)]
+    pub reused_lexical_stage: bool,
 }
 
 /// The small atomic selector stored at an artifact root.
@@ -216,7 +222,6 @@ pub fn build_embedded_artifacts_with_provider(
             provider,
             model_id,
             model_revision,
-            checkpoint_path: None,
         }),
     )
 }
@@ -225,13 +230,10 @@ struct SemanticBuild<'a> {
     provider: &'a mut dyn EmbeddingProvider,
     model_id: &'a str,
     model_revision: &'a str,
-    checkpoint_path: Option<&'a Path>,
 }
 
 struct IncrementalStage {
     lexical_path: PathBuf,
-    vector_path: Option<PathBuf>,
-    corpus_digest: ContentDigest,
 }
 
 struct ReconciledVectorStage {
@@ -294,11 +296,260 @@ struct PreviousCorpusProjection {
     content_digest: ContentDigest,
 }
 
+const GIT_HISTORY_LEXICAL_STAGE_SCHEMA: SchemaVersion = SchemaVersion { major: 1, minor: 2 };
+const GIT_HISTORY_LEXICAL_STAGE_DIR: &str = "lexical-stage";
+const GIT_HISTORY_LEXICAL_STAGE_MARKER: &str = "complete.json";
+
+#[derive(Serialize)]
+struct GitHistoryLexicalContract<'a> {
+    schema: SchemaVersion,
+    corpus_version: &'static str,
+    chunking: ChunkingConfig,
+    component_versions: &'a BTreeMap<String, String>,
+    embedded_catalog: ContentDigest,
+    sources: Vec<GitHistorySourceContract<'a>>,
+}
+
+#[derive(Serialize)]
+struct GitHistorySourceContract<'a> {
+    repository: &'a RepositoryId,
+    revision: &'a Revision,
+    trust_tier: crate::TrustTier,
+    license: &'a crate::LicenseStatus,
+    include_prefixes: &'a [String],
+    exclude_prefixes: &'a [String],
+    include_patterns: &'a [String],
+    exclude_patterns: &'a [String],
+    extensions: &'a BTreeSet<String>,
+    filenames: &'a BTreeSet<String>,
+    max_file_bytes: u64,
+    max_files: usize,
+    max_total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHistoryLexicalStageRefresh {
+    reachable_commits: usize,
+    reused_commits: usize,
+    ingested_commits: usize,
+    ingested_blobs: usize,
+    reused_blobs: usize,
+    #[serde(default)]
+    budget_rejections: usize,
+    reused_contents: usize,
+    candidate_chunks: usize,
+    materialized_chunks: usize,
+    candidate_identifier_count_histogram: Vec<u64>,
+    materialized_identifier_count_histogram: Vec<u64>,
+    git: GitIngestionObservations,
+}
+
+impl GitHistoryLexicalStageRefresh {
+    fn from_refresh(refresh: &GitHistoryRefreshObservations) -> Self {
+        Self {
+            reachable_commits: refresh.reachable_commits,
+            reused_commits: refresh.reused_commits,
+            ingested_commits: refresh.ingested_commits,
+            ingested_blobs: refresh.ingested_blobs,
+            reused_blobs: refresh.reused_blobs,
+            budget_rejections: refresh.budget_rejections,
+            reused_contents: refresh.reused_contents,
+            candidate_chunks: refresh.candidate_chunks,
+            materialized_chunks: refresh.materialized_chunks,
+            candidate_identifier_count_histogram: refresh
+                .candidate_identifier_count_histogram
+                .to_vec(),
+            materialized_identifier_count_histogram: refresh
+                .materialized_identifier_count_histogram
+                .to_vec(),
+            git: refresh.git.clone(),
+        }
+    }
+
+    fn to_refresh(&self) -> Result<GitHistoryRefreshObservations, LifecycleError> {
+        if self.candidate_identifier_count_histogram.len() != MAX_IDENTIFIERS + 1
+            || self.materialized_identifier_count_histogram.len() != MAX_IDENTIFIERS + 1
+        {
+            return Err(LifecycleError::Contract(
+                "Git history lexical stage histogram is invalid".into(),
+            ));
+        }
+        let mut candidate_identifier_count_histogram = [0; MAX_IDENTIFIERS + 1];
+        candidate_identifier_count_histogram
+            .copy_from_slice(&self.candidate_identifier_count_histogram);
+        let mut materialized_identifier_count_histogram = [0; MAX_IDENTIFIERS + 1];
+        materialized_identifier_count_histogram
+            .copy_from_slice(&self.materialized_identifier_count_histogram);
+        Ok(GitHistoryRefreshObservations {
+            reachable_commits: self.reachable_commits,
+            reused_commits: self.reused_commits,
+            ingested_commits: self.ingested_commits,
+            ingested_blobs: self.ingested_blobs,
+            reused_blobs: self.reused_blobs,
+            budget_rejections: self.budget_rejections,
+            reused_contents: self.reused_contents,
+            candidate_chunks: self.candidate_chunks,
+            materialized_chunks: self.materialized_chunks,
+            candidate_identifier_count_histogram,
+            materialized_identifier_count_histogram,
+            git: self.git.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitHistoryLexicalStageMarker {
+    schema: SchemaVersion,
+    contract_digest: ContentDigest,
+    lexical_checksum: ContentDigest,
+    lexical_sidecar_checksum: ContentDigest,
+    lexical_bytes: u64,
+    corpus: CorpusManifest,
+    history_chunks: usize,
+    refresh: GitHistoryLexicalStageRefresh,
+    reused_snapshot: bool,
+}
+
+struct GitHistoryLexicalStage {
+    root: PathBuf,
+    marker: GitHistoryLexicalStageMarker,
+}
+
+impl GitHistoryLexicalStage {
+    fn lexical_path(&self) -> PathBuf {
+        self.root.join("lexical.json")
+    }
+}
+
+fn git_history_lexical_stage_path(root: &Path) -> PathBuf {
+    root.join(GIT_HISTORY_LEXICAL_STAGE_DIR)
+}
+
+fn git_history_lexical_contract_digest(
+    sources: &[GitCorpusSource],
+) -> Result<ContentDigest, LifecycleError> {
+    let component_versions = git_history_lexical_component_versions();
+    let embedded_catalog = ContentDigest::of(&serde_json::to_vec(&embedded_catalog_chunks()?)?);
+    let sources = sources
+        .iter()
+        .map(|source| GitHistorySourceContract {
+            repository: &source.repository_id,
+            revision: &source.revision,
+            trust_tier: source.trust_tier,
+            license: &source.license,
+            include_prefixes: &source.policy.include_prefixes,
+            exclude_prefixes: &source.policy.exclude_prefixes,
+            include_patterns: &source.policy.include_patterns,
+            exclude_patterns: &source.policy.exclude_patterns,
+            extensions: &source.policy.extensions,
+            filenames: &source.policy.filenames,
+            max_file_bytes: source.policy.limits.max_file_bytes(),
+            max_files: source.policy.limits.max_files(),
+            max_total_bytes: source.policy.limits.max_total_bytes(),
+        })
+        .collect();
+    let contract = GitHistoryLexicalContract {
+        schema: GIT_HISTORY_LEXICAL_STAGE_SCHEMA,
+        corpus_version: "git-full-history-v1",
+        chunking: ChunkingConfig::default(),
+        component_versions: &component_versions,
+        embedded_catalog,
+        sources,
+    };
+    Ok(ContentDigest::of(&serde_json::to_vec(&contract)?))
+}
+
+fn read_git_history_lexical_stage(
+    root: &Path,
+    sources: &[GitCorpusSource],
+) -> Result<GitHistoryLexicalStage, LifecycleError> {
+    let stage_root = git_history_lexical_stage_path(root);
+    let marker: GitHistoryLexicalStageMarker = serde_json::from_slice(&fs::read(
+        stage_root.join(GIT_HISTORY_LEXICAL_STAGE_MARKER),
+    )?)?;
+    if marker.schema != GIT_HISTORY_LEXICAL_STAGE_SCHEMA
+        || marker.contract_digest != git_history_lexical_contract_digest(sources)?
+    {
+        return Err(LifecycleError::Contract(
+            "Git history lexical stage contract does not match".into(),
+        ));
+    }
+    marker.refresh.to_refresh()?;
+    marker
+        .corpus
+        .validate()
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let lexical_path = stage_root.join("lexical.json");
+    let lexical_bytes = fs::read(&lexical_path)?;
+    if u64::try_from(lexical_bytes.len()).unwrap_or(u64::MAX) != marker.lexical_bytes
+        || ContentDigest::of(&lexical_bytes) != marker.lexical_checksum
+    {
+        return Err(LifecycleError::Contract(
+            "Git history lexical stage checksum does not match".into(),
+        ));
+    }
+    if LexicalIndex::sidecar_checksum(&lexical_path)? != marker.lexical_sidecar_checksum {
+        return Err(LifecycleError::Contract(
+            "Git history lexical stage sidecar checksum does not match".into(),
+        ));
+    }
+    let (documents, chunks, digest) = LexicalIndex::corpus_inventory(&lexical_path)?;
+    if documents != marker.corpus.document_count()
+        || chunks != marker.corpus.chunk_count()
+        || digest != marker.corpus.content_digest
+    {
+        return Err(LifecycleError::Contract(
+            "Git history lexical stage inventory does not match".into(),
+        ));
+    }
+    Ok(GitHistoryLexicalStage {
+        root: stage_root,
+        marker,
+    })
+}
+
+fn load_git_history_lexical_stage(
+    root: &Path,
+    sources: &[GitCorpusSource],
+) -> Result<Option<GitHistoryLexicalStage>, LifecycleError> {
+    let stage_root = git_history_lexical_stage_path(root);
+    if !stage_root.exists() {
+        return Ok(None);
+    }
+    if let Ok(stage) = read_git_history_lexical_stage(root, sources) {
+        Ok(Some(stage))
+    } else {
+        if stage_root.is_dir() {
+            fs::remove_dir_all(stage_root)?;
+        } else {
+            fs::remove_file(stage_root)?;
+        }
+        Ok(None)
+    }
+}
+
+/// Remove a completed private lexical stage after its snapshot is durable.
+///
+/// # Errors
+///
+/// Returns an I/O error when the stage exists but cannot be removed.
+pub fn remove_git_history_lexical_stage(root: &Path) -> Result<(), LifecycleError> {
+    let stage_root = git_history_lexical_stage_path(root);
+    match fs::remove_dir_all(stage_root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn build_git_history_cold(
     root: &Path,
     sources: &[GitCorpusSource],
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
     vector_checkpoint_path: Option<&Path>,
+    progress: &mut dyn FnMut(BuildPhase),
 ) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
     build_git_history_artifacts_incrementally(
         root,
@@ -308,6 +559,7 @@ fn build_git_history_cold(
         semantic,
         None,
         vector_checkpoint_path,
+        progress,
     )
 }
 
@@ -324,11 +576,9 @@ fn build_artifacts(
     observations.record(BuildPhase::Chunking, chunking_started);
     stage_chunks(
         root,
-        chunks,
+        &chunks,
+        None,
         semantic,
-        None,
-        None,
-        None,
         "embedded-catalog-v1",
         Vec::new(),
         Vec::new(),
@@ -422,15 +672,12 @@ pub fn build_allowlisted_artifacts_with_provider(
         provider,
         model_id,
         model_revision,
-        checkpoint_path: None,
     });
     stage_chunks(
         root,
-        chunks,
+        &chunks,
+        None,
         semantic,
-        None,
-        None,
-        None,
         "allowlisted-v1",
         rejected,
         sources,
@@ -456,6 +703,7 @@ pub fn build_git_artifacts(
 /// # Errors
 ///
 /// Returns [`LifecycleError`] when Git inspection, chunking, embedding, or staging fails.
+#[allow(clippy::too_many_arguments)] // Public lifecycle inputs remain explicit.
 pub fn build_git_history_artifacts_incrementally(
     root: &Path,
     sources: &[GitCorpusSource],
@@ -464,39 +712,56 @@ pub fn build_git_history_artifacts_incrementally(
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
     previous_vectors: Option<VectorArtifact>,
     vector_checkpoint_path: Option<&Path>,
+    progress: &mut dyn FnMut(BuildPhase),
 ) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
     let started = Instant::now();
+    if let Some(stage) = load_git_history_lexical_stage(root, sources)? {
+        return resume_git_history_lexical_stage(
+            root,
+            sources,
+            &stage,
+            semantic,
+            previous_vectors,
+            None,
+            vector_checkpoint_path,
+            started,
+            progress,
+        );
+    }
     let ingestion_started = Instant::now();
-    let embedded_chunk_count = embedded_entries().len();
     let incremental = previous_tips
         .zip(previous_chunks)
         .map_or(Ok(None), |(tips, chunks)| {
-            ingest_git_history_fast_forward_owned(sources, &tips, chunks, embedded_chunk_count)
+            plan_git_history_fast_forward_owned(sources, &tips, chunks)
         })?;
-    let (history_chunks, refresh, reused_snapshot) = if let Some((chunks, refresh)) = incremental {
-        (chunks, refresh, true)
+    let (history_plan, refresh, reused_snapshot) = if let Some((plan, refresh)) = incremental {
+        (plan, refresh, true)
     } else {
-        let (chunks, refresh) =
-            ingest_git_history_fast_forward_owned(sources, &[], Vec::new(), embedded_chunk_count)?
-                .ok_or_else(|| {
-                    LifecycleError::Contract("cold Git history ingestion was rejected".into())
-                })?;
-        (chunks, refresh, false)
+        let (plan, refresh) = plan_git_history_fast_forward_owned(sources, &[], Vec::new())?
+            .ok_or_else(|| {
+                LifecycleError::Contract("cold Git history ingestion was rejected".into())
+            })?;
+        (plan, refresh, false)
     };
     let mut observations = BuildObservations::default();
     observations.record_duration(BuildPhase::Ingestion, elapsed_us(ingestion_started));
     observations.git_ingestion = Some(refresh.git.clone());
-    observations.accepted_files = u64::try_from(history_chunks.len()).unwrap_or(u64::MAX);
+    observations.accepted_files = u64::try_from(history_plan.len()).unwrap_or(u64::MAX);
     observations.visited_files = observations.accepted_files;
-    let artifacts = stage_git_history_chunks(
+    let artifacts = stage_git_history_plan(
         root,
-        history_chunks,
+        sources,
+        history_plan,
+        &refresh,
+        reused_snapshot,
         semantic,
         previous_vectors,
+        None,
         None,
         vector_checkpoint_path,
         started,
         observations,
+        progress,
     )?;
     Ok(IncrementalGitHistoryBuildSummary {
         artifacts,
@@ -511,56 +776,63 @@ pub fn build_git_history_artifacts_incrementally(
 ///
 /// Returns [`LifecycleError`] when Git inspection, chunking, embedding, or
 /// staging fails.
+#[allow(clippy::too_many_lines)] // One fallback tree preserves owned provider state.
 pub fn build_git_history_artifacts_from_previous(
     root: &Path,
     sources: &[GitCorpusSource],
     previous: Option<PreviousGitHistoryArtifact>,
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
     vector_checkpoint_path: Option<&Path>,
+    progress: &mut dyn FnMut(BuildPhase),
 ) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
-    let Some(previous) = previous else {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
-    };
-    if let Some((provider, model_id, model_revision)) = semantic.as_ref() {
-        let Some(vector_path) = previous.vector_path.as_ref() else {
-            return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
-        };
-        let Some(vector_checksum) = previous.vector_checksum.as_ref() else {
-            return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
-        };
-        if VectorArtifact::validate_reusable_artifact(
-            vector_path,
-            vector_checksum,
-            &previous.corpus_digest,
-            model_id,
-            model_revision,
-            provider.embedding_dimension(),
-        )
-        .is_err()
-        {
-            return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
-        }
+    let started = Instant::now();
+    if let Some(stage) = load_git_history_lexical_stage(root, sources)? {
+        let reconciled_vectors = previous
+            .as_ref()
+            .and_then(|previous| reusable_previous_vector_stage(previous, semantic.as_ref()));
+        return resume_git_history_lexical_stage(
+            root,
+            sources,
+            &stage,
+            semantic,
+            None,
+            reconciled_vectors,
+            vector_checkpoint_path,
+            started,
+            progress,
+        );
     }
+    let Some(previous) = previous else {
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
+    };
+    let reconciled_vectors = reusable_previous_vector_stage(&previous, semantic.as_ref());
     if !previous.lexical_format_compatible {
         return build_git_history_reindexing(
             root,
             sources,
-            previous,
+            reconciled_vectors,
             semantic,
             vector_checkpoint_path,
+            progress,
         );
     }
 
     let Ok(mut lookup) = LexicalIndex::open_history_content_lookup(&previous.lexical_path) else {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     };
     if !matches!(
         LexicalIndex::corpus_inventory(&previous.lexical_path),
         Ok((_documents, _chunks, digest)) if digest == previous.corpus_digest
     ) {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
-    let started = Instant::now();
+    let mut cached_history = CachedGitHistory::default();
+    if lookup
+        .visit_git_history_chunks(|chunk| cached_history.observe(chunk))
+        .is_err()
+    {
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
+    }
     let ingestion_started = Instant::now();
     let (incremental, lookup_failed) = {
         let mut lookup_failed = false;
@@ -570,15 +842,19 @@ pub fn build_git_history_artifacts_from_previous(
                 GitHistoryError::Invalid(error.to_string())
             })
         };
-        let incremental =
-            ingest_git_history_fast_forward_delta(sources, &previous.tips, &mut previous_contains);
+        let incremental = plan_git_history_fast_forward_delta(
+            sources,
+            &previous.tips,
+            cached_history,
+            &mut previous_contains,
+        );
         (incremental, lookup_failed)
     };
     if lookup_failed {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
     let Some((delta, refresh)) = incremental? else {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path);
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     };
     drop(lookup);
     let mut observations = BuildObservations::default();
@@ -586,29 +862,23 @@ pub fn build_git_history_artifacts_from_previous(
     observations.git_ingestion = Some(refresh.git.clone());
     observations.accepted_files = u64::try_from(delta.len()).unwrap_or(u64::MAX);
     observations.visited_files = observations.accepted_files;
-    let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
-        provider,
-        model_id,
-        model_revision,
-        checkpoint_path: None,
-    });
     let incremental = IncrementalStage {
         lexical_path: previous.lexical_path,
-        vector_path: previous.vector_path,
-        corpus_digest: previous.corpus_digest,
     };
-    let artifacts = stage_chunks(
+    let artifacts = stage_git_history_plan(
         root,
+        sources,
         delta,
+        &refresh,
+        true,
         semantic,
         None,
-        None,
+        reconciled_vectors,
         Some(&incremental),
-        "git-full-history-v1",
-        Vec::new(),
-        Vec::new(),
+        vector_checkpoint_path,
         started,
         observations,
+        progress,
     )?;
     Ok(IncrementalGitHistoryBuildSummary {
         artifacts,
@@ -617,43 +887,112 @@ pub fn build_git_history_artifacts_from_previous(
     })
 }
 
-fn build_git_history_reindexing(
+fn reusable_previous_vector_stage(
+    previous: &PreviousGitHistoryArtifact,
+    semantic: Option<&(&mut dyn EmbeddingProvider, &str, &str)>,
+) -> Option<ReconciledVectorStage> {
+    let (provider, model_id, model_revision) = semantic?;
+    let vector_path = previous.vector_path.as_ref()?;
+    let vector_checksum = previous.vector_checksum.as_ref()?;
+    VectorArtifact::validate_reusable_artifact(
+        vector_path,
+        vector_checksum,
+        &previous.corpus_digest,
+        model_id,
+        model_revision,
+        provider.embedding_dimension(),
+    )
+    .ok()?;
+    Some(ReconciledVectorStage {
+        path: vector_path.clone(),
+        checksum: vector_checksum.clone(),
+        corpus_digest: previous.corpus_digest.clone(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resume_git_history_lexical_stage(
     root: &Path,
     sources: &[GitCorpusSource],
-    previous: PreviousGitHistoryArtifact,
+    stage: &GitHistoryLexicalStage,
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    previous_vectors: Option<VectorArtifact>,
+    reconciled_vectors: Option<ReconciledVectorStage>,
     vector_checkpoint_path: Option<&Path>,
+    started: Instant,
+    progress: &mut dyn FnMut(BuildPhase),
 ) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
-    let started = Instant::now();
-    let ingestion_started = Instant::now();
-    let (history_chunks, refresh) =
-        ingest_git_history_fast_forward_owned(sources, &[], Vec::new(), embedded_entries().len())?
-            .ok_or_else(|| {
-                LifecycleError::Contract("cold Git history ingestion was rejected".into())
-            })?;
-    let mut observations = BuildObservations::default();
-    observations.record_duration(BuildPhase::Ingestion, elapsed_us(ingestion_started));
-    observations.git_ingestion = Some(refresh.git.clone());
-    observations.accepted_files = u64::try_from(history_chunks.len()).unwrap_or(u64::MAX);
-    observations.visited_files = observations.accepted_files;
-    let reconciled_vectors = semantic.is_some().then(|| ReconciledVectorStage {
-        path: previous
-            .vector_path
-            .expect("semantic predecessor has a vector artifact"),
-        checksum: previous
-            .vector_checksum
-            .expect("semantic predecessor has a vector checksum"),
-        corpus_digest: previous.corpus_digest,
-    });
-    let artifacts = stage_git_history_chunks(
+    let refresh = stage.marker.refresh.to_refresh()?;
+    let staged_reuse = stage.marker.reused_snapshot;
+    let accepted_files = u64::try_from(stage.marker.history_chunks).unwrap_or(u64::MAX);
+    let mut observations = BuildObservations {
+        visited_files: accepted_files,
+        accepted_files,
+        documents: stage.marker.corpus.document_count(),
+        chunks: stage.marker.corpus.chunk_count(),
+        git_ingestion: Some(refresh.git.clone()),
+        reused_lexical_stage: true,
+        ..BuildObservations::default()
+    };
+    observations.record_duration(BuildPhase::Ingestion, 0);
+    let artifacts = finish_git_history_lexical_stage(
         root,
-        history_chunks,
+        sources,
+        stage,
         semantic,
-        None,
+        previous_vectors,
         reconciled_vectors,
         vector_checkpoint_path,
         started,
         observations,
+        progress,
+    )?;
+    let reused_snapshot = staged_reuse
+        || artifacts
+            .observations
+            .vector_build
+            .as_ref()
+            .is_some_and(|vectors| vectors.reused_vectors > 0);
+    Ok(IncrementalGitHistoryBuildSummary {
+        artifacts,
+        refresh,
+        reused_snapshot,
+    })
+}
+
+fn build_git_history_reindexing(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    reconciled_vectors: Option<ReconciledVectorStage>,
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    vector_checkpoint_path: Option<&Path>,
+    progress: &mut dyn FnMut(BuildPhase),
+) -> Result<IncrementalGitHistoryBuildSummary, LifecycleError> {
+    let started = Instant::now();
+    let ingestion_started = Instant::now();
+    let (history_plan, refresh) = plan_git_history_fast_forward_owned(sources, &[], Vec::new())?
+        .ok_or_else(|| {
+            LifecycleError::Contract("cold Git history ingestion was rejected".into())
+        })?;
+    let mut observations = BuildObservations::default();
+    observations.record_duration(BuildPhase::Ingestion, elapsed_us(ingestion_started));
+    observations.git_ingestion = Some(refresh.git.clone());
+    observations.accepted_files = u64::try_from(history_plan.len()).unwrap_or(u64::MAX);
+    observations.visited_files = observations.accepted_files;
+    let artifacts = stage_git_history_plan(
+        root,
+        sources,
+        history_plan,
+        &refresh,
+        false,
+        semantic,
+        None,
+        reconciled_vectors,
+        None,
+        vector_checkpoint_path,
+        started,
+        observations,
+        progress,
     )?;
     let reused_snapshot = artifacts
         .observations
@@ -667,37 +1006,256 @@ fn build_git_history_reindexing(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn stage_git_history_chunks(
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn stage_git_history_plan(
     root: &Path,
-    history_chunks: Vec<crate::Chunk>,
+    sources: &[GitCorpusSource],
+    history_plan: GitHistoryBuildPlan,
+    refresh: &GitHistoryRefreshObservations,
+    reused_snapshot: bool,
+    semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    previous_vectors: Option<VectorArtifact>,
+    reconciled_vectors: Option<ReconciledVectorStage>,
+    incremental: Option<&IncrementalStage>,
+    vector_checkpoint_path: Option<&Path>,
+    started: Instant,
+    mut observations: BuildObservations,
+    progress: &mut dyn FnMut(BuildPhase),
+) -> Result<BuildSummary, LifecycleError> {
+    progress(BuildPhase::Lexical);
+    let stage = persist_git_history_lexical_stage(
+        root,
+        sources,
+        history_plan,
+        incremental,
+        refresh,
+        reused_snapshot,
+        &mut observations,
+    )?;
+    finish_git_history_lexical_stage(
+        root,
+        sources,
+        &stage,
+        semantic,
+        previous_vectors,
+        reconciled_vectors,
+        vector_checkpoint_path,
+        started,
+        observations,
+        progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_git_history_lexical_stage(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    history_plan: GitHistoryBuildPlan,
+    incremental: Option<&IncrementalStage>,
+    refresh: &GitHistoryRefreshObservations,
+    reused_snapshot: bool,
+    observations: &mut BuildObservations,
+) -> Result<GitHistoryLexicalStage, LifecycleError> {
+    if let Some(stage) = load_git_history_lexical_stage(root, sources)? {
+        observations.reused_lexical_stage = true;
+        observations.chunks = stage.marker.corpus.chunk_count();
+        observations.documents = stage.marker.corpus.document_count();
+        return Ok(stage);
+    }
+    let embedded = embedded_catalog_chunks()?;
+    let history_chunks = history_plan.len();
+    observations.chunks = history_chunks.saturating_add(embedded.len());
+    observations.visited_files = observations.visited_files.max(observations.accepted_files);
+    fs::create_dir_all(root)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".tmp-lexical-stage-")
+        .tempdir_in(root)?;
+    let temp_root = staging.path();
+    let lexical_path = temp_root.join("lexical.json");
+    let encoding_started = Instant::now();
+    let (lexical_checksum, lexical_bytes) = if let Some(previous) = incremental {
+        LexicalIndex::write_incremental_git_history_search_artifact_with_digest(
+            &previous.lexical_path,
+            &history_plan,
+            sources,
+            &lexical_path,
+        )?
+    } else {
+        LexicalIndex::write_git_history_search_artifact_with_digest(
+            &history_plan,
+            sources,
+            &embedded,
+            &lexical_path,
+        )?
+    };
+    let lexical_sidecar_checksum = LexicalIndex::sidecar_checksum(&lexical_path)?;
+    observations.record(BuildPhase::Encoding, encoding_started);
+    drop(history_plan);
+
+    let corpus_started = Instant::now();
+    let corpus_version = CorpusVersion::try_from("git-full-history-v1")
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let (documents, chunks, digest) = LexicalIndex::corpus_inventory(&lexical_path)?;
+    let corpus = CorpusManifest::from_inventory(corpus_version, documents, chunks, digest);
+    corpus
+        .validate()
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    observations.chunks = corpus.chunk_count();
+    observations.documents = corpus.document_count();
+    observations.record(BuildPhase::Corpus, corpus_started);
+
+    let marker = GitHistoryLexicalStageMarker {
+        schema: GIT_HISTORY_LEXICAL_STAGE_SCHEMA,
+        contract_digest: git_history_lexical_contract_digest(sources)?,
+        lexical_checksum,
+        lexical_sidecar_checksum,
+        lexical_bytes,
+        corpus,
+        history_chunks,
+        refresh: GitHistoryLexicalStageRefresh::from_refresh(refresh),
+        reused_snapshot,
+    };
+    let marker_path = temp_root.join(GIT_HISTORY_LEXICAL_STAGE_MARKER);
+    let marker_file = File::create(marker_path)?;
+    serde_json::to_writer(&marker_file, &marker)?;
+    marker_file.sync_all()?;
+    let temp_root = staging.keep();
+    let stage_root = git_history_lexical_stage_path(root);
+    fs::rename(temp_root, &stage_root)?;
+    File::open(root)?.sync_all()?;
+    Ok(GitHistoryLexicalStage {
+        root: stage_root,
+        marker,
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn finish_git_history_lexical_stage(
+    root: &Path,
+    sources: &[GitCorpusSource],
+    stage: &GitHistoryLexicalStage,
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
     previous_vectors: Option<VectorArtifact>,
     reconciled_vectors: Option<ReconciledVectorStage>,
     vector_checkpoint_path: Option<&Path>,
     started: Instant,
-    observations: BuildObservations,
+    mut observations: BuildObservations,
+    progress: &mut dyn FnMut(BuildPhase),
 ) -> Result<BuildSummary, LifecycleError> {
-    let mut chunks = history_chunks;
-    let embedded = embedded_catalog_chunks()?;
-    let embedded_len = embedded.len();
-    debug_assert!(chunks.capacity() >= chunks.len().saturating_add(embedded_len));
-    chunks.extend(embedded);
-    chunks.rotate_right(embedded_len);
-    let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
-        provider,
-        model_id,
-        model_revision,
-        checkpoint_path: vector_checkpoint_path,
-    });
-    stage_chunks(
+    let staging = tempfile::Builder::new().prefix(".tmp-").tempdir_in(root)?;
+    let temp_root = staging.path();
+    let lexical_path = temp_root.join("lexical.json");
+    LexicalIndex::clone_search_artifact(&stage.lexical_path(), &lexical_path)?;
+    let lexical_checksum = stage.marker.lexical_checksum.clone();
+    let lexical_bytes = stage.marker.lexical_bytes;
+    let corpus = stage.marker.corpus.clone();
+    observations.chunks = corpus.chunk_count();
+    observations.documents = corpus.document_count();
+
+    let (vector_checksum, vector_bytes) = if let Some((provider, model_id, model_revision)) =
+        semantic
+    {
+        progress(BuildPhase::Inference);
+        let vector_path = temp_root.join("vectors.bin");
+        let index = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
+        let ids = index.embedding_chunk_ids()?;
+        let mut hydrator = EmbeddingTextHydrator::default();
+        let mut embedding_texts = |indices: &[usize]| {
+            let requested = indices
+                .iter()
+                .map(|&index| ids.get(index).cloned().ok_or(EmbeddingError::InvalidHeader))
+                .collect::<Result<Vec<_>, _>>()?;
+            index
+                .embedding_texts_by_id(&requested, &mut hydrator)
+                .map_err(|error| EmbeddingError::Provider(error.to_string()))
+        };
+        let semantic_started = Instant::now();
+        let (checksum, bytes, count, dimension, vector_build) =
+            if let Some(previous) = reconciled_vectors {
+                VectorArtifact::write_provider_reconciling_ids_artifact_with_observations(
+                    provider,
+                    &ids,
+                    &mut embedding_texts,
+                    ReconciledVectorArtifact {
+                        model_id,
+                        model_revision,
+                        corpus_digest: &corpus.content_digest,
+                        previous_corpus_digest: &previous.corpus_digest,
+                        previous_checksum: &previous.checksum,
+                        previous_path: &previous.path,
+                        path: &vector_path,
+                        checkpoint_path: vector_checkpoint_path,
+                    },
+                )?
+            } else {
+                let temporary_checkpoint = temp_root.join("vectors.checkpoint");
+                let checkpoint_path = vector_checkpoint_path.unwrap_or(&temporary_checkpoint);
+                let result =
+                VectorArtifact::write_provider_reusing_checkpoint_ids_artifact_with_observations(
+                    provider,
+                    &ids,
+                    &mut embedding_texts,
+                    model_id,
+                    model_revision,
+                    &corpus.content_digest,
+                    previous_vectors,
+                    checkpoint_path,
+                    &vector_path,
+                );
+                if vector_checkpoint_path.is_none() && temporary_checkpoint.exists() {
+                    fs::remove_file(&temporary_checkpoint)?;
+                }
+                result?
+            };
+        observations.embedding_git_blob_loads = hydrator.git_blob_loads();
+        observations.embedding_input_bytes = vector_build.input_bytes;
+        observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
+        observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
+        observations.record_duration(
+            BuildPhase::VectorFinalization,
+            vector_build.vector_finalization_us,
+        );
+        observations.vector_build = Some(vector_build);
+        observations.vector_count = count;
+        observations.vector_dimension = Some(dimension);
+        observations.resolved_batch_size = Some(provider.embedding_batch_size().get());
+        let writing_us = elapsed_us(semantic_started)
+            .saturating_sub(
+                observations
+                    .phases_us
+                    .get(&BuildPhase::EmbeddingInput)
+                    .copied()
+                    .unwrap_or(0),
+            )
+            .saturating_sub(
+                observations
+                    .phases_us
+                    .get(&BuildPhase::Inference)
+                    .copied()
+                    .unwrap_or(0),
+            )
+            .saturating_sub(
+                observations
+                    .phases_us
+                    .get(&BuildPhase::VectorFinalization)
+                    .copied()
+                    .unwrap_or(0),
+            );
+        observations.record_duration(BuildPhase::Writing, writing_us);
+        (Some(checksum), Some(bytes))
+    } else {
+        (None, None)
+    };
+
+    progress(BuildPhase::Activation);
+    publish_staged_generation(
         root,
-        chunks,
-        semantic,
-        previous_vectors,
-        reconciled_vectors,
-        None,
-        "git-full-history-v1",
+        staging,
+        lexical_checksum,
+        lexical_bytes,
+        vector_checksum,
+        vector_bytes,
+        corpus,
         Vec::new(),
         Vec::new(),
         started,
@@ -754,7 +1312,8 @@ pub fn build_git_artifacts_with_provider(
             );
         }
         chunking_us = chunking_us.saturating_add(elapsed_us(chunking_started));
-        rejected.extend(report.rejected);
+        let remaining_samples = MAX_REJECTION_SAMPLES.saturating_sub(rejected.len());
+        rejected.extend(report.rejected.into_iter().take(remaining_samples));
         inventory.extend(report.sources);
     }
     let mut observations = BuildObservations::default();
@@ -762,8 +1321,9 @@ pub fn build_git_artifacts_with_provider(
     observations.record_duration(BuildPhase::Chunking, chunking_us);
     observations.visited_files = visited_files;
     observations.inventory_count = inventory.len();
-    observations.rejection_count = rejected.len();
-    observations.rejected_files = rejected.len() as u64;
+    observations.rejection_count =
+        usize::try_from(git_ingestion.rejection_count).unwrap_or(usize::MAX);
+    observations.rejected_files = git_ingestion.rejection_count;
     observations.accepted_files = inventory
         .iter()
         .filter(|source| source.rejection.is_none())
@@ -778,15 +1338,12 @@ pub fn build_git_artifacts_with_provider(
         provider,
         model_id,
         model_revision,
-        checkpoint_path: None,
     });
     stage_chunks(
         root,
-        chunks,
+        &chunks,
+        Some(sources),
         semantic,
-        None,
-        None,
-        None,
         "git-tree-v1",
         rejected,
         inventory,
@@ -798,11 +1355,9 @@ pub fn build_git_artifacts_with_provider(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn stage_chunks(
     root: &Path,
-    chunks: Vec<crate::Chunk>,
+    chunks: &[crate::Chunk],
+    git_sources: Option<&[GitCorpusSource]>,
     semantic: Option<SemanticBuild<'_>>,
-    previous_vectors: Option<VectorArtifact>,
-    reconciled_vectors: Option<ReconciledVectorStage>,
-    incremental: Option<&IncrementalStage>,
     corpus_version: &str,
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
@@ -817,24 +1372,21 @@ fn stage_chunks(
             .accepted_files
             .saturating_add(observations.rejected_files),
     );
-    let previous_lexical = incremental.map(|previous| previous.lexical_path.as_path());
-
     fs::create_dir_all(root)?;
     let staging = tempfile::Builder::new().prefix(".tmp-").tempdir_in(root)?;
     let temp_root = staging.path();
-    let generation_root = root.join("generations");
-    fs::create_dir_all(&generation_root)?;
     let lexical_path = temp_root.join("lexical.json");
     let encoding_started = Instant::now();
-    let (lexical_checksum, lexical_bytes) = if let Some(previous) = &previous_lexical {
-        LexicalIndex::write_incremental_search_artifact_with_digest(
-            previous,
-            chunks.iter(),
-            &lexical_path,
-        )?
-    } else {
-        LexicalIndex::write_search_artifact_with_digest(chunks.iter(), &lexical_path)?
-    };
+    let (lexical_checksum, lexical_bytes) = git_sources.map_or_else(
+        || LexicalIndex::write_search_artifact_with_digest(chunks.iter(), &lexical_path),
+        |sources| {
+            LexicalIndex::write_git_search_artifact_with_digest(
+                chunks.iter(),
+                sources,
+                &lexical_path,
+            )
+        },
+    )?;
     observations.record(BuildPhase::Encoding, encoding_started);
     let corpus_started = Instant::now();
     let corpus_version = CorpusVersion::try_from(corpus_version)
@@ -860,132 +1412,64 @@ fn stage_chunks(
     observations.record(BuildPhase::Corpus, corpus_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
         let vector_path = temp_root.join("vectors.bin");
-        if let Some(previous) = incremental {
-            let previous_path = previous.vector_path.as_ref().ok_or_else(|| {
-                LifecycleError::Contract(
-                    "incremental semantic staging requires the previous vector artifact".into(),
-                )
-            })?;
-            let write_started = Instant::now();
-            let (checksum, bytes, count, dimension, vector_build) =
-                VectorArtifact::write_provider_appending_artifact_with_observations(
-                    semantic.provider,
-                    &chunks,
-                    IncrementalVectorArtifact {
-                        model_id: semantic.model_id,
-                        model_revision: semantic.model_revision,
-                        corpus_digest: &corpus.content_digest,
-                        previous_corpus_digest: &previous.corpus_digest,
-                        previous_path,
-                        path: &vector_path,
-                    },
-                )?;
-            observations.embedding_input_bytes = vector_build.input_bytes;
-            observations
-                .record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
-            observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
-            observations.record_duration(
-                BuildPhase::VectorFinalization,
-                vector_build.vector_finalization_us,
-            );
-            observations.vector_build = Some(vector_build);
-            observations.vector_count = count;
-            observations.vector_dimension = Some(dimension);
-            observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
-            observations.record(BuildPhase::Writing, write_started);
-            (Some(checksum), Some(bytes))
-        } else if let Some(previous) = reconciled_vectors {
-            let write_started = Instant::now();
-            let (checksum, bytes, count, dimension, vector_build) =
-                VectorArtifact::write_provider_reconciling_artifact_with_observations(
-                    semantic.provider,
-                    chunks,
-                    ReconciledVectorArtifact {
-                        model_id: semantic.model_id,
-                        model_revision: semantic.model_revision,
-                        corpus_digest: &corpus.content_digest,
-                        previous_corpus_digest: &previous.corpus_digest,
-                        previous_checksum: &previous.checksum,
-                        previous_path: &previous.path,
-                        path: &vector_path,
-                        checkpoint_path: semantic.checkpoint_path,
-                    },
-                )?;
-            observations.embedding_input_bytes = vector_build.input_bytes;
-            observations
-                .record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
-            observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
-            observations.record_duration(
-                BuildPhase::VectorFinalization,
-                vector_build.vector_finalization_us,
-            );
-            observations.vector_build = Some(vector_build);
-            observations.vector_count = count;
-            observations.vector_dimension = Some(dimension);
-            observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
-            observations.record(BuildPhase::Writing, write_started);
-            (Some(checksum), Some(bytes))
-        } else if let Some(checkpoint_path) = semantic.checkpoint_path {
-            let semantic_started = Instant::now();
-            let (checksum, bytes, count, dimension, vector_build) =
-                VectorArtifact::write_provider_reusing_checkpoint_artifact_with_observations(
-                    semantic.provider,
-                    &chunks,
-                    semantic.model_id,
-                    semantic.model_revision,
-                    &corpus.content_digest,
-                    previous_vectors,
-                    checkpoint_path,
-                    &vector_path,
-                )?;
-            observations.embedding_input_bytes = vector_build.input_bytes;
-            observations
-                .record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
-            observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
-            observations.record_duration(
-                BuildPhase::VectorFinalization,
-                vector_build.vector_finalization_us,
-            );
-            observations.vector_build = Some(vector_build);
-            observations.vector_count = count;
-            observations.vector_dimension = Some(dimension);
-            observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
-            let writing_us = elapsed_us(semantic_started)
-                .saturating_sub(vector_build.embedding_input_us)
-                .saturating_sub(vector_build.provider_us)
-                .saturating_sub(vector_build.vector_finalization_us);
-            observations.record_duration(BuildPhase::Writing, writing_us);
-            (Some(checksum), Some(bytes))
-        } else {
-            let (vector, vector_build) =
-                VectorArtifact::from_provider_reusing_owned_with_observations(
-                    semantic.provider,
-                    &chunks,
-                    semantic.model_id,
-                    semantic.model_revision,
-                    corpus.content_digest.clone(),
-                    previous_vectors,
-                )?;
-            observations.embedding_input_bytes = vector_build.input_bytes;
-            observations
-                .record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
-            observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
-            observations.record_duration(
-                BuildPhase::VectorFinalization,
-                vector_build.vector_finalization_us,
-            );
-            observations.vector_build = Some(vector_build);
-            observations.vector_count = vector.ids.len();
-            observations.vector_dimension = Some(vector.dimension);
-            observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
-            let write_started = Instant::now();
-            let (checksum, bytes) = vector.write_artifact_with_digest(&vector_path)?;
-            observations.record(BuildPhase::Writing, write_started);
-            (Some(checksum), Some(bytes))
-        }
+        let (vector, vector_build) = VectorArtifact::from_provider_with_observations(
+            semantic.provider,
+            chunks,
+            semantic.model_id,
+            semantic.model_revision,
+            corpus.content_digest.clone(),
+        )?;
+        observations.embedding_input_bytes = vector_build.input_bytes;
+        observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
+        observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
+        observations.record_duration(
+            BuildPhase::VectorFinalization,
+            vector_build.vector_finalization_us,
+        );
+        observations.vector_count = vector.ids.len();
+        observations.vector_dimension = Some(vector.dimension);
+        observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
+        observations.vector_build = Some(vector_build);
+        let write_started = Instant::now();
+        let (checksum, bytes) = vector.write_artifact_with_digest(&vector_path)?;
+        observations.record(BuildPhase::Writing, write_started);
+        (Some(checksum), Some(bytes))
     } else {
         (None, None)
     };
+    publish_staged_generation(
+        root,
+        staging,
+        lexical_checksum,
+        lexical_bytes,
+        vector_checksum,
+        vector_bytes,
+        corpus,
+        diagnostics,
+        sources,
+        started,
+        observations,
+    )
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)] // Owning TempDir keeps cleanup active until atomic publication completes.
+fn publish_staged_generation(
+    root: &Path,
+    staging: tempfile::TempDir,
+    lexical_checksum: ContentDigest,
+    lexical_bytes: u64,
+    vector_checksum: Option<ContentDigest>,
+    vector_bytes: Option<u64>,
+    corpus: CorpusManifest,
+    diagnostics: Vec<SourceRejection>,
+    sources: Vec<SourceInventory>,
+    started: Instant,
+    mut observations: BuildObservations,
+) -> Result<BuildSummary, LifecycleError> {
     if vector_checksum.is_some() && observations.vector_count != corpus.chunk_count() {
         return Err(LifecycleError::Contract(format!(
             "vector count {} does not match corpus chunk count {}",
@@ -993,6 +1477,7 @@ fn stage_chunks(
             corpus.chunk_count()
         )));
     }
+    let temp_root = staging.path();
     let manifest = ArtifactManifest {
         schema: crate::corpus::ARTIFACT_SCHEMA_V1,
         corpus,
@@ -1024,6 +1509,8 @@ fn stage_chunks(
     )?;
     observations.record(BuildPhase::Validation, validation_started);
 
+    let generation_root = root.join("generations");
+    fs::create_dir_all(&generation_root)?;
     let base_generation = ContentDigest::of(&manifest_bytes).to_string();
     let generation = (0..=32)
         .find_map(|attempt| {
@@ -1071,26 +1558,62 @@ fn stage_chunks(
     })
 }
 
-/// Version inputs which affect persisted artifact compatibility and identity.
-#[must_use]
-pub fn artifact_component_versions() -> BTreeMap<String, String> {
-    let mut versions = BTreeMap::from([
-        (
-            "vesc-knowledge-index".into(),
-            env!("CARGO_PKG_VERSION").into(),
-        ),
+fn git_history_lexical_component_versions() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("chunking".into(), "markdown-structural-v1".into()),
         ("corpus-schema".into(), "1.1".into()),
+        (
+            "embedded-catalog".into(),
+            ContentDigest::of(include_bytes!("../generated/knowledge_index.json")).to_string(),
+        ),
+        ("git-history-corpus".into(), "1".into()),
+        (
+            "git-policy".into(),
+            crate::corpus::git::GIT_CORPUS_POLICY_VERSION.into(),
+        ),
         (
             "lexical-format".into(),
             crate::lexical::LEXICAL_FORMAT_VERSION.into(),
         ),
         ("markdown-parser".into(), "pulldown-cmark-0.13".into()),
+    ])
+}
+
+/// Whether two artifact version maps describe the same reusable Git-history corpus.
+///
+/// Lexical and vector encodings are deliberately excluded: they can be rebuilt
+/// from the persisted corpus without walking Git history again.
+#[must_use]
+pub fn git_history_corpus_versions_are_compatible(
+    previous: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> bool {
+    const CORPUS_COMPONENTS: [&str; 6] = [
+        "chunking",
+        "corpus-schema",
+        "embedded-catalog",
+        "git-history-corpus",
+        "git-policy",
+        "markdown-parser",
+    ];
+    CORPUS_COMPONENTS.iter().all(|name| {
+        previous
+            .get(*name)
+            .is_some_and(|value| current.get(*name) == Some(value))
+    })
+}
+
+/// Version inputs which affect persisted artifact compatibility and identity.
+#[must_use]
+pub fn artifact_component_versions() -> BTreeMap<String, String> {
+    let mut versions = git_history_lexical_component_versions();
+    versions.extend([
+        (
+            "vesc-knowledge-index".into(),
+            env!("CARGO_PKG_VERSION").into(),
+        ),
         ("vector-format".into(), "dense-cosine-v2".into()),
     ]);
-    versions.insert(
-        "git-policy".into(),
-        crate::corpus::git::GIT_CORPUS_POLICY_VERSION.into(),
-    );
     versions
 }
 
@@ -1326,6 +1849,45 @@ pub fn validate_active_generation(root: &Path) -> Result<PreviousArtifactSummary
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lexical_stage_contract_includes_git_corpus_limits() {
+        let mut source = GitCorpusSource {
+            repository_path: PathBuf::from("fixture.git"),
+            repository_id: RepositoryId::try_from("fixture").expect("repository"),
+            revision: Revision::try_from("0".repeat(40)).expect("revision"),
+            trust_tier: crate::TrustTier::CuratedUpstream,
+            license: crate::LicenseStatus::ReferenceOnly,
+            policy: crate::corpus::git::GitCorpusPolicy::default(),
+        };
+        source.policy.limits =
+            crate::corpus::git::GitCorpusLimits::new(1_024, 10, 4_096).expect("limits");
+        let baseline = git_history_lexical_contract_digest(std::slice::from_ref(&source))
+            .expect("baseline contract");
+
+        for limits in [
+            crate::corpus::git::GitCorpusLimits::new(2_048, 10, 4_096).expect("file limit"),
+            crate::corpus::git::GitCorpusLimits::new(1_024, 20, 4_096).expect("file count"),
+            crate::corpus::git::GitCorpusLimits::new(1_024, 10, 8_192).expect("total bytes"),
+        ] {
+            source.policy.limits = limits;
+            assert_ne!(
+                baseline,
+                git_history_lexical_contract_digest(std::slice::from_ref(&source))
+                    .expect("changed contract")
+            );
+        }
+    }
+
+    #[test]
+    fn lexical_contract_versions_exclude_vector_only_state() {
+        let versions = git_history_lexical_component_versions();
+
+        assert!(!versions.contains_key("vector-format"));
+        assert!(!versions.contains_key("vesc-knowledge-index"));
+        assert!(versions.contains_key("chunking"));
+        assert!(versions.contains_key("embedded-catalog"));
+    }
 
     #[test]
     fn staged_build_and_inspect_are_portable() {

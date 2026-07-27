@@ -65,6 +65,11 @@ let
       allowOfflineRestart = false;
     };
   }).config.systemd.services.vesc-mcp;
+  allDisabled = (evaluate {
+    repositories.disabled = repository // {
+      enabled = false;
+    };
+  }).config.systemd.services.vesc-mcp;
   rejects = settings:
     builtins.tryEval (toString (evaluate settings).config.systemd.services.vesc-mcp.environment.VESC_MCP_CONFIG);
   invalidId = rejects { repositories."Bad/ID" = repository; };
@@ -75,15 +80,19 @@ assert !invalidId.success;
 assert !invalidUrl.success;
 assert !invalidRef.success;
 pkgs.runCommand "vesc-mcp-nixos-module-smoke" { } ''
-  test "${defaults.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http"
+  test "${defaults.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 900"
   test "${toString defaults.serviceConfig.TimeoutStartSec}" = "900"
-  test "${strictLazy.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --skip-repository-refresh --skip-eager-index --require-fresh-repositories"
+  test "${strictLazy.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 900 --require-fresh-repositories"
+  test "${service.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 600"
   test "${nixpkgs.lib.boolToString service.serviceConfig.DynamicUser}" = "true"
   test "${service.serviceConfig.StateDirectory}" = "vesc-mcp"
   test "${service.serviceConfig.CacheDirectory}" = "vesc-mcp"
   test "${toString service.serviceConfig.TimeoutStartSec}" = "600"
+  grep -F 'managed_git = false' "${defaults.environment.VESC_MCP_CONFIG}"
+  grep -F 'managed_git = false' "${allDisabled.environment.VESC_MCP_CONFIG}"
   config_file="${service.environment.VESC_MCP_CONFIG}"
   grep -F 'data_root = "/var/lib/vesc-mcp"' "$config_file"
+  grep -F 'managed_git = true' "$config_file"
   grep -F 'id = "bldc"' "$config_file"
   grep -F 'id = "vesc_tool"' "$config_file"
   grep -F 'id = "refloat"' "$config_file"

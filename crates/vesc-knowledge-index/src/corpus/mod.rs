@@ -108,10 +108,94 @@ macro_rules! string_id {
 }
 
 string_id!(DocumentId, "document id");
-string_id!(ChunkId, "chunk id");
 string_id!(CorpusVersion, "corpus version");
 string_id!(RepositoryId, "repository id");
 string_id!(Revision, "revision");
+
+/// A stable chunk identity stored as its SHA-256 digest without a heap string.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChunkId([u8; 32]);
+
+pub(crate) struct EncodedChunkId([u8; ChunkId::ENCODED_LEN]);
+
+impl ChunkId {
+    pub(crate) const ENCODED_LEN: usize = 6 + 64;
+
+    pub(crate) fn encoded(&self) -> EncodedChunkId {
+        let mut encoded = [0_u8; Self::ENCODED_LEN];
+        encoded[..6].copy_from_slice(b"chunk-");
+        encode_hex(&self.0, &mut encoded[6..]);
+        EncodedChunkId(encoded)
+    }
+}
+
+impl EncodedChunkId {
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("chunk ID encoding is ASCII")
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; ChunkId::ENCODED_LEN] {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ChunkId {
+    type Error = CorpusError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        parse_prefixed_digest(&value, "chunk-")
+            .map(Self)
+            .ok_or(CorpusError::InvalidValue {
+                kind: "chunk id",
+                value,
+            })
+    }
+}
+
+impl TryFrom<&str> for ChunkId {
+    type Error = CorpusError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        parse_prefixed_digest(value, "chunk-")
+            .map(Self)
+            .ok_or_else(|| CorpusError::InvalidValue {
+                kind: "chunk id",
+                value: value.to_owned(),
+            })
+    }
+}
+
+impl Serialize for ChunkId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.encoded().as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ChunkId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::try_from(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl fmt::Display for ChunkId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.encoded().as_str())
+    }
+}
+
+impl fmt::Debug for ChunkId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ChunkId")
+            .field(&self.encoded().as_str())
+            .finish()
+    }
+}
 
 /// A SHA-256 digest with an explicit algorithm prefix.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -240,7 +324,11 @@ impl EncodedContentDigest {
 }
 
 fn parse_content_digest(value: &str) -> Option<ContentDigest> {
-    let hex = value.strip_prefix("sha256:")?;
+    parse_prefixed_digest(value, "sha256:").map(ContentDigest)
+}
+
+pub(crate) fn parse_prefixed_digest(value: &str, prefix: &str) -> Option<[u8; 32]> {
+    let hex = value.strip_prefix(prefix)?;
     if hex.len() != 64 {
         return None;
     }
@@ -248,7 +336,7 @@ fn parse_content_digest(value: &str) -> Option<ContentDigest> {
     for (output, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
         *output = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
     }
-    Some(ContentDigest(bytes))
+    Some(bytes)
 }
 
 const fn hex_digit(byte: u8) -> Option<u8> {
@@ -573,13 +661,22 @@ pub struct Chunk {
     pub content_digest: ContentDigest,
 }
 
+/// Compact fields needed to rank and de-duplicate a retrieval candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetrievalMetadata {
+    pub chunk_id: ChunkId,
+    pub document_id: DocumentId,
+    pub registered_id: Option<String>,
+    pub content_digest: ContentDigest,
+}
+
 pub(crate) struct ChunkIdentity {
     content_digest: ContentDigest,
     chunk_id: ChunkId,
 }
 
 impl ChunkIdentity {
-    pub(crate) fn from_sha256(content_digest: ContentDigest, chunk_digest: [u8; 32]) -> Self {
+    pub(crate) const fn from_sha256(content_digest: ContentDigest, chunk_digest: [u8; 32]) -> Self {
         Self {
             content_digest,
             chunk_id: ChunkId::from_sha256(chunk_digest),
@@ -588,6 +685,16 @@ impl ChunkIdentity {
 }
 
 impl Chunk {
+    #[must_use]
+    pub fn retrieval_metadata(&self) -> RetrievalMetadata {
+        RetrievalMetadata {
+            chunk_id: self.chunk_id.clone(),
+            document_id: self.document_id.clone(),
+            registered_id: self.registered_id.clone(),
+            content_digest: self.content_digest.clone(),
+        }
+    }
+
     /// Builds a stable chunk from normalized document metadata and passage text.
     ///
     /// # Errors
@@ -614,7 +721,8 @@ impl Chunk {
                 content_digest,
                 chunk_id,
             },
-        )
+        )?
+        .with_derived_resource_uri()
     }
 
     pub(crate) fn from_document_identity(
@@ -632,7 +740,6 @@ impl Chunk {
             content_digest,
             chunk_id,
         } = identity;
-        let resource_uri = ResourceUri::try_from(format!("vesc://knowledge/chunk/{chunk_id}"))?;
         Ok(Self {
             schema: CORPUS_SCHEMA_V1,
             chunk_id,
@@ -662,11 +769,24 @@ impl Chunk {
                 .collect(),
             registered_id: document.registered_id.clone(),
             trust_tier: document.trust_tier,
-            resource_uri: Some(resource_uri),
+            resource_uri: None,
             previous_chunk: None,
             next_chunk: None,
             content_digest,
         })
+    }
+
+    pub(crate) fn with_derived_resource_uri(mut self) -> Result<Self, CorpusError> {
+        self.attach_derived_resource_uri()?;
+        Ok(self)
+    }
+
+    pub(crate) fn attach_derived_resource_uri(&mut self) -> Result<(), CorpusError> {
+        let mut uri = String::with_capacity("vesc://knowledge/chunk/".len() + ChunkId::ENCODED_LEN);
+        uri.push_str("vesc://knowledge/chunk/");
+        uri.push_str(self.chunk_id.encoded().as_str());
+        self.resource_uri = Some(ResourceUri::try_from(uri)?);
+        Ok(())
     }
 
     /// Validates stored counts and the passage digest before artifact use.
@@ -763,7 +883,7 @@ impl CorpusManifest {
             digest_input.update([0]);
         }
         for id in &chunks {
-            digest_input.update(id.as_ref().as_bytes());
+            digest_input.update(id.encoded().as_bytes());
             digest_input.update([0]);
         }
         let content_digest = ContentDigest::from_sha256(digest_input.finalize().into());
@@ -958,16 +1078,11 @@ impl ChunkId {
         anchor: &str,
         digest: &ContentDigest,
     ) -> Self {
-        let encoded_digest = digest.encoded();
-        Self(digest_id(
-            "chunk-",
-            b"vesc-mcp/chunk/v1",
-            &[
-                document.as_ref(),
-                &ordinal.to_string(),
-                anchor,
-                encoded_digest.as_str(),
-            ],
+        Self(Self::heading_identity_digest(
+            document,
+            ordinal,
+            &[anchor],
+            digest,
         ))
     }
 
@@ -998,8 +1113,8 @@ impl ChunkId {
         hasher.finalize().into()
     }
 
-    pub(crate) fn from_sha256(digest: [u8; 32]) -> Self {
-        Self(prefixed_hex("chunk-", &digest))
+    pub(crate) const fn from_sha256(digest: [u8; 32]) -> Self {
+        Self(digest)
     }
 }
 
@@ -1116,7 +1231,7 @@ mod tests {
                 document.content_digest.to_string(),
                 document.document_id.as_str(),
                 chunk.content_digest.to_string(),
-                chunk.chunk_id.as_str(),
+                chunk.chunk_id.to_string(),
             ),
             (
                 "sha256:ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73"
@@ -1124,7 +1239,7 @@ mod tests {
                 "doc-ffe1dfa7013b387d4155eb776bddadde3b05b1161348e0892547994293c16a51",
                 "sha256:0886b051075687c18a9ae5075383feb8400fbe4328c6e4bd45b77b30f1e73b54"
                     .to_owned(),
-                "chunk-d9b489956a5b05bf266eae32b4121f06bbcb2dc7f123be5a07535057bc8e8487",
+                "chunk-d9b489956a5b05bf266eae32b4121f06bbcb2dc7f123be5a07535057bc8e8487".to_owned(),
             )
         );
     }
@@ -1132,6 +1247,16 @@ mod tests {
     #[test]
     fn content_digest_stores_only_digest_bytes() {
         assert_eq!(std::mem::size_of::<ContentDigest>(), 32);
+    }
+
+    #[test]
+    fn chunk_id_is_a_fixed_digest_newtype() {
+        let encoded = "chunk-d9b489956a5b05bf266eae32b4121f06bbcb2dc7f123be5a07535057bc8e8487";
+        let chunk_id = ChunkId::try_from(encoded).expect("chunk id");
+
+        assert_eq!(std::mem::size_of::<ChunkId>(), 32);
+        assert_eq!(chunk_id.to_string(), encoded);
+        assert!(ChunkId::try_from("missing").is_err());
     }
 
     #[test]

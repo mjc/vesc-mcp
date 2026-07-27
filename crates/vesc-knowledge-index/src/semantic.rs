@@ -546,19 +546,39 @@ pub trait EmbeddingProvider {
 /// lexical fields expose.
 #[must_use]
 pub fn embedding_text(chunk: &Chunk) -> String {
-    let mut identifier_buffer = [""; MAX_EMBEDDING_IDENTIFIERS];
-    let identifiers = embedding_identifiers(chunk, &mut identifier_buffer);
-    embedding_text_with_identifiers(chunk, identifiers)
-}
-
-pub(crate) fn embedding_text_with_identifiers(chunk: &Chunk, identifiers: &[&str]) -> String {
-    embedding_text_from_parts(
+    embedding_text_from_metadata(
         &chunk.title,
         chunk.heading_path.iter().map(String::as_str),
-        identifiers,
+        &chunk.identifiers,
         &chunk.tags,
         &chunk.text,
     )
+}
+
+pub(crate) fn embedding_text_from_metadata<'heading>(
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[compact_str::CompactString],
+    tags: &BTreeSet<String>,
+    content: &str,
+) -> String {
+    let mut identifier_buffer = [""; MAX_EMBEDDING_IDENTIFIERS];
+    let identifiers =
+        embedding_identifiers_from_parts(identifiers, content, &mut identifier_buffer);
+    embedding_text_from_parts(title, headings, identifiers, tags, content)
+}
+
+pub(crate) fn embedding_text_digest_from_metadata<'heading>(
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[compact_str::CompactString],
+    tags: &BTreeSet<String>,
+    content: &str,
+) -> ContentDigest {
+    let mut identifier_buffer = [""; MAX_EMBEDDING_IDENTIFIERS];
+    let identifiers =
+        embedding_identifiers_from_parts(identifiers, content, &mut identifier_buffer);
+    embedding_text_digest_from_parts(title, headings, identifiers, tags, content)
 }
 
 pub(crate) fn embedding_text_from_parts<'heading>(
@@ -643,23 +663,23 @@ fn visit_embedding_text_parts<'heading>(
 
 const MAX_EMBEDDING_IDENTIFIERS: usize = 32;
 
-fn embedding_identifiers<'chunk, 'buffer>(
-    chunk: &'chunk Chunk,
-    buffer: &'buffer mut [&'chunk str; MAX_EMBEDDING_IDENTIFIERS],
-) -> &'buffer [&'chunk str] {
-    if chunk.identifiers.len() <= MAX_EMBEDDING_IDENTIFIERS {
-        for (slot, identifier) in buffer.iter_mut().zip(&chunk.identifiers) {
+fn embedding_identifiers_from_parts<'metadata, 'buffer>(
+    identifiers: &'metadata [compact_str::CompactString],
+    content: &'metadata str,
+    buffer: &'buffer mut [&'metadata str; MAX_EMBEDDING_IDENTIFIERS],
+) -> &'buffer [&'metadata str] {
+    if identifiers.len() <= MAX_EMBEDDING_IDENTIFIERS {
+        for (slot, identifier) in buffer.iter_mut().zip(identifiers) {
             *slot = identifier;
         }
-        return &buffer[..chunk.identifiers.len()];
+        return &buffer[..identifiers.len()];
     }
-    let local = chunk
-        .text
+    let local = content
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
         .filter(|token| !token.is_empty())
         .collect::<BTreeSet<_>>();
     let mut length = 0;
-    for identifier in &chunk.identifiers {
+    for identifier in identifiers {
         let identifier = identifier.as_str();
         if local.contains(identifier) || identifier_semantic_alias(identifier).is_some() {
             buffer[length] = identifier;
@@ -871,6 +891,7 @@ impl EmbeddingProvider for FakeEmbeddingProvider {
 #[cfg(feature = "semantic-fastembed")]
 pub struct FastEmbedProvider {
     model: fastembed::TextEmbedding,
+    window_tokenizer: tokenizers::Tokenizer,
     batch_size: EmbeddingBatchSize,
     profile: EmbeddingProfile,
     length_bucketed: bool,
@@ -928,8 +949,14 @@ impl FastEmbedProvider {
             || Ok(EmbeddingBatchSize::default()),
             EmbeddingBatchSize::new,
         )?;
+        let mut window_tokenizer = model.tokenizer.clone();
+        window_tokenizer.with_padding(None);
+        window_tokenizer
+            .with_truncation(None)
+            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         Ok(Self {
             model,
+            window_tokenizer,
             batch_size,
             profile,
             length_bucketed: false,
@@ -987,11 +1014,6 @@ impl FastEmbedProvider {
             .iter()
             .map(|text| format!("{}{}", self.profile.document_prefix, text))
             .collect::<Vec<_>>();
-        let mut tokenizer = self.model.tokenizer.clone();
-        tokenizer.with_padding(None);
-        tokenizer
-            .with_truncation(None)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         let mut all_vectors = Vec::new();
         let mut all_owners = Vec::new();
         let mut all_token_counts = Vec::new();
@@ -1000,7 +1022,7 @@ impl FastEmbedProvider {
         let mut token_counts = Vec::with_capacity(self.batch_size.get());
         for (owner, text) in prefixed.iter().enumerate() {
             for (window, token_count) in
-                bounded_document_windows(&tokenizer, text, self.profile.max_length)?
+                bounded_document_windows(&self.window_tokenizer, text, self.profile.max_length)?
             {
                 windows.push(window);
                 owners.push(owner);
@@ -1202,6 +1224,16 @@ impl FastEmbedProvider {
             .with_max_length(profile.max_length)
             .with_execution_providers(semantic_execution_providers(execution_provider)?)
             .with_graph_optimization_level(graph_optimization_level);
+        if let Some(overrides) = migraphx_dimension_overrides(
+            encoded_model_digest.as_str(),
+            execution_provider,
+            batch_size,
+            profile.max_length,
+        )? {
+            for (name, size) in overrides {
+                options = options.with_dimension_override(name, size);
+            }
+        }
         if let Some(intra_threads) = intra_threads {
             if intra_threads == 0 {
                 return Err(EmbeddingError::Provider(
@@ -1246,12 +1278,6 @@ impl FastEmbedProvider {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut untruncated_tokenizer = self.model.tokenizer.clone();
-        untruncated_tokenizer.with_padding(None);
-        untruncated_tokenizer
-            .with_truncation(None)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-
         let mut real_tokens = Vec::new();
         let mut total_real_tokens = 0_u64;
         let mut total_padded_tokens = 0_u64;
@@ -1275,7 +1301,8 @@ impl FastEmbedProvider {
             // outer batch merely to collect diagnostics, defeating bounded
             // windowing before inference starts.
             for (configured, input) in configured.iter().zip(batch.iter()) {
-                let untruncated = untruncated_tokenizer
+                let untruncated = self
+                    .window_tokenizer
                     .encode_fast(input.as_str(), true)
                     .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
                 let real = configured
@@ -1428,24 +1455,15 @@ impl FastEmbedProvider {
     }
 
     fn document_windows(&self, text: &str) -> Result<Vec<(String, usize)>, EmbeddingError> {
-        let mut tokenizer = self.model.tokenizer.clone();
-        tokenizer.with_padding(None);
-        tokenizer
-            .with_truncation(None)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        bounded_document_windows(&tokenizer, text, self.profile.max_length)
+        bounded_document_windows(&self.window_tokenizer, text, self.profile.max_length)
     }
 
     fn document_window_batches(
         &self,
         texts: &[String],
     ) -> Result<Vec<Vec<(String, usize)>>, EmbeddingError> {
-        let mut tokenizer = self.model.tokenizer.clone();
-        tokenizer.with_padding(None);
-        tokenizer
-            .with_truncation(None)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        let special_tokens = tokenizer
+        let special_tokens = self
+            .window_tokenizer
             .encode_fast("", true)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?
             .len();
@@ -1455,19 +1473,15 @@ impl FastEmbedProvider {
                 if ascii_input_fits_model_window(text, self.profile.max_length, special_tokens) {
                     Ok(vec![(text.clone(), 1)])
                 } else {
-                    bounded_document_windows(&tokenizer, text, self.profile.max_length)
+                    bounded_document_windows(&self.window_tokenizer, text, self.profile.max_length)
                 }
             })
             .collect()
     }
 
     fn ensure_document_lengths(&self, texts: &[&str]) -> Result<(), EmbeddingError> {
-        let mut tokenizer = self.model.tokenizer.clone();
-        tokenizer.with_padding(None);
-        tokenizer
-            .with_truncation(None)
-            .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
-        let encodings = tokenizer
+        let encodings = self
+            .window_tokenizer
             .encode_batch_fast(texts.to_vec(), true)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?;
         if let Some(length) = encodings
@@ -1589,6 +1603,31 @@ fn validate_migraphx_model_digest(
         ));
     }
     Ok(())
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn migraphx_dimension_overrides(
+    model_digest: &str,
+    execution_provider: SemanticExecutionProvider,
+    batch_size: Option<usize>,
+    max_length: usize,
+) -> Result<Option<[(&'static str, i64); 2]>, EmbeddingError> {
+    if !matches!(
+        execution_provider,
+        SemanticExecutionProvider::Migraphx { .. }
+    ) || model_digest != crate::JINA_CODE_FP16_SHA256
+    {
+        return Ok(None);
+    }
+
+    let batch_size =
+        EmbeddingBatchSize::new(batch_size.unwrap_or_else(|| EmbeddingBatchSize::default().get()))?
+            .get();
+    let batch_size = i64::try_from(batch_size)
+        .map_err(|_| EmbeddingError::Provider("embedding batch size exceeds i64".into()))?;
+    let max_length = i64::try_from(max_length)
+        .map_err(|_| EmbeddingError::Provider("embedding max length exceeds i64".into()))?;
+    Ok(Some([("batch", batch_size), ("sequence", max_length)]))
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2302,15 +2341,20 @@ fn flush_checkpoint_batch(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
+fn complete_vector_checkpoint<P, F>(
     provider: &mut P,
-    chunks: &[Chunk],
+    ids: &[ChunkId],
+    mut embedding_texts: F,
     model_id: &str,
     model_revision: &str,
     corpus_digest: &ContentDigest,
     previous: Option<VectorArtifact>,
     checkpoint_path: &Path,
-) -> Result<CompletedVectorCheckpoint, EmbeddingError> {
+) -> Result<CompletedVectorCheckpoint, EmbeddingError>
+where
+    P: EmbeddingProvider + ?Sized,
+    F: FnMut(&[usize]) -> Result<Vec<String>, EmbeddingError>,
+{
     let finalization_started = Instant::now();
     validate_model_metadata(model_id, model_revision)?;
     let provider_dimension = provider.embedding_dimension();
@@ -2328,37 +2372,30 @@ fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
     if dimension > MAX_VECTOR_DIMENSION {
         return Err(EmbeddingError::TooLarge);
     }
-    encoded_artifact_len(chunks, dimension, model_id, model_revision)?;
+    encoded_artifact_len_from_count(ids.len(), dimension, model_id, model_revision)?;
 
-    let mut order = (0..chunks.len()).collect::<Vec<_>>();
-    order.sort_unstable_by(|left, right| chunks[*left].chunk_id.cmp(&chunks[*right].chunk_id));
-    if order
-        .windows(2)
-        .any(|pair| chunks[pair[0]].chunk_id >= chunks[pair[1]].chunk_id)
-    {
+    let mut order = (0..ids.len()).collect::<Vec<_>>();
+    order.sort_unstable_by(|left, right| ids[*left].cmp(&ids[*right]));
+    if order.windows(2).any(|pair| ids[pair[0]] >= ids[pair[1]]) {
         return Err(EmbeddingError::InvalidHeader);
     }
-    let mut rows = vec![0_usize; chunks.len()];
+    let mut rows = vec![0_usize; ids.len()];
     for (row, &index) in order.iter().enumerate() {
         rows[index] = row;
     }
     let checkpoint_identity = vector_checkpoint_identity(corpus_digest, model_id, model_revision);
-    let mut checkpoint = VectorCheckpoint::open(
-        checkpoint_path,
-        dimension,
-        chunks.len(),
-        &checkpoint_identity,
-    )?;
+    let mut checkpoint =
+        VectorCheckpoint::open(checkpoint_path, dimension, ids.len(), &checkpoint_identity)?;
     checkpoint.validate_completed_rows()?;
     if let Some(artifact) = previous.as_ref() {
         let mut copied_rows = Vec::with_capacity(256);
         let mut copied_vectors = Vec::with_capacity(256);
-        for (index, chunk) in chunks.iter().enumerate() {
+        for (index, id) in ids.iter().enumerate() {
             let row = rows[index];
             if checkpoint.is_complete(row) {
                 continue;
             }
-            let Ok(previous_row) = artifact.ids.binary_search(&chunk.chunk_id) else {
+            let Ok(previous_row) = artifact.ids.binary_search(id) else {
                 continue;
             };
             let start = previous_row
@@ -2377,7 +2414,7 @@ fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
         }
     }
     drop(previous);
-    let missing = chunks
+    let missing = ids
         .iter()
         .enumerate()
         .filter_map(|(index, _)| (!checkpoint.is_complete(rows[index])).then_some(index))
@@ -2392,10 +2429,13 @@ fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
     let mut checkpoint_vectors = Vec::with_capacity(VECTOR_CHECKPOINT_SYNC_ROWS);
     for batch in missing.chunks(batch_size) {
         let input_started = Instant::now();
-        let texts = batch
-            .iter()
-            .map(|&index| embedding_text(&chunks[index]))
-            .collect::<Vec<_>>();
+        let texts = embedding_texts(batch)?;
+        if texts.len() != batch.len() {
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: batch.len(),
+                actual: texts.len(),
+            });
+        }
         observations.embedding_input_us = observations
             .embedding_input_us
             .saturating_add(elapsed_us(input_started));
@@ -2492,7 +2532,7 @@ fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
         &mut checkpoint_vectors,
     )?;
 
-    observations.reused_vectors = chunks.len().saturating_sub(observations.embedded_vectors);
+    observations.reused_vectors = ids.len().saturating_sub(observations.embedded_vectors);
     Ok(CompletedVectorCheckpoint {
         order,
         dimension,
@@ -2501,45 +2541,15 @@ fn complete_vector_checkpoint<P: EmbeddingProvider + ?Sized>(
     })
 }
 
-fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized, C: Borrow<Chunk>>(
+fn embed_reconciliation_texts<P: EmbeddingProvider + ?Sized>(
     provider: &mut P,
-    chunks: &[C],
+    texts: &[String],
     dimension: usize,
     observations: &mut VectorBuildObservations,
 ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-    if chunks.is_empty() {
+    if texts.is_empty() {
         return Err(EmbeddingError::EmptyInput);
     }
-    let chunks = chunks.iter().map(Borrow::borrow).collect::<Vec<_>>();
-    let natural_order;
-    let inference_order = if let Some(order) = provider.inference_order(&chunks)? {
-        if order.len() != chunks.len() || order.iter().any(|&index| index >= chunks.len()) {
-            return Err(EmbeddingError::Provider(
-                "provider returned an invalid inference order".into(),
-            ));
-        }
-        let mut seen = vec![false; chunks.len()];
-        for &index in &order {
-            if std::mem::replace(&mut seen[index], true) {
-                return Err(EmbeddingError::Provider(
-                    "provider returned a duplicate inference index".into(),
-                ));
-            }
-        }
-        order
-    } else {
-        natural_order = (0..chunks.len()).collect::<Vec<_>>();
-        natural_order
-    };
-
-    let input_started = Instant::now();
-    let texts = inference_order
-        .iter()
-        .map(|&index| embedding_text(chunks[index]))
-        .collect::<Vec<_>>();
-    observations.embedding_input_us = observations
-        .embedding_input_us
-        .saturating_add(elapsed_us(input_started));
     observations.input_bytes = observations.input_bytes.saturating_add(
         texts
             .iter()
@@ -2553,23 +2563,21 @@ fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized, C: Borrow<Chunk>>(
     );
 
     let provider_started = Instant::now();
-    let vectors = provider.embed_documents(&texts)?;
+    let vectors = provider.embed_documents(texts)?;
     observations.provider_us = observations
         .provider_us
         .saturating_add(elapsed_us(provider_started));
-    if vectors.len() != chunks.len() {
+    if vectors.len() != texts.len() {
         return Err(EmbeddingError::DimensionMismatch {
-            expected: chunks.len(),
+            expected: texts.len(),
             actual: vectors.len(),
         });
     }
 
     let finalization_started = Instant::now();
     let normalization = provider.output_normalization();
-    let mut ordered = std::iter::repeat_with(|| None)
-        .take(chunks.len())
-        .collect::<Vec<_>>();
-    for (index, mut vector) in inference_order.into_iter().zip(vectors) {
+    let mut vectors = vectors;
+    for vector in &mut vectors {
         if vector.len() != dimension {
             return Err(EmbeddingError::DimensionMismatch {
                 expected: dimension,
@@ -2577,23 +2585,19 @@ fn embed_reconciliation_batch<P: EmbeddingProvider + ?Sized, C: Borrow<Chunk>>(
             });
         }
         match normalization {
-            OutputNormalization::Guaranteed => validate_vector(&vector, true)?,
-            OutputNormalization::Unknown => normalize(&mut vector)?,
+            OutputNormalization::Guaranteed => validate_vector(vector, true)?,
+            OutputNormalization::Unknown => normalize(vector)?,
         }
-        ordered[index] = Some(vector);
     }
     observations.vector_finalization_us = observations
         .vector_finalization_us
         .saturating_add(elapsed_us(finalization_started));
-    observations.embedded_vectors = observations.embedded_vectors.saturating_add(chunks.len());
-    ordered
-        .into_iter()
-        .map(|vector| vector.ok_or(EmbeddingError::InvalidHeader))
-        .collect()
+    observations.embedded_vectors = observations.embedded_vectors.saturating_add(texts.len());
+    Ok(vectors)
 }
 
-fn reconciliation_checkpoint_identity(
-    missing: &[Chunk],
+fn reconciliation_checkpoint_identity<'a>(
+    missing: impl IntoIterator<Item = &'a ChunkId>,
     corpus_digest: &ContentDigest,
     previous_checksum: &ContentDigest,
     model_id: &str,
@@ -2616,8 +2620,9 @@ fn reconciliation_checkpoint_identity(
         );
         digest.update(bytes);
     }
-    for chunk in missing {
-        let bytes = chunk.chunk_id.as_str().as_bytes();
+    for id in missing {
+        let encoded = id.encoded();
+        let bytes = encoded.as_bytes();
         digest.update(
             u64::try_from(bytes.len())
                 .map_err(|_| EmbeddingError::TooLarge)?
@@ -2645,16 +2650,6 @@ pub struct VectorArtifact {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct IncrementalVectorArtifact<'a> {
-    pub model_id: &'a str,
-    pub model_revision: &'a str,
-    pub corpus_digest: &'a ContentDigest,
-    pub previous_corpus_digest: &'a ContentDigest,
-    pub previous_path: &'a Path,
-    pub path: &'a Path,
-}
-
-#[derive(Clone, Copy)]
 pub(crate) struct ReconciledVectorArtifact<'a> {
     pub model_id: &'a str,
     pub model_revision: &'a str,
@@ -2672,21 +2667,16 @@ fn encoded_artifact_len<C: Borrow<Chunk>>(
     model_id: &str,
     model_revision: &str,
 ) -> Result<usize, EmbeddingError> {
-    encoded_artifact_len_from_ids(
-        chunks.iter().map(|chunk| &chunk.borrow().chunk_id),
-        dimension,
-        model_id,
-        model_revision,
-    )
+    encoded_artifact_len_from_count(chunks.len(), dimension, model_id, model_revision)
 }
 
-fn encoded_artifact_len_from_ids<'a>(
-    mut ids: impl ExactSizeIterator<Item = &'a ChunkId>,
+fn encoded_artifact_len_from_count(
+    count: usize,
     dimension: usize,
     model_id: &str,
     model_revision: &str,
 ) -> Result<usize, EmbeddingError> {
-    u32::try_from(ids.len()).map_err(|_| EmbeddingError::TooLarge)?;
+    u32::try_from(count).map_err(|_| EmbeddingError::TooLarge)?;
     u32::try_from(dimension).map_err(|_| EmbeddingError::TooLarge)?;
     u32::try_from(model_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
     u32::try_from(model_revision.len()).map_err(|_| EmbeddingError::TooLarge)?;
@@ -2701,15 +2691,14 @@ fn encoded_artifact_len_from_ids<'a>(
     let vector_bytes = dimension
         .checked_mul(std::mem::size_of::<f32>())
         .ok_or(EmbeddingError::TooLarge)?;
-    let total = ids.try_fold(fixed, |total, id| {
-        let id_len = id.as_str().len();
-        u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
-        total
-            .checked_add(2)
-            .and_then(|total| total.checked_add(id_len))
-            .and_then(|total| total.checked_add(vector_bytes))
-            .ok_or(EmbeddingError::TooLarge)
-    })?;
+    let row_bytes = 2_usize
+        .checked_add(ChunkId::ENCODED_LEN)
+        .and_then(|length| length.checked_add(vector_bytes))
+        .ok_or(EmbeddingError::TooLarge)?;
+    let total = count
+        .checked_mul(row_bytes)
+        .and_then(|rows| fixed.checked_add(rows))
+        .ok_or(EmbeddingError::TooLarge)?;
     (total <= MAX_ARTIFACT_BYTES)
         .then_some(total)
         .ok_or(EmbeddingError::TooLarge)
@@ -2993,6 +2982,7 @@ impl VectorArtifact {
     ///
     /// Returns [`EmbeddingError`] when the checkpoint, provider output, or final
     /// artifact is invalid.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_provider_reusing_checkpoint_artifact_with_observations<
         P: EmbeddingProvider + ?Sized,
@@ -3006,6 +2996,44 @@ impl VectorArtifact {
         checkpoint_path: &Path,
         path: &Path,
     ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
+        let ids = chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        Self::write_provider_reusing_checkpoint_ids_artifact_with_observations(
+            provider,
+            &ids,
+            |indices| {
+                Ok(indices
+                    .iter()
+                    .map(|&index| embedding_text(&chunks[index]))
+                    .collect())
+            },
+            model_id,
+            model_revision,
+            corpus_digest,
+            previous,
+            checkpoint_path,
+            path,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_provider_reusing_checkpoint_ids_artifact_with_observations<P, F>(
+        provider: &mut P,
+        ids: &[ChunkId],
+        embedding_texts: F,
+        model_id: impl Into<String>,
+        model_revision: impl Into<String>,
+        corpus_digest: &ContentDigest,
+        previous: Option<Self>,
+        checkpoint_path: &Path,
+        path: &Path,
+    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError>
+    where
+        P: EmbeddingProvider + ?Sized,
+        F: FnMut(&[usize]) -> Result<Vec<String>, EmbeddingError>,
+    {
         if checkpoint_path == path {
             return Err(EmbeddingError::Io(
                 "vector destination must differ from its checkpoint".into(),
@@ -3020,19 +3048,16 @@ impl VectorArtifact {
             observations,
         } = complete_vector_checkpoint(
             provider,
-            chunks,
+            ids,
+            embedding_texts,
             &model_id,
             &model_revision,
             corpus_digest,
             previous,
             checkpoint_path,
         )?;
-        let expected_length = encoded_artifact_len_from_ids(
-            order.iter().map(|&index| &chunks[index].chunk_id),
-            dimension,
-            &model_id,
-            &model_revision,
-        )?;
+        let expected_length =
+            encoded_artifact_len_from_count(order.len(), dimension, &model_id, &model_revision)?;
         let destination = File::create(path).map_err(io_error)?;
         let mut artifact = DigestingWriter::new(BufWriter::new(destination));
         let checksum = {
@@ -3049,7 +3074,7 @@ impl VectorArtifact {
             )?;
             checkpoint.try_for_each_value_row(|row, vector, bytes| {
                 validate_vector(vector, true)?;
-                write_vector_row_bytes(&mut body, &chunks[order[row]].chunk_id, bytes)
+                write_vector_row_bytes(&mut body, &ids[order[row]], bytes)
             })?;
             let (_, checksum, body_length) = body.finish();
             if body_length != (expected_length - CHECKSUM_LEN) as u64 {
@@ -3098,181 +3123,11 @@ impl VectorArtifact {
         result
     }
 
-    /// Embeds only delta chunks and streams them together with a persisted predecessor.
-    ///
-    /// This keeps memory proportional to the delta plus one predecessor row.
-    #[allow(clippy::too_many_lines)] // The streaming merge is one ordered binary pass.
-    pub(crate) fn write_provider_appending_artifact_with_observations<
-        P: EmbeddingProvider + ?Sized,
-    >(
-        provider: &mut P,
-        chunks: &[Chunk],
-        request: IncrementalVectorArtifact<'_>,
-    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
-        let IncrementalVectorArtifact {
-            model_id,
-            model_revision,
-            corpus_digest,
-            previous_corpus_digest,
-            previous_path,
-            path,
-        } = request;
-        if previous_path == path {
-            return Err(EmbeddingError::Io(
-                "incremental vector destination must differ from its predecessor".into(),
-            ));
-        }
-        let source = File::open(previous_path).map_err(io_error)?;
-        let source_length = source.metadata().map_err(io_error)?.len();
-        if source_length > MAX_ARTIFACT_BYTES as u64
-            || source_length < (MAGIC.len() + CHECKSUM_LEN) as u64
-        {
-            return Err(EmbeddingError::TooLarge);
-        }
-        let body_length = source_length - CHECKSUM_LEN as u64;
-        let mut source = BufReader::new(source);
-        verify_reader_checksum(&mut source, body_length)?;
-        source.seek(SeekFrom::Start(0)).map_err(io_error)?;
-        let mut source = BinaryReader::new(
-            &mut source,
-            usize::try_from(body_length).map_err(|_| EmbeddingError::TooLarge)?,
-        );
-        let header = read_vector_header(&mut source)?;
-        if header.schema != 2
-            || !header.normalized
-            || header.model_id != model_id
-            || header.model_revision != model_revision
-            || header.corpus_digest != *previous_corpus_digest
-            || provider
-                .embedding_dimension()
-                .is_some_and(|dimension| dimension != header.dimension)
-        {
-            return Err(EmbeddingError::ModelMismatch);
-        }
-
-        let (embedded, mut observations) = if chunks.is_empty() {
-            (None, VectorBuildObservations::default())
-        } else {
-            let refs = chunks.iter().collect::<Vec<_>>();
-            let inference_order = provider.inference_order(&refs)?;
-            let (artifact, observations) = Self::from_provider_with_observations_and_order(
-                provider,
-                chunks,
-                model_id,
-                model_revision,
-                corpus_digest.clone(),
-                inference_order.as_deref(),
-            )?;
-            if artifact.dimension != header.dimension {
-                return Err(EmbeddingError::DimensionMismatch {
-                    expected: header.dimension,
-                    actual: artifact.dimension,
-                });
-            }
-            (Some(artifact), observations)
-        };
-        let embedded_count = embedded.as_ref().map_or(0, |artifact| artifact.ids.len());
-        let count = header
-            .count
-            .checked_add(embedded_count)
-            .ok_or(EmbeddingError::TooLarge)?;
-        u32::try_from(count).map_err(|_| EmbeddingError::TooLarge)?;
-        let added_bytes = embedded.as_ref().map_or(Ok(0_usize), encoded_rows_len)?;
-        let expected_length = usize::try_from(source_length)
-            .map_err(|_| EmbeddingError::TooLarge)?
-            .checked_add(added_bytes)
-            .filter(|length| *length <= MAX_ARTIFACT_BYTES)
-            .ok_or(EmbeddingError::TooLarge)?;
-
-        let destination = File::create(path).map_err(io_error)?;
-        let mut artifact = DigestingWriter::new(BufWriter::new(destination));
-        let checksum = {
-            let mut body = DigestingWriter::new(&mut artifact);
-            write_vector_header(
-                &mut body,
-                2,
-                header.dimension,
-                count,
-                model_id,
-                model_revision,
-                true,
-                corpus_digest,
-            )?;
-            let mut previous_row = read_vector_row(&mut source, header.dimension)?;
-            let mut previous_id: Option<ChunkId> = None;
-            let mut embedded_row = 0_usize;
-            let mut written = 0_usize;
-            while previous_row.is_some() || embedded_row < embedded_count {
-                let take_previous = embedded.as_ref().is_none_or(|embedded| {
-                    embedded_row == embedded.ids.len()
-                        || previous_row
-                            .as_ref()
-                            .is_some_and(|(id, _)| id < &embedded.ids[embedded_row])
-                });
-                if take_previous {
-                    let (id, vector) = previous_row.take().expect("previous row is present");
-                    if previous_id.as_ref().is_some_and(|previous| previous >= &id) {
-                        return Err(EmbeddingError::InvalidHeader);
-                    }
-                    validate_vector(&vector, true)?;
-                    write_vector_row(&mut body, &id, &vector)?;
-                    previous_id = Some(id);
-                    previous_row = read_vector_row(&mut source, header.dimension)?;
-                } else {
-                    let embedded = embedded.as_ref().expect("embedded row is present");
-                    if previous_row
-                        .as_ref()
-                        .is_some_and(|(id, _)| id == &embedded.ids[embedded_row])
-                    {
-                        return Err(EmbeddingError::Provider(
-                            "incremental vector delta contains an existing chunk id".into(),
-                        ));
-                    }
-                    let start = embedded_row
-                        .checked_mul(header.dimension)
-                        .ok_or(EmbeddingError::TooLarge)?;
-                    let end = start
-                        .checked_add(header.dimension)
-                        .ok_or(EmbeddingError::TooLarge)?;
-                    write_vector_row(
-                        &mut body,
-                        &embedded.ids[embedded_row],
-                        &embedded.values[start..end],
-                    )?;
-                    embedded_row += 1;
-                }
-                written += 1;
-            }
-            if written != count || !source.is_empty() {
-                return Err(EmbeddingError::InvalidHeader);
-            }
-            let (_, checksum, body_length) = body.finish();
-            if body_length != (expected_length - CHECKSUM_LEN) as u64 {
-                return Err(EmbeddingError::InvalidHeader);
-            }
-            checksum
-        };
-        artifact.write_all(&checksum).map_err(io_error)?;
-        artifact.flush().map_err(io_error)?;
-        let (_, digest, length) = artifact.finish();
-        if length != expected_length as u64 {
-            return Err(EmbeddingError::InvalidHeader);
-        }
-        observations.reused_vectors = header.count;
-        observations.embedded_vectors = embedded_count;
-        Ok((
-            digest_from_bytes(&digest)?,
-            length,
-            count,
-            header.dimension,
-            observations,
-        ))
-    }
-
     /// Streams matching rows from a predecessor and embeds only new chunk IDs.
     ///
     /// Unlike the append-only path, this also drops predecessor rows absent
     /// from the requested corpus, allowing bounded format migrations.
+    #[cfg(test)]
     #[allow(clippy::too_many_lines)] // One ordered streaming reconciliation pass.
     pub(crate) fn write_provider_reconciling_artifact_with_observations<
         P: EmbeddingProvider + ?Sized,
@@ -3281,6 +3136,35 @@ impl VectorArtifact {
         mut chunks: Vec<Chunk>,
         request: ReconciledVectorArtifact<'_>,
     ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError> {
+        chunks.sort_unstable_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
+        let ids = chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        Self::write_provider_reconciling_ids_artifact_with_observations(
+            provider,
+            &ids,
+            |indices| {
+                Ok(indices
+                    .iter()
+                    .map(|&index| embedding_text(&chunks[index]))
+                    .collect())
+            },
+            request,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn write_provider_reconciling_ids_artifact_with_observations<P, F>(
+        provider: &mut P,
+        ids: &[ChunkId],
+        mut embedding_texts: F,
+        request: ReconciledVectorArtifact<'_>,
+    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError>
+    where
+        P: EmbeddingProvider + ?Sized,
+        F: FnMut(&[usize]) -> Result<Vec<String>, EmbeddingError>,
+    {
         let ReconciledVectorArtifact {
             model_id,
             model_revision,
@@ -3296,10 +3180,11 @@ impl VectorArtifact {
                 "reconciled vector destination must differ from its predecessor".into(),
             ));
         }
-        chunks.sort_unstable_by(|left, right| left.chunk_id.cmp(&right.chunk_id));
-        if chunks
+        let mut order = (0..ids.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| ids[*left].cmp(&ids[*right]));
+        if order
             .windows(2)
-            .any(|chunks| chunks[0].chunk_id == chunks[1].chunk_id)
+            .any(|indices| ids[indices[0]] == ids[indices[1]])
         {
             return Err(EmbeddingError::InvalidHeader);
         }
@@ -3314,33 +3199,47 @@ impl VectorArtifact {
         )?;
         let mut row = Vec::with_capacity(header.dimension);
         let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
-        let mut missing_flags = Vec::with_capacity(chunks.len());
-        for chunk in &chunks {
-            while previous_id.as_ref().is_some_and(|id| id < &chunk.chunk_id) {
+        let mut is_missing = vec![false; ids.len()];
+        for &source_index in &order {
+            let id = &ids[source_index];
+            while previous_id.as_ref().is_some_and(|previous| previous < id) {
                 previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
             }
-            if previous_id.as_ref() == Some(&chunk.chunk_id) {
+            if previous_id.as_ref() == Some(id) {
                 previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
-                missing_flags.push(false);
             } else {
-                missing_flags.push(true);
+                is_missing[source_index] = true;
             }
         }
-        let mut ids = Vec::with_capacity(chunks.len());
-        let mut missing = Vec::new();
-        for (chunk, is_missing) in chunks.into_iter().zip(missing_flags) {
-            if is_missing {
-                ids.push(chunk.chunk_id.clone());
-                missing.push(chunk);
-            } else {
-                ids.push(chunk.chunk_id);
-            }
-        }
+        let missing = is_missing
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &missing)| missing.then_some(index))
+            .collect::<Vec<_>>();
+        drop(is_missing);
 
         let mut observations = VectorBuildObservations::default();
+        let temporary_checkpoint = if checkpoint_path.is_none() && !missing.is_empty() {
+            Some(
+                tempfile::Builder::new()
+                    .prefix(".vector-reconciliation-")
+                    .tempdir_in(path.parent().ok_or_else(|| {
+                        EmbeddingError::Io(
+                            "reconciled vector destination has no parent directory".into(),
+                        )
+                    })?)
+                    .map_err(io_error)?,
+            )
+        } else {
+            None
+        };
+        let temporary_checkpoint_path = temporary_checkpoint
+            .as_ref()
+            .map(|directory| directory.path().join("vectors.checkpoint"));
+        let checkpoint_path = checkpoint_path.or(temporary_checkpoint_path.as_deref());
         let mut checkpoint = if let Some(path) = checkpoint_path.filter(|_| !missing.is_empty()) {
             let identity = reconciliation_checkpoint_identity(
-                &missing,
+                missing.iter().map(|&index| &ids[index]),
                 corpus_digest,
                 previous_checksum,
                 model_id,
@@ -3376,10 +3275,15 @@ impl VectorArtifact {
                 if rows.len() < batch_size {
                     continue;
                 }
-                let chunks = rows.iter().map(|&row| &missing[row]).collect::<Vec<_>>();
-                let vectors = embed_reconciliation_batch(
+                let indices = rows.iter().map(|&row| missing[row]).collect::<Vec<_>>();
+                let input_started = Instant::now();
+                let texts = embedding_texts(&indices)?;
+                observations.embedding_input_us = observations
+                    .embedding_input_us
+                    .saturating_add(elapsed_us(input_started));
+                let vectors = embed_reconciliation_texts(
                     provider,
-                    &chunks,
+                    &texts,
                     header.dimension,
                     &mut observations,
                 )?;
@@ -3387,18 +3291,27 @@ impl VectorArtifact {
                 rows.clear();
             }
             if !rows.is_empty() {
-                let chunks = rows.iter().map(|&row| &missing[row]).collect::<Vec<_>>();
-                let vectors = embed_reconciliation_batch(
+                let indices = rows.iter().map(|&row| missing[row]).collect::<Vec<_>>();
+                let input_started = Instant::now();
+                let texts = embedding_texts(&indices)?;
+                observations.embedding_input_us = observations
+                    .embedding_input_us
+                    .saturating_add(elapsed_us(input_started));
+                let vectors = embed_reconciliation_texts(
                     provider,
-                    &chunks,
+                    &texts,
                     header.dimension,
                     &mut observations,
                 )?;
                 checkpoint.write_batch(&rows, &vectors)?;
             }
         }
+        let mut missing_rows = vec![usize::MAX; ids.len()];
+        for (row, &source_index) in missing.iter().enumerate() {
+            missing_rows[source_index] = row;
+        }
         let expected_length =
-            encoded_artifact_len_from_ids(ids.iter(), header.dimension, model_id, model_revision)?;
+            encoded_artifact_len_from_count(ids.len(), header.dimension, model_id, model_revision)?;
         let destination = File::create(path).map_err(io_error)?;
         let mut artifact = DigestingWriter::new(BufWriter::new(destination));
         let checksum = {
@@ -3415,14 +3328,10 @@ impl VectorArtifact {
             )?;
             let (mut source, _) = rewind_vector_reader(source)?;
             let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
-            let batch_size = provider.embedding_batch_size().get();
-            let mut next_missing = 0_usize;
-            let mut batch_start = 0_usize;
-            let mut embedded_batch = Vec::new();
-            let mut embedded_row = 0_usize;
             let mut checkpoint_vector = Vec::new();
             let mut checkpoint_bytes = Vec::new();
-            for id in &ids {
+            for &source_index in &order {
+                let id = &ids[source_index];
                 while previous_id.as_ref().is_some_and(|previous| previous < id) {
                     previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
                 }
@@ -3432,50 +3341,20 @@ impl VectorArtifact {
                     previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
                     continue;
                 }
-                let missing_row = next_missing.saturating_sub(embedded_batch.len()) + embedded_row;
-                if let Some(checkpoint) = checkpoint.as_mut() {
-                    checkpoint.read_row_into(
-                        missing_row,
-                        &mut checkpoint_vector,
-                        &mut checkpoint_bytes,
-                    )?;
-                    validate_vector(&checkpoint_vector, true)?;
-                    write_vector_row(&mut body, id, &checkpoint_vector)?;
-                    next_missing = missing_row + 1;
-                    embedded_row = 0;
-                    embedded_batch.clear();
-                    continue;
-                }
-                if embedded_row == embedded_batch.len() {
-                    batch_start = next_missing;
-                    let end = next_missing.saturating_add(batch_size).min(missing.len());
-                    embedded_batch = embed_reconciliation_batch(
-                        provider,
-                        &missing[next_missing..end],
-                        header.dimension,
-                        &mut observations,
-                    )?;
-                    next_missing = end;
-                    embedded_row = 0;
-                }
-                if missing
-                    .get(batch_start + embedded_row)
-                    .map(|chunk| &chunk.chunk_id)
-                    != Some(id)
-                {
+                let missing_row = missing_rows[source_index];
+                if missing_row == usize::MAX {
                     return Err(EmbeddingError::MissingChunk(id.clone()));
                 }
-                write_vector_row(
-                    &mut body,
-                    id,
-                    embedded_batch
-                        .get(embedded_row)
-                        .ok_or_else(|| EmbeddingError::MissingChunk(id.clone()))?,
+                let checkpoint = checkpoint
+                    .as_mut()
+                    .ok_or_else(|| EmbeddingError::MissingChunk(id.clone()))?;
+                checkpoint.read_row_into(
+                    missing_row,
+                    &mut checkpoint_vector,
+                    &mut checkpoint_bytes,
                 )?;
-                embedded_row += 1;
-            }
-            if next_missing != missing.len() || embedded_row != embedded_batch.len() {
-                return Err(EmbeddingError::InvalidHeader);
+                validate_vector(&checkpoint_vector, true)?;
+                write_vector_row(&mut body, id, &checkpoint_vector)?;
             }
             let (_, checksum, body_length) = body.finish();
             if body_length != (expected_length - CHECKSUM_LEN) as u64 {
@@ -3762,15 +3641,16 @@ impl VectorArtifact {
             .and_then(|length| length.checked_add(model_revision.len()))
             .and_then(|length| length.checked_add(1 + 32 + CHECKSUM_LEN))
             .ok_or(EmbeddingError::TooLarge)?;
-        let length = self.ids.iter().try_fold(fixed, |length, chunk_id| {
-            let id_len = chunk_id.as_str().len();
-            u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
-            length
-                .checked_add(2)
-                .and_then(|length| length.checked_add(id_len))
-                .and_then(|length| length.checked_add(vector_bytes))
-                .ok_or(EmbeddingError::TooLarge)
-        })?;
+        let row_bytes = 2_usize
+            .checked_add(ChunkId::ENCODED_LEN)
+            .and_then(|length| length.checked_add(vector_bytes))
+            .ok_or(EmbeddingError::TooLarge)?;
+        let length = self
+            .ids
+            .len()
+            .checked_mul(row_bytes)
+            .and_then(|rows| fixed.checked_add(rows))
+            .ok_or(EmbeddingError::TooLarge)?;
         (length <= MAX_ARTIFACT_BYTES)
             .then_some(length)
             .ok_or(EmbeddingError::TooLarge)
@@ -3835,7 +3715,8 @@ impl VectorArtifact {
             .iter()
             .zip(self.values.chunks_exact(self.dimension))
         {
-            let chunk_id = chunk_id.as_str().as_bytes();
+            let encoded = chunk_id.encoded();
+            let chunk_id = encoded.as_bytes();
             let chunk_id_len =
                 u16::try_from(chunk_id.len()).map_err(|_| EmbeddingError::TooLarge)?;
             writer
@@ -4369,7 +4250,8 @@ fn write_vector_row(
     chunk_id: &ChunkId,
     vector: &[f32],
 ) -> Result<(), EmbeddingError> {
-    let id = chunk_id.as_str().as_bytes();
+    let encoded = chunk_id.encoded();
+    let id = encoded.as_bytes();
     let id_len = u16::try_from(id.len()).map_err(|_| EmbeddingError::TooLarge)?;
     writer
         .write_all(&id_len.to_le_bytes())
@@ -4386,29 +4268,14 @@ fn write_vector_row_bytes(
     chunk_id: &ChunkId,
     vector: &[u8],
 ) -> Result<(), EmbeddingError> {
-    let id = chunk_id.as_str().as_bytes();
+    let encoded = chunk_id.encoded();
+    let id = encoded.as_bytes();
     let id_len = u16::try_from(id.len()).map_err(|_| EmbeddingError::TooLarge)?;
     writer
         .write_all(&id_len.to_le_bytes())
         .and_then(|()| writer.write_all(id))
         .and_then(|()| writer.write_all(vector))
         .map_err(io_error)
-}
-
-fn encoded_rows_len(artifact: &VectorArtifact) -> Result<usize, EmbeddingError> {
-    let vector_bytes = artifact
-        .dimension
-        .checked_mul(std::mem::size_of::<f32>())
-        .ok_or(EmbeddingError::TooLarge)?;
-    artifact.ids.iter().try_fold(0_usize, |length, id| {
-        let id_len = id.as_str().len();
-        u16::try_from(id_len).map_err(|_| EmbeddingError::TooLarge)?;
-        length
-            .checked_add(2)
-            .and_then(|length| length.checked_add(id_len))
-            .and_then(|length| length.checked_add(vector_bytes))
-            .ok_or(EmbeddingError::TooLarge)
-    })
 }
 
 fn verify_reader_checksum<R: Read>(
@@ -4707,6 +4574,58 @@ mod tests {
     }
 
     #[test]
+    fn reconciled_ids_preserve_embedding_input_order() {
+        let root = tempfile::tempdir().expect("vector artifacts");
+        let previous_path = root.path().join("previous.bin");
+        let next_path = root.path().join("next.bin");
+        let ids = vec![
+            ChunkId::from_sha256([3; 32]),
+            ChunkId::from_sha256([1; 32]),
+            ChunkId::from_sha256([2; 32]),
+        ];
+        let previous = VectorArtifact {
+            schema: 2,
+            model_id: "fake".into(),
+            model_revision: "test".into(),
+            dimension: 2,
+            normalized: true,
+            corpus_digest: ContentDigest::of(b"old"),
+            ids: vec![ids[2].clone()],
+            values: vec![1.0, 0.0],
+        };
+        let (previous_checksum, _) = previous
+            .write_artifact_with_digest(&previous_path)
+            .expect("write previous artifact");
+        let mut provider = FakeEmbeddingProvider::new(2);
+        let mut requested = Vec::new();
+
+        VectorArtifact::write_provider_reconciling_ids_artifact_with_observations(
+            &mut provider,
+            &ids,
+            |indices| {
+                requested.extend_from_slice(indices);
+                Ok(indices
+                    .iter()
+                    .map(|index| format!("embedding input {index}"))
+                    .collect())
+            },
+            ReconciledVectorArtifact {
+                model_id: "fake",
+                model_revision: "test",
+                corpus_digest: &ContentDigest::of(b"new"),
+                previous_corpus_digest: &previous.corpus_digest,
+                previous_checksum: &previous_checksum,
+                previous_path: &previous_path,
+                path: &next_path,
+                checkpoint_path: None,
+            },
+        )
+        .expect("reconciled artifact");
+
+        assert_eq!(requested, [0, 1]);
+    }
+
+    #[test]
     fn reconciled_vector_build_resumes_missing_rows_from_checkpoint() {
         let root = tempfile::tempdir().expect("vector artifacts");
         let previous_path = root.path().join("previous.bin");
@@ -4944,6 +4863,49 @@ mod tests {
 
         assert_eq!(restarted.embedded, 0);
         assert_eq!(observations.reused_vectors, chunks.len());
+    }
+
+    #[test]
+    fn locator_checkpoint_loads_only_one_provider_batch_at_a_time() {
+        let root = tempfile::tempdir().expect("vector checkpoint");
+        let chunks = (0..25)
+            .map(|index| chunk(&format!("chunk-{index}")))
+            .collect::<Vec<_>>();
+        let ids = chunks
+            .iter()
+            .map(|chunk| chunk.chunk_id.clone())
+            .collect::<Vec<_>>();
+        let corpus_digest = ContentDigest::of(b"bounded locator corpus");
+        let mut provider = RecordingProvider {
+            dimension: 4,
+            embedded: 0,
+        };
+        let mut max_loaded = 0;
+        let mut loads = 0;
+
+        VectorArtifact::write_provider_reusing_checkpoint_ids_artifact_with_observations(
+            &mut provider,
+            &ids,
+            |indices| {
+                loads += 1;
+                max_loaded = max_loaded.max(indices.len());
+                Ok(indices
+                    .iter()
+                    .map(|&index| embedding_text(&chunks[index]))
+                    .collect())
+            },
+            "model",
+            "revision",
+            &corpus_digest,
+            None,
+            &root.path().join("checkpoint.bin"),
+            &root.path().join("vectors.bin"),
+        )
+        .expect("bounded locator artifact");
+
+        assert!(loads > 1);
+        assert_eq!(max_loaded, DEFAULT_SEMANTIC_BATCH_SIZE);
+        assert_eq!(provider.embedded, chunks.len());
     }
 
     #[test]
@@ -5628,6 +5590,31 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "semantic-migraphx")]
+    #[test]
+    fn migraphx_pins_the_packaged_jina_input_shape() {
+        assert_eq!(
+            migraphx_dimension_overrides(
+                crate::JINA_CODE_FP16_SHA256,
+                SemanticExecutionProvider::Migraphx { device_id: 0 },
+                Some(64),
+                64,
+            )
+            .expect("fixed dimensions"),
+            Some([("batch", 64), ("sequence", 64)])
+        );
+        assert_eq!(
+            migraphx_dimension_overrides(
+                crate::JINA_CODE_FP16_SHA256,
+                SemanticExecutionProvider::Cpu,
+                Some(64),
+                64,
+            )
+            .expect("CPU dimensions"),
+            None
+        );
+    }
+
     #[test]
     fn fake_provider_maps_chunks_to_valid_vectors() {
         let mut provider = FakeEmbeddingProvider::new(4);
@@ -5803,7 +5790,9 @@ mod tests {
         let chunks = (0..17)
             .map(|index| {
                 let mut chunk = source.clone();
-                chunk.chunk_id = ChunkId::try_from(format!("chunk-{index:02}")).expect("chunk id");
+                let mut digest = [0_u8; 32];
+                digest[31] = index;
+                chunk.chunk_id = ChunkId::from_sha256(digest);
                 chunk
             })
             .collect::<Vec<_>>();

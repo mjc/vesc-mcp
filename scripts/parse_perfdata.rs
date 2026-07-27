@@ -47,7 +47,7 @@ fn main() {
     }
 
     let mut child = Command::new("perf")
-        .args(["script", "-i", &path])
+        .args(["script", "--no-inline", "-i", &path])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap_or_else(|error| {

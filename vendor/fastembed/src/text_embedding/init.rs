@@ -35,6 +35,8 @@ pub struct InitOptionsUserDefined {
     /// Set this to cap CPU usage (e.g. on laptops) at the cost of throughput.
     pub intra_threads: Option<usize>,
     pub graph_optimization_level: GraphOptimizationLevel,
+    /// Fixed values for symbolic ONNX input dimensions.
+    pub dimension_overrides: Vec<(String, i64)>,
 }
 
 impl InitOptionsUserDefined {
@@ -73,6 +75,12 @@ impl InitOptionsUserDefined {
         self.graph_optimization_level = graph_optimization_level;
         self
     }
+
+    /// Set one symbolic ONNX input dimension to a fixed value.
+    pub fn with_dimension_override(mut self, name: impl Into<String>, size: i64) -> Self {
+        self.dimension_overrides.push((name.into(), size));
+        self
+    }
 }
 
 impl Default for InitOptionsUserDefined {
@@ -82,6 +90,7 @@ impl Default for InitOptionsUserDefined {
             max_length: DEFAULT_MAX_LENGTH,
             intra_threads: None,
             graph_optimization_level: GraphOptimizationLevel::Level3,
+            dimension_overrides: Vec::new(),
         }
     }
 }
@@ -96,6 +105,7 @@ impl From<TextInitOptions> for InitOptionsUserDefined {
             max_length: options.max_length,
             intra_threads: options.intra_threads,
             graph_optimization_level: GraphOptimizationLevel::Level3,
+            dimension_overrides: Vec::new(),
         }
     }
 }
@@ -160,4 +170,21 @@ pub struct TextEmbedding {
     pub(crate) need_token_type_ids: bool,
     pub(crate) quantization: QuantizationMode,
     pub(crate) output_key: Option<OutputKey>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InitOptionsUserDefined;
+
+    #[test]
+    fn user_defined_options_collect_dimension_overrides() {
+        let options = InitOptionsUserDefined::new()
+            .with_dimension_override("batch", 64)
+            .with_dimension_override("sequence", 64);
+
+        assert_eq!(
+            options.dimension_overrides,
+            vec![("batch".into(), 64), ("sequence".into(), 64)]
+        );
+    }
 }

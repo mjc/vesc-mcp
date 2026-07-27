@@ -97,11 +97,11 @@ impl VersionedKnowledgeFixture {
         let (remote, old_commit, tagged_commit) = versioned_fixture_remote(temp.path());
         let data_root = temp.path().join("data");
         let toml = format!(
-            "[knowledge]\ndata_root = \"{}\"\n{}{}{}",
+            "[knowledge]\nmanaged_git = true\ndata_root = \"{}\"\n{}{}{}",
             data_root.display(),
-            versioned_repository_toml("bldc"),
-            versioned_repository_toml("refloat"),
-            versioned_repository_toml("vesc_tool")
+            versioned_repository_toml("bldc", &remote),
+            versioned_repository_toml("refloat", &remote),
+            versioned_repository_toml("vesc_tool", &remote)
         );
         let knowledge = crate::config::McpConfig::from_toml(
             &toml,
@@ -232,12 +232,12 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
     (remote, old, tagged)
 }
 
-fn versioned_repository_toml(id: &str) -> String {
+fn versioned_repository_toml(id: &str, remote: &Path) -> String {
     format!(
         r#"
 [[knowledge.repositories]]
 id = "{id}"
-remote_url = "https://example.invalid/{id}.git"
+remote_url = "{}"
 default_ref = "refs/heads/main"
 policy = "required"
 include = ["**/*.md"]
@@ -248,7 +248,8 @@ attribution = "Test fixture"
 max_file_bytes = 1048576
 max_files = 100
 max_total_bytes = 10485760
-"#
+"#,
+        remote.display()
     )
 }
 

@@ -37,7 +37,7 @@ fn emit_golden_search_fixtures() {
                 "id": chunk
                     .registered_id
                     .as_deref()
-                    .unwrap_or_else(|| chunk.chunk_id.as_ref()),
+                    .map_or_else(|| chunk.chunk_id.to_string(), str::to_owned),
                 "name": chunk.title,
                 "category": category,
                 "source_repo": chunk.repository,

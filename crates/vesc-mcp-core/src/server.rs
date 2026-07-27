@@ -1171,10 +1171,10 @@ fn knowledge_repository(knowledge: &KnowledgeConfig, repository: &str) -> Option
 pub(crate) fn knowledge_preparation_status(
     knowledge: &KnowledgeConfig,
 ) -> Option<crate::preparation_status::KnowledgePreparationStatus> {
-    let repositories_total = knowledge.repositories.iter().len();
-    if repositories_total == 0 {
+    if !knowledge.manages_repositories() {
         return None;
     }
+    let repositories_total = knowledge.repositories.enabled_len();
     let data_root = knowledge.data_root.as_ref()?;
     Some(crate::preparation_status::read_or_starting(
         data_root.as_path(),
@@ -1380,6 +1380,58 @@ mod tests {
     #[test]
     fn decide_ping_echo_returns_custom_message() {
         assert_eq!(decide_ping_echo(Some("hello vesc".into())), "hello vesc");
+    }
+
+    #[test]
+    fn ping_preparation_uses_only_enabled_managed_repositories() {
+        let root = tempfile::tempdir().expect("data root");
+        let repositories = toml::from_str(
+            r#"
+[[repositories]]
+id = "enabled"
+remote_url = "https://example.com/enabled.git"
+default_ref = "refs/heads/main"
+policy = "required"
+trust_tier = "official"
+license = "MIT"
+attribution = "Example"
+max_file_bytes = 1
+max_files = 1
+max_total_bytes = 1
+
+[[repositories]]
+id = "disabled"
+remote_url = "https://example.com/disabled.git"
+default_ref = "refs/heads/main"
+policy = "disabled"
+trust_tier = "official"
+license = "MIT"
+attribution = "Example"
+max_file_bytes = 1
+max_files = 1
+max_total_bytes = 1
+"#,
+        )
+        .expect("repository registry");
+        let mut knowledge = KnowledgeConfig {
+            managed_git: true,
+            data_root: Some(
+                crate::managed_repositories::DataRoot::new(root.path().to_owned())
+                    .expect("absolute data root"),
+            ),
+            repositories,
+            ..KnowledgeConfig::default()
+        };
+
+        assert_eq!(
+            knowledge_preparation_status(&knowledge)
+                .expect("managed preparation")
+                .repositories_total,
+            1
+        );
+
+        knowledge.managed_git = false;
+        assert_eq!(knowledge_preparation_status(&knowledge), None);
     }
 
     #[test]

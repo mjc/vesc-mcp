@@ -401,7 +401,7 @@ fn read_source(root: &Path, spec: &SourceSpec, source: &str) -> Result<String, S
         .map_err(|_| rejection(spec, source, "encoding", "source is not UTF-8"))
 }
 
-pub(super) fn normalize_text_ref(bytes: &[u8]) -> Result<String, std::str::Utf8Error> {
+pub(crate) fn normalize_text_ref(bytes: &[u8]) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(bytes).map(|content| content.replace("\r\n", "\n"))
 }
 

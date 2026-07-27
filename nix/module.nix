@@ -10,9 +10,13 @@ let
   inherit (lib) types;
   package = if cfg.package != null then cfg.package else defaultPackage pkgs;
   httpBind = "${cfg.bind}:${toString cfg.port}";
-  startupArgs = [ "--http" ]
-    ++ lib.optional (!cfg.startup.refresh) "--skip-repository-refresh"
-    ++ lib.optional (!cfg.startup.eagerIndex) "--skip-eager-index"
+  startupArgs = [
+    "--http"
+    "--repository-preparation-timeout-secs"
+    (toString cfg.startup.timeoutSecs)
+  ]
+    ++ lib.optional cfg.startup.refresh "--refresh-on-startup"
+    ++ lib.optional cfg.startup.eagerIndex "--eager-index"
     ++ lib.optional (!cfg.startup.allowOfflineRestart) "--require-fresh-repositories";
   validRepositoryId = id: builtins.match "[a-z0-9][a-z0-9_-]*" id != null;
   validHttpsUrl = url:
@@ -117,6 +121,7 @@ let
     knowledge = {
       mode = cfg.retrievalMode;
       data_root = "/var/lib/${cfg.stateDirectory}";
+      managed_git = builtins.any (id: cfg.repositories.${id}.enabled) repositoryIds;
       repositories = map repositoryConfig repositoryIds;
       prewarm = cfg.prewarm;
       semantic = semanticConfig;
@@ -235,13 +240,13 @@ in
     startup = {
       refresh = lib.mkOption {
         type = types.bool;
-        default = true;
-        description = "Refresh managed bare repositories before serving.";
+        default = false;
+        description = "Refresh managed bare repositories during service startup even when usable knowledge already exists.";
       };
       eagerIndex = lib.mkOption {
         type = types.bool;
-        default = true;
-        description = "Prepare the default and prewarmed snapshots before serving.";
+        default = false;
+        description = "Prepare updated default and prewarmed snapshots during every service startup.";
       };
       allowOfflineRestart = lib.mkOption {
         type = types.bool;
@@ -251,7 +256,7 @@ in
       timeoutSecs = lib.mkOption {
         type = types.ints.positive;
         default = 900;
-        description = "Maximum systemd startup duration, including refresh and eager indexing.";
+        description = "Maximum background repository refresh and eager-index preparation duration.";
       };
     };
   };

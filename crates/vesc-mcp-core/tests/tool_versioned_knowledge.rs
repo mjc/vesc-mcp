@@ -2,6 +2,9 @@ use std::fs;
 
 use serde_json::{Value, json};
 use vesc_mcp_core::test_support::{McpTestHarness, VersionedKnowledgeFixture};
+use vesc_mcp_core::tools::prepare_knowledge::{
+    PrepareVescKnowledgeParams, prepare_vesc_knowledge_tool,
+};
 
 async fn assert_default_snapshot_compatibility(
     fixture: &VersionedKnowledgeFixture,
@@ -125,6 +128,24 @@ async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
 #[tokio::test]
 async fn preparation_errors_are_structured_and_actionable() {
     let fixture = VersionedKnowledgeFixture::new().await;
+    let mut unmanaged = fixture.knowledge().clone();
+    unmanaged.managed_git = false;
+    let direct =
+        prepare_vesc_knowledge_tool(&PrepareVescKnowledgeParams::default(), &unmanaged).await;
+    assert_eq!(
+        direct.error.as_ref().map(|error| error.code),
+        Some("not_configured")
+    );
+    let unmanaged_harness = McpTestHarness::with_knowledge_config(unmanaged);
+    let transported: Value = serde_json::from_str(
+        &unmanaged_harness
+            .call_tool_async("prepare_vesc_knowledge", json!({}))
+            .await,
+    )
+    .expect("disabled managed Git response");
+    assert_eq!(transported["ok"], false);
+    assert_eq!(transported["error"]["code"], "not_configured");
+
     let harness = McpTestHarness::with_knowledge_config(fixture.knowledge().clone());
     for (selection, expected) in [
         (
@@ -179,7 +200,7 @@ async fn preparation_errors_are_structured_and_actionable() {
 async fn stale_managed_source_paths_have_stable_errors() {
     for (relative, expected) in [
         ("repositories/bldc.refs.json", "source_unavailable"),
-        ("repositories/bldc.git", "build_failed"),
+        ("repositories/bldc.git", "source_unavailable"),
     ] {
         let fixture = VersionedKnowledgeFixture::new().await;
         let target = fixture.data_root().join(relative);

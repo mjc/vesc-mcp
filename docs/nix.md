@@ -21,9 +21,11 @@ nix develop -c vesc-mcp-server --http
 The packaged build includes the embedded catalog and the pinned INT8
 `jinaai/jina-embeddings-v2-base-code` query model. `auto` retrieval uses hybrid
 search when its managed snapshot has matching vectors. Managed snapshot
-preparation builds those vectors with the packaged model. Without a managed
-snapshot, lexical search uses the embedded catalog and `auto` or `hybrid`
-returns an explicit lexical retry:
+preparation builds those vectors with the packaged model. With managed
+repositories disabled, lexical search uses the embedded catalog and `auto` or
+`hybrid` returns an explicit lexical retry. With managed repositories enabled,
+search never substitutes the embedded catalog or `artifact_path` for an
+unavailable managed snapshot:
 
 ```bash
 nix run
@@ -125,7 +127,7 @@ services.vesc-mcp = {
     refresh = true;
     eagerIndex = true;
     allowOfflineRestart = true;
-    timeoutSecs = 900;
+    timeoutSecs = 900; # Bounds the detached refresh/index preparation child.
   };
 };
 ```
@@ -139,14 +141,22 @@ new fast-forward commit range is chunked and embedded. The default alias advance
 only after the new snapshot validates; changing one ref does not delete older
 immutable snapshots.
 
+Configuring at least one enabled repository enables managed Git in the generated
+runtime configuration. An empty or fully disabled `repositories` set leaves
+managed Git disabled.
+
 Bare repositories, manifests, indexes, and temporary same-filesystem staging
 live below `/var/lib/vesc-mcp`; disposable caches have the separate
 `/var/cache/vesc-mcp` lifecycle. The dynamic service user has no writable home
 and `ProtectSystem=strict` prevents writes to the Nix store or project checkout.
-With `allowOfflineRestart = true`, a failed refresh retains and serves the last
-valid default snapshot with a bounded stale warning. Set `refresh = false` for
-an intentionally offline cached restart, or `eagerIndex = false` to defer new
-snapshot preparation.
+With `allowOfflineRestart = true`, a source outage may retain and serve the last
+valid default snapshot when its enabled repositories, resolved selections, and
+indexing policies still match. Build or configuration failures do not silently
+fall back. A cached outage restart and an intentionally skipped refresh publish
+`ping.knowledge.state = "stale"`; strict preparation, terminal failure, or an
+invalid managed artifact makes search explicitly unavailable. Set
+`refresh = false` for an intentionally offline cached restart, or
+`eagerIndex = false` to defer new snapshot preparation.
 
 Only credential-free HTTPS repository URLs are accepted in evaluated Nix
 configuration. Put bearer tokens or Git credential environment settings in a

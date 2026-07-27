@@ -31,32 +31,34 @@ pub use corpus::ingest::{
 };
 pub use corpus::{
     ArtifactManifest, Chunk, ChunkId, ContentDigest, CorpusManifest, CorpusVersion, DocumentId,
-    LicenseStatus, NormalizedDocument, RepositoryId, ResourceUri, Revision, SchemaVersion,
-    SourceKind, SourceSpan, TrustTier, validate_chunk_adjacency,
+    LicenseStatus, NormalizedDocument, RepositoryId, ResourceUri, RetrievalMetadata, Revision,
+    SchemaVersion, SourceKind, SourceSpan, TrustTier, validate_chunk_adjacency,
 };
 pub use embedded::{embedded_entries, lexical_index, search_lexical_knowledge};
 pub use entry::{Category, IndexEntry, SourceRef};
 pub use fusion::{
-    ExpandedContext, FusedHit, FusionConfig, expand_adjacent_context, fuse_candidates,
+    ExpandedContext, FusedCandidate, FusedHit, FusionConfig, expand_adjacent_context,
+    fuse_candidate_metadata, fuse_candidates,
 };
 pub use hardware::{
     JINA_CODE_FP16_SHA256, JINA_CODE_INGEST_BATCH_SIZE, JINA_CODE_INGEST_MAX_LENGTH,
     JINA_CODE_INT8_SHA256, JINA_CODE_MAX_LENGTH, JINA_CODE_MODEL_ID, JINA_CODE_MODEL_REVISION,
     JinaCodeQueryProfile, Rx5700Xt8600gProfile,
 };
-pub use lexical::{LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
+pub use lexical::{LexicalCandidate, LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{
     BuildObservations, BuildPhase, BuildSummary, LifecycleError,
     PROVENANCE_OVERHEAD_THRESHOLD_PERCENT, active_generation_path, active_manifest_path,
     artifact_component_versions, build_allowlisted_artifacts,
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
-    build_embedded_artifacts_with_provider, inspect_manifest, inspect_previous_artifact,
-    validate_active_generation,
+    build_embedded_artifacts_with_provider, git_history_corpus_versions_are_compatible,
+    inspect_manifest, inspect_previous_artifact, validate_active_generation,
 };
 pub use lifecycle::{
     IncrementalGitHistoryBuildSummary, PreviousArtifactSummary, PreviousGitHistoryArtifact,
     build_git_artifacts, build_git_artifacts_with_provider,
     build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
+    remove_git_history_lexical_stage,
 };
 pub use parsers::native_lib_abi::NativeLibAbiParseError;
 pub use parsers::priorities::PrioritiesParseError;

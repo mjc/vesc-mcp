@@ -77,15 +77,15 @@ pub async fn prepare_vesc_knowledge_tool(
     params: &PrepareVescKnowledgeParams,
     config: &KnowledgeConfig,
 ) -> PrepareVescKnowledgeResponse {
+    if !config.manages_repositories() {
+        return failure("not_configured", "managed Git repositories are not enabled");
+    }
     let Some(root) = config.data_root.clone() else {
         return failure(
             "not_configured",
             "managed knowledge storage is not configured",
         );
     };
-    if config.repositories.is_empty() {
-        return failure("not_configured", "managed repositories are not configured");
-    }
     let mut selectors = BTreeMap::new();
     for (id, selector) in &params.sources {
         let Ok(id) = RepositoryId::new(id.clone()) else {
@@ -158,6 +158,7 @@ fn snapshot_failure(error: &SnapshotError) -> PrepareVescKnowledgeResponse {
         SnapshotError::ManagedGit(error) => match error {
             ManagedGitError::UnknownSelector | ManagedGitError::NotACommit => "unknown_ref",
             ManagedGitError::UnreachableCommit => "unreachable_commit",
+            ManagedGitError::RemoteUrlChanged { .. } => "source_changed",
             ManagedGitError::Storage(_) | ManagedGitError::Git(_) => "source_unavailable",
             ManagedGitError::Task(_) => "cancelled",
         },

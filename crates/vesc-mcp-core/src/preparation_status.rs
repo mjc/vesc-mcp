@@ -21,7 +21,10 @@ pub enum PreparationState {
 pub enum PreparationPhase {
     Starting,
     SynchronizingRepositories,
-    Indexing,
+    PlanningHistory,
+    BuildingLexicalIndex,
+    BuildingSemanticIndex,
+    Publishing,
     Serving,
 }
 
@@ -31,6 +34,8 @@ pub struct KnowledgePreparationStatus {
     pub phase: PreparationPhase,
     pub repositories_completed: usize,
     pub repositories_total: usize,
+    #[serde(default)]
+    pub freshness_required: bool,
 }
 
 impl KnowledgePreparationStatus {
@@ -45,6 +50,7 @@ impl KnowledgePreparationStatus {
             phase,
             repositories_completed,
             repositories_total,
+            freshness_required: false,
         }
     }
 
@@ -59,7 +65,14 @@ impl KnowledgePreparationStatus {
             phase: PreparationPhase::Serving,
             repositories_completed,
             repositories_total,
+            freshness_required: false,
         }
+    }
+
+    #[must_use]
+    pub const fn with_freshness_required(mut self, freshness_required: bool) -> Self {
+        self.freshness_required = freshness_required;
+        self
     }
 }
 
@@ -73,6 +86,13 @@ pub fn read_or_starting(data_root: &Path, repositories_total: usize) -> Knowledg
     read_preparation_status(data_root).unwrap_or_else(|| {
         KnowledgePreparationStatus::preparing(PreparationPhase::Starting, 0, repositories_total)
     })
+}
+
+/// Whether the current managed artifact may be exposed to search.
+#[must_use]
+pub fn managed_artifact_is_servable(data_root: &Path) -> bool {
+    read_preparation_status(data_root)
+        .is_none_or(|status| !status.freshness_required || status.state == PreparationState::Ready)
 }
 
 /// Atomically publish knowledge preparation progress for all server sessions.
@@ -103,7 +123,8 @@ mod tests {
     #[test]
     fn preparation_status_roundtrips_through_the_shared_data_root() {
         let root = tempfile::tempdir().expect("data root");
-        let status = KnowledgePreparationStatus::preparing(PreparationPhase::Indexing, 3, 3);
+        let status =
+            KnowledgePreparationStatus::preparing(PreparationPhase::BuildingSemanticIndex, 3, 3);
 
         write_preparation_status(root.path(), &status).expect("write status");
 
@@ -118,5 +139,48 @@ mod tests {
             read_or_starting(root.path(), 3),
             KnowledgePreparationStatus::preparing(PreparationPhase::Starting, 0, 3)
         );
+    }
+
+    #[test]
+    fn managed_artifact_serving_respects_freshness_and_failure_state() {
+        let root = tempfile::tempdir().expect("data root");
+
+        write_preparation_status(
+            root.path(),
+            &KnowledgePreparationStatus::preparing(PreparationPhase::PlanningHistory, 1, 2)
+                .with_freshness_required(true),
+        )
+        .expect("strict preparing status");
+        assert!(!managed_artifact_is_servable(root.path()));
+
+        write_preparation_status(
+            root.path(),
+            &KnowledgePreparationStatus::finished(PreparationState::Ready, 2, 2)
+                .with_freshness_required(true),
+        )
+        .expect("strict ready status");
+        assert!(managed_artifact_is_servable(root.path()));
+
+        write_preparation_status(
+            root.path(),
+            &KnowledgePreparationStatus::finished(PreparationState::Stale, 1, 2),
+        )
+        .expect("offline stale status");
+        assert!(managed_artifact_is_servable(root.path()));
+
+        write_preparation_status(
+            root.path(),
+            &KnowledgePreparationStatus::finished(PreparationState::Failed, 1, 2),
+        )
+        .expect("offline failed status");
+        assert!(managed_artifact_is_servable(root.path()));
+
+        write_preparation_status(
+            root.path(),
+            &KnowledgePreparationStatus::finished(PreparationState::Failed, 1, 2)
+                .with_freshness_required(true),
+        )
+        .expect("strict failed status");
+        assert!(!managed_artifact_is_servable(root.path()));
     }
 }

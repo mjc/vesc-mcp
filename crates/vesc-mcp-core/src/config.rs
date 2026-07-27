@@ -143,6 +143,7 @@ pub struct KnowledgeConfig {
     pub mode: RetrievalMode,
     pub artifact_path: Option<PathBuf>,
     pub data_root: Option<DataRoot>,
+    pub managed_git: bool,
     pub repositories: RepositoryRegistry,
     pub prewarm: Vec<BTreeMap<RepositoryId, String>>,
     pub semantic_model_dir: Option<PathBuf>,
@@ -163,6 +164,7 @@ impl Default for KnowledgeConfig {
             mode: RetrievalMode::Lexical,
             artifact_path: None,
             data_root: None,
+            managed_git: false,
             repositories: RepositoryRegistry::default(),
             prewarm: Vec::new(),
             semantic_model_dir: None,
@@ -180,6 +182,18 @@ impl Default for KnowledgeConfig {
 }
 
 impl KnowledgeConfig {
+    /// Whether this process should clone, fetch, or build from configured Git repositories.
+    #[must_use]
+    pub fn manages_repositories(&self) -> bool {
+        self.managed_git && self.repositories.has_enabled()
+    }
+
+    pub(crate) fn managed_repositories_root(&self) -> Option<PathBuf> {
+        self.data_root
+            .as_ref()
+            .map(|root| root.as_path().join("repositories"))
+    }
+
     pub(crate) fn resolved_snapshot(&self, value: &str) -> Option<ResolvedKnowledgeArtifact> {
         let id = KnowledgeSnapshotId::new(value.to_owned()).ok()?;
         let layout = KnowledgeDataLayout::new(self.data_root.clone()?);
@@ -202,23 +216,27 @@ impl KnowledgeConfig {
     }
 
     pub(crate) fn resolved_artifact(&self) -> Option<ResolvedKnowledgeArtifact> {
-        self.resolved_managed_artifact().or_else(|| {
-            self.artifact_path
-                .clone()
-                .map(|path| ResolvedKnowledgeArtifact {
-                    path,
-                    snapshot_id: None,
-                    snapshot_profile: None,
-                    repositories: BTreeMap::new(),
-                })
-        })
+        if self.manages_repositories() {
+            return self.resolved_managed_artifact();
+        }
+        self.artifact_path
+            .clone()
+            .map(|path| ResolvedKnowledgeArtifact {
+                path,
+                snapshot_id: None,
+                snapshot_profile: None,
+                repositories: BTreeMap::new(),
+            })
     }
 
     fn resolved_managed_artifact(&self) -> Option<ResolvedKnowledgeArtifact> {
-        if self.repositories.is_empty() {
+        if !self.manages_repositories() {
             return None;
         }
         let layout = KnowledgeDataLayout::new(self.data_root.clone()?);
+        if !crate::preparation_status::managed_artifact_is_servable(layout.root().as_path()) {
+            return None;
+        }
         let alias: DefaultSnapshotAlias =
             serde_json::from_slice(&crate::read_default_snapshot(layout.root().as_path()).ok()?)
                 .ok()?;
@@ -394,6 +412,7 @@ struct KnowledgeSection {
     mode: Option<RetrievalMode>,
     artifact_path: Option<String>,
     data_root: Option<String>,
+    managed_git: Option<bool>,
     #[serde(default)]
     repositories: Vec<RepositoryWire>,
     #[serde(default)]
@@ -702,6 +721,9 @@ fn try_merge_config(
                     .map(workspace::expand_path)
             }),
             data_root: Some(data_root),
+            managed_git: knowledge
+                .and_then(|section| section.managed_git)
+                .unwrap_or(defaults.managed_git),
             repositories,
             prewarm,
             semantic_model_dir: env.semantic_model_dir.clone().or_else(|| {
@@ -1179,6 +1201,60 @@ max_total_bytes = 268435456
     }
 
     #[test]
+    fn managed_git_is_an_explicit_runtime_toggle() {
+        let source = r#"
+[knowledge]
+managed_git = false
+artifact_path = "/var/lib/vesc-mcp/static-artifact"
+data_root = "/var/lib/vesc-mcp"
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "https://github.com/vedderb/bldc.git"
+default_ref = "refs/heads/master"
+policy = "required"
+include = ["**/*.c", "**/*.h"]
+exclude = []
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+"#;
+        let disabled =
+            McpConfig::from_toml(source, &DataRootInputs::default()).expect("disabled managed Git");
+
+        assert!(!disabled.knowledge.managed_git);
+        assert!(!disabled.knowledge.manages_repositories());
+        assert_eq!(
+            disabled.knowledge.resolved_artifact_path(),
+            Some(PathBuf::from("/var/lib/vesc-mcp/static-artifact"))
+        );
+
+        let enabled = McpConfig::from_toml(
+            &source.replace("managed_git = false", "managed_git = true"),
+            &DataRootInputs::default(),
+        )
+        .expect("enabled managed Git");
+
+        assert!(enabled.knowledge.managed_git);
+        assert!(enabled.knowledge.manages_repositories());
+
+        let all_disabled = McpConfig::from_toml(
+            &source
+                .replace("managed_git = false", "managed_git = true")
+                .replace("policy = \"required\"", "policy = \"disabled\""),
+            &DataRootInputs::default(),
+        )
+        .expect("disabled repository policy");
+
+        assert!(all_disabled.knowledge.managed_git);
+        assert!(!all_disabled.knowledge.manages_repositories());
+        assert!(!KnowledgeConfig::default().managed_git);
+    }
+
+    #[test]
     fn managed_snapshot_prewarm_selections_are_typed_and_deterministic() {
         let config = McpConfig::from_toml(
             r#"
@@ -1233,12 +1309,13 @@ max_total_bytes = 268435456
     }
 
     #[test]
-    fn managed_default_snapshot_resolves_as_the_active_artifact() {
+    fn managed_default_snapshot_respects_preparation_freshness_gate() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let mut config = McpConfig::from_toml(
             &format!(
                 r#"
 [knowledge]
+managed_git = true
 data_root = "{}"
 
 [[knowledge.repositories]]
@@ -1285,6 +1362,28 @@ max_total_bytes = 1073741824
         let artifact = temp.path().join("artifacts").join("a".repeat(64));
         std::fs::create_dir_all(&artifact).expect("artifact directory");
 
+        crate::preparation_status::write_preparation_status(
+            temp.path(),
+            &crate::preparation_status::KnowledgePreparationStatus::preparing(
+                crate::preparation_status::PreparationPhase::PlanningHistory,
+                1,
+                1,
+            )
+            .with_freshness_required(true),
+        )
+        .expect("strict preparation status");
+        assert_eq!(config.knowledge.resolved_artifact_path(), None);
+
+        crate::preparation_status::write_preparation_status(
+            temp.path(),
+            &crate::preparation_status::KnowledgePreparationStatus::finished(
+                crate::preparation_status::PreparationState::Ready,
+                1,
+                1,
+            )
+            .with_freshness_required(true),
+        )
+        .expect("ready preparation status");
         assert_eq!(config.knowledge.resolved_artifact_path(), Some(artifact));
         let resolved = config
             .knowledge

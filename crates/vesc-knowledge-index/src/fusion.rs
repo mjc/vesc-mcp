@@ -4,7 +4,7 @@ use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Chunk, ChunkId, LexicalHit, SemanticHit};
+use crate::{Chunk, ChunkId, LexicalCandidate, LexicalHit, RetrievalMetadata, SemanticHit};
 
 const LEXICAL_FLOOR_DEPTH: usize = 2;
 
@@ -40,6 +40,18 @@ impl Default for FusionConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FusedHit {
     pub chunk: Chunk,
+    pub score: f64,
+    pub lexical_rank: Option<usize>,
+    pub semantic_rank: Option<usize>,
+    pub lexical_score: Option<f32>,
+    pub semantic_similarity: Option<f32>,
+    pub exact_identifier: bool,
+}
+
+/// A fused result whose passage has not yet been loaded from Git.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FusedCandidate {
+    pub chunk: RetrievalMetadata,
     pub score: f64,
     pub lexical_rank: Option<usize>,
     pub semantic_rank: Option<usize>,
@@ -156,11 +168,7 @@ fn append_bounded_piece(output: &mut String, piece: &str, max_bytes: usize) -> b
     false
 }
 
-/// Fuse ranked candidates with stable ordering and passage diversity.
-///
-/// Candidates are joined by stable chunk ID. A passage can contribute to both
-/// signals once, exact identifier hits are protected ahead of ordinary hits,
-/// and identical content digests are emitted only once.
+/// Fuse hydrated candidates with stable ordering and passage diversity.
 #[must_use]
 pub fn fuse_candidates<C: Borrow<Chunk>>(
     lexical: &[LexicalHit],
@@ -168,6 +176,63 @@ pub fn fuse_candidates<C: Borrow<Chunk>>(
     chunks: &BTreeMap<ChunkId, C>,
     config: FusionConfig,
 ) -> Vec<FusedHit> {
+    let lexical_candidates = lexical
+        .iter()
+        .map(|hit| LexicalCandidate {
+            chunk: hit.chunk.retrieval_metadata(),
+            score: hit.score,
+            exact_identifier: hit.exact_identifier,
+        })
+        .collect::<Vec<_>>();
+    let metadata = chunks
+        .values()
+        .map(|chunk| {
+            let metadata = chunk.borrow().retrieval_metadata();
+            (metadata.chunk_id.clone(), metadata)
+        })
+        .collect();
+    let mut hydrated = chunks
+        .values()
+        .map(|chunk| {
+            let chunk = chunk.borrow();
+            (chunk.chunk_id.clone(), chunk)
+        })
+        .collect::<BTreeMap<_, _>>();
+    for hit in lexical {
+        hydrated
+            .entry(hit.chunk.chunk_id.clone())
+            .or_insert(&hit.chunk);
+    }
+
+    fuse_candidate_metadata(&lexical_candidates, semantic, &metadata, config)
+        .into_iter()
+        .filter_map(|candidate| {
+            let chunk = (*hydrated.get(&candidate.chunk.chunk_id)?).clone();
+            Some(FusedHit {
+                chunk,
+                score: candidate.score,
+                lexical_rank: candidate.lexical_rank,
+                semantic_rank: candidate.semantic_rank,
+                lexical_score: candidate.lexical_score,
+                semantic_similarity: candidate.semantic_similarity,
+                exact_identifier: candidate.exact_identifier,
+            })
+        })
+        .collect()
+}
+
+/// Fuse ranked metadata with stable ordering and passage diversity.
+///
+/// Candidates are joined by stable chunk ID. A passage can contribute to both
+/// signals once, exact identifier hits are protected ahead of ordinary hits,
+/// and identical content digests are emitted only once.
+#[must_use]
+pub fn fuse_candidate_metadata(
+    lexical: &[LexicalCandidate],
+    semantic: &[SemanticHit],
+    chunks: &BTreeMap<ChunkId, RetrievalMetadata>,
+    config: FusionConfig,
+) -> Vec<FusedCandidate> {
     let k = f64::from(config.rrf_k);
     let mut candidates: BTreeMap<ChunkId, Candidate> = BTreeMap::new();
 
@@ -185,7 +250,6 @@ pub fn fuse_candidates<C: Borrow<Chunk>>(
         let Some(chunk) = chunks.get(&hit.chunk_id) else {
             continue;
         };
-        let chunk = chunk.borrow();
         let entry = candidates
             .entry(hit.chunk_id.clone())
             .or_insert_with(|| Candidate::new(chunk.clone()));
@@ -271,7 +335,7 @@ pub fn fuse_candidates<C: Borrow<Chunk>>(
 }
 
 struct Candidate {
-    chunk: Chunk,
+    chunk: RetrievalMetadata,
     score: f64,
     lexical_rank: Option<usize>,
     semantic_rank: Option<usize>,
@@ -281,7 +345,7 @@ struct Candidate {
 }
 
 impl Candidate {
-    const fn new(chunk: Chunk) -> Self {
+    const fn new(chunk: RetrievalMetadata) -> Self {
         Self {
             chunk,
             score: 0.0,
@@ -293,8 +357,8 @@ impl Candidate {
         }
     }
 
-    fn into_hit(self) -> FusedHit {
-        FusedHit {
+    fn into_hit(self) -> FusedCandidate {
+        FusedCandidate {
             chunk: self.chunk,
             score: self.score,
             lexical_rank: self.lexical_rank,

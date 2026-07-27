@@ -1,12 +1,14 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tempfile::tempdir;
 use vesc_knowledge_index::corpus::git::GitCorpusSource;
-use vesc_knowledge_index::corpus::git::{GitCorpusPolicy, GitIngestionError, ingest_git_commit};
+use vesc_knowledge_index::corpus::git::{
+    GitCorpusLimits, GitCorpusPolicy, GitIngestionError, ingest_git_commit,
+};
 use vesc_knowledge_index::{
-    LexicalFilters, LexicalIndex, LicenseStatus, RepositoryId, Revision, TrustTier,
+    Chunk, LexicalFilters, LexicalIndex, LicenseStatus, RepositoryId, Revision, TrustTier,
     build_git_artifacts,
 };
 
@@ -26,6 +28,14 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         .expect("git output")
         .trim()
         .to_owned()
+}
+
+fn manage_repository(root: &Path, id: &str, source: &Path) -> PathBuf {
+    let repositories = root.join("repositories");
+    fs::create_dir_all(&repositories).expect("managed repository root");
+    let target = repositories.join(format!("{id}.git"));
+    fs::rename(source, &target).expect("move bare repository into managed layout");
+    target
 }
 
 fn bare_fixture() -> (
@@ -189,6 +199,56 @@ fn bare_commit_ingestion_yields_bounded_code_with_exact_provenance() {
 }
 
 #[test]
+fn git_tree_rejections_keep_a_bounded_sample_and_exact_count() {
+    let root = tempdir().expect("fixture root");
+    let work = root.path().join("work");
+    let bare = root.path().join("fixture.git");
+    fs::create_dir_all(work.join("src")).expect("source directory");
+    git(&work, &["init", "-q"]);
+    git(&work, &["config", "user.email", "fixture@example.invalid"]);
+    git(&work, &["config", "user.name", "Fixture"]);
+    for index in 0..100 {
+        fs::write(
+            work.join(format!("src/item-{index:03}.rs")),
+            format!("pub fn item_{index:03}() {{}}\n"),
+        )
+        .expect("source file");
+    }
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "many sources"]);
+    let revision = git(&work, &["rev-parse", "HEAD"]);
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            work.to_str().expect("UTF-8 worktree"),
+            bare.to_str().expect("UTF-8 bare path"),
+        ],
+    );
+    let policy = GitCorpusPolicy {
+        limits: GitCorpusLimits::new(1_024, 1, 1_024).expect("valid limits"),
+        ..GitCorpusPolicy::default()
+    };
+
+    let report = ingest_git_commit(
+        &bare,
+        &RepositoryId::try_from("vesc").expect("repository"),
+        &Revision::try_from(revision).expect("revision"),
+        TrustTier::CuratedUpstream,
+        &LicenseStatus::ReferenceOnly,
+        &policy,
+    )
+    .expect("ingest bounded tree");
+    let observations = report.git_observations.as_ref().expect("Git observations");
+
+    assert_eq!(report.documents.len(), 1);
+    assert_eq!(observations.rejection_count, 99);
+    assert_eq!(report.rejected.len(), 64);
+}
+
+#[test]
 fn same_commit_and_policy_are_deterministic() {
     let (_root, _work, bare, revision) = bare_fixture();
     let ingest = || {
@@ -239,6 +299,7 @@ fn same_commit_and_policy_are_deterministic() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // One end-to-end revision provenance scenario.
 fn exact_commits_produce_revision_correct_content_and_ids() {
     let (_root, work, bare, first_revision) = bare_fixture();
     fs::write(
@@ -288,6 +349,9 @@ fn exact_commits_produce_revision_correct_content_and_ids() {
 
     let (_refloat_root, refloat_bare, refloat_revision) =
         single_file_bare("src/main.c", "void unchanged_refloat_source(void) {}\n");
+    let managed = tempdir().expect("managed repository root");
+    let bare = manage_repository(managed.path(), "vesc", &bare);
+    let refloat_bare = manage_repository(managed.path(), "refloat", &refloat_bare);
     let source = |path: std::path::PathBuf, repository: &str, revision: &str| GitCorpusSource {
         repository_path: path,
         repository_id: RepositoryId::try_from(repository).expect("repository"),
@@ -314,32 +378,32 @@ fn exact_commits_produce_revision_correct_content_and_ids() {
         ],
     )
     .expect("second combined build");
-    let open = |root: &Path, generation: &str| {
-        LexicalIndex::open_artifact(
+    let read = |root: &Path, generation: &str| {
+        LexicalIndex::read_git_artifact_chunks(
             &root
                 .join("generations")
                 .join(generation)
                 .join("lexical.json"),
+            &managed.path().join("repositories"),
         )
         .expect("combined lexical artifact")
     };
-    let first_index = open(first_root.path(), &first_summary.generation);
-    let second_index = open(second_root.path(), &second_summary.generation);
-    let identities = |index: &LexicalIndex, repository: &str| {
-        index
-            .chunks()
-            .values()
+    let first_chunks = read(first_root.path(), &first_summary.generation);
+    let second_chunks = read(second_root.path(), &second_summary.generation);
+    let identities = |chunks: &[Chunk], repository: &str| {
+        chunks
+            .iter()
             .filter(|chunk| chunk.repository.as_str() == repository)
             .map(|chunk| (chunk.chunk_id.clone(), chunk.text.clone()))
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        identities(&first_index, "refloat"),
-        identities(&second_index, "refloat")
+        identities(&first_chunks, "refloat"),
+        identities(&second_chunks, "refloat")
     );
     assert_ne!(
-        identities(&first_index, "vesc"),
-        identities(&second_index, "vesc")
+        identities(&first_chunks, "vesc"),
+        identities(&second_chunks, "vesc")
     );
 }
 
@@ -410,6 +474,8 @@ fn ingestion_requires_an_existing_commit_object() {
 fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
     let (_root, _work, bare, revision) = bare_fixture();
     let artifacts = tempdir().expect("artifact root");
+    let managed = tempdir().expect("managed repository root");
+    let bare = manage_repository(managed.path(), "vesc", &bare);
     let source = GitCorpusSource {
         repository_path: bare,
         repository_id: RepositoryId::try_from("vesc").expect("repository"),
@@ -426,14 +492,15 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
     assert_eq!(summary.manifest.sources.len(), 4);
     assert_eq!(
         summary.manifest.component_versions["git-policy"],
-        "reviewed-v2"
+        "reviewed-v3"
     );
-    let lexical = LexicalIndex::open_artifact(
+    let lexical = LexicalIndex::open_git_search_artifact(
         &artifacts
             .path()
             .join("generations")
             .join(&summary.generation)
             .join("lexical.json"),
+        &managed.path().join("repositories"),
     )
     .expect("open lexical artifact");
     assert!(lexical.schema().get_field("path").is_ok());
@@ -486,19 +553,74 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
 }
 
 #[test]
+fn persisted_git_hydration_enforces_the_artifact_file_limit() {
+    let (_root, bare, revision) = single_file_bare(
+        "src/lib.rs",
+        "pub fn bounded_hydration_signal() -> bool { true }\n",
+    );
+    let artifacts = tempdir().expect("artifact root");
+    let managed = tempdir().expect("managed repository root");
+    let bare = manage_repository(managed.path(), "vesc", &bare);
+    let policy = GitCorpusPolicy {
+        limits: GitCorpusLimits::new(1_024, 10, 1_024).expect("valid limits"),
+        ..GitCorpusPolicy::default()
+    };
+    let source = GitCorpusSource {
+        repository_path: bare,
+        repository_id: RepositoryId::try_from("vesc").expect("repository"),
+        revision: Revision::try_from(revision).expect("revision"),
+        trust_tier: TrustTier::CuratedUpstream,
+        license: LicenseStatus::ReferenceOnly,
+        policy,
+    };
+    let summary = build_git_artifacts(artifacts.path(), &[source]).expect("build Git corpus");
+    let lexical_path = artifacts
+        .path()
+        .join("generations")
+        .join(summary.generation)
+        .join("lexical.json");
+    let mut descriptor: serde_json::Value =
+        serde_json::from_slice(&fs::read(&lexical_path).expect("read descriptor"))
+            .expect("parse descriptor");
+    assert_eq!(descriptor["git_sources"]["vesc"]["max_file_bytes"], 1_024);
+    descriptor["git_sources"]["vesc"]["max_file_bytes"] = serde_json::json!(1);
+    fs::write(
+        &lexical_path,
+        serde_json::to_vec(&descriptor).expect("encode descriptor"),
+    )
+    .expect("tighten persisted limit");
+    let lexical =
+        LexicalIndex::open_git_search_artifact(&lexical_path, &managed.path().join("repositories"))
+            .expect("open lexical artifact");
+
+    let error = lexical
+        .search("bounded_hydration_signal", &LexicalFilters::default(), 1)
+        .expect_err("oversized Git blob must be rejected before hydration");
+    assert!(
+        error
+            .to_string()
+            .contains("exceeds the configured per-file byte limit")
+    );
+}
+
+#[test]
 fn judged_queries_cover_vesc_vesc_tool_and_refloat_sources() {
-    let vesc = single_file_bare(
+    let mut vesc = single_file_bare(
         "motor/mcpwm_foc.c",
         "void timer_update(void) { foc_current_control(); }\n",
     );
-    let tool = single_file_bare(
+    let mut tool = single_file_bare(
         "commands/packagemanager.cpp",
         "void packVescPackage() { serializePackageManifest(); }\n",
     );
-    let refloat = single_file_bare(
+    let mut refloat = single_file_bare(
         "src/main.c",
         "INIT_FUN(init_refloat) { lbm_add_extension(\"get-imu\", ext_get_imu); }\n",
     );
+    let managed = tempdir().expect("managed repository root");
+    vesc.1 = manage_repository(managed.path(), "vesc", &vesc.1);
+    tool.1 = manage_repository(managed.path(), "vesc-tool", &tool.1);
+    refloat.1 = manage_repository(managed.path(), "refloat", &refloat.1);
     let fixtures = [
         (&vesc.1, "vesc", &vesc.2),
         (&tool.1, "vesc-tool", &tool.2),
@@ -514,12 +636,13 @@ fn judged_queries_cover_vesc_vesc_tool_and_refloat_sources() {
     });
     let artifacts = tempdir().expect("artifact root");
     let summary = build_git_artifacts(artifacts.path(), &sources).expect("build judged corpus");
-    let lexical = LexicalIndex::open_artifact(
+    let lexical = LexicalIndex::open_git_search_artifact(
         &artifacts
             .path()
             .join("generations")
             .join(summary.generation)
             .join("lexical.json"),
+        &managed.path().join("repositories"),
     )
     .expect("open lexical artifact");
 

@@ -1,13 +1,17 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use tracing_subscriber::EnvFilter;
 use vesc_mcp_core::config::{McpConfig, SemanticIngestionProvider};
 use vesc_mcp_core::managed_git::ManagedGitStore;
 use vesc_mcp_core::managed_repositories::{DataRoot, KnowledgeDataLayout, RepositoryPolicy};
-use vesc_mcp_core::managed_snapshots::{KnowledgeSnapshotStore, SnapshotDisposition};
+use vesc_mcp_core::managed_snapshots::{
+    KnowledgeSnapshotStore, SnapshotBuildPhase, SnapshotDisposition, SnapshotState,
+};
 use vesc_mcp_core::preparation_status::{
     KnowledgePreparationStatus, PreparationPhase, PreparationState, read_preparation_status,
     write_preparation_status,
@@ -17,19 +21,27 @@ use vesc_mcp_core::tools::prepare_knowledge::{
     prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
 };
 
+const PROFILE_INITIAL_TRAINING_ARG: &str = "--profile-initial-training";
+const REPOSITORY_PREPARATION_TIMEOUT_ARG: &str = "--repository-preparation-timeout-secs";
+const REFRESH_ON_STARTUP_ARG: &str = "--refresh-on-startup";
+const EAGER_INDEX_ARG: &str = "--eager-index";
+const DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS: u64 = 900;
+
 struct PreparationReporter {
     data_root: PathBuf,
     repositories_total: usize,
     repositories_completed: usize,
+    freshness_required: bool,
     finished: bool,
 }
 
 impl PreparationReporter {
-    fn new(data_root: PathBuf, repositories_total: usize) -> Self {
+    fn new(data_root: PathBuf, repositories_total: usize, freshness_required: bool) -> Self {
         let reporter = Self {
             data_root,
             repositories_total,
             repositories_completed: 0,
+            freshness_required,
             finished: false,
         };
         reporter.publish(&KnowledgePreparationStatus::preparing(
@@ -49,13 +61,31 @@ impl PreparationReporter {
         ));
     }
 
-    fn indexing(&mut self) {
+    fn planning_history(&mut self) {
         self.repositories_completed = self.repositories_total;
         self.publish(&KnowledgePreparationStatus::preparing(
-            PreparationPhase::Indexing,
+            PreparationPhase::PlanningHistory,
             self.repositories_completed,
             self.repositories_total,
         ));
+    }
+
+    fn snapshot_progress_reporter(&self) -> impl Fn(SnapshotBuildPhase) + Send + Sync + 'static {
+        let data_root = self.data_root.clone();
+        let repositories_completed = self.repositories_completed;
+        let repositories_total = self.repositories_total;
+        let freshness_required = self.freshness_required;
+        move |phase| {
+            let status = KnowledgePreparationStatus::preparing(
+                preparation_phase_for_build(phase),
+                repositories_completed,
+                repositories_total,
+            )
+            .with_freshness_required(freshness_required);
+            if let Err(error) = write_preparation_status(&data_root, &status) {
+                tracing::warn!(%error, "could not publish knowledge preparation status");
+            }
+        }
     }
 
     fn finish(&mut self, state: PreparationState) {
@@ -68,9 +98,21 @@ impl PreparationReporter {
     }
 
     fn publish(&self, status: &KnowledgePreparationStatus) {
-        if let Err(error) = write_preparation_status(&self.data_root, status) {
+        let status = status
+            .clone()
+            .with_freshness_required(self.freshness_required);
+        if let Err(error) = write_preparation_status(&self.data_root, &status) {
             tracing::warn!(%error, "could not publish knowledge preparation status");
         }
+    }
+}
+
+const fn preparation_phase_for_build(phase: SnapshotBuildPhase) -> PreparationPhase {
+    match phase {
+        SnapshotBuildPhase::PlanningHistory => PreparationPhase::PlanningHistory,
+        SnapshotBuildPhase::BuildingLexicalIndex => PreparationPhase::BuildingLexicalIndex,
+        SnapshotBuildPhase::BuildingSemanticIndex => PreparationPhase::BuildingSemanticIndex,
+        SnapshotBuildPhase::Publishing => PreparationPhase::Publishing,
     }
 }
 
@@ -99,7 +141,8 @@ impl RuntimeProfile {
                 arg.as_str(),
                 "--refresh-repositories" | PREPARE_KNOWLEDGE_CHILD_ARG
             )
-        }) {
+        }) || args.iter().any(|arg| arg == PROFILE_INITIAL_TRAINING_ARG)
+        {
             Self::Preparation
         } else {
             Self::Serving { worker_threads: 2 }
@@ -129,9 +172,29 @@ struct StartupPolicy {
 impl StartupPolicy {
     fn from_args(args: &[String]) -> Self {
         Self {
-            refresh: !args.iter().any(|arg| arg == "--skip-repository-refresh"),
-            eager_index: !args.iter().any(|arg| arg == "--skip-eager-index"),
+            refresh: args.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--refresh-repositories" | REFRESH_ON_STARTUP_ARG
+                )
+            }) && !args.iter().any(|arg| arg == "--skip-repository-refresh"),
+            eager_index: args.iter().any(|arg| arg == EAGER_INDEX_ARG),
             allow_offline_restart: !args.iter().any(|arg| arg == "--require-fresh-repositories"),
+        }
+    }
+}
+
+const fn policy_for_available_data(
+    policy: StartupPolicy,
+    current_snapshot_ready: bool,
+) -> StartupPolicy {
+    if current_snapshot_ready {
+        policy
+    } else {
+        StartupPolicy {
+            refresh: true,
+            eager_index: true,
+            allow_offline_restart: policy.allow_offline_restart,
         }
     }
 }
@@ -202,6 +265,20 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         synchronize_managed_repositories(startup_policy).await?;
         return Ok(());
     }
+    if args.iter().any(|arg| arg == PROFILE_INITIAL_TRAINING_ARG) {
+        #[cfg(feature = "coz-profile")]
+        {
+            synchronize_managed_repositories(StartupPolicy {
+                refresh: false,
+                eager_index: true,
+                allow_offline_restart: true,
+            })
+            .await?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "coz-profile"))]
+        anyhow::bail!("initial-training profiling is unavailable in this build");
+    }
     if args.iter().any(|arg| arg == PREPARE_KNOWLEDGE_CHILD_ARG) {
         let request =
             serde_json::from_reader::<_, PrepareKnowledgeChildRequest>(std::io::stdin().lock())?;
@@ -222,18 +299,20 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--http") {
+        let refresh_args = repository_refresh_args(&args);
+        initialize_managed_repository_preparation(&refresh_args)?;
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
-            synchronize_managed_repositories_in_child(repository_refresh_args(&args)),
+            synchronize_managed_repositories_in_child(refresh_args),
         )
         .await?;
         return Ok(());
     }
 
+    let refresh_args = repository_refresh_args(&args);
+    initialize_managed_repository_preparation(&refresh_args)?;
     tokio::spawn(async move {
-        if let Err(error) =
-            synchronize_managed_repositories_in_child(repository_refresh_args(&args)).await
-        {
+        if let Err(error) = synchronize_managed_repositories_in_child(refresh_args).await {
             tracing::error!(%error, "managed repository preparation failed");
         }
     });
@@ -258,55 +337,162 @@ where
 
 fn repository_refresh_args(args: &[String]) -> Vec<String> {
     let mut refresh_args = vec!["--refresh-repositories".to_owned()];
+    if !args.iter().any(|arg| arg == REFRESH_ON_STARTUP_ARG) {
+        refresh_args.push("--skip-repository-refresh".to_owned());
+    }
     refresh_args.extend(
         args.iter()
             .filter(|arg| {
                 matches!(
                     arg.as_str(),
-                    "--skip-repository-refresh"
-                        | "--skip-eager-index"
-                        | "--require-fresh-repositories"
+                    REFRESH_ON_STARTUP_ARG | EAGER_INDEX_ARG | "--require-fresh-repositories"
                 )
             })
             .cloned(),
     );
+    if args
+        .iter()
+        .any(|arg| arg == REPOSITORY_PREPARATION_TIMEOUT_ARG)
+    {
+        refresh_args.push(REPOSITORY_PREPARATION_TIMEOUT_ARG.to_owned());
+        if let Some(value) = argument_value(args, REPOSITORY_PREPARATION_TIMEOUT_ARG) {
+            refresh_args.push(value);
+        }
+    }
     refresh_args
+}
+
+fn repository_preparation_timeout(args: &[String]) -> anyhow::Result<Duration> {
+    let Some(value) = argument_value(args, REPOSITORY_PREPARATION_TIMEOUT_ARG) else {
+        if args
+            .iter()
+            .any(|arg| arg == REPOSITORY_PREPARATION_TIMEOUT_ARG)
+        {
+            anyhow::bail!("{REPOSITORY_PREPARATION_TIMEOUT_ARG} requires a value");
+        }
+        return Ok(Duration::from_secs(
+            DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS,
+        ));
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("{REPOSITORY_PREPARATION_TIMEOUT_ARG} must be an integer"))?;
+    if seconds == 0 {
+        anyhow::bail!("{REPOSITORY_PREPARATION_TIMEOUT_ARG} must be greater than zero");
+    }
+    Ok(Duration::from_secs(seconds))
+}
+
+fn initialize_managed_repository_preparation(args: &[String]) -> anyhow::Result<()> {
+    repository_preparation_timeout(args)?;
+    let config = McpConfig::load();
+    if !config.knowledge.manages_repositories() {
+        return Ok(());
+    }
+    let data_root = config
+        .knowledge
+        .data_root
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("managed repositories require a data root"))?;
+    let status = KnowledgePreparationStatus::preparing(
+        PreparationPhase::Starting,
+        0,
+        config.knowledge.repositories.enabled_len(),
+    )
+    .with_freshness_required(!StartupPolicy::from_args(args).allow_offline_restart);
+    write_preparation_status(data_root.as_path(), &status)
 }
 
 async fn synchronize_managed_repositories_in_child(args: Vec<String>) -> anyhow::Result<()> {
     let config = McpConfig::load();
+    if !config.knowledge.manages_repositories() {
+        return Ok(());
+    }
+    let timeout = repository_preparation_timeout(&args)?;
+    let freshness_required = !StartupPolicy::from_args(&args).allow_offline_restart;
     let data_root = config.knowledge.data_root.as_ref();
-    let repositories_total = config.knowledge.repositories.iter().len();
+    let repositories_total = config.knowledge.repositories.enabled_len();
     let executable = match env::current_exe() {
         Ok(executable) => executable,
         Err(error) => {
-            publish_child_preparation_failure(data_root, repositories_total);
+            publish_child_preparation_failure(data_root, repositories_total, freshness_required);
             return Err(error.into());
         }
     };
-    let status = match tokio::process::Command::new(executable)
+    let mut command = tokio::process::Command::new(executable);
+    command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
-        .status()
-        .await
-    {
-        Ok(status) => status,
+        .kill_on_drop(true);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(error) => {
-            publish_child_preparation_failure(data_root, repositories_total);
+            publish_child_preparation_failure(data_root, repositories_total, freshness_required);
             return Err(error.into());
         }
     };
-    if !status.success() {
-        publish_child_preparation_failure(data_root, repositories_total);
-        anyhow::bail!("managed repository preparation process exited with {status}");
+    supervise_preparation_child(
+        &mut child,
+        timeout,
+        data_root,
+        repositories_total,
+        freshness_required,
+    )
+    .await
+}
+
+async fn supervise_preparation_child(
+    child: &mut tokio::process::Child,
+    timeout: Duration,
+    data_root: Option<&DataRoot>,
+    repositories_total: usize,
+    freshness_required: bool,
+) -> anyhow::Result<()> {
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => {
+            publish_child_preparation_failure(data_root, repositories_total, freshness_required);
+            anyhow::bail!("managed repository preparation process exited with {status}");
+        }
+        Ok(Err(error)) => {
+            let termination = kill_and_reap_preparation_child(child).await;
+            publish_child_preparation_failure(data_root, repositories_total, freshness_required);
+            termination.map_err(|termination_error| {
+                anyhow::anyhow!(
+                    "managed repository preparation wait failed: {error}; \
+                     failed to terminate child: {termination_error}"
+                )
+            })?;
+            Err(error.into())
+        }
+        Err(_) => {
+            let termination = kill_and_reap_preparation_child(child).await;
+            publish_child_preparation_failure(data_root, repositories_total, freshness_required);
+            termination.map_err(|error| {
+                anyhow::anyhow!(
+                    "managed repository preparation timed out after {timeout:?}; \
+                     failed to terminate child: {error}"
+                )
+            })?;
+            anyhow::bail!("managed repository preparation timed out after {timeout:?}");
+        }
+    }
+}
+
+async fn kill_and_reap_preparation_child(child: &mut tokio::process::Child) -> std::io::Result<()> {
+    if child.try_wait()?.is_none() {
+        child.kill().await?;
     }
     Ok(())
 }
 
-fn publish_child_preparation_failure(data_root: Option<&DataRoot>, repositories_total: usize) {
+fn publish_child_preparation_failure(
+    data_root: Option<&DataRoot>,
+    repositories_total: usize,
+    freshness_required: bool,
+) {
     let Some(data_root) = data_root else {
         return;
     };
@@ -317,7 +503,8 @@ fn publish_child_preparation_failure(data_root: Option<&DataRoot>, repositories_
         PreparationState::Failed,
         completed,
         repositories_total,
-    );
+    )
+    .with_freshness_required(freshness_required);
     if let Err(error) = write_preparation_status(data_root.as_path(), &status) {
         tracing::warn!(%error, "could not publish failed child preparation status");
     }
@@ -326,7 +513,7 @@ fn publish_child_preparation_failure(data_root: Option<&DataRoot>, repositories_
 #[allow(clippy::too_many_lines)]
 async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Result<()> {
     let config = vesc_mcp_core::config::McpConfig::load();
-    if config.knowledge.repositories.is_empty() {
+    if !config.knowledge.manages_repositories() {
         return Ok(());
     }
     let data_root = config
@@ -336,9 +523,19 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
         .ok_or_else(|| anyhow::anyhow!("managed repositories require a data root"))?;
     let mut reporter = PreparationReporter::new(
         data_root.as_path().to_owned(),
-        config.knowledge.repositories.iter().len(),
+        config.knowledge.repositories.enabled_len(),
+        !policy.allow_offline_restart,
     );
     let layout = KnowledgeDataLayout::new(data_root);
+    let snapshot_store =
+        KnowledgeSnapshotStore::new(layout.clone()).with_semantic_config(&config.knowledge)?;
+    let current_snapshot_ready = snapshot_store.default_manifest().is_ok_and(|manifest| {
+        manifest.uses_current_components()
+            && snapshot_store.status(&manifest.id) == SnapshotState::Ready
+    });
+    let policy = policy_for_available_data(policy, current_snapshot_ready);
+    let mut used_stale_sources = !policy.refresh;
+    let mut unavailable_optional = BTreeSet::new();
     if policy.refresh {
         let store = ManagedGitStore::new(layout.clone());
         for (completed, (id, result)) in store
@@ -355,6 +552,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
                                 "repository {id} refresh failed and offline restart is disabled: {warning}"
                             ));
                         }
+                        used_stale_sources = true;
                         tracing::warn!(repository = %id, %warning, "using stale managed repository catalog");
                     } else {
                         tracing::info!(
@@ -377,6 +575,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
                     if required {
                         return Err(anyhow::anyhow!("required repository {id} failed: {error}"));
                     }
+                    unavailable_optional.insert(id.clone());
                     tracing::warn!(repository = %id, %error, "optional managed repository unavailable");
                 }
             }
@@ -388,10 +587,27 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
         return Ok(());
     }
 
-    reporter.indexing();
-    let prepared = KnowledgeSnapshotStore::new(layout)
-        .with_semantic_config(&config.knowledge)?
-        .prepare_configured(&config.knowledge.repositories, &config.knowledge.prewarm)
+    reporter.planning_history();
+    let progress = reporter.snapshot_progress_reporter();
+    let repositories = config
+        .knowledge
+        .repositories
+        .excluding(&unavailable_optional);
+    let prewarm = config
+        .knowledge
+        .prewarm
+        .iter()
+        .map(|selection| {
+            selection
+                .iter()
+                .filter(|(id, _)| !unavailable_optional.contains(*id))
+                .map(|(id, selector)| (id.clone(), selector.clone()))
+                .collect()
+        })
+        .collect::<Vec<_>>();
+    let prepared = snapshot_store
+        .with_progress_reporter(progress)
+        .prepare_configured(&repositories, &prewarm)
         .await?;
     if prepared.default.disposition == SnapshotDisposition::Stale {
         if !policy.allow_offline_restart {
@@ -417,14 +633,22 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
             "prepared historical knowledge snapshot"
         );
     }
-    reporter.finish(
-        if prepared.default.disposition == SnapshotDisposition::Stale {
-            PreparationState::Stale
-        } else {
-            PreparationState::Ready
-        },
-    );
+    reporter.finish(terminal_preparation_state(
+        used_stale_sources,
+        prepared.default.disposition,
+    ));
     Ok(())
+}
+
+const fn terminal_preparation_state(
+    used_stale_sources: bool,
+    disposition: SnapshotDisposition,
+) -> PreparationState {
+    if used_stale_sources || matches!(disposition, SnapshotDisposition::Stale) {
+        PreparationState::Stale
+    } else {
+        PreparationState::Ready
+    }
 }
 
 fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
@@ -511,10 +735,15 @@ mod tests {
 
     use vesc_mcp_core::config::SemanticIngestionProvider;
     use vesc_mcp_core::managed_repositories::DataRoot;
+    use vesc_mcp_core::managed_snapshots::{SnapshotBuildPhase, SnapshotDisposition};
+    use vesc_mcp_core::preparation_status::PreparationPhase;
 
     use super::{
-        PreparationReporter, RuntimeProfile, StartupPolicy, migraphx_cache_path,
-        publish_child_preparation_failure, repository_refresh_args, run_http,
+        EAGER_INDEX_ARG, PROFILE_INITIAL_TRAINING_ARG, PreparationReporter, REFRESH_ON_STARTUP_ARG,
+        REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy, migraphx_cache_path,
+        policy_for_available_data, preparation_phase_for_build, publish_child_preparation_failure,
+        repository_preparation_timeout, repository_refresh_args, run_http,
+        supervise_preparation_child, terminal_preparation_state,
     };
 
     #[test]
@@ -532,9 +761,39 @@ mod tests {
     }
 
     #[test]
-    fn startup_policy_defaults_to_refresh_eager_and_offline_fallback() {
+    fn startup_policy_defaults_to_reusing_existing_data() {
         assert_eq!(
             StartupPolicy::from_args(&[]),
+            StartupPolicy {
+                refresh: false,
+                eager_index: false,
+                allow_offline_restart: true,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_policy_flags_enable_work_or_require_fresh_sources() {
+        let args = [
+            REFRESH_ON_STARTUP_ARG.to_owned(),
+            EAGER_INDEX_ARG.to_owned(),
+            "--require-fresh-repositories".to_owned(),
+        ];
+
+        assert_eq!(
+            StartupPolicy::from_args(&args),
+            StartupPolicy {
+                refresh: true,
+                eager_index: true,
+                allow_offline_restart: false,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_data_forces_initial_refresh_and_index() {
+        assert_eq!(
+            policy_for_available_data(StartupPolicy::from_args(&[]), false),
             StartupPolicy {
                 refresh: true,
                 eager_index: true,
@@ -544,20 +803,24 @@ mod tests {
     }
 
     #[test]
-    fn startup_policy_flags_disable_work_or_require_fresh_sources() {
-        let args = [
-            "--skip-repository-refresh".to_owned(),
-            "--skip-eager-index".to_owned(),
-            "--require-fresh-repositories".to_owned(),
-        ];
+    fn existing_data_preserves_lazy_startup_policy() {
+        let policy = StartupPolicy::from_args(&[]);
+        assert_eq!(policy_for_available_data(policy, true), policy);
+    }
 
+    #[test]
+    fn build_phases_map_to_precise_live_preparation_status() {
         assert_eq!(
-            StartupPolicy::from_args(&args),
-            StartupPolicy {
-                refresh: false,
-                eager_index: false,
-                allow_offline_restart: false,
-            }
+            preparation_phase_for_build(SnapshotBuildPhase::BuildingLexicalIndex),
+            PreparationPhase::BuildingLexicalIndex
+        );
+        assert_eq!(
+            preparation_phase_for_build(SnapshotBuildPhase::BuildingSemanticIndex),
+            PreparationPhase::BuildingSemanticIndex
+        );
+        assert_eq!(
+            preparation_phase_for_build(SnapshotBuildPhase::Publishing),
+            PreparationPhase::Publishing
         );
     }
 
@@ -580,6 +843,10 @@ mod tests {
             RuntimeProfile::Preparation
         );
         assert_eq!(
+            RuntimeProfile::from_args(&[PROFILE_INITIAL_TRAINING_ARG.into()]),
+            RuntimeProfile::Preparation
+        );
+        assert_eq!(
             RuntimeProfile::from_args(&["--http".into()]),
             RuntimeProfile::Serving { worker_threads: 2 }
         );
@@ -593,20 +860,128 @@ mod tests {
     fn http_preparation_child_forwards_only_startup_policy() {
         let args = [
             "--http".to_owned(),
-            "--skip-repository-refresh".to_owned(),
             "--benchmark-search".to_owned(),
-            "--skip-eager-index".to_owned(),
+            REFRESH_ON_STARTUP_ARG.to_owned(),
+            EAGER_INDEX_ARG.to_owned(),
             "--require-fresh-repositories".to_owned(),
+            REPOSITORY_PREPARATION_TIMEOUT_ARG.to_owned(),
+            "42".to_owned(),
         ];
 
         assert_eq!(
             repository_refresh_args(&args),
             [
                 "--refresh-repositories",
-                "--skip-repository-refresh",
-                "--skip-eager-index",
+                REFRESH_ON_STARTUP_ARG,
+                EAGER_INDEX_ARG,
                 "--require-fresh-repositories",
+                REPOSITORY_PREPARATION_TIMEOUT_ARG,
+                "42",
             ]
+        );
+    }
+
+    #[test]
+    fn default_preparation_child_skips_refresh_and_eager_indexing() {
+        assert_eq!(
+            repository_refresh_args(&["--http".to_owned()]),
+            ["--refresh-repositories", "--skip-repository-refresh"]
+        );
+    }
+
+    #[test]
+    fn repository_preparation_timeout_is_bounded_and_configurable() {
+        assert_eq!(
+            repository_preparation_timeout(&[]).expect("default timeout"),
+            std::time::Duration::from_mins(15)
+        );
+        assert_eq!(
+            repository_preparation_timeout(&[
+                REPOSITORY_PREPARATION_TIMEOUT_ARG.to_owned(),
+                "42".to_owned(),
+            ])
+            .expect("configured timeout"),
+            std::time::Duration::from_secs(42)
+        );
+        assert!(
+            repository_preparation_timeout(&[
+                REPOSITORY_PREPARATION_TIMEOUT_ARG.to_owned(),
+                "0".to_owned(),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_sources_are_retained_in_the_terminal_preparation_state() {
+        assert_eq!(
+            terminal_preparation_state(false, SnapshotDisposition::Reused),
+            vesc_mcp_core::preparation_status::PreparationState::Ready
+        );
+        assert_eq!(
+            terminal_preparation_state(true, SnapshotDisposition::Reused),
+            vesc_mcp_core::preparation_status::PreparationState::Stale
+        );
+        assert_eq!(
+            terminal_preparation_state(false, SnapshotDisposition::Stale),
+            vesc_mcp_core::preparation_status::PreparationState::Stale
+        );
+    }
+
+    const HANGING_PREPARATION_CHILD_ENV: &str = "VESC_MCP_TEST_HANG_PREPARATION_CHILD";
+
+    #[test]
+    fn hanging_preparation_child_fixture() {
+        if std::env::var_os(HANGING_PREPARATION_CHILD_ENV).is_some() {
+            loop {
+                std::thread::park();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn preparation_timeout_kills_and_reaps_child_before_persisting_failure() {
+        let root = tempfile::tempdir().expect("data root");
+        let data_root = DataRoot::new(root.path().to_owned()).expect("absolute data root");
+        let mut child =
+            tokio::process::Command::new(std::env::current_exe().expect("current test executable"))
+                .args(["--exact", "tests::hanging_preparation_child_fixture"])
+                .env(HANGING_PREPARATION_CHILD_ENV, "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn hanging child");
+
+        let error = supervise_preparation_child(
+            &mut child,
+            std::time::Duration::from_millis(50),
+            Some(&data_root),
+            1,
+            true,
+        )
+        .await
+        .expect_err("hanging child times out");
+
+        assert!(error.to_string().contains("timed out"));
+        assert!(
+            child
+                .try_wait()
+                .expect("inspect child")
+                .is_some_and(|status| !status.success()),
+            "timed-out child must be dead and reaped"
+        );
+        assert_eq!(
+            vesc_mcp_core::preparation_status::read_preparation_status(root.path()),
+            Some(
+                vesc_mcp_core::preparation_status::KnowledgePreparationStatus::finished(
+                    vesc_mcp_core::preparation_status::PreparationState::Failed,
+                    0,
+                    1,
+                )
+                .with_freshness_required(true)
+            )
         );
     }
 
@@ -617,14 +992,14 @@ mod tests {
         vesc_mcp_core::preparation_status::write_preparation_status(
             root.path(),
             &vesc_mcp_core::preparation_status::KnowledgePreparationStatus::preparing(
-                vesc_mcp_core::preparation_status::PreparationPhase::Indexing,
+                vesc_mcp_core::preparation_status::PreparationPhase::BuildingSemanticIndex,
                 2,
                 4,
             ),
         )
         .expect("preparing status");
 
-        publish_child_preparation_failure(Some(&data_root), 4);
+        publish_child_preparation_failure(Some(&data_root), 4, true);
 
         assert_eq!(
             vesc_mcp_core::preparation_status::read_preparation_status(root.path()),
@@ -634,6 +1009,7 @@ mod tests {
                     2,
                     4,
                 )
+                .with_freshness_required(true)
             ),
         );
     }
@@ -670,7 +1046,7 @@ mod tests {
     #[test]
     fn unfinished_preparation_is_published_as_failed() {
         let root = tempfile::tempdir().expect("data root");
-        drop(PreparationReporter::new(root.path().to_owned(), 3));
+        drop(PreparationReporter::new(root.path().to_owned(), 3, true));
 
         let status = vesc_mcp_core::preparation_status::read_preparation_status(root.path())
             .expect("published status");
@@ -678,5 +1054,6 @@ mod tests {
             status.state,
             vesc_mcp_core::preparation_status::PreparationState::Failed
         );
+        assert!(status.freshness_required);
     }
 }

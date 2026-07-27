@@ -133,16 +133,16 @@ pub(crate) struct ChunkDraft<'a> {
 }
 
 impl ChunkDraft<'_> {
-    pub(crate) const fn document(&self) -> &NormalizedDocument {
-        self.document
-    }
-
     pub(crate) fn text(&self) -> &str {
         &self.document.content[self.text.clone()]
     }
 
     pub(crate) fn headings(&self) -> &[&str] {
         self.headings.as_slice()
+    }
+
+    pub(crate) const fn ordinal(&self) -> u32 {
+        self.ordinal
     }
 }
 
@@ -279,7 +279,12 @@ fn finish_drafts<'a>(
 
 fn materialize_all(drafts: &ChunkDrafts<'_>) -> Result<Vec<Chunk>, ChunkingError> {
     (0..drafts.len())
-        .map(|index| drafts.materialize(index, None).map_err(ChunkingError::from))
+        .map(|index| {
+            drafts
+                .materialize(index, None)?
+                .with_derived_resource_uri()
+                .map_err(ChunkingError::from)
+        })
         .collect()
 }
 
@@ -304,12 +309,19 @@ fn markdown_blocks(source: &str) -> Vec<Block<'_>> {
     let mut in_code = false;
     let mut heading_only = false;
     let mut line_start = 0;
+    let mut code_range = 0;
     for line in source.split_inclusive('\n') {
         let line_end = line_start + line.len();
         let trimmed = line.trim();
+        while code_ranges
+            .get(code_range)
+            .is_some_and(|range| range.end <= line_start)
+        {
+            code_range += 1;
+        }
         let line_is_code = code_ranges
-            .iter()
-            .any(|range| line_start < range.end && line_end > range.start);
+            .get(code_range)
+            .is_some_and(|range| line_start < range.end && line_end > range.start);
         if !line_is_code && trimmed.starts_with('#') {
             if let Some(current) = start.take() {
                 push_block(&mut blocks, current, line_start, in_code, &headings);
@@ -487,6 +499,29 @@ mod tests {
 
         assert_eq!(materialized.chunk_id, direct.chunk_id);
         assert_eq!(materialized.content_digest, direct.content_digest);
+    }
+
+    #[test]
+    fn only_public_chunks_materialize_their_derived_resource_uri() {
+        let document = NormalizedDocument::new(
+            "Title",
+            SourceKind::Markdown,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("revision").expect("revision"),
+            "docs/example.md",
+            "text/markdown",
+            "# Heading\n\npassage",
+        )
+        .expect("document");
+        let drafts =
+            chunk_markdown_drafts(&document, ChunkingConfig::default()).expect("chunk drafts");
+        let history_chunk = drafts.materialize(0, None).expect("history chunk");
+        let public_chunk = chunk_markdown(&document, ChunkingConfig::default())
+            .expect("public chunks")
+            .remove(0);
+
+        assert!(history_chunk.resource_uri.is_none());
+        assert!(public_chunk.resource_uri.is_some());
     }
 
     #[test]

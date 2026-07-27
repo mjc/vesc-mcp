@@ -11,8 +11,9 @@ use std::sync::{Condvar, MutexGuard, Once};
 use std::time::Duration;
 use std::time::Instant;
 use vesc_knowledge_index::{
-    Category, ExpandedContext, FusionConfig, LexicalHit, LexicalIndex, SemanticHit,
-    expand_adjacent_context,
+    Category, ExpandedContext, FusedCandidate, FusedHit, FusionConfig, LexicalCandidate,
+    LexicalHit, LexicalIndex, RetrievalMetadata, SemanticHit, expand_adjacent_context,
+    fuse_candidate_metadata,
 };
 #[cfg(any(feature = "semantic-fastembed", test))]
 use vesc_knowledge_index::{EmbeddingProvider, VectorArtifact, semantic_query_text};
@@ -408,6 +409,9 @@ pub fn search_vesc_knowledge_tool_with_config(
         Err(error) => return error_response(mode, error),
     };
     let config = selected_config.as_ref().unwrap_or(config);
+    if let Err(error) = resolved_search_artifact(config) {
+        return error_response(mode, error);
+    }
     let started = Instant::now();
     if params.query.len() > config.max_query_bytes {
         return error_response(
@@ -512,8 +516,20 @@ fn selected_search_config(
             .to_owned()
     })?;
     let mut selected = config.clone();
+    selected.managed_git = false;
     selected.artifact_path = Some(resolved.path.clone());
     Ok((Some(resolved), Some(selected)))
+}
+
+fn resolved_search_artifact(config: &KnowledgeConfig) -> Result<Option<PathBuf>, String> {
+    let artifact = config.resolved_artifact_path();
+    if artifact.is_none() && config.manages_repositories() {
+        return Err(
+            "managed knowledge is unavailable while repository preparation is incomplete or failed"
+                .into(),
+        );
+    }
+    Ok(artifact)
 }
 
 fn qualify_snapshot_resources(results: &mut [SearchVescKnowledgeResult], snapshot_id: &str) {
@@ -842,9 +858,10 @@ fn lexical_results(
     limit: usize,
     config: &KnowledgeConfig,
 ) -> Result<Vec<LexicalHit>, String> {
-    if let Some(path) = config.resolved_artifact_path() {
+    if let Some(path) = resolved_search_artifact(config)? {
         let lexical_path = active_lexical_path(&path)?;
-        return with_cached_lexical_index(&lexical_path, |index| {
+        let repositories_root = config.managed_repositories_root();
+        return with_cached_lexical_index(&lexical_path, repositories_root.as_deref(), |index| {
             index
                 .search(query, filters, limit)
                 .map_err(|error| error.to_string())
@@ -862,23 +879,24 @@ fn hybrid_results(
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
-    let (lexical, mut chunks) =
-        lexical_hits_and_chunks(&params.query, filters, candidate_limit, config)?;
+    let (lexical, mut metadata) =
+        lexical_candidates_and_metadata(&params.query, filters, candidate_limit, config)?;
     let (mut semantic, live_rerank) = semantic_hits(&params.query, candidate_limit, config)?;
-    hydrate_semantic_chunks(&mut semantic, filters, config, &mut chunks)?;
+    load_semantic_metadata(&mut semantic, filters, config, &mut metadata)?;
     let context_budget = params
         .max_context_bytes
         .unwrap_or(config.max_passage_bytes)
         .min(config.max_passage_bytes);
-    let fused = vesc_knowledge_index::fuse_candidates(
+    let fused = fuse_candidate_metadata(
         &lexical,
         &semantic,
-        &chunks,
+        &metadata,
         FusionConfig {
             limit,
             ..FusionConfig::default()
         },
     );
+    let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
     hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
     let results = fused
         .into_iter()
@@ -911,25 +929,26 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     provider: &mut P,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, bool), String> {
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
-    let (lexical, mut chunks) =
-        lexical_hits_and_chunks(&params.query, filters, candidate_limit, config)?;
+    let (lexical, mut metadata) =
+        lexical_candidates_and_metadata(&params.query, filters, candidate_limit, config)?;
     let vector = load_vector_artifact(config)?;
     let mut semantic =
         semantic_hits_with_provider(&params.query, candidate_limit, &vector, provider)?;
-    hydrate_semantic_chunks(&mut semantic, filters, config, &mut chunks)?;
+    load_semantic_metadata(&mut semantic, filters, config, &mut metadata)?;
     let context_budget = params
         .max_context_bytes
         .unwrap_or(config.max_passage_bytes)
         .min(config.max_passage_bytes);
-    let fused = vesc_knowledge_index::fuse_candidates(
+    let fused = fuse_candidate_metadata(
         &lexical,
         &semantic,
-        &chunks,
+        &metadata,
         FusionConfig {
             limit,
             ..FusionConfig::default()
         },
     );
+    let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
     hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
     let results = fused
         .into_iter()
@@ -946,37 +965,39 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     Ok((results, false))
 }
 
-fn lexical_hits_and_chunks(
+fn lexical_candidates_and_metadata(
     query: &str,
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-) -> Result<(Vec<LexicalHit>, ChunkMap), String> {
-    if let Some(path) = config.resolved_artifact_path() {
+) -> Result<(Vec<LexicalCandidate>, CandidateMetadataMap), String> {
+    if let Some(path) = resolved_search_artifact(config)? {
         let lexical_path = active_lexical_path(&path)?;
-        return with_cached_lexical_index(&lexical_path, |index| {
+        let repositories_root = config.managed_repositories_root();
+        return with_cached_lexical_index(&lexical_path, repositories_root.as_deref(), |index| {
             let hits = index
-                .search(query, filters, limit)
+                .search_candidates(query, filters, limit)
                 .map_err(|error| error.to_string())?;
-            let chunks = hits
+            let metadata = hits
                 .iter()
                 .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
                 .collect();
-            Ok((hits, chunks))
+            Ok((hits, metadata))
         });
     }
     let index = vesc_knowledge_index::lexical_index();
     let hits = index
-        .search(query, filters, limit)
+        .search_candidates(query, filters, limit)
         .map_err(|error| error.to_string())?;
-    let chunks = hits
+    let metadata = hits
         .iter()
         .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
         .collect();
-    Ok((hits, chunks))
+    Ok((hits, metadata))
 }
 
 type ChunkMap = BTreeMap<vesc_knowledge_index::ChunkId, vesc_knowledge_index::Chunk>;
+type CandidateMetadataMap = BTreeMap<vesc_knowledge_index::ChunkId, RetrievalMetadata>;
 type ArtifactCache<T> = OnceLock<Mutex<Option<(PathBuf, Arc<T>)>>>;
 static LEXICAL_ARTIFACT_CACHE: ArtifactCache<LexicalIndex> = OnceLock::new();
 static ARTIFACT_METADATA_CACHE: ArtifactCache<vesc_knowledge_index::PreviousArtifactSummary> =
@@ -1034,10 +1055,15 @@ fn active_artifact_summary(
 /// Reuse the active generation's Tantivy index between MCP requests.
 fn with_cached_lexical_index<T>(
     path: &Path,
+    repositories_root: Option<&Path>,
     operation: impl FnOnce(&LexicalIndex) -> Result<T, String>,
 ) -> Result<T, String> {
     let index = cached_artifact(&LEXICAL_ARTIFACT_CACHE, path, || {
-        LexicalIndex::open_search_artifact(path)
+        repositories_root
+            .map_or_else(
+                || LexicalIndex::open_search_artifact(path),
+                |root| LexicalIndex::open_git_search_artifact(path, root),
+            )
             .map_err(|_| "configured lexical artifact unavailable".to_string())
     })?;
     operation(&index)
@@ -1212,8 +1238,7 @@ fn reap_idle_semantic_model() {
 
 #[cfg(any(feature = "semantic-fastembed", test))]
 fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>, String> {
-    let root = config
-        .resolved_artifact_path()
+    let root = resolved_search_artifact(config)?
         .ok_or_else(|| "vector artifact is not configured".to_string())?;
     let artifact = active_artifact_summary(&root)
         .map_err(|_| "configured vector artifact unavailable".to_string())?;
@@ -1261,24 +1286,79 @@ fn semantic_hits_with_provider<P: EmbeddingProvider + ?Sized>(
         .map_err(|error| format!("semantic search failed: {error}"))
 }
 
-fn hydrate_semantic_chunks(
+fn load_semantic_metadata(
     hits: &mut Vec<SemanticHit>,
     filters: &vesc_knowledge_index::LexicalFilters,
     config: &KnowledgeConfig,
-    chunks: &mut ChunkMap,
+    metadata: &mut CandidateMetadataMap,
 ) -> Result<(), String> {
-    let ids = hits.iter().map(|hit| hit.chunk_id.clone()).collect();
-    hydrate_chunk_ids(&ids, config, chunks)?;
-    hits.retain(|hit| {
-        chunks
-            .get(&hit.chunk_id)
-            .is_some_and(|chunk| filters.matches(chunk))
-    });
+    let missing = hits
+        .iter()
+        .map(|hit| hit.chunk_id.clone())
+        .filter(|id| !metadata.contains_key(id))
+        .collect();
+    metadata.extend(load_metadata_ids(&missing, filters, config)?);
+    hits.retain(|hit| metadata.contains_key(&hit.chunk_id));
     Ok(())
 }
 
+fn load_metadata_ids(
+    ids: &BTreeSet<vesc_knowledge_index::ChunkId>,
+    filters: &vesc_knowledge_index::LexicalFilters,
+    config: &KnowledgeConfig,
+) -> Result<CandidateMetadataMap, String> {
+    if let Some(root) = resolved_search_artifact(config)? {
+        let lexical_path = active_lexical_path(&root)?;
+        let repositories_root = config.managed_repositories_root();
+        return with_cached_lexical_index(&lexical_path, repositories_root.as_deref(), |index| {
+            index
+                .metadata_by_id(ids, filters)
+                .map_err(|error| error.to_string())
+        });
+    }
+    vesc_knowledge_index::lexical_index()
+        .metadata_by_id(ids, filters)
+        .map_err(|error| error.to_string())
+}
+
+fn hydrate_fused_candidates(
+    candidates: Vec<FusedCandidate>,
+    config: &KnowledgeConfig,
+) -> Result<(Vec<FusedHit>, ChunkMap), String> {
+    let ids = candidates
+        .iter()
+        .map(|candidate| candidate.chunk.chunk_id.clone())
+        .collect();
+    let mut chunks = ChunkMap::new();
+    hydrate_chunk_ids(&ids, config, &mut chunks)?;
+    let hits = candidates
+        .into_iter()
+        .map(|candidate| {
+            let chunk = chunks
+                .get(&candidate.chunk.chunk_id)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "lexical artifact is missing fused chunk {}",
+                        candidate.chunk.chunk_id
+                    )
+                })?;
+            Ok(FusedHit {
+                chunk,
+                score: candidate.score,
+                lexical_rank: candidate.lexical_rank,
+                semantic_rank: candidate.semantic_rank,
+                lexical_score: candidate.lexical_score,
+                semantic_similarity: candidate.semantic_similarity,
+                exact_identifier: candidate.exact_identifier,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((hits, chunks))
+}
+
 fn hydrate_adjacent_chunks(
-    hits: &[vesc_knowledge_index::FusedHit],
+    hits: &[FusedHit],
     config: &KnowledgeConfig,
     chunks: &mut ChunkMap,
 ) -> Result<(), String> {
@@ -1323,9 +1403,10 @@ fn hydrate_chunk_ids(
     if missing.is_empty() {
         return Ok(());
     }
-    let loaded = if let Some(root) = config.resolved_artifact_path() {
+    let loaded = if let Some(root) = resolved_search_artifact(config)? {
         let lexical_path = active_lexical_path(&root)?;
-        with_cached_lexical_index(&lexical_path, |index| {
+        let repositories_root = config.managed_repositories_root();
+        with_cached_lexical_index(&lexical_path, repositories_root.as_deref(), |index| {
             index
                 .chunks_by_id(&missing)
                 .map_err(|error| error.to_string())
@@ -2132,6 +2213,74 @@ mod tests {
         assert!(response.results[0].passage.is_some());
         assert!(response.results[0].source.revision.is_some());
         assert!(response.results[0].source.end_line.is_some());
+    }
+
+    #[test]
+    fn unavailable_managed_knowledge_never_falls_back_to_static_or_embedded_search() {
+        let root = tempfile::tempdir().expect("data root");
+        let mut config = crate::config::McpConfig::from_toml(
+            &format!(
+                r#"
+[knowledge]
+managed_git = true
+artifact_path = "{}"
+data_root = "{}"
+
+[[knowledge.repositories]]
+id = "vesc"
+remote_url = "https://github.com/vedderb/bldc.git"
+default_ref = "refs/heads/master"
+policy = "required"
+include = ["**/*.c"]
+exclude = []
+trust_tier = "official"
+license = "GPL-3.0-or-later"
+attribution = "VESC Project"
+max_file_bytes = 1048576
+max_files = 100000
+max_total_bytes = 1073741824
+"#,
+                root.path().join("static-artifact").display(),
+                root.path().display(),
+            ),
+            &crate::managed_repositories::DataRootInputs::default(),
+        )
+        .expect("managed configuration")
+        .knowledge;
+        config.mode = RetrievalMode::Lexical;
+        crate::preparation_status::write_preparation_status(
+            root.path(),
+            &crate::preparation_status::KnowledgePreparationStatus::preparing(
+                crate::preparation_status::PreparationPhase::PlanningHistory,
+                0,
+                1,
+            )
+            .with_freshness_required(true),
+        )
+        .expect("strict preparation status");
+
+        let response = search_vesc_knowledge_tool_with_config(
+            &SearchVescKnowledgeParams {
+                query: "lbm_add_extension".into(),
+                snapshot_id: None,
+                limit: default_search_limit(),
+                mode: Some(SearchMode::Lexical),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::default(),
+            },
+            &config,
+        );
+
+        assert!(!response.ok);
+        assert!(response.results.is_empty());
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("managed knowledge is unavailable"))
+        );
     }
 
     #[test]

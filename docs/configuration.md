@@ -31,6 +31,7 @@ enable_flash = false
 
 [knowledge]
 mode = "lexical"
+managed_git = false
 
 [feedback]
 path = ".vesc-mcp-feedback"
@@ -132,6 +133,7 @@ The default `lexical` mode is local and does not download a model.
 | `[knowledge] mode` | `VESC_RAG_MODE` | `lexical` | Retrieval mode |
 | `[knowledge] artifact_path` | `VESC_RAG_ARTIFACT` | unset; embedded catalog | Generated artifact directory |
 | `[knowledge] data_root` | `STATE_DIRECTORY` fallback | platform application-data directory | Persistent repository, snapshot, and artifact state |
+| `[knowledge] managed_git` | none | `false` | Clone, fetch, and index configured Git repositories |
 | `[knowledge.semantic] model_dir` | `VESC_RAG_SEMANTIC_MODEL_DIR` | unset | Pinned local model directory |
 | `[knowledge.semantic] model_id` | `VESC_RAG_SEMANTIC_MODEL_ID` | unset | Model identity recorded by the artifact |
 | `[knowledge.semantic] model_revision` | `VESC_RAG_SEMANTIC_MODEL_REVISION` | unset | Pinned model revision |
@@ -176,9 +178,15 @@ filesystem access. Repository IDs are stable lowercase path-safe identifiers;
 remotes must be credential-free HTTPS URLs; refs must be full `refs/...`
 names; and include/exclude rules must be relative patterns without `..` path
 components. Duplicate IDs and zero or inconsistent source limits are rejected.
+`max_file_bytes` rejects an oversized Git blob before hydration.
+`max_files` and `max_total_bytes` bound the files processed for one repository
+build: the complete selected history for a cold build, or only the changed
+delta for an incremental build. They do not cap the cumulative persisted
+corpus.
 
 ```toml
 [knowledge]
+managed_git = true
 data_root = "/var/lib/vesc-mcp"
 
 [[knowledge.repositories]]
@@ -210,9 +218,13 @@ max_files = 100000
 max_total_bytes = 1073741824
 ```
 
-Repository order in runtime configuration is deterministic by `id`. An empty
-repository list remains valid and preserves embedded or explicitly configured
-artifact retrieval.
+Repository order in runtime configuration is deterministic by `id`.
+`managed_git = false` performs no managed repository lifecycle work and uses
+the embedded catalog or `artifact_path`; an empty or fully disabled repository
+list has the same effect. When managed Git is active, search uses only the
+resolved managed snapshot. Strict preparation, terminal failure, or an invalid
+managed artifact returns an unavailable response instead of falling back to
+`artifact_path` or the embedded catalog.
 
 The application data root resolves in this order:
 
@@ -242,19 +254,24 @@ repository counts; the same state is atomically shared through
 containing every searchable blob reachable from each configured default branch.
 The managed bare repositories remain the sole commit, tree, ref, and blob
 store; snapshots do not duplicate that graph in a corpus-sized JSON file.
-Tantivy stores the normalized searchable chunks and `vectors.bin` stores their
-embeddings.
+Tantivy stores compact searchable locators and hydrates bounded top results
+from Git; `vectors.bin` stores embeddings.
 
 A later refresh resolves the current tips from Git. An unchanged immutable
 snapshot ID reuses its complete artifact without rebuilding. Changed tips are
 checked against the prior tips in Git. Fast-forwards seed normalized chunks from
 the prior Tantivy artifact, ingest only the newly reachable commit range, and
 copy unchanged rows from a compatible `vectors.bin`; only new chunk IDs are
-embedded. Rewrites, policy changes, and incompatible semantic contracts fall
-back to a cold rebuild. The new derived artifact is validated before the mutable
-default alias advances. Explicit prewarm selections remain commit-tree snapshots
-for version-specific comparisons. A failed refresh keeps the last complete
-default and reports it as stale. Run
+embedded. Rewrites and policy changes fall back to a cold corpus rebuild.
+Incompatible semantic contracts reuse the compatible lexical predecessor and
+regenerate its embeddings. The new derived artifact is validated before the
+mutable default alias advances. Explicit prewarm selections remain commit-tree
+snapshots for version-specific comparisons. A failed refresh keeps the last
+complete compatible default and reports it as stale only when offline restart
+is allowed. Snapshot compatibility includes each repository's configured
+remote URL and default ref. An unavailable optional repository is excluded from
+the new snapshot; in particular, changing its remote URL never indexes content
+from the old cached repository. Run
 `vesc-mcp-server --refresh-repositories` from a deployment hook or timer to
 perform a refresh and exit. There is no built-in background scheduler.
 

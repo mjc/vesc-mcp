@@ -211,6 +211,26 @@ length without changing the registered model profile; the override cannot
 exceed the profile maximum. The build command accepts the same lower override;
 configure `[knowledge.semantic] max_length` to match it at query time.
 
+## Deterministic performance benchmarks
+
+The Nix development shell includes Gungraun, Valgrind, and the matching
+`gungraun-runner`. Run the CPU/cache suite with Callgrind, or add DHAT and
+Massif for allocation and peak-heap measurements:
+
+```bash
+nix develop -c make bench
+nix develop -c make bench-memory
+```
+
+The suite measures bounded Markdown chunking, Git commit ingestion, Tantivy
+build/search and inventory streaming, and deterministic fake-provider vector
+construction. Fixture setup is excluded from the measurements. Full semantic
+provider initialization and GPU inference remain in the provider profiling
+workflow because those results are machine-specific.
+
+Raw Callgrind, DHAT, and Massif outputs are written below
+`target/gungraun/`. Do not commit them.
+
 ## Coverage
 
 The line-coverage floor is 80% for library source in `vesc-domain`,

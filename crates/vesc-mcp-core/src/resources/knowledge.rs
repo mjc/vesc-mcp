@@ -47,6 +47,7 @@ fn read_knowledge_chunk_from_artifact(
     uri: &str,
     chunk: &KnowledgeChunkUri,
     artifact_root: &Path,
+    repositories_root: Option<&Path>,
 ) -> Result<String, ResourceReadError> {
     let requested = ChunkId::try_from(chunk.id.as_str())
         .map_err(|_| ResourceReadError::NotFound { uri: uri.into() })?;
@@ -60,7 +61,7 @@ fn read_knowledge_chunk_from_artifact(
             })?
             .join("lexical.json")
     };
-    let index = LexicalIndex::open_search_artifact(&lexical_path).map_err(|error| {
+    let index = open_lexical_artifact(&lexical_path, repositories_root).map_err(|error| {
         ResourceReadError::ReadFailed {
             uri: uri.into(),
             message: format!("read knowledge lexical artifact: {error}"),
@@ -111,11 +112,12 @@ fn read_knowledge_document_from_artifact(
     uri: &str,
     document: &KnowledgeDocumentUri,
     artifact_root: &Path,
+    repositories_root: Option<&Path>,
 ) -> Result<String, ResourceReadError> {
     let requested = DocumentId::try_from(document.id.as_str())
         .map_err(|_| ResourceReadError::NotFound { uri: uri.into() })?;
     let lexical_path = artifact_lexical_path(artifact_root, uri)?;
-    let index = LexicalIndex::open_search_artifact(&lexical_path).map_err(|error| {
+    let index = open_lexical_artifact(&lexical_path, repositories_root).map_err(|error| {
         ResourceReadError::ReadFailed {
             uri: uri.into(),
             message: format!("read knowledge lexical artifact: {error}"),
@@ -171,6 +173,16 @@ fn artifact_lexical_path(artifact_root: &Path, uri: &str) -> Result<PathBuf, Res
             uri: uri.into(),
             message: format!("read knowledge artifact manifest: {error}"),
         })
+}
+
+fn open_lexical_artifact(
+    lexical_path: &Path,
+    repositories_root: Option<&Path>,
+) -> Result<LexicalIndex, vesc_knowledge_index::LexicalError> {
+    repositories_root.map_or_else(
+        || LexicalIndex::open_search_artifact(lexical_path),
+        |root| LexicalIndex::open_git_search_artifact(lexical_path, root),
+    )
 }
 
 /// Handler for normalized embedded knowledge documents.
@@ -230,6 +242,7 @@ impl ResourceReadHandler for ConfiguredKnowledgeDocumentResourceHandler {
     }
 
     fn read(&self, uri: &ParsedResourceUri) -> Result<String, ResourceReadError> {
+        let repositories_root = self.knowledge.managed_repositories_root();
         match uri {
             ParsedResourceUri::KnowledgeDocument(document) => self
                 .knowledge
@@ -237,7 +250,14 @@ impl ResourceReadHandler for ConfiguredKnowledgeDocumentResourceHandler {
                 .as_ref()
                 .map_or_else(
                     || read_knowledge_document(&uri.to_uri(), document),
-                    |root| read_knowledge_document_from_artifact(&uri.to_uri(), document, root),
+                    |root| {
+                        read_knowledge_document_from_artifact(
+                            &uri.to_uri(),
+                            document,
+                            root,
+                            repositories_root.as_deref(),
+                        )
+                    },
                 ),
             ParsedResourceUri::SnapshotKnowledgeDocument(document) => {
                 let root = snapshot_artifact(&self.knowledge, &document.snapshot, &uri.to_uri())?;
@@ -247,6 +267,7 @@ impl ResourceReadHandler for ConfiguredKnowledgeDocumentResourceHandler {
                         id: document.id.clone(),
                     },
                     &root,
+                    repositories_root.as_deref(),
                 )
             }
             _ => Err(ResourceReadError::NotFound { uri: uri.to_uri() }),
@@ -310,6 +331,7 @@ impl ResourceReadHandler for ConfiguredKnowledgeChunkResourceHandler {
     }
 
     fn read(&self, uri: &ParsedResourceUri) -> Result<String, ResourceReadError> {
+        let repositories_root = self.knowledge.managed_repositories_root();
         match uri {
             ParsedResourceUri::KnowledgeChunk(chunk) => self
                 .knowledge
@@ -317,7 +339,14 @@ impl ResourceReadHandler for ConfiguredKnowledgeChunkResourceHandler {
                 .as_ref()
                 .map_or_else(
                     || read_knowledge_chunk(&uri.to_uri(), chunk),
-                    |root| read_knowledge_chunk_from_artifact(&uri.to_uri(), chunk, root),
+                    |root| {
+                        read_knowledge_chunk_from_artifact(
+                            &uri.to_uri(),
+                            chunk,
+                            root,
+                            repositories_root.as_deref(),
+                        )
+                    },
                 ),
             ParsedResourceUri::SnapshotKnowledgeChunk(chunk) => {
                 let root = snapshot_artifact(&self.knowledge, &chunk.snapshot, &uri.to_uri())?;
@@ -327,6 +356,7 @@ impl ResourceReadHandler for ConfiguredKnowledgeChunkResourceHandler {
                         id: chunk.id.clone(),
                     },
                     &root,
+                    repositories_root.as_deref(),
                 )
             }
             _ => Err(ResourceReadError::NotFound { uri: uri.to_uri() }),

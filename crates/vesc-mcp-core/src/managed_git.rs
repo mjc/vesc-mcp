@@ -3,14 +3,15 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::managed_repositories::{
-    KnowledgeDataLayout, KnowledgeRepository, RepositoryId, RepositoryPolicy, RepositoryRegistry,
+    KnowledgeDataLayout, KnowledgeRepository, RepositoryId, RepositoryRegistry,
 };
 
 const HEADS_REFSPEC: &str = "+refs/heads/*:refs/remotes/origin/*";
@@ -23,14 +24,16 @@ pub enum ManagedGitError {
     Storage(#[source] std::io::Error),
     #[error("managed repository operation failed: {0}")]
     Git(String),
-    #[error("managed repository task failed")]
-    Task(#[from] tokio::task::JoinError),
+    #[error("managed repository task failed: {0}")]
+    Task(String),
     #[error("repository selector was not found")]
     UnknownSelector,
     #[error("repository selector does not identify a commit")]
     NotACommit,
     #[error("repository selector identifies an unreachable commit")]
     UnreachableCommit,
+    #[error("configured remote URL differs from cached origin ({cached} != {configured})")]
+    RemoteUrlChanged { cached: String, configured: String },
 }
 
 impl From<std::io::Error> for ManagedGitError {
@@ -105,7 +108,93 @@ pub struct ResolvedRevision {
 
 #[derive(Default)]
 struct SyncSlot {
-    generation: Mutex<u64>,
+    generation: AtomicU64,
+    gate: AsyncMutex<()>,
+    completed: Mutex<Option<(SyncRequest, SharedSyncResult)>>,
+}
+
+#[derive(PartialEq, Eq)]
+struct SyncRequest {
+    remote_url: String,
+    default_ref: String,
+}
+
+enum SharedSyncResult {
+    Success(RepositorySync),
+    Failure(SharedManagedGitError),
+}
+
+enum SharedManagedGitError {
+    Storage {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    Git(String),
+    Task(String),
+    UnknownSelector,
+    NotACommit,
+    UnreachableCommit,
+    RemoteUrlChanged {
+        cached: String,
+        configured: String,
+    },
+}
+
+impl SharedManagedGitError {
+    fn capture(error: &ManagedGitError) -> Self {
+        match error {
+            ManagedGitError::Storage(error) => Self::Storage {
+                kind: error.kind(),
+                message: error.to_string(),
+            },
+            ManagedGitError::Git(message) => Self::Git(message.clone()),
+            ManagedGitError::Task(message) => Self::Task(message.clone()),
+            ManagedGitError::UnknownSelector => Self::UnknownSelector,
+            ManagedGitError::NotACommit => Self::NotACommit,
+            ManagedGitError::UnreachableCommit => Self::UnreachableCommit,
+            ManagedGitError::RemoteUrlChanged { cached, configured } => Self::RemoteUrlChanged {
+                cached: cached.clone(),
+                configured: configured.clone(),
+            },
+        }
+    }
+
+    fn to_error(&self) -> ManagedGitError {
+        match self {
+            Self::Storage { kind, message } => {
+                ManagedGitError::Storage(std::io::Error::new(*kind, message.clone()))
+            }
+            Self::Git(message) => ManagedGitError::Git(message.clone()),
+            Self::Task(message) => ManagedGitError::Task(message.clone()),
+            Self::UnknownSelector => ManagedGitError::UnknownSelector,
+            Self::NotACommit => ManagedGitError::NotACommit,
+            Self::UnreachableCommit => ManagedGitError::UnreachableCommit,
+            Self::RemoteUrlChanged { cached, configured } => ManagedGitError::RemoteUrlChanged {
+                cached: cached.clone(),
+                configured: configured.clone(),
+            },
+        }
+    }
+}
+
+impl SharedSyncResult {
+    fn from_result(result: &Result<RepositorySync, ManagedGitError>) -> Self {
+        match result {
+            Ok(sync) => Self::Success(sync.clone()),
+            Err(error) => Self::Failure(SharedManagedGitError::capture(error)),
+        }
+    }
+
+    fn deduplicated(&self) -> Result<RepositorySync, ManagedGitError> {
+        match self {
+            Self::Success(sync) => {
+                let mut sync = sync.clone();
+                sync.disposition = SyncDisposition::Deduplicated;
+                Ok(sync)
+            }
+            Self::Failure(error) => Err(error.to_error()),
+        }
+    }
 }
 
 /// Path-based handle for managed bare repositories.
@@ -144,10 +233,8 @@ impl ManagedGitStore {
         repositories: &RepositoryRegistry,
     ) -> Vec<(RepositoryId, Result<RepositorySync, ManagedGitError>)> {
         let mut outcomes = Vec::new();
-        for repository in repositories.iter() {
-            if repository.policy() != RepositoryPolicy::Disabled {
-                outcomes.push((repository.id().clone(), self.refresh(repository).await));
-            }
+        for repository in repositories.enabled() {
+            outcomes.push((repository.id().clone(), self.refresh(repository).await));
         }
         outcomes
     }
@@ -180,16 +267,13 @@ impl ManagedGitStore {
             let mut slots = self.slots.lock().expect("managed Git slots mutex poisoned");
             Arc::clone(slots.entry(id.clone()).or_default())
         };
-        let observed_generation = *slot
-            .generation
-            .lock()
-            .expect("managed Git generation mutex poisoned");
+        let observed_generation = slot.generation.load(Ordering::Acquire);
         let layout = self.layout.clone();
         let id = id.clone();
         let remote_url = remote_url.to_owned();
         let default_ref = default_ref.to_owned();
         let interrupt = Arc::new(AtomicBool::new(false));
-        Self::run_sync(
+        tokio::spawn(Self::run_sync(
             layout,
             id,
             remote_url,
@@ -197,8 +281,9 @@ impl ManagedGitStore {
             slot,
             observed_generation,
             interrupt,
-        )
+        ))
         .await
+        .map_err(|error| ManagedGitError::Task(error.to_string()))?
     }
 
     async fn run_sync(
@@ -210,46 +295,62 @@ impl ManagedGitStore {
         observed_generation: u64,
         interrupt: Arc<AtomicBool>,
     ) -> Result<RepositorySync, ManagedGitError> {
-        tokio::task::spawn_blocking(move || {
-            let mut generation = slot
-                .generation
+        let _gate = slot.gate.lock().await;
+        let request = SyncRequest {
+            remote_url: remote_url.clone(),
+            default_ref: default_ref.clone(),
+        };
+        if slot.generation.load(Ordering::Acquire) != observed_generation {
+            let completed = slot
+                .completed
                 .lock()
-                .expect("managed Git generation mutex poisoned");
-            if *generation != observed_generation {
-                drop(generation);
-                let catalog = read_catalog(&layout, &id)?;
-                return Ok(RepositorySync {
-                    catalog,
-                    disposition: SyncDisposition::Deduplicated,
-                    warning: None,
-                });
+                .expect("managed Git completion mutex poisoned");
+            if let Some((completed_request, result)) = completed.as_ref()
+                && completed_request == &request
+            {
+                return result.deduplicated();
             }
+        }
 
-            let result = synchronize(&layout, &id, &remote_url, &default_ref, &interrupt);
-            if result.is_ok() {
-                *generation += 1;
-            }
-            drop(generation);
-            match result {
-                Ok(catalog) => Ok(RepositorySync {
-                    catalog,
-                    disposition: SyncDisposition::Refreshed,
-                    warning: None,
-                }),
-                Err(error) => match read_catalog(&layout, &id) {
-                    Ok(mut catalog) => {
-                        catalog.mark_stale();
-                        Ok(RepositorySync {
-                            catalog,
-                            disposition: SyncDisposition::Stale,
-                            warning: Some(error.to_string()),
-                        })
-                    }
-                    Err(_) => Err(error),
-                },
-            }
+        let sync_layout = layout.clone();
+        let sync_id = id.clone();
+        let result = match tokio::task::spawn_blocking(move || {
+            synchronize(
+                &sync_layout,
+                &sync_id,
+                &remote_url,
+                &default_ref,
+                &interrupt,
+            )
         })
-        .await?
+        .await
+        {
+            Ok(Ok(catalog)) => Ok(RepositorySync {
+                catalog,
+                disposition: SyncDisposition::Refreshed,
+                warning: None,
+            }),
+            Ok(Err(error @ ManagedGitError::RemoteUrlChanged { .. })) => Err(error),
+            Ok(Err(error)) => match read_catalog(&layout, &id) {
+                Ok(mut catalog) => {
+                    catalog.mark_stale();
+                    Ok(RepositorySync {
+                        catalog,
+                        disposition: SyncDisposition::Stale,
+                        warning: Some(error.to_string()),
+                    })
+                }
+                Err(_) => Err(error),
+            },
+            Err(error) => Err(ManagedGitError::Task(error.to_string())),
+        };
+        *slot
+            .completed
+            .lock()
+            .expect("managed Git completion mutex poisoned") =
+            Some((request, SharedSyncResult::from_result(&result)));
+        slot.generation.fetch_add(1, Ordering::Release);
+        result
     }
 
     #[cfg(test)]
@@ -263,10 +364,7 @@ impl ManagedGitStore {
             let mut slots = self.slots.lock().expect("managed Git slots mutex poisoned");
             Arc::clone(slots.entry(id.clone()).or_default())
         };
-        let observed_generation = *slot
-            .generation
-            .lock()
-            .expect("managed Git generation mutex poisoned");
+        let observed_generation = slot.generation.load(Ordering::Acquire);
         let interrupt = Arc::new(AtomicBool::new(true));
         Self::run_sync(
             self.layout.clone(),
@@ -331,6 +429,22 @@ impl ManagedGitStore {
             commit: object_id.to_string(),
         })
     }
+
+    /// Verify the cached origin before resolving a configured repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedGitError::RemoteUrlChanged`] when the cached repository
+    /// belongs to a different configured source.
+    pub fn resolve_configured(
+        &self,
+        repository: &KnowledgeRepository,
+        selector: &str,
+    ) -> Result<ResolvedRevision, ManagedGitError> {
+        let cached = gix::open(self.repository_path(repository.id())).map_err(git_error)?;
+        validate_cached_origin(&cached, repository.remote_url())?;
+        self.resolve(repository.id(), selector)
+    }
 }
 
 fn synchronize(
@@ -353,7 +467,7 @@ fn synchronize(
     let repository_path = layout.repository(id);
 
     if repository_path.exists() {
-        fetch_existing(&repository_path, interrupt)?;
+        fetch_existing(&repository_path, remote_url, interrupt)?;
     } else {
         clone_missing(layout, &repository_path, remote_url, interrupt)?;
     }
@@ -412,10 +526,17 @@ fn clone_missing(
     Ok(())
 }
 
-fn fetch_existing(repository_path: &Path, interrupt: &AtomicBool) -> Result<(), ManagedGitError> {
+fn fetch_existing(
+    repository_path: &Path,
+    remote_url: &str,
+    interrupt: &AtomicBool,
+) -> Result<(), ManagedGitError> {
     let repo = gix::open(repository_path).map_err(git_error)?;
+    validate_cached_origin(&repo, remote_url)?;
     let remote = repo
         .find_remote("origin")
+        .map_err(git_error)?
+        .with_url(remote_url)
         .map_err(git_error)?
         .with_refspecs([HEADS_REFSPEC, TAGS_REFSPEC], gix::remote::Direction::Fetch)
         .map_err(git_error)?;
@@ -430,6 +551,26 @@ fn fetch_existing(repository_path: &Path, interrupt: &AtomicBool) -> Result<(), 
         .map_err(git_error)?
         .receive(gix::progress::Discard, interrupt)
         .map_err(git_error)?;
+    Ok(())
+}
+
+fn validate_cached_origin(repo: &gix::Repository, remote_url: &str) -> Result<(), ManagedGitError> {
+    let remote = repo.find_remote("origin").map_err(git_error)?;
+    let cached_url = remote
+        .url(gix::remote::Direction::Fetch)
+        .cloned()
+        .ok_or_else(|| ManagedGitError::Git("cached origin has no fetch URL".to_owned()))?;
+    let remote = remote.with_url(remote_url).map_err(git_error)?;
+    let configured_url = remote
+        .url(gix::remote::Direction::Fetch)
+        .cloned()
+        .ok_or_else(|| ManagedGitError::Git("configured origin has no fetch URL".to_owned()))?;
+    if cached_url != configured_url {
+        return Err(ManagedGitError::RemoteUrlChanged {
+            cached: cached_url.to_bstring().to_string(),
+            configured: configured_url.to_bstring().to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -752,6 +893,170 @@ mod tests {
 
         assert!(dispositions.contains(&SyncDisposition::Refreshed));
         assert!(dispositions.contains(&SyncDisposition::Deduplicated));
+    }
+
+    #[test]
+    fn deduplicated_failures_preserve_the_original_error_classification() {
+        let storage = SharedSyncResult::from_result(&Err(ManagedGitError::Storage(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fixture storage"),
+        )));
+        let task =
+            SharedSyncResult::from_result(&Err(ManagedGitError::Task("fixture task".into())));
+
+        assert!(matches!(
+            storage.deduplicated(),
+            Err(ManagedGitError::Storage(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
+        assert!(matches!(
+            task.deduplicated(),
+            Err(ManagedGitError::Task(message)) if message == "fixture task"
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_refresh_caller_does_not_cancel_shared_fetch() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first) = fixture_remote(temp.path());
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(temp.path().join("data")).expect("absolute data root"),
+        );
+        let store = ManagedGitStore::new(layout);
+        let id = RepositoryId::new("fixture").expect("valid repository id");
+        let remote = remote.to_str().expect("UTF-8 fixture path").to_owned();
+        let slot = {
+            let mut slots = store.slots.lock().expect("managed Git slots mutex");
+            Arc::clone(slots.entry(id.clone()).or_default())
+        };
+        let gate = slot.gate.lock().await;
+
+        let cancelled = tokio::spawn({
+            let store = store.clone();
+            let id = id.clone();
+            let remote = remote.clone();
+            async move { store.sync_source(&id, &remote, "refs/heads/main").await }
+        });
+        while Arc::strong_count(&slot) < 3 {
+            tokio::task::yield_now().await;
+        }
+        cancelled.abort();
+        assert!(
+            cancelled
+                .await
+                .expect_err("caller is cancelled")
+                .is_cancelled()
+        );
+        assert!(
+            Arc::strong_count(&slot) >= 3,
+            "the shared fetch must outlive its cancelled caller"
+        );
+        tokio::task::yield_now().await;
+        let follower = tokio::spawn({
+            let store = store.clone();
+            let id = id.clone();
+            let remote = remote.clone();
+            async move { store.sync_source(&id, &remote, "refs/heads/main").await }
+        });
+        tokio::task::yield_now().await;
+        drop(gate);
+
+        assert_eq!(
+            follower
+                .await
+                .expect("follower task completes")
+                .expect("shared fetch succeeds")
+                .disposition,
+            SyncDisposition::Deduplicated
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_failed_refresh_callers_share_stale_result() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first) = fixture_remote(temp.path());
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(temp.path().join("data")).expect("absolute data root"),
+        );
+        let store = ManagedGitStore::new(layout);
+        let id = RepositoryId::new("fixture").expect("valid repository id");
+        let remote = remote.to_str().expect("UTF-8 fixture path");
+        store
+            .sync_source(&id, remote, "refs/heads/main")
+            .await
+            .expect("initial sync succeeds");
+        fs::remove_dir_all(remote).expect("remove remote");
+
+        let (left, right) = tokio::join!(
+            store.sync_source(&id, remote, "refs/heads/main"),
+            store.sync_source(&id, remote, "refs/heads/main")
+        );
+        let results = [
+            left.expect("first caller gets cached catalog"),
+            right.expect("second caller gets cached catalog"),
+        ];
+
+        assert!(results.iter().any(|result| {
+            result.disposition == SyncDisposition::Stale && result.warning.is_some()
+        }));
+        assert!(results.iter().any(|result| {
+            result.disposition == SyncDisposition::Deduplicated && result.warning.is_some()
+        }));
+    }
+
+    #[tokio::test]
+    async fn changed_remote_url_is_rejected_without_discarding_cached_objects() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let first_root = temp.path().join("first");
+        let second_root = temp.path().join("second");
+        fs::create_dir(&first_root).expect("create first fixture root");
+        fs::create_dir(&second_root).expect("create second fixture root");
+        let (first_work, first_remote, _first_initial) = fixture_remote(&first_root);
+        let (second_work, second_remote, _second_first) = fixture_remote(&second_root);
+        fs::write(first_work.join("README.md"), "first remote\n").expect("update first fixture");
+        run_git(&first_work, &["commit", "-am", "first remote"]);
+        let first_commit = run_git(&first_work, &["rev-parse", "HEAD"]);
+        run_git(&first_work, &["push", "origin", "main"]);
+        fs::write(second_work.join("README.md"), "second remote\n").expect("update second fixture");
+        run_git(&second_work, &["commit", "-am", "second remote"]);
+        run_git(&second_work, &["push", "origin", "main"]);
+
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(temp.path().join("data")).expect("absolute data root"),
+        );
+        let store = ManagedGitStore::new(layout);
+        let id = RepositoryId::new("fixture").expect("valid repository id");
+        store
+            .sync_source(
+                &id,
+                first_remote.to_str().expect("UTF-8 fixture path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("first remote sync succeeds");
+        let error = store
+            .sync_source(
+                &id,
+                second_remote.to_str().expect("UTF-8 fixture path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect_err("changed remote is rejected");
+
+        assert!(matches!(error, ManagedGitError::RemoteUrlChanged { .. }));
+        assert_eq!(
+            store.resolve(&id, "main").expect("cached main").commit,
+            first_commit
+        );
+        assert!(
+            gix::open(store.repository_path(&id))
+                .expect("bare repository opens")
+                .find_object(
+                    gix::hash::ObjectId::from_hex(first_commit.as_bytes())
+                        .expect("fixture commit is valid")
+                )
+                .is_ok(),
+            "changing remotes must retain already fetched objects"
+        );
     }
 
     #[tokio::test]
