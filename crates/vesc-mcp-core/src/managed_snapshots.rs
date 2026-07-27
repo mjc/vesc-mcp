@@ -176,6 +176,25 @@ struct SnapshotIdentity<'a> {
     semantic: Option<&'a SnapshotSemanticModel>,
 }
 
+fn semantic_serving_contract_matches(
+    snapshot: Option<&SnapshotSemanticModel>,
+    configured: Option<&SnapshotSemanticModel>,
+) -> bool {
+    match (snapshot, configured) {
+        (None, None) => true,
+        (Some(snapshot), Some(configured)) => {
+            snapshot.model_id == configured.model_id
+                && snapshot.model_revision == configured.model_revision
+                && snapshot.max_length == configured.max_length
+                && configured
+                    .ingestion
+                    .as_ref()
+                    .is_none_or(|ingestion| snapshot.ingestion.as_ref() == Some(ingestion))
+        }
+        _ => false,
+    }
+}
+
 /// Whether preparation built a snapshot or reused a complete one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -400,6 +419,12 @@ impl KnowledgeSnapshotStore {
         &self,
         repositories: &RepositoryRegistry,
     ) -> Result<PreparedSnapshot, SnapshotError> {
+        if let Ok(prepared) =
+            self.load_compatible_default(repositories, SnapshotDisposition::Reused, false)
+        {
+            self.set_state(&prepared.manifest.id, SnapshotState::Ready);
+            return Ok(prepared);
+        }
         let prepared = match self
             .prepare_profile(
                 repositories,
@@ -410,7 +435,11 @@ impl KnowledgeSnapshotStore {
         {
             Ok(prepared) => prepared,
             Err(error) if error.source_is_unavailable() => {
-                return match self.load_compatible_default(repositories) {
+                return match self.load_compatible_default(
+                    repositories,
+                    SnapshotDisposition::Stale,
+                    true,
+                ) {
                     Ok(stale) => {
                         self.set_state(&stale.manifest.id, SnapshotState::Stale);
                         Ok(stale)
@@ -562,10 +591,12 @@ impl KnowledgeSnapshotStore {
     fn load_compatible_default(
         &self,
         repositories: &RepositoryRegistry,
+        disposition: SnapshotDisposition,
+        allow_unavailable: bool,
     ) -> Result<PreparedSnapshot, SnapshotError> {
-        let stale = self.load_default(SnapshotDisposition::Stale)?;
-        if self.default_is_compatible(&stale.manifest, repositories)? {
-            Ok(stale)
+        let prepared = self.load_default(disposition)?;
+        if self.default_is_compatible(&prepared.manifest, repositories, allow_unavailable)? {
+            Ok(prepared)
         } else {
             Err(SnapshotError::IdentityMismatch)
         }
@@ -575,9 +606,14 @@ impl KnowledgeSnapshotStore {
         &self,
         manifest: &KnowledgeSnapshotManifest,
         repositories: &RepositoryRegistry,
+        allow_unavailable: bool,
     ) -> Result<bool, SnapshotError> {
         if manifest.profile != SnapshotProfile::CompleteHistory
-            || manifest.semantic.as_ref() != self.semantic.as_ref().map(|value| &value.model)
+            || !manifest.uses_current_components()
+            || !semantic_serving_contract_matches(
+                manifest.semantic.as_ref(),
+                self.semantic.as_ref().map(|value| &value.model),
+            )
         {
             return Ok(false);
         }
@@ -606,7 +642,9 @@ impl KnowledgeSnapshotStore {
                 Ok(resolved)
                     if selected.is_some_and(|selected| selected.commit == resolved.commit) => {}
                 Err(ManagedGitError::Storage(_) | ManagedGitError::Git(_))
-                    if selected.is_some() || repository.policy() == RepositoryPolicy::Optional => {}
+                    if allow_unavailable
+                        && (selected.is_some()
+                            || repository.policy() == RepositoryPolicy::Optional) => {}
                 _ => return Ok(false),
             }
         }
@@ -2110,6 +2148,79 @@ max_total_bytes = 10485760
         );
     }
 
+    #[tokio::test]
+    async fn cpu_runtime_reuses_snapshot_built_with_accelerated_ingestion() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first, second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let repository = repositories.iter().next().expect("fixture repository");
+        let repository_id = repository.id().clone();
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                &repository_id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+
+        let serving_model = SnapshotSemanticModel {
+            model_id: "fake".into(),
+            model_revision: "test-revision".into(),
+            max_length: 512,
+            ingestion: None,
+        };
+        let mut accelerated_model = serving_model.clone();
+        accelerated_model.ingestion = Some(SnapshotSemanticIngestion {
+            model_sha256: "f".repeat(64),
+            provider: SemanticIngestionProvider::Migraphx,
+            device_id: 0,
+            max_length: 64,
+            batch_size: 64,
+            window_aggregation: vesc_knowledge_index::WindowAggregation::TokenWeightedMean,
+        });
+        let accelerated = KnowledgeSnapshotManifest::with_profile(
+            vec![SnapshotRepository {
+                repository: repository_id,
+                commit: second,
+                policy_digest: repository_policy_digest(repository).expect("policy digest"),
+            }],
+            Some(accelerated_model),
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("accelerated snapshot manifest");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            &layout.artifact(&accelerated.id),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("portable semantic artifact");
+        write_json_atomic(
+            &crate::default_snapshot_path(layout.root().as_path()),
+            &accelerated,
+        )
+        .expect("default snapshot alias");
+
+        let mut cpu_store = KnowledgeSnapshotStore::new(layout.clone());
+        cpu_store.semantic = Some(SnapshotSemanticConfig {
+            model_dir: temp.path().join("unused-cpu-model"),
+            model: serving_model,
+        });
+        let prepared = cpu_store
+            .prepare_default(&repositories)
+            .await
+            .expect("CPU runtime reuses portable artifact");
+
+        assert_eq!(prepared.manifest.id, accelerated.id);
+        assert_eq!(prepared.disposition, SnapshotDisposition::Reused);
+        assert!(layout.artifact(&accelerated.id).is_dir());
+    }
+
     fn artifact_matches(root: &Path, query: &str) -> bool {
         let repositories = root
             .parent()
@@ -2230,6 +2341,14 @@ max_total_bytes = 10485760
         assert_ne!(left.id, semantic.id);
         assert_ne!(semantic.id, shorter_semantic.id);
         assert_ne!(semantic.id, accelerated_semantic.id);
+        assert!(semantic_serving_contract_matches(
+            accelerated_semantic.semantic.as_ref(),
+            semantic.semantic.as_ref(),
+        ));
+        assert!(!semantic_serving_contract_matches(
+            semantic.semantic.as_ref(),
+            accelerated_semantic.semantic.as_ref(),
+        ));
         assert_eq!(left.id.as_str().len(), 64);
     }
 
