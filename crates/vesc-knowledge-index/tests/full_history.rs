@@ -1430,6 +1430,14 @@ fn changed_tip_reuses_existing_vectors_and_embeds_only_new_chunks() {
         second.artifacts.manifest.corpus,
         cold.artifacts.manifest.corpus
     );
+    assert_eq!(
+        second.artifacts.manifest.corpus.content_digest,
+        cold.artifacts.manifest.corpus.content_digest
+    );
+    assert_eq!(
+        second.artifacts.manifest.vector_checksum,
+        cold.artifacts.manifest.vector_checksum
+    );
     let second_generation = second_artifacts
         .path()
         .join("generations")

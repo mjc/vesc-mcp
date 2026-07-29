@@ -3000,6 +3000,37 @@ mod tests {
     }
 
     #[test]
+    fn embedding_inventory_rejects_a_missing_chunk_digest() {
+        let chunk = catalog_chunks(1).remove(0);
+        let (schema, fields) = schema();
+        let index = Index::create_in_ram(schema);
+        let mut writer = index
+            .writer_with_num_threads(1, IN_MEMORY_WRITER_MEMORY_BYTES)
+            .expect("writer");
+        let mut document = TantivyDocument::default();
+        document.add_text(fields.document_id, chunk.document_id.as_str());
+        document.add_text(fields.chunk_id, chunk.chunk_id.encoded().as_str());
+        writer.add_document(document).expect("malformed document");
+        writer.commit().expect("commit");
+        let reader = index.reader().expect("reader");
+        let malformed = LexicalIndex {
+            index,
+            reader,
+            fields,
+            chunks: BTreeMap::new(),
+            repositories_root: None,
+            repository_paths: BTreeMap::new(),
+            git_sources: BTreeMap::new(),
+        };
+
+        assert!(matches!(
+            malformed.embedding_chunk_ids(),
+            Err(LexicalError::Artifact(message))
+                if message.contains("chunk digest fast field")
+        ));
+    }
+
+    #[test]
     fn embedding_inventory_sorts_chunks_within_a_document_across_segments() {
         let document = NormalizedDocument::new(
             "Shared document",
