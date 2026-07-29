@@ -345,7 +345,7 @@ load_query_args() {
   }
   while IFS= read -r variable; do
     unset "$variable"
-  done < <(compgen -A variable VESC_RAG_)
+  done < <(env | sed -n 's/^\(VESC_RAG_[^=]*\)=.*/\1/p')
   unset VESC_MCP_CONFIG ORT_DYLIB_PATH ORT_MIGRAPHX_MODEL_CACHE_PATH
   while IFS= read -r setup_line; do
     [[ $setup_line == exec\ * ]] && break
