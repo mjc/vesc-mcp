@@ -392,7 +392,7 @@ case "$command" in
     "${build_scope[@]}" env \
       CARGO_TARGET_DIR="$provider_target" \
       CARGO_BUILD_RUSTFLAGS="-C force-frame-pointers=yes" \
-      cargo build --profile bench -p vesc-knowledge-index \
+      cargo build --jobs 1 --profile bench -p vesc-knowledge-index \
         --features semantic-fastembed --bin gen-knowledge-index
     profile_source_digest >"$provider_binary.source-digest"
     ;;
@@ -507,7 +507,7 @@ case "$command" in
     "${build_scope[@]}" env \
       CARGO_TARGET_DIR="$provider_target" \
       CARGO_BUILD_RUSTFLAGS="-C force-frame-pointers=yes" \
-      cargo build --profile bench -p vesc-mcp-server \
+      cargo build --jobs 1 --profile bench -p vesc-mcp-server \
         --features semantic-fastembed,semantic-migraphx --bin vesc-mcp-server
     profile_source_digest >"$query_binary.source-digest"
     ;;
