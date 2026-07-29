@@ -5,11 +5,12 @@ use std::process::Command;
 
 use gungraun::prelude::*;
 use tempfile::{TempDir, tempdir};
+use vesc_knowledge_index::benchmark::embedding_chunk_ids;
 use vesc_knowledge_index::corpus::git::{GitCorpusPolicy, ingest_git_commit};
 use vesc_knowledge_index::{
-    Chunk, ChunkingConfig, ContentDigest, FakeEmbeddingProvider, LexicalFilters, LexicalHit,
-    LexicalIndex, LicenseStatus, NormalizedDocument, RepositoryId, Revision, SourceKind, TrustTier,
-    VectorArtifact, chunk_document,
+    Chunk, ChunkId, ChunkingConfig, ContentDigest, FakeEmbeddingProvider, LexicalFilters,
+    LexicalHit, LexicalIndex, LicenseStatus, NormalizedDocument, RepositoryId, Revision,
+    SourceKind, TrustTier, VectorArtifact, chunk_document,
 };
 
 const CHUNK_COUNT: usize = 256;
@@ -79,6 +80,13 @@ fn fixture_artifact() -> ArtifactFixture {
 
 fn fixture_lexical_index() -> LexicalIndex {
     LexicalIndex::build(&fixture_chunks()).expect("build lexical index")
+}
+
+fn fixture_embedding_inventory_index() -> LexicalIndex {
+    std::env::var_os("VESC_MCP_BENCH_LEXICAL_ARTIFACT").map_or_else(fixture_lexical_index, |path| {
+        LexicalIndex::open_search_artifact(Path::new(&path))
+            .expect("open VESC_MCP_BENCH_LEXICAL_ARTIFACT")
+    })
 }
 
 struct GitFixture {
@@ -198,6 +206,13 @@ fn bench_corpus_inventory(fixture: ArtifactFixture) -> (usize, usize, ContentDig
     black_box(LexicalIndex::corpus_inventory(&fixture.path).expect("corpus inventory"))
 }
 
+#[library_benchmark(setup = fixture_embedding_inventory_index)]
+fn bench_embedding_chunk_ids(index: LexicalIndex) -> (LexicalIndex, Vec<ChunkId>) {
+    let index = black_box(index);
+    let ids = embedding_chunk_ids(&index).expect("embedding chunk IDs");
+    black_box((index, ids))
+}
+
 #[library_benchmark(setup = fixture_chunks)]
 fn bench_fake_vector_build(chunks: Vec<Chunk>) -> VectorArtifact {
     let chunks = black_box(chunks);
@@ -222,6 +237,7 @@ library_benchmark_group!(
         bench_lexical_build,
         bench_lexical_search,
         bench_corpus_inventory,
+        bench_embedding_chunk_ids,
         bench_fake_vector_build,
     ]
 );

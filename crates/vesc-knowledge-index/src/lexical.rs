@@ -17,7 +17,7 @@ use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::termdict::TermMerger;
-use tantivy::{DocSet, Index, IndexReader, IndexWriter, TantivyDocument, Term};
+use tantivy::{DocSet, Index, IndexReader, IndexWriter, TERMINATED, TantivyDocument, Term};
 
 use crate::corpus::full_history::{CachedGitHistoryChunk, GitHistoryBuildPlan};
 use crate::corpus::git::GitCorpusSource;
@@ -27,8 +27,8 @@ use crate::corpus::{
 };
 use crate::{Category, RepositoryId, Revision};
 
-pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-blob-locators-v10";
-const LEXICAL_DESCRIPTOR_SCHEMA: u16 = 6;
+pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-blob-locators-v11";
+const LEXICAL_DESCRIPTOR_SCHEMA: u16 = 7;
 const INDEX_WRITER_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;
 const MAX_INCREMENTAL_SEGMENTS: usize = 32;
@@ -177,6 +177,7 @@ struct LexicalFields {
     tags_raw: Field,
     chunk_id: Field,
     document_id: Field,
+    chunk_digest: [Field; 4],
     ordinal: Field,
     category: Field,
     repository: Field,
@@ -856,52 +857,76 @@ impl LexicalIndex {
         let document_count = usize::try_from(searcher.num_docs())
             .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
         let mut chunks = Vec::with_capacity(document_count);
-        for reader in searcher.segment_readers() {
-            let document_ids = reader
-                .fast_fields()
-                .str("document_id")
-                .map_err(|error| LexicalError::Artifact(error.to_string()))?
-                .ok_or_else(|| invalid_field("document_id fast field"))?;
-            let chunk_ids = reader
-                .fast_fields()
-                .str("chunk_id")
-                .map_err(|error| LexicalError::Artifact(error.to_string()))?
-                .ok_or_else(|| invalid_field("chunk_id fast field"))?;
-            let mut document_id = String::new();
-            let mut chunk_id = String::new();
-            for doc_id in reader.doc_ids_alive() {
-                let mut document_ords = document_ids.ords().values_for_doc(doc_id);
-                let document_ord = document_ords
-                    .next()
-                    .ok_or_else(|| invalid_field("document_id fast field"))?;
-                if document_ords.next().is_some()
-                    || !document_ids
-                        .ord_to_str(document_ord, &mut document_id)
-                        .map_err(|error| LexicalError::Artifact(error.to_string()))?
-                {
-                    return Err(invalid_field("document_id fast field"));
+        let segment_readers = searcher.segment_readers();
+        let document_indexes = segment_readers
+            .iter()
+            .map(|reader| reader.inverted_index(self.fields.document_id))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(LexicalError::Search)?;
+        let streams = document_indexes
+            .iter()
+            .map(|index| index.terms().stream())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        let chunk_digests = segment_readers
+            .iter()
+            .map(|reader| {
+                let fast_fields = reader.fast_fields();
+                Ok([
+                    fast_fields.u64("chunk_digest_0")?,
+                    fast_fields.u64("chunk_digest_1")?,
+                    fast_fields.u64("chunk_digest_2")?,
+                    fast_fields.u64("chunk_digest_3")?,
+                ])
+            })
+            .collect::<Result<Vec<_>, tantivy::TantivyError>>()
+            .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        let mut documents = TermMerger::new(streams);
+        let mut document_chunks = Vec::new();
+
+        while documents.advance() {
+            document_chunks.clear();
+            for (segment_ord, term_info) in documents.current_segment_ords_and_term_infos() {
+                let reader = &segment_readers[segment_ord];
+                let mut postings = document_indexes[segment_ord]
+                    .read_postings_from_terminfo(&term_info, IndexRecordOption::Basic)
+                    .map_err(|error| LexicalError::Io(error.to_string()))?;
+                while postings.doc() != TERMINATED {
+                    let doc_id = postings.doc();
+                    if !reader.is_deleted(doc_id) {
+                        if document_chunks.is_empty()
+                            && std::str::from_utf8(documents.key())
+                                .ok()
+                                .and_then(|value| parse_prefixed_digest(value, "doc-"))
+                                .is_none()
+                        {
+                            return Err(invalid_field("document_id"));
+                        }
+                        let mut digest = [0_u8; 32];
+                        for (part, column) in chunk_digests[segment_ord].iter().enumerate() {
+                            let mut values = column.values_for_doc(doc_id);
+                            let value = values
+                                .next()
+                                .ok_or_else(|| invalid_field("chunk digest fast field"))?;
+                            if values.next().is_some() {
+                                return Err(invalid_field("chunk digest fast field"));
+                            }
+                            digest[part * 8..(part + 1) * 8].copy_from_slice(&value.to_be_bytes());
+                        }
+                        document_chunks.push(ChunkId::from_sha256(digest));
+                    }
+                    postings.advance();
                 }
-                let mut chunk_ords = chunk_ids.ords().values_for_doc(doc_id);
-                let chunk_ord = chunk_ords
-                    .next()
-                    .ok_or_else(|| invalid_field("chunk_id fast field"))?;
-                if chunk_ords.next().is_some()
-                    || !chunk_ids
-                        .ord_to_str(chunk_ord, &mut chunk_id)
-                        .map_err(|error| LexicalError::Artifact(error.to_string()))?
-                {
-                    return Err(invalid_field("chunk_id fast field"));
-                }
-                chunks.push(EmbeddingOrderKey::from_ids(&document_id, &chunk_id)?);
             }
+            document_chunks.sort_unstable();
+            chunks.extend(document_chunks.iter().cloned());
         }
         if chunks.len() != document_count {
             return Err(LexicalError::Artifact(
                 "lexical index document inventory is incomplete".into(),
             ));
         }
-        chunks.sort_unstable();
-        Ok(chunks.into_iter().map(|chunk| chunk.chunk_id).collect())
+        Ok(chunks)
     }
 
     /// Streams the sorted unique document and chunk IDs from a persisted index.
@@ -1692,22 +1717,6 @@ struct ChunkLocator {
     git_blob_id: Option<gix::ObjectId>,
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
-struct EmbeddingOrderKey {
-    document_id: [u8; 32],
-    chunk_id: ChunkId,
-}
-
-impl EmbeddingOrderKey {
-    fn from_ids(document_id: &str, chunk_id: &str) -> Result<Self, LexicalError> {
-        Ok(Self {
-            document_id: parse_prefixed_digest(document_id, "doc-")
-                .ok_or_else(|| invalid_field("document_id"))?,
-            chunk_id: ChunkId::try_from(chunk_id).map_err(|_| invalid_field("chunk_id"))?,
-        })
-    }
-}
-
 impl ChunkLocator {
     fn compare_hydration_order(left: &Self, right: &Self) -> std::cmp::Ordering {
         left.repository
@@ -2123,8 +2132,14 @@ fn schema() -> (Schema, LexicalFields) {
     let body = builder.add_text_field("body", text.clone());
     let tags = builder.add_text_field("tags", text);
     let tags_raw = builder.add_text_field("tags_raw", STRING | STORED);
-    let chunk_id = builder.add_text_field("chunk_id", (STRING | STORED).set_fast(None));
-    let document_id = builder.add_text_field("document_id", (STRING | STORED).set_fast(None));
+    let chunk_id = builder.add_text_field("chunk_id", STRING | STORED);
+    let document_id = builder.add_text_field("document_id", STRING | STORED);
+    let chunk_digest = [
+        builder.add_u64_field("chunk_digest_0", tantivy::schema::FAST),
+        builder.add_u64_field("chunk_digest_1", tantivy::schema::FAST),
+        builder.add_u64_field("chunk_digest_2", tantivy::schema::FAST),
+        builder.add_u64_field("chunk_digest_3", tantivy::schema::FAST),
+    ];
     let ordinal = builder.add_u64_field("ordinal", STORED);
     let category = builder.add_text_field("category", STRING | STORED);
     let repository = builder.add_text_field("repository", STRING | STORED);
@@ -2159,6 +2174,7 @@ fn schema() -> (Schema, LexicalFields) {
             tags_raw,
             chunk_id,
             document_id,
+            chunk_digest,
             ordinal,
             category,
             repository,
@@ -2209,7 +2225,7 @@ fn tantivy_document(
     let history_content_key = crate::corpus::history_content_key_for_chunk(chunk);
     let content_digest = chunk.content_digest.encoded();
     let history_content_key_encoded = history_content_key.as_ref().map(ContentDigest::encoded);
-    let field_value_count = 16_usize
+    let field_value_count = 20_usize
         .saturating_add(chunk.identifiers.len().saturating_mul(2))
         .saturating_add(chunk.tags.len())
         .saturating_add(chunk.heading_path.len())
@@ -2320,6 +2336,16 @@ fn tantivy_document(
     let chunk_id = chunk.chunk_id.encoded();
     document.add_text(fields.chunk_id, chunk_id.as_str());
     document.add_text(fields.document_id, chunk.document_id.as_str());
+    for (field, bytes) in fields
+        .chunk_digest
+        .into_iter()
+        .zip(chunk.chunk_id.as_bytes().chunks_exact(8))
+    {
+        document.add_u64(
+            field,
+            u64::from_be_bytes(bytes.try_into().expect("chunk digest part is eight bytes")),
+        );
+    }
     document.add_u64(fields.ordinal, u64::from(chunk.ordinal));
     document.add_text(fields.category, category);
     document.add_text(fields.repository, chunk.repository.as_str());
@@ -2814,7 +2840,7 @@ mod tests {
             .map(|(field, _)| field.field_id())
             .collect::<Vec<_>>();
 
-        assert_eq!(field_ids.len(), 17 + 2 * chunk.identifiers.len());
+        assert_eq!(field_ids.len(), 21 + 2 * chunk.identifiers.len());
         assert!(field_ids.is_sorted());
         assert_eq!(document.get_all(fields.body).count(), 1);
     }
@@ -2931,7 +2957,7 @@ mod tests {
     }
 
     #[test]
-    fn embedding_inventory_uses_fast_id_columns() {
+    fn embedding_inventory_preserves_exact_order_without_string_fast_fields() {
         let chunks = catalog_chunks(2);
         let index = LexicalIndex::build(&chunks).expect("index");
         let schema = index.schema();
@@ -2939,8 +2965,8 @@ mod tests {
         for name in ["document_id", "chunk_id"] {
             let field = schema.get_field(name).expect("ID field");
             assert!(
-                schema.get_field_entry(field).is_fast(),
-                "{name} must be columnar so inventory scans do not deserialize complete documents"
+                !schema.get_field_entry(field).is_fast(),
+                "{name} must not duplicate its encoded string in a fast-field dictionary"
             );
         }
         let mut expected = chunks
@@ -2954,6 +2980,56 @@ mod tests {
                 .into_iter()
                 .map(|(_, chunk_id)| chunk_id)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn embedding_inventory_has_fixed_chunk_digest_columns() {
+        let index = LexicalIndex::build(&catalog_chunks(1)).expect("index");
+        let schema = index.schema();
+
+        for name in [
+            "chunk_digest_0",
+            "chunk_digest_1",
+            "chunk_digest_2",
+            "chunk_digest_3",
+        ] {
+            let field = schema.get_field(name).expect("chunk digest field");
+            assert!(schema.get_field_entry(field).is_fast());
+        }
+    }
+
+    #[test]
+    fn embedding_inventory_sorts_chunks_within_a_document_across_segments() {
+        let document = NormalizedDocument::new(
+            "Shared document",
+            SourceKind::Markdown,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("rev").expect("revision"),
+            "docs/shared.md",
+            "text/markdown",
+            "shared content",
+        )
+        .expect("document");
+        let first = Chunk::from_document(&document, 0, "first".into(), Vec::new(), None)
+            .expect("first chunk");
+        let second = Chunk::from_document(&document, 1, "second".into(), Vec::new(), None)
+            .expect("second chunk");
+        let mut expected = vec![first.chunk_id.clone(), second.chunk_id.clone()];
+        expected.sort_unstable();
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let previous = temp.path().join("previous.json");
+        let next = temp.path().join("next.json");
+        LexicalIndex::write_search_artifact_with_digest([&first], &previous)
+            .expect("write previous");
+        LexicalIndex::write_incremental_search_artifact_with_digest(&previous, [&second], &next)
+            .expect("write incremental");
+
+        let index = LexicalIndex::open_search_artifact(&next).expect("open incremental");
+        assert_eq!(
+            index.embedding_chunk_ids().expect("embedding inventory"),
+            expected
         );
     }
 

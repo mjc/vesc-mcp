@@ -10,9 +10,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::evaluation::{EvaluationMode, EvaluationReport};
 use crate::{
-    Chunk, ContentDigest, EmbeddingProvider, FusionConfig, LexicalFilters, LexicalIndex,
-    TokenStatistics, VectorArtifact, VectorBuildObservations, embedded_entries, fuse_candidates,
+    Chunk, ChunkId, ContentDigest, EmbeddingProvider, FusionConfig, LexicalError, LexicalFilters,
+    LexicalIndex, TokenStatistics, VectorArtifact, VectorBuildObservations, embedded_entries,
+    fuse_candidates,
 };
+
+/// Runs the persisted-index embedding inventory path for allocation benchmarks.
+///
+/// # Errors
+///
+/// Returns [`LexicalError`] when the index's ID columns are invalid.
+pub fn embedding_chunk_ids(index: &LexicalIndex) -> Result<Vec<ChunkId>, LexicalError> {
+    index.embedding_chunk_ids()
+}
 
 /// A percentile summary over monotonic elapsed-time samples in microseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

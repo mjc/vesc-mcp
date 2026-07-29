@@ -121,6 +121,10 @@ pub(crate) struct EncodedChunkId([u8; ChunkId::ENCODED_LEN]);
 impl ChunkId {
     pub(crate) const ENCODED_LEN: usize = 6 + 64;
 
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     pub(crate) fn encoded(&self) -> EncodedChunkId {
         let mut encoded = [0_u8; Self::ENCODED_LEN];
         encoded[..6].copy_from_slice(b"chunk-");
