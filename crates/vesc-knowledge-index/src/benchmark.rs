@@ -670,7 +670,7 @@ pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized>(
         }
     }
 
-    let rss_before_queries_bytes = current_rss_bytes();
+    let rss_before_queries_bytes = process_rss_bytes();
     let mut embedding_samples = Vec::with_capacity(queries.len() * repetitions);
     let mut search_samples = search_limits
         .iter()
@@ -691,7 +691,7 @@ pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized>(
             }
         }
     }
-    let rss_after_queries_bytes = current_rss_bytes();
+    let rss_after_queries_bytes = process_rss_bytes();
     Ok(SemanticQueryBenchmarkReport {
         schema: 1,
         cold_initialization: None,
@@ -782,7 +782,7 @@ pub fn benchmark_lexical(
         }
     }
 
-    let rss_before_queries_bytes = current_rss_bytes();
+    let rss_before_queries_bytes = process_rss_bytes();
     let mut query_samples = Vec::with_capacity(queries.len() * repetitions);
     let mut fusion_samples = Vec::with_capacity(queries.len() * repetitions);
     let mut response_sizes = Vec::with_capacity(queries.len() * repetitions);
@@ -812,7 +812,7 @@ pub fn benchmark_lexical(
             fusion_samples.push(elapsed_us(start));
         }
     }
-    let rss_after_queries_bytes = current_rss_bytes();
+    let rss_after_queries_bytes = process_rss_bytes();
     let corpus_documents = index
         .chunks()
         .values()
@@ -875,7 +875,10 @@ fn elapsed_us(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-fn current_rss_bytes() -> Option<u64> {
+/// Returns this process's current resident set size in bytes when the host
+/// exposes it through `ps`.
+#[must_use]
+pub fn process_rss_bytes() -> Option<u64> {
     let output = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
         .output()

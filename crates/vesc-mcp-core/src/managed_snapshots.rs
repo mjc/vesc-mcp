@@ -435,6 +435,10 @@ impl KnowledgeSnapshotStore {
         {
             Ok(prepared) => prepared,
             Err(error) if error.source_is_unavailable() => {
+                tracing::warn!(
+                    %error,
+                    "managed snapshot preparation failed; serving the last compatible snapshot"
+                );
                 return match self.load_compatible_default(
                     repositories,
                     SnapshotDisposition::Stale,

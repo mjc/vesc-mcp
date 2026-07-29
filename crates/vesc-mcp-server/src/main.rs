@@ -675,13 +675,29 @@ fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
         .as_deref()
         .unwrap_or("10")
         .parse::<usize>()?;
+    let mode = match argument_value(args, "--mode")
+        .as_deref()
+        .unwrap_or("lexical")
+    {
+        "lexical" => vesc_mcp_core::tools::search_knowledge::SearchMode::Lexical,
+        "hybrid" => vesc_mcp_core::tools::search_knowledge::SearchMode::Hybrid,
+        "auto" => vesc_mcp_core::tools::search_knowledge::SearchMode::Auto,
+        other => {
+            anyhow::bail!("unsupported benchmark mode {other:?}; use lexical, hybrid, or auto")
+        }
+    };
     let format = argument_value(args, "--format").unwrap_or_else(|| "text".into());
     let mut config = vesc_mcp_core::config::McpConfig::load().knowledge.clone();
     if let Some(artifact) = argument_value(args, "--artifact") {
         config.artifact_path = Some(PathBuf::from(artifact));
     }
-    let report =
-        vesc_mcp_core::benchmark::benchmark_search(&config, &queries, warmup, repetitions)?;
+    let report = vesc_mcp_core::benchmark::benchmark_search_mode(
+        &config,
+        &queries,
+        warmup,
+        repetitions,
+        mode,
+    )?;
     match format.as_str() {
         "json" => println!("{}", serde_json::to_string_pretty(&report)?),
         "text" => {

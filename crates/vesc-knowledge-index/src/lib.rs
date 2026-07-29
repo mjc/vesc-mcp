@@ -43,7 +43,7 @@ pub use fusion::{
 pub use hardware::{
     JINA_CODE_FP16_SHA256, JINA_CODE_INGEST_BATCH_SIZE, JINA_CODE_INGEST_MAX_LENGTH,
     JINA_CODE_INT8_SHA256, JINA_CODE_MAX_LENGTH, JINA_CODE_MODEL_ID, JINA_CODE_MODEL_REVISION,
-    JinaCodeQueryProfile, Rx5700Xt8600gProfile,
+    JinaCodeQueryProfile, Rx5700Xt8600gProfile, sha256_file,
 };
 pub use lexical::{LexicalCandidate, LexicalError, LexicalFilters, LexicalHit, LexicalIndex};
 pub use lifecycle::{

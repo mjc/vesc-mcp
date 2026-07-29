@@ -1,5 +1,6 @@
 //! In-process MCP search benchmark.
 
+use std::collections::BTreeSet;
 use std::process::Command;
 use std::time::Instant;
 
@@ -10,6 +11,18 @@ use crate::tools::search_knowledge::{
     SearchMode, SearchResponseDetail, SearchVescKnowledgeFilters, SearchVescKnowledgeParams,
     search_vesc_knowledge_json_with_config,
 };
+
+#[derive(Deserialize)]
+struct BenchmarkSearchResponse {
+    ok: bool,
+    mode: SearchMode,
+    #[serde(default)]
+    results: Vec<serde_json::Value>,
+    #[serde(default)]
+    warnings: Vec<String>,
+    snapshot_id: Option<String>,
+    error: Option<String>,
+}
 
 /// Percentiles over elapsed MCP handler/serialization samples.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +64,9 @@ pub struct McpBenchmarkReport {
     pub warmup_iterations: usize,
     pub repetitions: usize,
     pub query_count: usize,
+    pub snapshot_ids: Vec<String>,
+    pub result_counts: Vec<usize>,
+    pub response_digests: Vec<String>,
     pub handler_and_serialization: TimingDistribution,
     pub response_bytes: ByteDistribution,
     pub rss_before_queries_bytes: Option<u64>,
@@ -68,8 +84,19 @@ pub enum BenchmarkError {
     EmptyQueries,
     #[error("MCP benchmark repetitions must be positive")]
     InvalidRepetitions,
-    #[error("MCP response serialization failed: {0}")]
-    Serialize(#[from] serde_json::Error),
+    #[error("MCP benchmark response JSON was invalid: {0}")]
+    ResponseJson(#[from] serde_json::Error),
+    #[error("MCP benchmark search failed: {0}")]
+    SearchFailed(String),
+    #[error("MCP benchmark requested {expected:?}, but the response used {actual:?}")]
+    UnexpectedMode {
+        expected: SearchMode,
+        actual: SearchMode,
+    },
+    #[error("MCP benchmark search returned no results")]
+    NoResults,
+    #[error("MCP benchmark search returned warnings: {0}")]
+    SearchWarnings(String),
 }
 
 /// Measures the synchronous search handler and its JSON response serialization.
@@ -88,6 +115,27 @@ pub fn benchmark_search(
     warmup_iterations: usize,
     repetitions: usize,
 ) -> Result<McpBenchmarkReport, BenchmarkError> {
+    benchmark_search_mode(
+        config,
+        queries,
+        warmup_iterations,
+        repetitions,
+        SearchMode::Lexical,
+    )
+}
+
+/// Measures the synchronous search handler in an explicit retrieval mode.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] for invalid inputs or response serialization.
+pub fn benchmark_search_mode(
+    config: &KnowledgeConfig,
+    queries: &[String],
+    warmup_iterations: usize,
+    repetitions: usize,
+    mode: SearchMode,
+) -> Result<McpBenchmarkReport, BenchmarkError> {
     if queries.is_empty() {
         return Err(BenchmarkError::EmptyQueries);
     }
@@ -99,7 +147,7 @@ pub fn benchmark_search(
         query: query.to_owned(),
         snapshot_id: None,
         limit: 10,
-        mode: Some(SearchMode::Lexical),
+        mode: Some(mode),
         filters: SearchVescKnowledgeFilters::default(),
         max_response_bytes: None,
         max_context_bytes: None,
@@ -107,19 +155,28 @@ pub fn benchmark_search(
     };
     for _ in 0..warmup_iterations {
         for query in queries {
-            let _ = search_vesc_knowledge_json_with_config(&params(query), config);
+            let response = search_vesc_knowledge_json_with_config(&params(query), config);
+            validate_search_response(&response, mode)?;
         }
     }
 
     let rss_before_queries_bytes = process_rss_bytes();
     let mut timings = Vec::with_capacity(queries.len() * repetitions);
     let mut response_sizes = Vec::with_capacity(queries.len() * repetitions);
+    let mut snapshot_ids = BTreeSet::new();
+    let mut result_counts = BTreeSet::new();
+    let mut response_digests = BTreeSet::new();
     for _ in 0..repetitions {
         for query in queries {
             let started = Instant::now();
             let response = search_vesc_knowledge_json_with_config(&params(query), config);
             let bytes = response.len();
             timings.push(elapsed_us(started));
+            let validated = validate_search_response(&response, mode)?;
+            snapshot_ids.extend(validated.snapshot_id);
+            result_counts.insert(validated.results.len());
+            response_digests
+                .insert(vesc_knowledge_index::ContentDigest::of(response.as_bytes()).to_string());
             response_sizes.push(bytes as u64);
         }
     }
@@ -133,11 +190,14 @@ pub fn benchmark_search(
         });
 
     Ok(McpBenchmarkReport {
-        schema: 1,
-        mode: SearchMode::Lexical,
+        schema: 2,
+        mode,
         warmup_iterations,
         repetitions,
         query_count: queries.len(),
+        snapshot_ids: snapshot_ids.into_iter().collect(),
+        result_counts: result_counts.into_iter().collect(),
+        response_digests: response_digests.into_iter().collect(),
         handler_and_serialization: TimingDistribution::from_samples(timings),
         response_bytes: ByteDistribution::from_samples(response_sizes),
         rss_before_queries_bytes,
@@ -146,6 +206,31 @@ pub fn benchmark_search(
         machine: machine_profile(),
         warnings: vec!["measures the in-process MCP handler, not stdio transport".into()],
     })
+}
+
+fn validate_search_response(
+    response: &str,
+    expected_mode: SearchMode,
+) -> Result<BenchmarkSearchResponse, BenchmarkError> {
+    let response: BenchmarkSearchResponse = serde_json::from_str(response)?;
+    if !response.ok {
+        return Err(BenchmarkError::SearchFailed(
+            response.error.unwrap_or_else(|| "unknown error".into()),
+        ));
+    }
+    if response.mode != expected_mode {
+        return Err(BenchmarkError::UnexpectedMode {
+            expected: expected_mode,
+            actual: response.mode,
+        });
+    }
+    if response.results.is_empty() {
+        return Err(BenchmarkError::NoResults);
+    }
+    if !response.warnings.is_empty() {
+        return Err(BenchmarkError::SearchWarnings(response.warnings.join("; ")));
+    }
+    Ok(response)
 }
 
 impl TimingDistribution {
@@ -233,9 +318,25 @@ mod tests {
             2,
         )
         .expect("benchmark");
+        assert_eq!(report.schema, 2);
         assert_eq!(report.query_count, 1);
+        assert_eq!(report.response_digests.len(), 1);
         assert_eq!(report.handler_and_serialization.samples, 2);
         assert_eq!(report.response_bytes.samples, 2);
         assert!(report.response_bytes.max_bytes > 0);
+    }
+
+    #[test]
+    fn hybrid_benchmark_rejects_lexical_only_configuration() {
+        let error = benchmark_search_mode(
+            &KnowledgeConfig::default(),
+            &["lbm_add_extension".into()],
+            0,
+            1,
+            SearchMode::Hybrid,
+        )
+        .expect_err("hybrid search must fail against lexical-only configuration");
+
+        assert!(matches!(error, BenchmarkError::SearchFailed(_)));
     }
 }

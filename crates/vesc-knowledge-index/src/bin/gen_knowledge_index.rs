@@ -16,6 +16,7 @@ use vesc_knowledge_index::benchmark::BakeoffCandidateSpec;
 use vesc_knowledge_index::benchmark::{
     BakeoffCandidateReport, BakeoffReport, SemanticBenchmarkMatrixReport, SemanticBenchmarkReport,
     benchmark_semantic, benchmark_semantic_queries, benchmark_semantic_with_artifact,
+    process_rss_bytes,
 };
 use vesc_knowledge_index::benchmark::{BenchmarkReport, benchmark_lexical};
 #[cfg(feature = "semantic-fastembed")]
@@ -27,10 +28,10 @@ use vesc_knowledge_index::evaluation::{
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{
     Chunk, ChunkId, DocumentWindowVectors, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider,
-    FusionConfig, SemanticExecutionProvider, VectorArtifact, WindowAggregation,
+    FusionConfig, SemanticExecutionProvider, SemanticHit, VectorArtifact, WindowAggregation,
     aggregate_window_vectors, build_allowlisted_artifacts_with_provider,
     build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
-    fuse_candidates, semantic_runtime_diagnostics, sequence_length_census_iter,
+    fuse_candidates, semantic_runtime_diagnostics, sequence_length_census_iter, sha256_file,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{ContentDigest, NormalizedDocument, embedded_entries};
@@ -68,6 +69,10 @@ fn main() {
         run_benchmark(&args[1..]);
         return;
     }
+    if args.first().is_some_and(|arg| arg == "provider-lifecycle") {
+        run_provider_lifecycle(&args[1..]);
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "bakeoff") {
         run_bakeoff(&args[1..]);
         return;
@@ -86,6 +91,222 @@ fn main() {
     }
 
     generate_index();
+}
+
+#[cfg(feature = "semantic-fastembed")]
+#[derive(serde::Serialize)]
+struct ProviderLifecycleReport {
+    schema: u16,
+    model_id: String,
+    model_revision: String,
+    model_sha256: String,
+    model_bytes: u64,
+    requested_provider: SemanticExecutionProvider,
+    max_length: usize,
+    batch_size: Option<usize>,
+    intra_threads: usize,
+    query: String,
+    construction_us: u64,
+    first_query_us: u64,
+    drop_us: u64,
+    settle_millis: u64,
+    vector_dimension: usize,
+    vector_digest: ContentDigest,
+    vector_artifact_path: Option<PathBuf>,
+    vector_artifact_bytes: Option<u64>,
+    vector_artifact_rows: Option<usize>,
+    vector_artifact_sha256: Option<ContentDigest>,
+    vector_artifact_model_id: Option<String>,
+    vector_artifact_model_revision: Option<String>,
+    vector_artifact_corpus_digest: Option<ContentDigest>,
+    vector_open_us: Option<u64>,
+    vector_search_us: Option<u64>,
+    vector_search_hits: Option<usize>,
+    vector_search_digest: Option<ContentDigest>,
+    rss_start_bytes: Option<u64>,
+    rss_after_vector_open_bytes: Option<u64>,
+    rss_after_construction_bytes: Option<u64>,
+    rss_after_query_bytes: Option<u64>,
+    rss_after_provider_drop_bytes: Option<u64>,
+    rss_after_vector_drop_bytes: Option<u64>,
+    rss_after_settle_bytes: Option<u64>,
+}
+
+#[cfg(feature = "semantic-fastembed")]
+#[allow(clippy::too_many_lines)] // Keep the measured lifecycle stages in one auditable sequence.
+fn run_provider_lifecycle(args: &[String]) {
+    let model_dir = argument_value(args, "--semantic-model-dir")
+        .map_or_else(|| panic!("--semantic-model-dir is required"), PathBuf::from);
+    let model_id = argument_value(args, "--semantic-model-id")
+        .unwrap_or_else(|| panic!("--semantic-model-id is required"));
+    let model_revision = argument_value(args, "--semantic-model-revision")
+        .unwrap_or_else(|| panic!("--semantic-model-revision is required"));
+    let batch_size = argument_value(args, "--semantic-batch-size").map(|value| {
+        value
+            .parse::<usize>()
+            .expect("--semantic-batch-size must be a positive integer")
+    });
+    let intra_threads = argument_value(args, "--semantic-intra-threads").map_or(1, |value| {
+        value
+            .parse::<usize>()
+            .expect("--semantic-intra-threads must be a positive integer")
+    });
+    let settle_millis = argument_value(args, "--settle-millis").map_or(1_000, |value| {
+        value
+            .parse::<u64>()
+            .expect("--settle-millis must be an integer")
+    });
+    let query =
+        argument_value(args, "--query").unwrap_or_else(|| "vescpkg loader layout".to_string());
+    let execution_provider = semantic_execution_provider(args);
+    let profile = semantic_profile_with_args(&model_id, args);
+    let model_path = model_dir.join("model.onnx");
+    let model_sha256 = sha256_file(&model_path)
+        .unwrap_or_else(|error| panic!("hash {}: {error}", model_path.display()));
+    let model_bytes = fs::metadata(&model_path)
+        .unwrap_or_else(|error| panic!("stat {}: {error}", model_path.display()))
+        .len();
+    let rss_start_bytes = process_rss_bytes();
+    let vector_artifact_path =
+        argument_value(args, "--semantic-vector-artifact").map(PathBuf::from);
+    let vector_artifact_bytes = vector_artifact_path.as_ref().map(|path| {
+        fs::metadata(path)
+            .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()))
+            .len()
+    });
+    let vector_open_started = std::time::Instant::now();
+    let opened_vector_artifact = vector_artifact_path.as_ref().map(|path| {
+        VectorArtifact::open_artifact_with_digest(path)
+            .unwrap_or_else(|error| panic!("open {}: {error}", path.display()))
+    });
+    let vector_open_us = opened_vector_artifact
+        .as_ref()
+        .map(|_| u64::try_from(vector_open_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    let vector_artifact_sha256 = opened_vector_artifact
+        .as_ref()
+        .map(|(_, digest)| digest.clone());
+    let vector_artifact = opened_vector_artifact.map(|(artifact, _)| artifact);
+    let vector_artifact_rows = vector_artifact.as_ref().map(|artifact| artifact.ids.len());
+    let vector_artifact_model_id = vector_artifact
+        .as_ref()
+        .map(|artifact| artifact.model_id.clone());
+    let vector_artifact_model_revision = vector_artifact
+        .as_ref()
+        .map(|artifact| artifact.model_revision.clone());
+    let vector_artifact_corpus_digest = vector_artifact
+        .as_ref()
+        .map(|artifact| artifact.corpus_digest.clone());
+    let rss_after_vector_open_bytes = process_rss_bytes();
+
+    let construction_started = std::time::Instant::now();
+    let mut provider =
+        FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
+            &model_dir,
+            batch_size,
+            profile.clone(),
+            Some(intra_threads),
+            execution_provider,
+            semantic_graph_optimization_level(args),
+        )
+        .unwrap_or_else(|error| panic!("construct semantic provider: {error}"));
+    let construction_us =
+        u64::try_from(construction_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let rss_after_construction_bytes = process_rss_bytes();
+
+    let query_started = std::time::Instant::now();
+    let vector = provider
+        .embed_query(&query)
+        .unwrap_or_else(|error| panic!("run provider query: {error}"));
+    let first_query_us = u64::try_from(query_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let rss_after_query_bytes = process_rss_bytes();
+    let vector_dimension = vector.len();
+    let vector_digest = provider_vector_digest(&vector);
+    let vector_search_started = std::time::Instant::now();
+    let vector_search_results = vector_artifact.as_ref().map(|artifact| {
+        artifact
+            .search(&vector, 10)
+            .unwrap_or_else(|error| panic!("search vector artifact: {error}"))
+    });
+    let vector_search_us = vector_search_results
+        .as_ref()
+        .map(|_| u64::try_from(vector_search_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    let vector_search_hits = vector_search_results.as_ref().map(Vec::len);
+    let vector_search_digest = vector_search_results.as_deref().map(provider_search_digest);
+    drop(vector);
+
+    let drop_started = std::time::Instant::now();
+    drop(provider);
+    let drop_us = u64::try_from(drop_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let rss_after_provider_drop_bytes = process_rss_bytes();
+    drop(vector_artifact);
+    let rss_after_vector_drop_bytes = process_rss_bytes();
+    std::thread::sleep(std::time::Duration::from_millis(settle_millis));
+    let rss_after_settle_bytes = process_rss_bytes();
+
+    let report = ProviderLifecycleReport {
+        schema: 2,
+        model_id,
+        model_revision,
+        model_sha256,
+        model_bytes,
+        requested_provider: execution_provider,
+        max_length: profile.max_length,
+        batch_size,
+        intra_threads,
+        query,
+        construction_us,
+        first_query_us,
+        drop_us,
+        settle_millis,
+        vector_dimension,
+        vector_digest,
+        vector_artifact_path,
+        vector_artifact_bytes,
+        vector_artifact_rows,
+        vector_artifact_sha256,
+        vector_artifact_model_id,
+        vector_artifact_model_revision,
+        vector_artifact_corpus_digest,
+        vector_open_us,
+        vector_search_us,
+        vector_search_hits,
+        vector_search_digest,
+        rss_start_bytes,
+        rss_after_vector_open_bytes,
+        rss_after_construction_bytes,
+        rss_after_query_bytes,
+        rss_after_provider_drop_bytes,
+        rss_after_vector_drop_bytes,
+        rss_after_settle_bytes,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("serialize provider lifecycle")
+    );
+}
+
+#[cfg(not(feature = "semantic-fastembed"))]
+fn run_provider_lifecycle(_args: &[String]) {
+    panic!("provider lifecycle profiling requires the semantic-fastembed feature")
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn provider_vector_digest(vector: &[f32]) -> ContentDigest {
+    let mut bytes = Vec::with_capacity(vector.len().saturating_mul(std::mem::size_of::<f32>()));
+    for value in vector {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    ContentDigest::of(&bytes)
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn provider_search_digest(hits: &[SemanticHit]) -> ContentDigest {
+    let mut bytes = Vec::with_capacity(hits.len().saturating_mul(80));
+    for hit in hits {
+        bytes.extend_from_slice(hit.chunk_id.to_string().as_bytes());
+        bytes.extend_from_slice(&hit.similarity.to_bits().to_le_bytes());
+    }
+    ContentDigest::of(&bytes)
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -2213,6 +2434,14 @@ fn semantic_profile_with_args(model_id: &str, args: &[String]) -> EmbeddingProfi
 #[cfg(all(test, feature = "semantic-fastembed"))]
 mod semantic_profile_tests {
     use super::*;
+
+    #[test]
+    fn provider_vector_digest_uses_little_endian_f32_bytes() {
+        let expected =
+            ContentDigest::of(&[1.0_f32.to_le_bytes(), (-0.0_f32).to_le_bytes()].concat());
+
+        assert_eq!(provider_vector_digest(&[1.0, -0.0]), expected);
+    }
 
     #[test]
     fn semantic_profile_honors_shorter_max_length() {

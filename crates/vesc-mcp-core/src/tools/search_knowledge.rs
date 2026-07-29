@@ -4,10 +4,12 @@ use crate::config::{KnowledgeConfig, RetrievalMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+#[cfg(any(feature = "semantic-fastembed", test))]
+use std::sync::Condvar;
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(feature = "semantic-fastembed")]
-use std::sync::{Condvar, MutexGuard, Once};
-#[cfg(feature = "semantic-fastembed")]
+use std::sync::{MutexGuard, Once};
+#[cfg(any(feature = "semantic-fastembed", test))]
 use std::time::Duration;
 use std::time::Instant;
 use vesc_knowledge_index::{
@@ -1077,10 +1079,9 @@ fn semantic_hits(
 ) -> Result<(Vec<SemanticHit>, bool), String> {
     #[cfg(feature = "semantic-fastembed")]
     {
-        let vector = load_vector_artifact(config)?;
         let mut state = initialize_semantic_model(config)?;
+        let vector = load_vector_artifact(config)?;
         let entry = state
-            .entry
             .as_mut()
             .ok_or_else(|| "semantic provider cache is empty".to_string())?;
         let result = semantic_hits_with_provider(query, limit, &vector, &mut entry.provider)
@@ -1098,21 +1099,15 @@ fn semantic_hits(
 }
 
 #[cfg(feature = "semantic-fastembed")]
-static SEMANTIC_PROVIDER: OnceLock<SemanticModelCache> = OnceLock::new();
+static SEMANTIC_PROVIDER: OnceLock<SemanticModelCache<CachedSemanticProvider>> = OnceLock::new();
 
 #[cfg(feature = "semantic-fastembed")]
 static SEMANTIC_REAPER: Once = Once::new();
 
-#[cfg(feature = "semantic-fastembed")]
-struct SemanticModelCache {
-    state: Mutex<SemanticModelState>,
+#[cfg(any(feature = "semantic-fastembed", test))]
+struct SemanticModelCache<T> {
+    state: Mutex<Option<T>>,
     wake: Condvar,
-}
-
-#[cfg(feature = "semantic-fastembed")]
-#[derive(Default)]
-struct SemanticModelState {
-    entry: Option<CachedSemanticProvider>,
 }
 
 #[cfg(feature = "semantic-fastembed")]
@@ -1124,15 +1119,16 @@ struct CachedSemanticProvider {
 }
 
 #[cfg(feature = "semantic-fastembed")]
-fn semantic_model_cache() -> &'static SemanticModelCache {
+fn semantic_model_cache() -> &'static SemanticModelCache<CachedSemanticProvider> {
     let cache = SEMANTIC_PROVIDER.get_or_init(|| SemanticModelCache {
-        state: Mutex::new(SemanticModelState::default()),
+        state: Mutex::new(None),
         wake: Condvar::new(),
     });
     SEMANTIC_REAPER.call_once(|| {
-        let _ = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("vesc-semantic-model-reaper".into())
-            .spawn(reap_idle_semantic_model);
+            .spawn(reap_idle_semantic_model)
+            .expect("spawn semantic model reaper");
     });
     cache
 }
@@ -1140,7 +1136,7 @@ fn semantic_model_cache() -> &'static SemanticModelCache {
 #[cfg(feature = "semantic-fastembed")]
 fn initialize_semantic_model(
     config: &KnowledgeConfig,
-) -> Result<MutexGuard<'static, SemanticModelState>, String> {
+) -> Result<MutexGuard<'static, Option<CachedSemanticProvider>>, String> {
     let model_dir = config
         .semantic_model_dir
         .as_deref()
@@ -1165,7 +1161,7 @@ fn initialize_semantic_model(
         .state
         .lock()
         .map_err(|_| "semantic provider cache is poisoned".to_string())?;
-    if state.entry.as_ref().is_none_or(|entry| entry.key != key) {
+    if state.as_ref().is_none_or(|entry| entry.key != key) {
         let mut profile = vesc_knowledge_index::EmbeddingProfile::for_model_id(model_id)
             .ok_or_else(|| format!("no embedding profile is registered for {model_id}"))?;
         if let Some(max_length) = config.semantic_max_length {
@@ -1185,14 +1181,14 @@ fn initialize_semantic_model(
                 Some(semantic_query_intra_threads()),
             )
             .map_err(|error| format!("semantic provider unavailable: {error}"))?;
-        state.entry = Some(CachedSemanticProvider {
+        *state = Some(CachedSemanticProvider {
             key,
             provider,
             last_used: Instant::now(),
             idle_timeout: Duration::from_secs(config.semantic_idle_timeout_secs),
         });
     }
-    if let Some(entry) = state.entry.as_mut() {
+    if let Some(entry) = state.as_mut() {
         entry.last_used = Instant::now();
         entry.idle_timeout = Duration::from_secs(config.semantic_idle_timeout_secs);
     }
@@ -1205,34 +1201,49 @@ const fn semantic_query_intra_threads() -> usize {
     1
 }
 
-#[cfg(feature = "semantic-fastembed")]
-fn reap_idle_semantic_model() {
-    let cache = SEMANTIC_PROVIDER
-        .get()
-        .expect("semantic cache initialized before reaper");
+#[cfg(any(feature = "semantic-fastembed", test))]
+fn reap_one_idle_entry<T, U>(
+    cache: &SemanticModelCache<T>,
+    remaining: impl Fn(&T) -> Duration,
+    artifact_cache: &'static ArtifactCache<U>,
+) {
     let mut state = cache
         .state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
-        let Some(entry) = state.entry.as_ref() else {
+        let Some(entry) = state.as_ref() else {
             state = cache
                 .wake
                 .wait(state)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             continue;
         };
-        let remaining = entry.idle_timeout.saturating_sub(entry.last_used.elapsed());
+        let remaining = remaining(entry);
         if remaining.is_zero() {
-            state.entry = None;
-            evict_cached_artifact(&VECTOR_ARTIFACT_CACHE);
-            continue;
+            drop(state.take().expect("semantic cache entry exists"));
+            evict_cached_artifact(artifact_cache);
+            return;
         }
         let (next, _) = cache
             .wake
             .wait_timeout(state, remaining)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state = next;
+    }
+}
+
+#[cfg(feature = "semantic-fastembed")]
+fn reap_idle_semantic_model() {
+    let cache = SEMANTIC_PROVIDER
+        .get()
+        .expect("semantic cache initialized before reaper");
+    loop {
+        reap_one_idle_entry(
+            cache,
+            |entry| entry.idle_timeout.saturating_sub(entry.last_used.elapsed()),
+            &VECTOR_ARTIFACT_CACHE,
+        );
     }
 }
 
@@ -1980,6 +1991,59 @@ mod tests {
         evict_cached_artifact(cache);
 
         assert!(retained.upgrade().is_none());
+    }
+
+    #[test]
+    fn semantic_reaper_evicts_provider_and_vector_at_idle_deadline() {
+        struct TestEntry {
+            last_used: Instant,
+            idle_timeout: Duration,
+            dropped: Option<std::sync::mpsc::Sender<Instant>>,
+        }
+
+        impl Drop for TestEntry {
+            fn drop(&mut self) {
+                self.dropped
+                    .take()
+                    .expect("drop notification")
+                    .send(Instant::now())
+                    .expect("report drop");
+            }
+        }
+
+        let idle_timeout = Duration::from_millis(10);
+        let started = Instant::now();
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        let vector_cache: &'static ArtifactCache<usize> = Box::leak(Box::new(OnceLock::new()));
+        let vector = cached_artifact(vector_cache, Path::new("vectors.bin"), || Ok(7))
+            .expect("cached vector");
+        let retained_vector = Arc::downgrade(&vector);
+        drop(vector);
+        let cache = Arc::new(SemanticModelCache {
+            state: Mutex::new(Some(TestEntry {
+                last_used: started,
+                idle_timeout,
+                dropped: Some(dropped_tx),
+            })),
+            wake: Condvar::new(),
+        });
+        let reaper_cache = Arc::clone(&cache);
+        let reaper = std::thread::spawn(move || {
+            reap_one_idle_entry(
+                &reaper_cache,
+                |entry| entry.idle_timeout.saturating_sub(entry.last_used.elapsed()),
+                vector_cache,
+            );
+        });
+
+        let dropped_at = dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("provider was evicted");
+        reaper.join().expect("reaper completed");
+
+        assert!(dropped_at.duration_since(started) >= idle_timeout);
+        assert!(cache.state.lock().expect("cache mutex").is_none());
+        assert!(retained_vector.upgrade().is_none());
     }
 
     #[test]
