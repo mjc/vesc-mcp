@@ -14,8 +14,13 @@ use super::{
 };
 
 const DEFAULT_EXTENSIONS: &[&str] = &[
-    "c", "cc", "cpp", "h", "hh", "hpp", "json", "lisp", "md", "qml", "rs", "toml", "ts", "txt",
-    "yaml", "yml",
+    "c", "c++", "cc", "cp", "cpp", "cppm", "cxx", "h", "h++", "hh", "hp", "hpp", "hxx", "i", "icc",
+    "ii", "inc", "inl", "ipp", "ixx", "mpp", "tcc", "tpp", "txx", "json", "lisp", "md", "qml",
+    "rs", "toml", "ts", "txt", "yaml", "yml",
+];
+const MANDATORY_CODE_EXTENSIONS: &[&str] = &[
+    "c", "c++", "cc", "cp", "cpp", "cppm", "cxx", "h", "h++", "hh", "hp", "hpp", "hxx", "i", "icc",
+    "ii", "inc", "inl", "ipp", "ixx", "mpp", "tcc", "tpp", "txx",
 ];
 const DEFAULT_FILENAMES: &[&str] = &["CMakeLists.txt", "Kconfig", "Makefile"];
 pub(crate) const MAX_REJECTION_SAMPLES: usize = 64;
@@ -32,14 +37,14 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 ];
 
 /// Version of the reviewed default code-corpus path and resource policy.
-pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v3";
+pub const GIT_CORPUS_POLICY_VERSION: &str = "reviewed-v4";
 
 /// Working-set limits for one repository ingestion pass.
 ///
-/// A cold history build applies the file-count and total-byte limits to its
-/// complete candidate set. A fast-forward build applies them only to the new
-/// delta, so incremental refresh remains incremental. `max_file_bytes` is
-/// checked again before every later Git-blob hydration.
+/// A cold history build applies independent file-count and total-byte budgets
+/// to code/doc blobs and commit messages, so messages cannot crowd out source.
+/// A fast-forward build applies them only to the new delta. `max_file_bytes`
+/// is checked again before every later Git-object hydration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GitCorpusLimits {
     file_bytes: u64,
@@ -512,6 +517,66 @@ pub(super) fn document_from_git_blob(
     Ok(document)
 }
 
+pub(crate) fn commit_message_size(commit: &gix::Commit<'_>, max_bytes: u64) -> Option<u64> {
+    let message = commit.message_raw_sloppy().to_str_lossy();
+    let message = message.trim();
+    let size = u64::try_from(message.len().saturating_add(1)).ok()?;
+    if message.is_empty() || size > max_bytes {
+        return None;
+    }
+    Some(size)
+}
+
+pub(crate) fn commit_message_content(commit: &gix::Commit<'_>, max_bytes: u64) -> Option<String> {
+    commit_message_size(commit, max_bytes)?;
+    let message = commit.message_raw_sloppy().to_str_lossy();
+    let message = message.trim();
+    let mut content = String::with_capacity(message.len().saturating_add(1));
+    content.push_str(message);
+    content.push('\n');
+    Some(content)
+}
+
+pub(crate) fn document_from_git_commit(
+    commit: &gix::Commit<'_>,
+    repository_id: &RepositoryId,
+    trust_tier: TrustTier,
+    license: &LicenseStatus,
+    max_bytes: u64,
+) -> Result<Option<NormalizedDocument>, GitIngestionError> {
+    let raw_message = commit.message_raw_sloppy().to_str_lossy();
+    let title = raw_message
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or("Git commit", str::trim);
+    let Some(content) = commit_message_content(commit, max_bytes) else {
+        return Ok(None);
+    };
+    let revision = Revision::try_from(commit.id.to_string())?;
+    let path = format!("commits/{}", commit.id);
+    let mut document = NormalizedDocument::new(
+        title,
+        SourceKind::GitCommit,
+        repository_id.clone(),
+        revision,
+        path,
+        "text/x-git-commit",
+        content,
+    )?;
+    document.trust_tier = trust_tier;
+    document.license = license.clone();
+    document.source_span = SourceSpan::new(
+        1,
+        u32::try_from(document.content.lines().count().max(1)).unwrap_or(u32::MAX),
+        Some(0),
+        u64::try_from(document.content.len()).ok(),
+    )
+    .ok();
+    document.canonical_uri =
+        Some(format!("vesc://knowledge/document/{}", document.document_id).try_into()?);
+    Ok(Some(document))
+}
+
 pub(super) fn validate_policy(policy: &GitCorpusPolicy) -> Result<(), GitIngestionError> {
     for prefix in policy
         .include_prefixes
@@ -577,13 +642,13 @@ fn collect_tree(
         };
         match entry.kind() {
             gix::object::tree::EntryKind::Tree => {
-                if !is_excluded(&path, policy) {
-                    let subtree = entry
-                        .object()
-                        .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?
-                        .into_tree();
-                    collect_tree(&subtree, &path, policy, collection)?;
-                }
+                // Excluded directories can still contain mandatory C/C++.
+                // Apply exclusions to blobs, where the mandatory floor is known.
+                let subtree = entry
+                    .object()
+                    .map_err(|error| GitIngestionError::ReadTree(error.to_string()))?
+                    .into_tree();
+                collect_tree(&subtree, &path, policy, collection)?;
             }
             gix::object::tree::EntryKind::Blob | gix::object::tree::EntryKind::BlobExecutable => {
                 collection.visited_files = collection.visited_files.saturating_add(1);
@@ -634,28 +699,40 @@ fn collect_tree(
 }
 
 pub(super) fn is_selected(path: &str, policy: &GitCorpusPolicy) -> bool {
-    !is_excluded(path, policy)
-        && (policy.include_prefixes.is_empty() && policy.include_patterns.is_empty()
-            || policy
-                .include_prefixes
-                .iter()
-                .any(|prefix| path_is_under(path, prefix))
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let mandatory_code = extension
+        .as_deref()
+        .is_some_and(|extension| MANDATORY_CODE_EXTENSIONS.contains(&extension));
+    if mandatory_code {
+        return true;
+    }
+    if is_excluded(path, policy) {
+        return false;
+    }
+    if !policy.include_prefixes.is_empty() || !policy.include_patterns.is_empty() {
+        return policy
+            .include_prefixes
+            .iter()
+            .any(|prefix| path_is_under(path, prefix))
             || policy
                 .include_patterns
                 .iter()
-                .any(|pattern| glob_matches(pattern, path)))
-        && Path::new(path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| {
-                policy.filenames.contains(name)
-                    || Path::new(name)
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| {
-                            policy.extensions.contains(&extension.to_ascii_lowercase())
-                        })
-            })
+                .any(|pattern| glob_matches(pattern, path));
+    }
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            policy.filenames.contains(name)
+                || Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .is_some_and(|extension| policy.extensions.contains(&extension))
+        })
 }
 
 fn is_excluded(path: &str, policy: &GitCorpusPolicy) -> bool {
@@ -690,12 +767,16 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
 }
 
 fn media_type(path: &str) -> &'static str {
-    match Path::new(path)
+    let extension = Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
-    {
-        Some("c" | "h") => "text/x-c",
-        Some("cc" | "cpp" | "hh" | "hpp") => "text/x-c++",
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("c" | "h" | "i" | "inc") => "text/x-c",
+        Some(
+            "c++" | "cc" | "cp" | "cpp" | "cppm" | "cxx" | "h++" | "hh" | "hp" | "hpp" | "hxx"
+            | "icc" | "ii" | "inl" | "ipp" | "ixx" | "mpp" | "tcc" | "tpp" | "txx",
+        ) => "text/x-c++",
         Some("json") => "application/json",
         Some("md") => "text/markdown",
         Some("qml") => "text/x-qml",
@@ -788,8 +869,68 @@ fn elapsed_us(started: Instant) -> u64 {
 mod tests {
     use super::{
         GitCorpusPolicy, GitIngestionError, glob_matches, identifier_refs, identifier_values,
-        validate_policy,
+        is_selected, validate_policy,
     };
+
+    #[test]
+    fn managed_repository_allowlist_cannot_omit_c_or_cpp_sources() {
+        let policy = GitCorpusPolicy {
+            include_patterns: vec!["**/*.md".into()],
+            extensions: std::iter::once("md".into()).collect(),
+            ..GitCorpusPolicy::default()
+        };
+
+        for path in [
+            "src/control.c",
+            "src/control.c++",
+            "src/control.cc",
+            "src/control.cp",
+            "src/control.cpp",
+            "src/control.cppm",
+            "src/control.cxx",
+            "include/control.h",
+            "include/control.h++",
+            "include/control.hh",
+            "include/control.hp",
+            "include/control.hpp",
+            "include/control.hxx",
+            "src/control.i",
+            "include/control.icc",
+            "src/control.ii",
+            "include/control.inc",
+            "include/control.inl",
+            "include/control.ipp",
+            "include/control.ixx",
+            "src/control.mpp",
+            "include/control.tcc",
+            "include/control.tpp",
+            "include/control.txx",
+        ] {
+            assert!(is_selected(path, &policy), "omitted {path}");
+        }
+    }
+
+    #[test]
+    fn managed_repository_explicit_patterns_admit_requested_text_types() {
+        let policy = GitCorpusPolicy {
+            include_patterns: vec!["**/*.lbm".into()],
+            ..GitCorpusPolicy::default()
+        };
+
+        assert!(is_selected("package/main.lbm", &policy));
+        assert!(!is_selected("package/image.png", &policy));
+    }
+
+    #[test]
+    fn managed_repository_exclusions_cannot_omit_the_mandatory_code_floor() {
+        let policy = GitCorpusPolicy {
+            exclude_patterns: vec!["generated/**".into()],
+            ..GitCorpusPolicy::default()
+        };
+
+        assert!(is_selected("generated/control.cpp", &policy));
+        assert!(!is_selected("generated/notes.md", &policy));
+    }
 
     #[test]
     fn managed_repository_globs_reject_ambiguous_non_git_forms() {

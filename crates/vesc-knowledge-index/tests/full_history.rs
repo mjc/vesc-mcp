@@ -10,9 +10,9 @@ use vesc_knowledge_index::{
     BuildPhase, Chunk, ContentDigest, EmbeddingBatchSize, EmbeddingError, EmbeddingProvider,
     FakeEmbeddingProvider, FusionConfig, GitHistoryRefreshObservations, GitHistoryTip,
     LexicalFilters, LexicalIndex, LicenseStatus, OutputNormalization, PreviousGitHistoryArtifact,
-    RepositoryId, Revision, TrustTier, VectorArtifact, build_git_history_artifacts_from_previous,
-    build_git_history_artifacts_incrementally, fuse_candidate_metadata,
-    ingest_git_history_fast_forward,
+    RepositoryId, Revision, SourceKind, TrustTier, VectorArtifact,
+    build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
+    fuse_candidate_metadata, ingest_git_history_fast_forward,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -129,6 +129,7 @@ fn add_bounded_delta(work: &Path) {
 fn assert_bounded_delta(contents: &[Chunk], observations: &GitHistoryRefreshObservations) {
     let mut paths = contents
         .iter()
+        .filter(|chunk| chunk.source_kind == SourceKind::GitBlob)
         .map(|chunk| chunk.path.as_str())
         .collect::<Vec<_>>();
     paths.sort_unstable();
@@ -230,7 +231,8 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
     assert_eq!(cold.reachable_commits, 3);
     assert_eq!(cold.ingested_commits, 3);
     assert_eq!(cold.ingested_blobs, 3);
-    assert_eq!(contents.len(), 3);
+    assert_eq!(cold.ingested_commit_messages, 3);
+    assert_eq!(contents.len(), 6);
     assert!(
         contents
             .iter()
@@ -253,6 +255,384 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
     assert_eq!(warm.reused_commits, 3);
     assert_eq!(warm.ingested_commits, 0);
     assert_eq!(warm.ingested_blobs, 0);
+    assert_eq!(warm.reused_commit_messages, 3);
+}
+
+#[test]
+fn full_history_never_omits_c_or_cpp_from_a_narrow_repository_allowlist() {
+    let (_root, work) = fixture();
+    let mut previous_source = at_head(source(work.clone(), "fixture"), &work);
+    previous_source.policy.include_patterns = vec!["**/*.md".into()];
+    let (cached, _) = cold_history(std::slice::from_ref(&previous_source));
+    let previous_tips = snapshot_tips(std::slice::from_ref(&previous_source));
+
+    fs::write(
+        work.join("src/native.c"),
+        "int native(void) { return 1; }\n",
+    )
+    .expect("C source");
+    fs::write(work.join("src/native.hpp"), "int native_cpp();\n").expect("C++ header");
+    git(&work, &["add", "src"]);
+    git(&work, &["commit", "-qm", "add native package code"]);
+    let mut current_source = at_head(source(work.clone(), "fixture"), &work);
+    current_source.policy.include_patterns = vec!["**/*.md".into()];
+
+    let (incremental, _) = ingest_git_history_fast_forward(
+        std::slice::from_ref(&current_source),
+        &previous_tips,
+        &cached,
+    )
+    .expect("incremental history")
+    .expect("fast-forward history");
+    let (cold, _) = cold_history(&[current_source]);
+    let paths = incremental
+        .iter()
+        .map(|chunk| chunk.path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    assert!(paths.contains("src/native.c"));
+    assert!(paths.contains("src/native.hpp"));
+    assert_eq!(incremental, cold);
+}
+
+#[test]
+fn full_history_indexes_commit_subject_and_body_from_git() {
+    let (_root, work) = fixture();
+    git(
+        &work,
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "Explain loader repair",
+            "-m",
+            "quasar_loader_regression was caused by stale package metadata",
+        ],
+    );
+    let source = at_head(source(work.clone(), "fixture"), &work);
+
+    let (contents, _) = cold_history(&[source]);
+    let message = contents
+        .iter()
+        .find(|chunk| chunk.text.contains("quasar_loader_regression"))
+        .expect("commit body becomes history evidence");
+
+    assert_eq!(message.source_kind, SourceKind::GitCommit);
+    assert!(message.text.contains("Explain loader repair"));
+}
+
+#[test]
+fn commit_message_budget_cannot_consume_the_source_budget() {
+    let (root, work) = fixture();
+    fs::write(work.join("native.c"), "int native(void) { return 1; }\n").expect("C source");
+    git(&work, &["add", "native.c"]);
+    git(&work, &["commit", "-qm", "add native source"]);
+    git(&work, &["commit", "--allow-empty", "-qm", "document one"]);
+    git(&work, &["commit", "--allow-empty", "-qm", "document two"]);
+    let bare = root.path().join("bounded.git");
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            work.to_str().expect("UTF-8 worktree path"),
+            bare.to_str().expect("UTF-8 bare repository path"),
+        ],
+    );
+    let mut source = at_head(source(bare, "fixture"), &work);
+    source.policy.include_patterns = vec!["native.c".into()];
+    source.policy.limits = GitCorpusLimits::new(128, 1, 128).expect("bounded corpus");
+
+    let (contents, observations) = cold_history(&[source]);
+
+    assert!(contents.iter().any(|chunk| chunk.path == "native.c"));
+    assert_eq!(
+        contents
+            .iter()
+            .filter(|chunk| chunk.source_kind == SourceKind::GitCommit)
+            .count(),
+        1
+    );
+    assert!(observations.rejected_commit_messages >= 1);
+}
+
+#[test]
+fn commit_message_budget_keeps_the_newest_history() {
+    let (_root, work) = fixture();
+    for message in [
+        "historical message one",
+        "historical message two",
+        "current message three",
+        "current message four",
+    ] {
+        git(&work, &["commit", "--allow-empty", "-qm", message]);
+    }
+    let mut source = at_head(source(work.clone(), "fixture"), &work);
+    source.policy.limits = GitCorpusLimits::new(128, 2, 256).expect("bounded messages");
+
+    let (contents, observations) = cold_history(&[source]);
+    let messages = contents
+        .iter()
+        .filter(|chunk| chunk.source_kind == SourceKind::GitCommit)
+        .map(|chunk| chunk.text.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("current message four"))
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("current message three"))
+    );
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("historical message"))
+    );
+    assert!(observations.rejected_commit_messages >= 1);
+}
+
+#[test]
+fn fast_forward_commit_message_budget_matches_a_cold_build() {
+    let (_root, work) = fixture();
+    let mut previous = at_head(source(work.clone(), "fixture"), &work);
+    previous.policy.limits = GitCorpusLimits::new(128, 2, 256).expect("bounded messages");
+    let (cached, _) = cold_history(std::slice::from_ref(&previous));
+
+    git(
+        &work,
+        &["commit", "--allow-empty", "-qm", "newest message one"],
+    );
+    git(
+        &work,
+        &["commit", "--allow-empty", "-qm", "newest message two"],
+    );
+    let mut current = at_head(source(work.clone(), "fixture"), &work);
+    current.policy.limits = previous.policy.limits;
+
+    let (incremental, _) = ingest_git_history_fast_forward(
+        std::slice::from_ref(&current),
+        &snapshot_tips(&[previous]),
+        &cached,
+    )
+    .expect("incremental history")
+    .expect("fast-forward history");
+    let (cold, _) = cold_history(&[current]);
+
+    assert_eq!(incremental, cold);
+    assert_eq!(
+        incremental
+            .iter()
+            .filter(|chunk| chunk.source_kind == SourceKind::GitCommit)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn persisted_fast_forward_commit_message_budget_matches_cold_vectors() {
+    let (_root, work) = fixture();
+    let mut previous = at_head(source(work.clone(), "fixture"), &work);
+    previous.policy.limits = GitCorpusLimits::new(128, 2, 256).expect("bounded messages");
+    let previous_root = tempdir().expect("previous artifacts");
+    let mut previous_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&previous),
+        None,
+        None,
+        Some((&mut previous_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("previous history");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+
+    git(
+        &work,
+        &["commit", "--allow-empty", "-qm", "newest message one"],
+    );
+    git(
+        &work,
+        &["commit", "--allow-empty", "-qm", "newest message two"],
+    );
+    let mut current = at_head(source(work.clone(), "fixture"), &work);
+    current.policy.limits = previous.policy.limits;
+    let incremental_root = tempdir().expect("incremental artifacts");
+    let mut incremental_provider = FakeEmbeddingProvider::new(8);
+    let incremental = build_git_history_artifacts_from_previous(
+        incremental_root.path(),
+        std::slice::from_ref(&current),
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(&[previous]),
+            lexical_path: previous_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: first.artifacts.manifest.vector_checksum,
+            vector_path: Some(previous_generation.join("vectors.bin")),
+            lexical_format_compatible: true,
+        }),
+        Some((&mut incremental_provider, "fake", "test-revision")),
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("incremental history");
+    let cold_root = tempdir().expect("cold artifacts");
+    let mut cold_provider = FakeEmbeddingProvider::new(8);
+    let cold = build_git_history_artifacts_incrementally(
+        cold_root.path(),
+        std::slice::from_ref(&current),
+        None,
+        None,
+        Some((&mut cold_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("cold history");
+    let generation = |root: &Path, name: &str| root.join("generations").join(name);
+    let incremental_generation =
+        generation(incremental_root.path(), &incremental.artifacts.generation);
+    let cold_generation = generation(cold_root.path(), &cold.artifacts.generation);
+
+    assert_cold_equivalent_lexical(
+        &incremental_generation.join("lexical.json"),
+        &cold_generation.join("lexical.json"),
+    );
+    let incremental_vectors =
+        VectorArtifact::open_artifact(&incremental_generation.join("vectors.bin"))
+            .expect("incremental vectors");
+    let cold_vectors =
+        VectorArtifact::open_artifact(&cold_generation.join("vectors.bin")).expect("cold vectors");
+    assert_eq!(incremental_vectors.ids, cold_vectors.ids);
+    assert_eq!(incremental_vectors.values, cold_vectors.values);
+}
+
+#[test]
+fn persisted_history_rehydrates_commit_messages_from_managed_git() {
+    let (root, work) = fixture();
+    git(
+        &work,
+        &[
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "Document package fix",
+            "-m",
+            "nebula_commit_only_evidence explains the loader transition",
+        ],
+    );
+    let repositories = root.path().join("repositories");
+    fs::create_dir(&repositories).expect("repository directory");
+    let bare = repositories.join("fixture.git");
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            work.to_str().expect("UTF-8 worktree path"),
+            bare.to_str().expect("UTF-8 bare repository path"),
+        ],
+    );
+    let source = at_head(source(bare, "fixture"), &work);
+    let artifact_root = root.path().join("artifacts").join("fixture");
+    let summary = build_git_history_artifacts_incrementally(
+        &artifact_root,
+        &[source],
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("history build");
+    let lexical_path = artifact_root
+        .join("generations")
+        .join(&summary.artifacts.generation)
+        .join("lexical.json");
+    let index =
+        LexicalIndex::open_git_search_artifact(&lexical_path, &repositories).expect("open index");
+
+    let hit = index
+        .search("nebula_commit_only_evidence", &LexicalFilters::default(), 1)
+        .expect("search commit evidence")
+        .pop()
+        .expect("commit message hit");
+
+    assert_eq!(hit.chunk.source_kind, SourceKind::GitCommit);
+    assert!(hit.chunk.text.contains("nebula_commit_only_evidence"));
+}
+
+#[test]
+fn commit_messages_do_not_bury_an_exact_code_identifier() {
+    let (root, work) = fixture();
+    for ordinal in 0..120 {
+        git(
+            &work,
+            &[
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                &format!("Discuss second implementation {ordinal}"),
+            ],
+        );
+    }
+    let repositories = root.path().join("repositories");
+    fs::create_dir(&repositories).expect("repository directory");
+    let bare = repositories.join("fixture.git");
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--quiet",
+            "--bare",
+            work.to_str().expect("UTF-8 worktree path"),
+            bare.to_str().expect("UTF-8 bare repository path"),
+        ],
+    );
+    let source = at_head(source(bare, "fixture"), &work);
+    let artifact_root = root.path().join("artifacts").join("fixture");
+    let summary = build_git_history_artifacts_incrementally(
+        &artifact_root,
+        &[source],
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("history build");
+    let lexical_path = artifact_root
+        .join("generations")
+        .join(summary.artifacts.generation)
+        .join("lexical.json");
+    let index =
+        LexicalIndex::open_git_search_artifact(&lexical_path, &repositories).expect("open index");
+
+    let hits = index
+        .search("second", &LexicalFilters::default(), 5)
+        .expect("search identifier");
+
+    assert!(
+        hits.iter().any(|hit| {
+            hit.chunk.source_kind == SourceKind::GitBlob
+                && hit.chunk.text.contains("pub fn second()")
+        }),
+        "bounded unfiltered results buried the exact code evidence"
+    );
 }
 
 #[test]
@@ -347,6 +727,7 @@ fn cold_history_spends_a_bounded_budget_on_the_current_tree_first() {
     assert_eq!(
         contents
             .iter()
+            .filter(|chunk| chunk.source_kind == SourceKind::GitBlob)
             .map(|chunk| chunk.path.as_str())
             .collect::<Vec<_>>(),
         ["limits/current.rs"],
@@ -378,6 +759,7 @@ fn cold_history_seeds_files_unchanged_at_the_selected_tip_before_deleted_history
     assert_eq!(
         contents
             .iter()
+            .filter(|chunk| chunk.source_kind == SourceKind::GitBlob)
             .map(|chunk| chunk.path.as_str())
             .collect::<Vec<_>>(),
         ["limits/current.rs"]
@@ -389,7 +771,11 @@ fn incremental_history_bounds_only_the_new_delta_before_loading_blobs() {
     let (_root, work) = fixture();
     let previous_source = bounded_source(&work);
     let (cached, _) = cold_history(std::slice::from_ref(&previous_source));
-    assert!(cached.is_empty());
+    assert!(
+        cached
+            .iter()
+            .all(|chunk| chunk.source_kind == SourceKind::GitCommit)
+    );
     let previous_tips = snapshot_tips(std::slice::from_ref(&previous_source));
     add_bounded_delta(&work);
     let current_source = bounded_source(&work);
@@ -784,11 +1170,18 @@ fn persisted_history_hydrates_top_hits_from_managed_git_without_stored_chunks() 
         "persisted lexical schema must not retain serialized chunks"
     );
     assert!(
-        index.schema().get_field("git_blob_id").is_ok(),
-        "Git locators must address blobs directly instead of walking commit trees per chunk"
+        index.schema().get_field("git_object_id").is_ok(),
+        "Git locators must address objects directly instead of walking commit trees per chunk"
     );
     let hit = index
-        .search("second", &LexicalFilters::default(), 1)
+        .search(
+            "second",
+            &LexicalFilters {
+                source_kind: Some(SourceKind::GitBlob),
+                ..LexicalFilters::default()
+            },
+            1,
+        )
         .expect("hydrate Git hit")
         .pop()
         .expect("matching history chunk");
@@ -798,7 +1191,14 @@ fn persisted_history_hydrates_top_hits_from_managed_git_without_stored_chunks() 
 
     fs::remove_dir_all(&bare).expect("remove managed repository");
     let error = index
-        .search("first", &LexicalFilters::default(), 1)
+        .search(
+            "first",
+            &LexicalFilters {
+                source_kind: Some(SourceKind::GitBlob),
+                ..LexicalFilters::default()
+            },
+            1,
+        )
         .expect_err("missing canonical Git storage must fail");
     assert!(error.to_string().contains("fixture"));
     assert!(error.to_string().contains("managed Git repository"));
@@ -948,6 +1348,7 @@ fn repository_filter_matches_a_canonical_locator_present_in_a_managed_fork() {
         LexicalIndex::open_git_search_artifact(&lexical_path, &repositories).expect("open index");
     let filters = LexicalFilters {
         repository: Some(RepositoryId::try_from("beta").expect("repository")),
+        source_kind: Some(SourceKind::GitBlob),
         ..LexicalFilters::default()
     };
 
@@ -1010,6 +1411,7 @@ fn repository_filter_does_not_cross_git_corpus_contracts() {
         LexicalIndex::open_git_search_artifact(&lexical_path, &repositories).expect("open index");
     let filters = LexicalFilters {
         repository: Some(RepositoryId::try_from("beta").expect("repository")),
+        source_kind: Some(SourceKind::GitBlob),
         ..LexicalFilters::default()
     };
 
@@ -1796,7 +2198,7 @@ fn source_order_is_deterministic_and_shared_history_is_not_duplicated() {
             reverse_observations.ingested_blobs,
         )
     );
-    assert_eq!(forward.len(), 3);
+    assert_eq!(forward.len(), 6);
 }
 
 #[test]
@@ -2049,5 +2451,5 @@ fn rewritten_history_rejects_the_cache_and_rebuilds_from_git() {
     assert!(incremental.is_none());
     assert_eq!(refresh.reachable_commits, 1);
     assert_eq!(refresh.ingested_commits, 1);
-    assert_eq!(cold.len(), 1);
+    assert_eq!(cold.len(), 2);
 }

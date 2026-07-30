@@ -143,6 +143,63 @@ fn document_at<'a>(
 }
 
 #[test]
+fn excluded_directories_still_admit_the_mandatory_code_floor() {
+    let (root, bare, _revision) = single_file_bare(
+        "generated/control.cpp",
+        "int generated_control(void) { return 1; }\n",
+    );
+    let work = root.path().join("extra-work");
+    git(
+        root.path(),
+        &[
+            "clone",
+            "-q",
+            bare.to_str().expect("UTF-8 bare path"),
+            work.to_str().expect("UTF-8 worktree path"),
+        ],
+    );
+    git(&work, &["config", "user.email", "fixture@example.invalid"]);
+    git(&work, &["config", "user.name", "Fixture"]);
+    fs::write(work.join("generated/notes.md"), "excluded prose\n").expect("excluded prose");
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "add excluded prose"]);
+    git(
+        &work,
+        &[
+            "push",
+            "-q",
+            bare.to_str().expect("UTF-8 bare path"),
+            "HEAD:refs/heads/main",
+        ],
+    );
+    let revision = git(&work, &["rev-parse", "HEAD"]);
+    let policy = GitCorpusPolicy {
+        exclude_patterns: vec!["generated/**".into()],
+        ..GitCorpusPolicy::default()
+    };
+
+    let report = ingest_git_commit(
+        &bare,
+        &RepositoryId::try_from("vesc").expect("repository"),
+        &Revision::try_from(revision).expect("revision"),
+        TrustTier::CuratedUpstream,
+        &LicenseStatus::ReferenceOnly,
+        &policy,
+    )
+    .expect("ingest excluded directory");
+
+    assert!(report.documents.iter().any(|document| {
+        document.path == "generated/control.cpp" && document.content.contains("generated_control")
+    }));
+    assert!(
+        report
+            .documents
+            .iter()
+            .all(|document| document.path != "generated/notes.md")
+    );
+}
+
+#[test]
 fn bare_commit_ingestion_yields_bounded_code_with_exact_provenance() {
     let (_root, _work, bare, revision) = bare_fixture();
     let report = ingest_git_commit(
@@ -430,7 +487,15 @@ fn configured_path_filters_are_enforced() {
         ingest(&only_docs)
             .expect("filtered corpus")
             .documents
-            .is_empty()
+            .iter()
+            .all(|document| {
+                matches!(
+                    std::path::Path::new(&document.path)
+                        .extension()
+                        .and_then(|extension| extension.to_str()),
+                    Some("c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" | "inc" | "inl")
+                )
+            })
     );
 
     for prefix in ["", "../imu", "/imu", "imu/../docs"] {
@@ -492,7 +557,7 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
     assert_eq!(summary.manifest.sources.len(), 4);
     assert_eq!(
         summary.manifest.component_versions["git-policy"],
-        "reviewed-v3"
+        "reviewed-v4"
     );
     let lexical = LexicalIndex::open_git_search_artifact(
         &artifacts

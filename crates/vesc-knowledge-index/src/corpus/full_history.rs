@@ -1,14 +1,15 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use sha2::{Digest, Sha256};
 
 use super::chunking::{ChunkingConfig, chunk_document_drafts};
 use super::git::{
     CachedGitBlob, Candidate, GitCorpusBudget, GitCorpusPolicy, GitCorpusSource, GitIngestionError,
-    GitIngestionObservations, MAX_IDENTIFIERS, document_from_git_blob, identifier_refs,
-    identifier_values, is_selected, load_git_blob, validate_policy,
+    GitIngestionObservations, MAX_IDENTIFIERS, commit_message_size, document_from_git_blob,
+    document_from_git_commit, identifier_refs, identifier_values, is_selected, load_git_blob,
+    validate_policy,
 };
 use super::{Chunk, ContentDigest, DocumentId, RepositoryId, Revision, SourceKind};
 use crate::semantic::{embedding_text_digest_from_metadata, embedding_text_digest_from_parts};
@@ -27,6 +28,9 @@ pub struct GitHistoryRefreshObservations {
     pub ingested_commits: usize,
     pub ingested_blobs: usize,
     pub reused_blobs: usize,
+    pub ingested_commit_messages: usize,
+    pub reused_commit_messages: usize,
+    pub rejected_commit_messages: usize,
     pub budget_rejections: usize,
     pub reused_contents: usize,
     pub candidate_chunks: usize,
@@ -44,6 +48,9 @@ impl Default for GitHistoryRefreshObservations {
             ingested_commits: 0,
             ingested_blobs: 0,
             reused_blobs: 0,
+            ingested_commit_messages: 0,
+            reused_commit_messages: 0,
+            rejected_commit_messages: 0,
             budget_rejections: 0,
             reused_contents: 0,
             candidate_chunks: 0,
@@ -72,6 +79,7 @@ pub enum GitHistoryError {
 struct ReachableCommit {
     id: gix::ObjectId,
     first_parent: Option<gix::ObjectId>,
+    message_admitted: bool,
 }
 
 struct ProcessedHistory<'a> {
@@ -115,6 +123,7 @@ pub(crate) struct CachedGitHistoryChunk<'a> {
     pub has_previous: bool,
     pub has_next: bool,
     pub blob: Option<gix::ObjectId>,
+    pub source_kind: SourceKind,
 }
 
 #[derive(Default)]
@@ -123,9 +132,11 @@ pub(crate) struct CachedGitHistory {
 }
 
 struct CachedGitHistoryDocument {
+    document_id: Box<str>,
     revision: Box<str>,
     path: Box<str>,
     blob: Option<gix::ObjectId>,
+    source_kind: SourceKind,
     chunk_count: u32,
     maximum_ordinal: u32,
     last_ordinal: Option<u32>,
@@ -142,9 +153,11 @@ impl CachedGitHistory {
         let document = documents
             .entry(chunk.document_id.to_owned())
             .or_insert_with(|| CachedGitHistoryDocument {
+                document_id: chunk.document_id.into(),
                 revision: chunk.revision.into(),
                 path: chunk.path.into(),
                 blob: chunk.blob,
+                source_kind: chunk.source_kind,
                 chunk_count: 0,
                 maximum_ordinal: 0,
                 last_ordinal: None,
@@ -154,6 +167,7 @@ impl CachedGitHistory {
         document.consistent &= document.revision.as_ref() == chunk.revision
             && document.path.as_ref() == chunk.path
             && document.blob == chunk.blob
+            && document.source_kind == chunk.source_kind
             && (chunk.ordinal != 0 || !chunk.has_previous);
         document.chunk_count = document.chunk_count.saturating_add(1);
         document.maximum_ordinal = document.maximum_ordinal.max(chunk.ordinal);
@@ -176,6 +190,9 @@ impl CachedGitHistory {
         };
         let mut blobs = HistoryBlobDeduper::default();
         for document in documents.into_values() {
+            if document.source_kind != SourceKind::GitBlob {
+                continue;
+            }
             let complete = document.consistent
                 && document.starts_at_zero
                 && document.last_ordinal == Some(document.maximum_ordinal)
@@ -218,6 +235,29 @@ impl CachedGitHistory {
             blobs.insert(document.path.as_ref(), blob, revision, true);
         }
         Ok(blobs)
+    }
+
+    fn unadmitted_commit_document_ids(
+        &self,
+        source: &GitCorpusSource,
+        admitted: &HashSet<gix::ObjectId>,
+    ) -> Result<Vec<String>, GitHistoryError> {
+        let Some(documents) = self.repositories.get(source.repository_id.as_str()) else {
+            return Ok(Vec::new());
+        };
+        documents
+            .values()
+            .filter(|document| document.source_kind == SourceKind::GitCommit)
+            .filter_map(|document| {
+                let revision = gix::ObjectId::from_hex(document.revision.as_bytes())
+                    .map_err(|error| GitHistoryError::Invalid(error.to_string()));
+                match revision {
+                    Ok(revision) if admitted.contains(&revision) => None,
+                    Ok(_) => Some(Ok(document.document_id.to_string())),
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .collect()
     }
 }
 
@@ -380,7 +420,8 @@ impl CommitCoverage {
 struct GitHistoryDocument {
     source_index: usize,
     revision: gix::ObjectId,
-    blob: gix::ObjectId,
+    object: gix::ObjectId,
+    source_kind: SourceKind,
     path: Box<str>,
 }
 
@@ -389,7 +430,8 @@ struct GitHistoryDocumentLocator<'a> {
     source_index: usize,
     repository: &'a RepositoryId,
     revision: gix::ObjectId,
-    blob: gix::ObjectId,
+    object: gix::ObjectId,
+    source_kind: SourceKind,
     path: &'a str,
 }
 
@@ -405,6 +447,7 @@ struct GitHistoryChunk {
 pub(crate) struct GitHistoryBuildPlan {
     documents: Vec<GitHistoryDocument>,
     chunks: HashMap<ContentDigest, GitHistoryChunk>,
+    removed_document_ids: BTreeSet<String>,
 }
 
 impl GitHistoryBuildPlan {
@@ -412,11 +455,32 @@ impl GitHistoryBuildPlan {
         self.chunks.len()
     }
 
+    pub(crate) fn removed_document_ids(&self) -> impl Iterator<Item = &str> {
+        self.removed_document_ids.iter().map(String::as_str)
+    }
+
+    fn retain_commit_messages(&mut self, source_index: usize, admitted: &HashSet<gix::ObjectId>) {
+        let removed = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(_, document)| {
+                document.source_index == source_index
+                    && document.source_kind == SourceKind::GitCommit
+                    && !admitted.contains(&document.revision)
+            })
+            .map(|(index, _)| u32::try_from(index).expect("document index fits in u32"))
+            .collect::<HashSet<_>>();
+        self.chunks
+            .retain(|_, chunk| !removed.contains(&chunk.document));
+    }
+
     fn push_document(
         &mut self,
         source_index: usize,
         revision: gix::ObjectId,
-        blob: gix::ObjectId,
+        object: gix::ObjectId,
+        source_kind: SourceKind,
         path: &str,
     ) -> Result<u32, GitHistoryError> {
         let index = u32::try_from(self.documents.len())
@@ -424,7 +488,8 @@ impl GitHistoryBuildPlan {
         self.documents.push(GitHistoryDocument {
             source_index,
             revision,
-            blob,
+            object,
+            source_kind,
             path: path.into(),
         });
         Ok(index)
@@ -471,7 +536,7 @@ impl GitHistoryBuildPlan {
         let mut plan = Self::default();
         let mut cached_history = CachedGitHistory::default();
         for chunk in chunks {
-            if chunk.source_kind != SourceKind::GitBlob {
+            if !chunk.source_kind.is_git() {
                 continue;
             }
             let Some(&source_index) = source_indices.get(&chunk.repository) else {
@@ -490,46 +555,59 @@ impl GitHistoryBuildPlan {
             let document = if let Some(&document) = documents.get(&cache_key) {
                 document
             } else {
-                let repository = repositories
-                    .get(&source_index)
-                    .expect("repository inserted above");
-                let commit = repository
-                    .find_commit(revision)
-                    .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-                let tree = commit
-                    .tree()
-                    .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-                let entry = tree
-                    .lookup_entry_by_path(&chunk.path)
-                    .map_err(|error| GitHistoryError::Git(error.to_string()))?
-                    .ok_or_else(|| {
-                        GitHistoryError::Invalid(format!(
-                            "cached history path is absent: {}@{}:{}",
+                let object = if chunk.source_kind == SourceKind::GitBlob {
+                    let repository = repositories
+                        .get(&source_index)
+                        .expect("repository inserted above");
+                    let commit = repository
+                        .find_commit(revision)
+                        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+                    let tree = commit
+                        .tree()
+                        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+                    let entry = tree
+                        .lookup_entry_by_path(&chunk.path)
+                        .map_err(|error| GitHistoryError::Git(error.to_string()))?
+                        .ok_or_else(|| {
+                            GitHistoryError::Invalid(format!(
+                                "cached history path is absent: {}@{}:{}",
+                                chunk.repository, chunk.revision, chunk.path
+                            ))
+                        })?;
+                    if !entry.mode().is_blob() {
+                        return Err(GitHistoryError::Invalid(format!(
+                            "cached history path is not a blob: {}@{}:{}",
                             chunk.repository, chunk.revision, chunk.path
-                        ))
-                    })?;
-                if !entry.mode().is_blob() {
-                    return Err(GitHistoryError::Invalid(format!(
-                        "cached history path is not a blob: {}@{}:{}",
-                        chunk.repository, chunk.revision, chunk.path
-                    )));
-                }
-                let document =
-                    plan.push_document(source_index, revision, entry.object_id(), &chunk.path)?;
+                        )));
+                    }
+                    entry.object_id()
+                } else {
+                    revision
+                };
+                let document = plan.push_document(
+                    source_index,
+                    revision,
+                    object,
+                    chunk.source_kind,
+                    &chunk.path,
+                )?;
                 documents.insert(cache_key, document);
                 document
             };
             let descriptor = &plan.documents[document as usize];
-            cached_history.observe(CachedGitHistoryChunk {
-                document_id: chunk.document_id.as_str(),
-                repository: chunk.repository.as_str(),
-                revision: chunk.revision.as_str(),
-                path: &chunk.path,
-                ordinal: chunk.ordinal,
-                has_previous: chunk.previous_chunk.is_some(),
-                has_next: chunk.next_chunk.is_some(),
-                blob: Some(descriptor.blob),
-            });
+            if chunk.source_kind == SourceKind::GitBlob {
+                cached_history.observe(CachedGitHistoryChunk {
+                    document_id: chunk.document_id.as_str(),
+                    repository: chunk.repository.as_str(),
+                    revision: chunk.revision.as_str(),
+                    path: &chunk.path,
+                    ordinal: chunk.ordinal,
+                    has_previous: chunk.previous_chunk.is_some(),
+                    has_next: chunk.next_chunk.is_some(),
+                    blob: Some(descriptor.object),
+                    source_kind: chunk.source_kind,
+                });
+            }
             let key = history_content_key_for_chunk(&chunk)
                 .expect("filtered Git-history chunk has a content key");
             plan.chunks.insert(
@@ -580,39 +658,66 @@ impl GitHistoryBuildPlan {
             let repository = repositories
                 .get(&descriptor.source_index)
                 .expect("repository inserted above");
-            let size = repository
-                .find_header(descriptor.blob)
-                .map_err(|error| GitHistoryError::Git(error.to_string()))?
-                .size();
-            let candidate = Candidate {
-                path: descriptor.path.to_string(),
-                id: descriptor.blob,
-                size,
-            };
-            let mut hydration = GitIngestionObservations::default();
-            let blob = load_git_blob(
-                repository,
-                &candidate,
-                source.policy.limits,
-                &mut hydration,
-                false,
-            )?;
-            if let CachedGitBlob::Rejected { code, message } = &blob {
-                return Err(GitHistoryError::Invalid(format!(
-                    "pinned Git blob {}:{} became {code}: {message}",
-                    source.repository_id, descriptor.path
-                )));
-            }
             let revision = Revision::try_from(descriptor.revision.to_string())
                 .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
-            let document = document_from_git_blob(
-                &descriptor.path,
-                &source.repository_id,
-                &revision,
-                source.trust_tier,
-                &source.license,
-                blob,
-            )?;
+            let document = match descriptor.source_kind {
+                SourceKind::GitBlob => {
+                    let size = repository
+                        .find_header(descriptor.object)
+                        .map_err(|error| GitHistoryError::Git(error.to_string()))?
+                        .size();
+                    let candidate = Candidate {
+                        path: descriptor.path.to_string(),
+                        id: descriptor.object,
+                        size,
+                    };
+                    let mut hydration = GitIngestionObservations::default();
+                    let blob = load_git_blob(
+                        repository,
+                        &candidate,
+                        source.policy.limits,
+                        &mut hydration,
+                        false,
+                    )?;
+                    if let CachedGitBlob::Rejected { code, message } = &blob {
+                        return Err(GitHistoryError::Invalid(format!(
+                            "pinned Git blob {}:{} became {code}: {message}",
+                            source.repository_id, descriptor.path
+                        )));
+                    }
+                    document_from_git_blob(
+                        &descriptor.path,
+                        &source.repository_id,
+                        &revision,
+                        source.trust_tier,
+                        &source.license,
+                        blob,
+                    )?
+                }
+                SourceKind::GitCommit => {
+                    let commit = repository
+                        .find_commit(descriptor.object)
+                        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+                    document_from_git_commit(
+                        &commit,
+                        &source.repository_id,
+                        source.trust_tier,
+                        &source.license,
+                        source.policy.limits.max_file_bytes(),
+                    )?
+                    .ok_or_else(|| {
+                        GitHistoryError::Invalid(format!(
+                            "pinned Git commit message {} became unavailable",
+                            descriptor.object
+                        ))
+                    })?
+                }
+                _ => {
+                    return Err(GitHistoryError::Invalid(
+                        "history plan contains a non-Git source".into(),
+                    ));
+                }
+            };
             let drafts = chunk_document_drafts(&document, ChunkingConfig::default())
                 .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
             for (expected_key, selection) in &selected[offset..end] {
@@ -648,7 +753,7 @@ impl GitHistoryBuildPlan {
                 let chunk = drafts
                     .materialize(index, Some(identifiers))
                     .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-                visit(&chunk, descriptor.blob);
+                visit(&chunk, descriptor.object);
             }
             offset = end;
         }
@@ -689,6 +794,44 @@ enum HistoryContents<'a> {
 }
 
 impl HistoryContents<'_> {
+    fn retain_commit_messages(
+        &mut self,
+        cached_history: &CachedGitHistory,
+        source_index: usize,
+        source: &GitCorpusSource,
+        admitted: &HashSet<gix::ObjectId>,
+    ) -> Result<usize, GitHistoryError> {
+        match self {
+            Self::All(plan) => {
+                plan.retain_commit_messages(source_index, admitted);
+                Ok(plan
+                    .documents
+                    .iter()
+                    .filter(|document| {
+                        document.source_index == source_index
+                            && document.source_kind == SourceKind::GitCommit
+                            && admitted.contains(&document.revision)
+                    })
+                    .count())
+            }
+            Self::Delta { plan, .. } => {
+                let removed = cached_history.unadmitted_commit_document_ids(source, admitted)?;
+                plan.removed_document_ids.extend(removed);
+                Ok(cached_history
+                    .repositories
+                    .get(source.repository_id.as_str())
+                    .into_iter()
+                    .flat_map(HashMap::values)
+                    .filter(|document| {
+                        document.source_kind == SourceKind::GitCommit
+                            && gix::ObjectId::from_hex(document.revision.as_bytes())
+                                .is_ok_and(|revision| admitted.contains(&revision))
+                    })
+                    .count())
+            }
+        }
+    }
+
     fn insert_draft(
         &mut self,
         key: ContentDigest,
@@ -748,7 +891,8 @@ fn selected_document(
     let document = plan.push_document(
         locator.source_index,
         locator.revision,
-        locator.blob,
+        locator.object,
+        locator.source_kind,
         locator.path,
     )?;
     *selected = Some(document);
@@ -804,7 +948,7 @@ fn plan_git_history_fast_forward_from_chunks(
         .map(|source| source.repository_id.clone())
         .collect::<BTreeSet<_>>();
     let chunks = cached_chunks.into_iter().filter(|chunk| {
-        chunk.source_kind == SourceKind::GitBlob
+        chunk.source_kind.is_git()
             && repositories.contains(&chunk.repository)
             && previous_tips
                 .iter()
@@ -880,13 +1024,20 @@ fn ingest_git_history_fast_forward_with_contents(
             continue;
         }
         let reusable_blobs = known_history.map(|index| &processed[index].reusable_blobs);
-        let mut source_reachable = 0_usize;
-        if let Some(previous_id) = previous_id {
-            let reused = count_reachable(&repo, previous_id)?;
-            source_reachable = source_reachable.saturating_add(reused);
-            observations.reachable_commits = observations.reachable_commits.saturating_add(reused);
-            observations.reused_commits = observations.reused_commits.saturating_add(reused);
-        }
+        let (admitted_messages, source_reachable) =
+            select_commit_messages(&repo, current_id, source.policy.limits)?;
+        observations.reused_commit_messages =
+            observations
+                .reused_commit_messages
+                .saturating_add(contents.retain_commit_messages(
+                    &cached_history,
+                    source_index,
+                    source,
+                    &admitted_messages,
+                )?);
+        observations.reachable_commits = observations
+            .reachable_commits
+            .saturating_add(source_reachable);
         let walk = previous_id.map_or_else(
             || repo.rev_walk([current_id]),
             |previous_id| repo.rev_walk([current_id]).with_hidden([previous_id]),
@@ -950,8 +1101,6 @@ fn ingest_git_history_fast_forward_with_contents(
         let mut commits = Vec::new();
         for info in walk {
             let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
-            source_reachable = source_reachable.saturating_add(1);
-            observations.reachable_commits = observations.reachable_commits.saturating_add(1);
             #[cfg(feature = "coz-profile")]
             coz::progress!("git_history_walk_commit");
             let commit = info
@@ -960,9 +1109,13 @@ fn ingest_git_history_fast_forward_with_contents(
             let commit = ReachableCommit {
                 id: info.id,
                 first_parent: commit.parent_ids().next().map(gix::Id::detach),
+                message_admitted: admitted_messages.contains(&info.id),
             };
             commits.push(commit);
         }
+        observations.reused_commits = observations
+            .reused_commits
+            .saturating_add(source_reachable.saturating_sub(commits.len()));
         commits.reverse();
         for commit in &commits {
             if resource_cache.is_none() {
@@ -1083,17 +1236,33 @@ fn is_ancestor(
     }
 }
 
-fn count_reachable(repo: &gix::Repository, tip: gix::ObjectId) -> Result<usize, GitHistoryError> {
+fn select_commit_messages(
+    repo: &gix::Repository,
+    tip: gix::ObjectId,
+    limits: super::git::GitCorpusLimits,
+) -> Result<(HashSet<gix::ObjectId>, usize), GitHistoryError> {
     let mut walk = repo
         .rev_walk([tip])
         .all()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    walk.try_fold(0_usize, |count, info| {
-        info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    let mut budget = GitCorpusBudget::new(limits);
+    let mut admitted = HashSet::new();
+    let mut reachable = 0_usize;
+    for info in &mut walk {
+        let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        reachable = reachable.saturating_add(1);
         #[cfg(feature = "coz-profile")]
         coz::progress!("git_history_walk_commit");
-        Ok(count.saturating_add(1))
-    })
+        let commit = info
+            .object()
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        if commit_message_size(&commit, limits.max_file_bytes())
+            .is_some_and(|size| budget.reserve(size).is_ok())
+        {
+            admitted.insert(info.id);
+        }
+    }
+    Ok((admitted, reachable))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1194,23 +1363,23 @@ fn ingest_commit_changes(
     let current_commit = repo
         .find_commit(commit.id)
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    let revision = Revision::try_from(commit.id.to_string())
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    let mut coverage = ingest_commit_message(
+        source_index,
+        source,
+        commit.id,
+        &current_commit,
+        commit.message_admitted,
+        contents,
+        observations,
+    )?;
     let current = current_commit
         .tree()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let previous = commit.first_parent.map_or_else(
-        || Ok(repo.empty_tree()),
-        |parent| {
-            let parent = repo
-                .find_commit(parent)
-                .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-            parent
-                .tree()
-                .map_err(|error| GitHistoryError::Git(error.to_string()))
-        },
-    )?;
+    let previous = commit_parent_tree(repo, commit.first_parent)?;
     let mut pending = Vec::new();
     let mut callback_error = None;
-    let mut coverage = CommitCoverage::default();
     let diff = previous
         .changes()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?
@@ -1273,8 +1442,6 @@ fn ingest_commit_changes(
     }
     pending.sort_by(|left, right| pending_path(left).cmp(pending_path(right)));
 
-    let revision = Revision::try_from(commit.id.to_string())
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     for PendingChange { path, id, size } in pending {
         let reusable = ingest_upsert(
             repo,
@@ -1288,6 +1455,68 @@ fn ingest_commit_changes(
             observations,
         )?;
         seen_blobs.insert(&path, id, commit.id, reusable);
+    }
+    Ok(coverage)
+}
+
+fn commit_parent_tree(
+    repo: &gix::Repository,
+    parent: Option<gix::ObjectId>,
+) -> Result<gix::Tree<'_>, GitHistoryError> {
+    parent.map_or_else(
+        || Ok(repo.empty_tree()),
+        |parent| {
+            repo.find_commit(parent)
+                .map_err(|error| GitHistoryError::Git(error.to_string()))?
+                .tree()
+                .map_err(|error| GitHistoryError::Git(error.to_string()))
+        },
+    )
+}
+
+fn ingest_commit_message(
+    source_index: usize,
+    source: &GitCorpusSource,
+    commit_id: gix::ObjectId,
+    commit: &gix::Commit<'_>,
+    admitted: bool,
+    contents: &mut HistoryContents<'_>,
+    observations: &mut GitHistoryRefreshObservations,
+) -> Result<CommitCoverage, GitHistoryError> {
+    let mut coverage = CommitCoverage::default();
+    let document = admitted
+        .then(|| {
+            document_from_git_commit(
+                commit,
+                &source.repository_id,
+                source.trust_tier,
+                &source.license,
+                source.policy.limits.max_file_bytes(),
+            )
+        })
+        .transpose()?
+        .flatten();
+    if let Some(document) = document {
+        coverage.selected = true;
+        let inserted = insert_document_drafts(
+            source_index,
+            source,
+            &document,
+            commit_id,
+            contents,
+            observations,
+        )?;
+        coverage.reused_from_prior &= !inserted;
+        if inserted {
+            observations.ingested_commit_messages =
+                observations.ingested_commit_messages.saturating_add(1);
+        } else {
+            observations.reused_commit_messages =
+                observations.reused_commit_messages.saturating_add(1);
+        }
+    } else {
+        observations.rejected_commit_messages =
+            observations.rejected_commit_messages.saturating_add(1);
     }
     Ok(coverage)
 }
@@ -1330,23 +1559,39 @@ fn ingest_upsert(
         &source.license,
         blob,
     )?;
-    let drafts = chunk_document_drafts(&document, ChunkingConfig::default())
+    let inserted =
+        insert_document_drafts(source_index, source, &document, id, contents, observations)?;
+    #[cfg(feature = "coz-profile")]
+    coz::progress!("git_history_ingested_blob");
+    Ok(inserted)
+}
+
+fn insert_document_drafts(
+    source_index: usize,
+    source: &GitCorpusSource,
+    document: &super::NormalizedDocument,
+    object: gix::ObjectId,
+    contents: &mut HistoryContents<'_>,
+    observations: &mut GitHistoryRefreshObservations,
+) -> Result<bool, GitHistoryError> {
+    let drafts = chunk_document_drafts(document, ChunkingConfig::default())
         .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-    let revision_id = gix::ObjectId::from_hex(revision.as_str().as_bytes())
+    let revision_id = gix::ObjectId::from_hex(document.revision.as_str().as_bytes())
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let locator = GitHistoryDocumentLocator {
         source_index,
         repository: &source.repository_id,
         revision: revision_id,
-        blob: id,
-        path,
+        object,
+        source_kind: document.source_kind,
+        path: &document.path,
     };
     let mut document_index = None;
     let mut all_inserted = drafts.len() != 0;
     for index in 0..drafts.len() {
         let draft = drafts.get(index);
         let mut identifier_buffer = [""; MAX_IDENTIFIERS];
-        let identifiers = identifier_refs(path, draft.text(), &mut identifier_buffer);
+        let identifiers = identifier_refs(&document.path, draft.text(), &mut identifier_buffer);
         observations.candidate_chunks = observations.candidate_chunks.saturating_add(1);
         observations.candidate_identifier_count_histogram[identifiers.len()] =
             observations.candidate_identifier_count_histogram[identifiers.len()].saturating_add(1);
@@ -1357,7 +1602,7 @@ fn ingest_upsert(
             &document.tags,
             draft.text(),
         );
-        let key = history_content_key(&source.repository_id, path, &embedding_key);
+        let key = history_content_key(&source.repository_id, &document.path, &embedding_key);
         all_inserted &= contents.insert_draft(
             key,
             draft.ordinal(),
@@ -1366,8 +1611,6 @@ fn ingest_upsert(
             observations,
         )?;
     }
-    #[cfg(feature = "coz-profile")]
-    coz::progress!("git_history_ingested_blob");
     Ok(all_inserted)
 }
 
@@ -1387,7 +1630,7 @@ fn history_content_key(
 }
 
 pub(crate) fn history_content_key_for_chunk(chunk: &Chunk) -> Option<ContentDigest> {
-    (chunk.source_kind == SourceKind::GitBlob).then(|| {
+    chunk.source_kind.is_git().then(|| {
         let embedding_key = embedding_text_digest_from_metadata(
             &chunk.title,
             chunk.heading_path.iter().map(String::as_str),
@@ -1476,9 +1719,12 @@ mod tests {
 
     #[test]
     fn history_plan_document_is_only_a_git_locator() {
-        let locator_bytes = std::mem::size_of::<usize>()
+        let fields = std::mem::size_of::<usize>()
             + 2 * std::mem::size_of::<gix::ObjectId>()
+            + std::mem::size_of::<SourceKind>()
             + std::mem::size_of::<Box<str>>();
+        let alignment = std::mem::align_of::<GitHistoryDocument>();
+        let locator_bytes = fields.next_multiple_of(alignment);
 
         assert!(
             std::mem::size_of::<GitHistoryDocument>() <= locator_bytes,

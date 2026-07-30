@@ -1,11 +1,17 @@
 //! Shared, bounded readiness state for background knowledge preparation.
 
+use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
 const STATUS_FILE: &str = "preparation-status.json";
+static VALIDATED_VECTORS: OnceLock<Mutex<HashMap<PathBuf, ValidatedVectorArtifact>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +42,86 @@ pub struct KnowledgePreparationStatus {
     pub repositories_total: usize,
     #[serde(default)]
     pub freshness_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validated_vector: Option<ValidatedVectorArtifact>,
+}
+
+/// File identity of a vector generation that completed lifecycle validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ValidatedVectorArtifact {
+    artifact: String,
+    generation: String,
+    checksum: String,
+    file_bytes: u64,
+    device: u64,
+    inode: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+impl ValidatedVectorArtifact {
+    /// Capture the current immutable-generation file identity.
+    #[must_use]
+    pub fn current_identity(root: &Path) -> Option<Self> {
+        let summary = vesc_knowledge_index::inspect_previous_artifact(
+            &vesc_knowledge_index::active_manifest_path(root),
+        )
+        .ok()?;
+        let checksum = summary.vector_checksum?;
+        let vector = root
+            .join("generations")
+            .join(summary.generation.to_string())
+            .join("vectors.bin");
+        let metadata = vector.metadata().ok()?;
+        #[cfg(unix)]
+        {
+            Some(Self {
+                artifact: root.file_name()?.to_str()?.to_owned(),
+                generation: summary.generation.to_string(),
+                checksum: checksum.to_string(),
+                file_bytes: metadata.len(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                modified_seconds: metadata.mtime(),
+                modified_nanoseconds: metadata.mtime_nsec(),
+                changed_seconds: metadata.ctime(),
+                changed_nanoseconds: metadata.ctime_nsec(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = metadata;
+            None
+        }
+    }
+
+    /// Return whether the selected generation is still the validated immutable file.
+    #[must_use]
+    pub fn matches(&self, root: &Path) -> bool {
+        Self::current_identity(root).as_ref() == Some(self)
+    }
+}
+
+pub(crate) fn record_validated_vector(root: &Path, identity: ValidatedVectorArtifact) {
+    VALIDATED_VECTORS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(root.to_owned(), identity);
+}
+
+/// Return a vector identity recorded by full lifecycle validation in this process.
+#[must_use]
+pub fn validated_vector(root: &Path) -> Option<ValidatedVectorArtifact> {
+    let identity = VALIDATED_VECTORS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(root)
+        .cloned()?;
+    identity.matches(root).then_some(identity)
 }
 
 impl KnowledgePreparationStatus {
@@ -51,6 +137,7 @@ impl KnowledgePreparationStatus {
             repositories_completed,
             repositories_total,
             freshness_required: false,
+            validated_vector: None,
         }
     }
 
@@ -66,12 +153,22 @@ impl KnowledgePreparationStatus {
             repositories_completed,
             repositories_total,
             freshness_required: false,
+            validated_vector: None,
         }
     }
 
     #[must_use]
     pub const fn with_freshness_required(mut self, freshness_required: bool) -> Self {
         self.freshness_required = freshness_required;
+        self
+    }
+
+    #[must_use]
+    pub fn with_validated_vector(
+        mut self,
+        validated_vector: Option<ValidatedVectorArtifact>,
+    ) -> Self {
+        self.validated_vector = validated_vector;
         self
     }
 }
@@ -129,6 +226,31 @@ mod tests {
         write_preparation_status(root.path(), &status).expect("write status");
 
         assert_eq!(read_preparation_status(root.path()), Some(status));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vector_validation_proof_is_invalidated_by_same_length_changes() {
+        let root = tempfile::tempdir().expect("artifact root");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            root.path(),
+            &mut provider,
+            "fake",
+            "test",
+        )
+        .expect("semantic artifact");
+        let proof = ValidatedVectorArtifact::current_identity(root.path()).expect("vector proof");
+        assert!(proof.matches(root.path()));
+        let vector = vesc_knowledge_index::active_generation_path(root.path())
+            .expect("active generation")
+            .join("vectors.bin");
+        let mut bytes = fs::read(&vector).expect("vector bytes");
+        let payload_byte = bytes.len() / 2;
+        bytes[payload_byte] ^= 1;
+        fs::write(vector, bytes).expect("same-length corruption");
+
+        assert!(!proof.matches(root.path()));
     }
 
     #[test]

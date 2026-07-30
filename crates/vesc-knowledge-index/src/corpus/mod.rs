@@ -455,7 +455,14 @@ pub enum SourceKind {
     Fixture,
     VendorFile,
     GitBlob,
+    GitCommit,
     ModelFeedback,
+}
+
+impl SourceKind {
+    pub(crate) const fn is_git(self) -> bool {
+        matches!(self, Self::GitBlob | Self::GitCommit)
+    }
 }
 
 /// Trust classification retained with every document and chunk.

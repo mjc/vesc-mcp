@@ -178,11 +178,18 @@ filesystem access. Repository IDs are stable lowercase path-safe identifiers;
 remotes must be credential-free HTTPS URLs; refs must be full `refs/...`
 names; and include/exclude rules must be relative patterns without `..` path
 components. Duplicate IDs and zero or inconsistent source limits are rejected.
-`max_file_bytes` rejects an oversized Git blob before hydration.
-`max_files` and `max_total_bytes` bound the files processed for one repository
-build: the complete selected history for a cold build, or only the changed
-delta for an incremental build. They do not cap the cumulative persisted
-corpus.
+C and C++ source/header families are always selected, even when an `include`
+list omits them or an `exclude` pattern matches them. The patterns select or
+exclude other text formats. Hard file/count/byte limits remain safety bounds
+and can stop admission after the configured capacity is exhausted.
+
+Reachable commit subjects and bodies are indexed as typed historical evidence.
+Their text is rehydrated from Git rather than copied into a history sidecar.
+`max_file_bytes` bounds each Git blob or commit message. `max_files` and
+`max_total_bytes` provide independent budgets for blobs and commit messages, so
+messages cannot crowd out source. A cold build applies those budgets to the
+complete selected history; an incremental build applies them only to its new
+delta. The limits do not cap the cumulative persisted corpus.
 
 ```toml
 [knowledge]
@@ -194,7 +201,7 @@ id = "vesc-tool"
 remote_url = "https://github.com/vedderb/vesc_tool.git"
 default_ref = "refs/heads/master"
 policy = "required"
-include = ["**/*.cpp", "**/*.h", "*.pro"]
+include = ["*.pro"]
 exclude = ["build/**"]
 trust_tier = "official"
 license = "GPL-3.0-or-later"
@@ -208,7 +215,16 @@ id = "vesc-pkg"
 remote_url = "https://github.com/vedderb/vesc_pkg.git"
 default_ref = "refs/heads/main"
 policy = "optional"
-include = ["**/*.lisp", "**/*.md", "**/*.qml"]
+include = [
+  "**/*.lisp", "**/*.lbm", "**/*.md", "**/*.qml", "**/*.py",
+  "**/*.yml", "**/*.yaml", "**/*.xml", "**/*.txt", "**/*.in",
+  "**/*.ld", "**/*.mk", "**/*.sh", "**/*.qrc", "**/*.diff",
+  "**/*.csv", "**/*.cfg", "**/*.gitignore", "**/*.gitmodules",
+  "**/*.project", "**/*.cproject", "**/*.gdbinit", "**/*.clangd",
+  "**/*.clang-format", "**/Makefile", "**/Dockerfile", "**/todo",
+  "**/generate_fonts", "**/build_res", "**/LICENSE", "**/package_name", "**/version",
+  "**/version_esc",
+]
 exclude = [".git/**"]
 trust_tier = "official"
 license = "GPL-3.0-or-later"

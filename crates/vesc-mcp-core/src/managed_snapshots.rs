@@ -21,7 +21,7 @@ use crate::managed_repositories::{
     TrustTier,
 };
 
-const SNAPSHOT_SCHEMA: u16 = 1;
+const SNAPSHOT_SCHEMA: u16 = 2;
 
 // Avoid queueing duplicate build tasks inside one process. The filesystem lock
 // below extends the same one-working-set limit across preparation children.
@@ -75,6 +75,13 @@ pub struct SnapshotRepository {
     pub policy_digest: String,
 }
 
+/// One configured repository contract, including sources unavailable at build time.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SnapshotRepositoryConfiguration {
+    pub repository: RepositoryId,
+    pub policy_digest: String,
+}
+
 /// Deterministic, path-free description of a prepared snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +91,7 @@ pub struct KnowledgeSnapshotManifest {
     #[serde(default)]
     pub profile: SnapshotProfile,
     pub repositories: Vec<SnapshotRepository>,
+    pub configured_repositories: Vec<SnapshotRepositoryConfiguration>,
     pub component_versions: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic: Option<SnapshotSemanticModel>,
@@ -103,7 +111,28 @@ impl KnowledgeSnapshotManifest {
     }
 
     fn with_profile(
+        repositories: Vec<SnapshotRepository>,
+        semantic: Option<SnapshotSemanticModel>,
+        profile: SnapshotProfile,
+    ) -> Result<Self, SnapshotError> {
+        let configured_repositories = repositories
+            .iter()
+            .map(|selected| SnapshotRepositoryConfiguration {
+                repository: selected.repository.clone(),
+                policy_digest: selected.policy_digest.clone(),
+            })
+            .collect();
+        Self::with_profile_and_configuration(
+            repositories,
+            configured_repositories,
+            semantic,
+            profile,
+        )
+    }
+
+    fn with_profile_and_configuration(
         mut repositories: Vec<SnapshotRepository>,
+        mut configured_repositories: Vec<SnapshotRepositoryConfiguration>,
         semantic: Option<SnapshotSemanticModel>,
         profile: SnapshotProfile,
     ) -> Result<Self, SnapshotError> {
@@ -111,9 +140,19 @@ impl KnowledgeSnapshotManifest {
             return Err(SnapshotError::EmptySelection);
         }
         repositories.sort_by(|left, right| left.repository.cmp(&right.repository));
+        configured_repositories.sort();
         if repositories
             .windows(2)
             .any(|pair| pair[0].repository == pair[1].repository)
+            || configured_repositories
+                .windows(2)
+                .any(|pair| pair[0].repository == pair[1].repository)
+            || repositories.iter().any(|selected| {
+                !configured_repositories.iter().any(|configured| {
+                    configured.repository == selected.repository
+                        && configured.policy_digest == selected.policy_digest
+                })
+            })
         {
             return Err(SnapshotError::DuplicateRepository);
         }
@@ -122,6 +161,7 @@ impl KnowledgeSnapshotManifest {
             schema: SNAPSHOT_SCHEMA,
             profile,
             repositories: &repositories,
+            configured_repositories: &configured_repositories,
             component_versions: &component_versions,
             semantic: semantic.as_ref(),
         };
@@ -132,6 +172,7 @@ impl KnowledgeSnapshotManifest {
             id,
             profile,
             repositories,
+            configured_repositories,
             component_versions,
             semantic,
         })
@@ -140,10 +181,21 @@ impl KnowledgeSnapshotManifest {
     fn has_valid_identity(&self) -> bool {
         if self.schema != SNAPSHOT_SCHEMA
             || self.repositories.is_empty()
+            || self.configured_repositories.is_empty()
             || self
                 .repositories
                 .windows(2)
                 .any(|pair| pair[0].repository >= pair[1].repository)
+            || self
+                .configured_repositories
+                .windows(2)
+                .any(|pair| pair[0].repository >= pair[1].repository)
+            || self.repositories.iter().any(|selected| {
+                !self.configured_repositories.iter().any(|configured| {
+                    configured.repository == selected.repository
+                        && configured.policy_digest == selected.policy_digest
+                })
+            })
         {
             return false;
         }
@@ -151,6 +203,7 @@ impl KnowledgeSnapshotManifest {
             schema: self.schema,
             profile: self.profile,
             repositories: &self.repositories,
+            configured_repositories: &self.configured_repositories,
             component_versions: &self.component_versions,
             semantic: self.semantic.as_ref(),
         };
@@ -172,6 +225,7 @@ struct SnapshotIdentity<'a> {
     schema: u16,
     profile: SnapshotProfile,
     repositories: &'a [SnapshotRepository],
+    configured_repositories: &'a [SnapshotRepositoryConfiguration],
     component_versions: &'a BTreeMap<String, String>,
     semantic: Option<&'a SnapshotSemanticModel>,
 }
@@ -505,6 +559,7 @@ impl KnowledgeSnapshotStore {
                 return Err(SnapshotError::UnknownRepository(id.clone()));
             }
         }
+        let configured_repositories = repository_configuration(repositories)?;
         let mut selected = Vec::new();
         for repository in repositories.enabled() {
             let selector = selectors
@@ -526,8 +581,9 @@ impl KnowledgeSnapshotStore {
                 Err(error) => return Err(error.into()),
             }
         }
-        let manifest = KnowledgeSnapshotManifest::with_profile(
+        let manifest = KnowledgeSnapshotManifest::with_profile_and_configuration(
             selected,
+            configured_repositories,
             self.semantic
                 .as_ref()
                 .map(|semantic| semantic.model.clone()),
@@ -548,6 +604,22 @@ impl KnowledgeSnapshotStore {
             return Err(SnapshotError::IdentityMismatch);
         }
         Ok(manifest)
+    }
+
+    /// Return whether the default snapshot still matches configured sources.
+    ///
+    /// This compares component, semantic, repository, and policy identities
+    /// without fetching remotes or rebuilding the artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the default alias is missing or invalid.
+    pub fn default_configuration_is_current(
+        &self,
+        repositories: &RepositoryRegistry,
+    ) -> Result<bool, SnapshotError> {
+        let manifest = self.default_manifest()?;
+        self.snapshot_contract_matches(&manifest, repositories)
     }
 
     #[must_use]
@@ -612,26 +684,8 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
         allow_unavailable: bool,
     ) -> Result<bool, SnapshotError> {
-        if manifest.profile != SnapshotProfile::CompleteHistory
-            || !manifest.uses_current_components()
-            || !semantic_serving_contract_matches(
-                manifest.semantic.as_ref(),
-                self.semantic.as_ref().map(|value| &value.model),
-            )
-        {
+        if !self.snapshot_contract_matches(manifest, repositories)? {
             return Ok(false);
-        }
-
-        for selected in &manifest.repositories {
-            let Some(repository) = repositories
-                .enabled()
-                .find(|repository| repository.id() == &selected.repository)
-            else {
-                return Ok(false);
-            };
-            if selected.policy_digest != repository_policy_digest(repository)? {
-                return Ok(false);
-            }
         }
 
         for repository in repositories.enabled() {
@@ -650,6 +704,40 @@ impl KnowledgeSnapshotStore {
                         && (selected.is_some()
                             || repository.policy() == RepositoryPolicy::Optional) => {}
                 _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
+    fn snapshot_contract_matches(
+        &self,
+        manifest: &KnowledgeSnapshotManifest,
+        repositories: &RepositoryRegistry,
+    ) -> Result<bool, SnapshotError> {
+        if manifest.profile != SnapshotProfile::CompleteHistory
+            || !manifest.uses_current_components()
+            || !semantic_serving_contract_matches(
+                manifest.semantic.as_ref(),
+                self.semantic.as_ref().map(|value| &value.model),
+            )
+        {
+            return Ok(false);
+        }
+
+        let configured_repositories = repository_configuration(repositories)?;
+        if manifest.configured_repositories != configured_repositories {
+            return Ok(false);
+        }
+        for repository in repositories
+            .enabled()
+            .filter(|repository| repository.policy() == RepositoryPolicy::Required)
+        {
+            if !manifest
+                .repositories
+                .iter()
+                .any(|selected| selected.repository == *repository.id())
+            {
+                return Ok(false);
             }
         }
         Ok(true)
@@ -789,6 +877,7 @@ fn build_or_reuse(
             "semantic snapshot vector artifact is unavailable".into(),
         ));
     }
+    validate_snapshot_artifact(&artifact_path, manifest)?;
     write_json_atomic(&snapshot_path, manifest)?;
     cleanup_completed_lexical_stage(&artifact_path);
     if let Some(path) = build.vector_checkpoint_path {
@@ -1505,12 +1594,22 @@ fn validate_snapshot_artifact(
     path: &Path,
     snapshot: &KnowledgeSnapshotManifest,
 ) -> Result<(), SnapshotError> {
+    let vector_before = crate::preparation_status::ValidatedVectorArtifact::current_identity(path);
     let artifact = vesc_knowledge_index::validate_active_generation(path)
         .map_err(|error| SnapshotError::Build(error.to_string()))?;
     if snapshot.semantic.is_some() && artifact.vector_checksum.is_none() {
         return Err(SnapshotError::Build(
             "semantic snapshot vector artifact is unavailable".into(),
         ));
+    }
+    let vector_after = crate::preparation_status::ValidatedVectorArtifact::current_identity(path);
+    if vector_before != vector_after {
+        return Err(SnapshotError::Build(
+            "semantic snapshot vector artifact changed during validation".into(),
+        ));
+    }
+    if let Some(identity) = vector_after {
+        crate::preparation_status::record_validated_vector(path, identity);
     }
     Ok(())
 }
@@ -1675,8 +1774,9 @@ fn repository_policy_digest(repository: &KnowledgeRepository) -> Result<String, 
     struct PolicyIdentity<'a> {
         remote_url: &'a str,
         default_ref: &'a str,
-        include: &'a [String],
-        exclude: &'a [String],
+        policy: RepositoryPolicy,
+        include: BTreeSet<&'a str>,
+        exclude: BTreeSet<&'a str>,
         trust_tier: TrustTier,
         license: &'a str,
         max_file_bytes: u64,
@@ -1687,14 +1787,31 @@ fn repository_policy_digest(repository: &KnowledgeRepository) -> Result<String, 
     Ok(hex_sha256(&serde_json::to_vec(&PolicyIdentity {
         remote_url: repository.remote_url(),
         default_ref: repository.default_ref(),
-        include: repository.include(),
-        exclude: repository.exclude(),
+        policy: repository.policy(),
+        include: repository.include().iter().map(String::as_str).collect(),
+        exclude: repository.exclude().iter().map(String::as_str).collect(),
         trust_tier: repository.trust_tier(),
         license: repository.license(),
         max_file_bytes: repository.max_file_bytes(),
         max_files: repository.max_files(),
         max_total_bytes: repository.max_total_bytes(),
     })?))
+}
+
+fn repository_configuration(
+    repositories: &RepositoryRegistry,
+) -> Result<Vec<SnapshotRepositoryConfiguration>, SnapshotError> {
+    let mut configured = repositories
+        .enabled()
+        .map(|repository| {
+            Ok(SnapshotRepositoryConfiguration {
+                repository: repository.id().clone(),
+                policy_digest: repository_policy_digest(repository)?,
+            })
+        })
+        .collect::<Result<Vec<_>, SnapshotError>>()?;
+    configured.sort();
+    Ok(configured)
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), SnapshotError> {
@@ -2223,6 +2340,16 @@ max_total_bytes = 10485760
         assert_eq!(prepared.manifest.id, accelerated.id);
         assert_eq!(prepared.disposition, SnapshotDisposition::Reused);
         assert!(layout.artifact(&accelerated.id).is_dir());
+
+        let vector_path =
+            vesc_knowledge_index::active_generation_path(&layout.artifact(&accelerated.id))
+                .expect("active generation")
+                .join("vectors.bin");
+        fs::remove_file(vector_path).expect("remove vectors");
+        let error = cpu_store
+            .load_default(SnapshotDisposition::Reused)
+            .expect_err("serving requires configured vectors");
+        assert!(matches!(error, SnapshotError::Build(_)));
     }
 
     fn artifact_matches(root: &Path, query: &str) -> bool {
@@ -2729,6 +2856,7 @@ max_total_bytes = 10485760
             schema: manifest.schema,
             profile: manifest.profile,
             repositories: &manifest.repositories,
+            configured_repositories: &manifest.configured_repositories,
             component_versions: &manifest.component_versions,
             semantic: manifest.semantic.as_ref(),
         };
@@ -3224,6 +3352,20 @@ max_total_bytes = 10485760
             .prepare_default(&repositories)
             .await
             .expect("initial default");
+        assert!(
+            store
+                .default_configuration_is_current(&repositories)
+                .expect("current configuration")
+        );
+        assert!(
+            !store
+                .default_configuration_is_current(&fixture_registry_with_include(
+                    &data_root,
+                    "refs/heads/main",
+                    "**/*.c",
+                ))
+                .expect("changed configuration")
+        );
         fs::remove_file(data_root.join("repositories/fixture.refs.json"))
             .expect("remove source catalog");
 
@@ -3256,5 +3398,144 @@ max_total_bytes = 10485760
             .expect("compatible source outage uses stale snapshot");
         assert_eq!(stale.manifest.id, initial.manifest.id);
         assert_eq!(stale.disposition, SnapshotDisposition::Stale);
+    }
+
+    #[test]
+    fn configuration_contract_distinguishes_new_from_unavailable_optional_repository() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let data_root = temp.path().join("data");
+        let remote = temp.path().join("remote.git");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let store = KnowledgeSnapshotStore::new(layout);
+        let registry = |second_policy: &str| {
+            McpConfig::from_toml(
+                &format!(
+                    r#"
+[knowledge]
+data_root = "{}"
+
+[[knowledge.repositories]]
+id = "required"
+remote_url = "{}"
+default_ref = "refs/heads/main"
+policy = "required"
+include = ["**/*.md"]
+exclude = []
+trust_tier = "official"
+license = "MIT"
+attribution = "Required fixture"
+max_file_bytes = 1048576
+max_files = 100
+max_total_bytes = 10485760
+
+[[knowledge.repositories]]
+id = "sometimes-unavailable"
+remote_url = "{}"
+default_ref = "refs/heads/main"
+policy = "{second_policy}"
+include = ["**/*.md"]
+exclude = []
+trust_tier = "official"
+license = "MIT"
+attribution = "Sometimes unavailable fixture"
+max_file_bytes = 1048576
+max_files = 100
+max_total_bytes = 10485760
+"#,
+                    data_root.display(),
+                    remote.display(),
+                    remote.display(),
+                ),
+                &DataRootInputs::default(),
+            )
+            .expect("repository configuration")
+            .knowledge
+            .repositories
+        };
+        let repositories = registry("optional");
+        let required = repositories
+            .iter()
+            .find(|repository| repository.id().as_str() == "required")
+            .expect("required repository");
+        let manifest_before_optional = KnowledgeSnapshotManifest::with_profile(
+            vec![SnapshotRepository {
+                repository: required.id().clone(),
+                commit: "a".repeat(40),
+                policy_digest: repository_policy_digest(required).expect("policy digest"),
+            }],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("snapshot with required repository");
+        let manifest_after_optional = KnowledgeSnapshotManifest::with_profile_and_configuration(
+            manifest_before_optional.repositories.clone(),
+            repository_configuration(&repositories).expect("configured repositories"),
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("snapshot with attempted optional repository");
+
+        assert!(
+            !store
+                .snapshot_contract_matches(&manifest_before_optional, &repositories)
+                .expect("new optional contract")
+        );
+        assert!(
+            store
+                .snapshot_contract_matches(&manifest_after_optional, &repositories)
+                .expect("attempted optional contract")
+        );
+        assert!(
+            !store
+                .snapshot_contract_matches(&manifest_after_optional, &registry("required"))
+                .expect("required contract")
+        );
+    }
+
+    #[test]
+    fn policy_digest_canonicalizes_set_like_path_rules() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let data_root = temp.path().join("data");
+        let remote = temp.path().join("remote.git");
+        let registry = |include: &str, exclude: &str| {
+            McpConfig::from_toml(
+                &format!(
+                    r#"
+[knowledge]
+data_root = "{}"
+
+[[knowledge.repositories]]
+id = "fixture"
+remote_url = "{}"
+default_ref = "refs/heads/main"
+policy = "required"
+include = [{include}]
+exclude = [{exclude}]
+trust_tier = "official"
+license = "MIT"
+attribution = "Fixture"
+max_file_bytes = 1048576
+max_files = 100
+max_total_bytes = 10485760
+"#,
+                    data_root.display(),
+                    remote.display(),
+                ),
+                &DataRootInputs::default(),
+            )
+            .expect("repository configuration")
+            .knowledge
+            .repositories
+        };
+        let left = registry(r#""**/*.md", "**/*.c""#, r#""target/**", "build/**""#);
+        let right = registry(r#""**/*.c", "**/*.md""#, r#""build/**", "target/**""#);
+
+        assert_eq!(
+            repository_policy_digest(left.iter().next().expect("left repository"))
+                .expect("left digest"),
+            repository_policy_digest(right.iter().next().expect("right repository"))
+                .expect("right digest")
+        );
     }
 }

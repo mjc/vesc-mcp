@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::evaluation::{EvaluationMode, EvaluationReport};
 use crate::{
     Chunk, ChunkId, ContentDigest, EmbeddingProvider, FusionConfig, LexicalError, LexicalFilters,
-    LexicalIndex, TokenStatistics, VectorArtifact, VectorBuildObservations, embedded_entries,
-    fuse_candidates,
+    LexicalIndex, TokenStatistics, VectorArtifact, VectorBuildObservations, VectorSearch,
+    embedded_entries, fuse_candidates,
 };
 
 /// Runs the persisted-index embedding inventory path for allocation benchmarks.
@@ -205,6 +205,20 @@ pub struct SemanticQueryBenchmarkReport {
     pub first_query: TimingDistribution,
     pub embedding: TimingDistribution,
     pub exact_search: BTreeMap<usize, TimingDistribution>,
+    /// Process RSS before the caller opens the vector artifact.
+    #[serde(default)]
+    pub rss_before_vector_open_bytes: Option<u64>,
+    /// Process RSS immediately after the caller opens and validates the vector
+    /// artifact.
+    #[serde(default)]
+    pub rss_after_vector_open_bytes: Option<u64>,
+    /// Process RSS after artifact opening and provider construction, but before
+    /// the first measured query.
+    #[serde(default)]
+    pub rss_before_first_query_bytes: Option<u64>,
+    /// Process RSS immediately after the first inference and search.
+    #[serde(default)]
+    pub rss_after_first_query_bytes: Option<u64>,
     pub rss_before_queries_bytes: Option<u64>,
     pub rss_after_queries_bytes: Option<u64>,
     pub rss_retained_delta_bytes: Option<i64>,
@@ -640,9 +654,9 @@ pub fn benchmark_semantic_with_artifact<P: EmbeddingProvider + ?Sized>(
 /// # Errors
 ///
 /// Returns [`BenchmarkError`] for empty inputs or provider/search failures.
-pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized>(
+pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized, A: VectorSearch + ?Sized>(
     provider: &mut P,
-    artifact: &VectorArtifact,
+    artifact: &A,
     queries: &[String],
     search_limits: &[usize],
     warmup_iterations: usize,
@@ -657,12 +671,14 @@ pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized>(
     if repetitions == 0 {
         return Err(BenchmarkError::InvalidRepetitions);
     }
+    let rss_before_first_query_bytes = process_rss_bytes();
     let first_query = {
         let started = Instant::now();
         let vector = provider.embed_query(&queries[0])?;
         let _ = artifact.search(&vector, search_limits[0])?;
         TimingDistribution::single(elapsed_us(started))
     };
+    let rss_after_first_query_bytes = process_rss_bytes();
     for _ in 0..warmup_iterations {
         for query in queries {
             let vector = provider.embed_query(query)?;
@@ -693,19 +709,23 @@ pub fn benchmark_semantic_queries<P: EmbeddingProvider + ?Sized>(
     }
     let rss_after_queries_bytes = process_rss_bytes();
     Ok(SemanticQueryBenchmarkReport {
-        schema: 1,
+        schema: 2,
         cold_initialization: None,
         warmup_iterations,
         repetitions,
         query_count: queries.len(),
-        vector_count: artifact.ids.len(),
-        vector_dimension: artifact.dimension,
+        vector_count: artifact.len(),
+        vector_dimension: artifact.dimension(),
         first_query,
         embedding: TimingDistribution::from_samples(embedding_samples),
         exact_search: search_samples
             .into_iter()
             .map(|(limit, samples)| (limit, TimingDistribution::from_samples(samples)))
             .collect(),
+        rss_before_vector_open_bytes: None,
+        rss_after_vector_open_bytes: None,
+        rss_before_first_query_bytes,
+        rss_after_first_query_bytes,
         rss_before_queries_bytes,
         rss_after_queries_bytes,
         rss_retained_delta_bytes: rss_before_queries_bytes

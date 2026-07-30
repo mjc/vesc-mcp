@@ -66,10 +66,10 @@ pub use parsers::refloat_commands::RefloatCommandsParseError;
 pub use parsers::vesc_c_if::VescCIfParseError;
 pub use semantic::{
     DEFAULT_SEMANTIC_BATCH_SIZE, EmbeddingBatchSize, EmbeddingError, EmbeddingProfile,
-    EmbeddingProvider, FakeEmbeddingProvider, OutputNormalization, Pooling, SemanticHit,
-    SequenceBucket, TokenStatistics, VectorArtifact, VectorBuildObservations, WindowAggregation,
-    aggregate_window_vectors, default_semantic_intra_threads, embedding_text, semantic_query_text,
-    sequence_bucket_plan,
+    EmbeddingProvider, FakeEmbeddingProvider, FileBackedVectorArtifact, OutputNormalization,
+    Pooling, SemanticHit, SequenceBucket, TokenStatistics, VectorArtifact, VectorBuildObservations,
+    VectorSearch, WindowAggregation, aggregate_window_vectors, default_semantic_intra_threads,
+    embedding_text, semantic_query_text, sequence_bucket_plan,
 };
 #[cfg(feature = "semantic-fastembed")]
 pub use semantic::{DocumentWindowVectors, FastEmbedProvider};

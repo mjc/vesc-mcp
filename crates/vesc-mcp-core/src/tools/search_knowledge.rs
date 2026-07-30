@@ -18,7 +18,7 @@ use vesc_knowledge_index::{
     fuse_candidate_metadata,
 };
 #[cfg(any(feature = "semantic-fastembed", test))]
-use vesc_knowledge_index::{EmbeddingProvider, VectorArtifact, semantic_query_text};
+use vesc_knowledge_index::{EmbeddingProvider, FileBackedVectorArtifact, semantic_query_text};
 
 use crate::{
     resources::ResourceRegistry,
@@ -1006,7 +1006,11 @@ static ARTIFACT_METADATA_CACHE: ArtifactCache<vesc_knowledge_index::PreviousArti
     OnceLock::new();
 
 #[cfg(any(feature = "semantic-fastembed", test))]
-static VECTOR_ARTIFACT_CACHE: ArtifactCache<VectorArtifact> = OnceLock::new();
+static VECTOR_ARTIFACT_CACHE: ArtifactCache<FileBackedVectorArtifact> = OnceLock::new();
+#[cfg(any(feature = "semantic-fastembed", test))]
+static VECTOR_VALIDATION_CACHE: OnceLock<
+    Mutex<Option<(PathBuf, crate::preparation_status::ValidatedVectorArtifact)>>,
+> = OnceLock::new();
 
 fn cached_artifact<T>(
     cache: &'static ArtifactCache<T>,
@@ -1248,7 +1252,7 @@ fn reap_idle_semantic_model() {
 }
 
 #[cfg(any(feature = "semantic-fastembed", test))]
-fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>, String> {
+fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<FileBackedVectorArtifact>, String> {
     let root = resolved_search_artifact(config)?
         .ok_or_else(|| "vector artifact is not configured".to_string())?;
     let artifact = active_artifact_summary(&root)
@@ -1257,14 +1261,50 @@ fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>,
         .join("generations")
         .join(artifact.generation.to_string())
         .join("vectors.bin");
+    let current_proof = crate::preparation_status::ValidatedVectorArtifact::current_identity(&root);
+    let process_validated = current_proof.as_ref().is_some_and(|proof| {
+        VECTOR_VALIDATION_CACHE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|(path, cached)| path == &root && cached == proof)
+    });
+    let preparation_validated = current_proof.as_ref().is_some_and(|proof| {
+        config
+            .data_root
+            .as_ref()
+            .and_then(|data_root| {
+                crate::preparation_status::read_preparation_status(data_root.as_path())
+            })
+            .and_then(|status| status.validated_vector)
+            .as_ref()
+            == Some(proof)
+    });
+    let lifecycle_validated = process_validated || preparation_validated;
+    if !process_validated {
+        evict_cached_artifact(&VECTOR_ARTIFACT_CACHE);
+    }
     let vector = cached_artifact(&VECTOR_ARTIFACT_CACHE, &vector_path, || {
-        let vector = VectorArtifact::open_artifact(&vector_path)
-            .map_err(|_| "configured vector artifact unavailable".to_string())?;
-        vector
-            .validate()
-            .map_err(|error| format!("semantic artifact incompatible: {error}"))?;
-        if vector.corpus_digest != artifact.corpus_digest {
+        let vector = if lifecycle_validated {
+            FileBackedVectorArtifact::open_search_artifact(&vector_path)
+        } else {
+            FileBackedVectorArtifact::open_artifact(&vector_path)
+        }
+        .map_err(|_| "configured vector artifact unavailable".to_string())?;
+        if vector.corpus_digest != artifact.corpus_digest || vector.len() != artifact.chunk_count {
             return Err("semantic artifact incompatible with the active corpus".into());
+        }
+        let validated_proof =
+            crate::preparation_status::ValidatedVectorArtifact::current_identity(&root);
+        if validated_proof != current_proof {
+            return Err("configured vector artifact unavailable".into());
+        }
+        if let Some(proof) = validated_proof {
+            *VECTOR_VALIDATION_CACHE
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((root.clone(), proof));
         }
         Ok(vector)
     })?;
@@ -1286,7 +1326,7 @@ fn load_vector_artifact(config: &KnowledgeConfig) -> Result<Arc<VectorArtifact>,
 fn semantic_hits_with_provider<P: EmbeddingProvider + ?Sized>(
     query: &str,
     limit: usize,
-    vector: &VectorArtifact,
+    vector: &FileBackedVectorArtifact,
     provider: &mut P,
 ) -> Result<Vec<SemanticHit>, String> {
     let query = provider
@@ -2481,6 +2521,65 @@ max_total_bytes = 1073741824
                 .as_ref()
                 .is_some_and(|explanation| explanation.semantic_rank.is_some())
         }));
+    }
+
+    #[test]
+    fn hybrid_rejects_same_length_vector_corruption() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut build_provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            temp.path(),
+            &mut build_provider,
+            "fake",
+            "test",
+        )
+        .expect("semantic artifact build");
+        let vector_path = vesc_knowledge_index::active_generation_path(temp.path())
+            .expect("active generation")
+            .join("vectors.bin");
+        let config = KnowledgeConfig {
+            mode: RetrievalMode::Hybrid,
+            artifact_path: Some(temp.path().into()),
+            semantic_model_dir: None,
+            semantic_model_id: Some("fake".into()),
+            semantic_model_revision: Some("test".into()),
+            ..KnowledgeConfig::default()
+        };
+        let params = SearchVescKnowledgeParams {
+            query: "lbm_add_extension".into(),
+            snapshot_id: None,
+            limit: 3,
+            mode: Some(SearchMode::Hybrid),
+            filters: SearchVescKnowledgeFilters::default(),
+            max_response_bytes: None,
+            max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
+        };
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+        hybrid_results_with_provider(
+            &params,
+            &vesc_knowledge_index::LexicalFilters::default(),
+            3,
+            &config,
+            &mut provider,
+        )
+        .expect("initial validated hybrid results");
+
+        let mut bytes = std::fs::read(&vector_path).expect("read vectors");
+        let payload_byte = bytes.len() / 2;
+        bytes[payload_byte] ^= 1;
+        std::fs::write(&vector_path, bytes).expect("corrupt vectors");
+
+        let error = hybrid_results_with_provider(
+            &params,
+            &vesc_knowledge_index::LexicalFilters::default(),
+            3,
+            &config,
+            &mut provider,
+        )
+        .expect_err("corrupt vector artifact");
+
+        assert_eq!(error, "configured vector artifact unavailable");
     }
 
     #[test]

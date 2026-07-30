@@ -45,7 +45,9 @@ max_passage_bytes = 8192
 # remote_url = "https://github.com/vedderb/vesc_tool.git"
 # default_ref = "refs/heads/master"
 # policy = "required" # disabled, optional, or required
-# include = ["**/*.cpp", "**/*.h", "*.pro"]
+# C and C++ source/header families are always included for every repository.
+# `include` adds other useful text formats; it cannot narrow that code floor.
+# include = ["*.pro"]
 # exclude = ["build/**"]
 # trust_tier = "official" # official, community, or untrusted
 # license = "GPL-3.0-or-later"
@@ -62,7 +64,16 @@ max_passage_bytes = 8192
 # remote_url = "https://github.com/vedderb/vesc_pkg.git"
 # default_ref = "refs/heads/main"
 # policy = "optional"
-# include = ["**/*.lisp", "**/*.md", "**/*.qml"]
+# include = [
+#   "**/*.lisp", "**/*.lbm", "**/*.md", "**/*.qml", "**/*.py",
+#   "**/*.yml", "**/*.yaml", "**/*.xml", "**/*.txt", "**/*.in",
+#   "**/*.ld", "**/*.mk", "**/*.sh", "**/*.qrc", "**/*.diff",
+#   "**/*.csv", "**/*.cfg", "**/*.gitignore", "**/*.gitmodules",
+#   "**/*.project", "**/*.cproject", "**/*.gdbinit", "**/*.clangd",
+#   "**/*.clang-format", "**/Makefile", "**/Dockerfile", "**/todo",
+#   "**/generate_fonts", "**/build_res",
+#   "**/LICENSE", "**/package_name", "**/version", "**/version_esc",
+# ]
 # exclude = [".git/**"]
 # trust_tier = "official"
 # license = "GPL-3.0-or-later"

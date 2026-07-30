@@ -28,8 +28,8 @@ use vesc_knowledge_index::evaluation::{
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::{
     Chunk, ChunkId, DocumentWindowVectors, EmbeddingProfile, EmbeddingProvider, FastEmbedProvider,
-    FusionConfig, SemanticExecutionProvider, SemanticHit, VectorArtifact, WindowAggregation,
-    aggregate_window_vectors, build_allowlisted_artifacts_with_provider,
+    FileBackedVectorArtifact, FusionConfig, SemanticExecutionProvider, SemanticHit, VectorArtifact,
+    WindowAggregation, aggregate_window_vectors, build_allowlisted_artifacts_with_provider,
     build_embedded_artifacts_with_provider, configure_ort_verbose_logging, embedding_text,
     fuse_candidates, semantic_runtime_diagnostics, sequence_length_census_iter, sha256_file,
 };
@@ -119,7 +119,9 @@ struct ProviderLifecycleReport {
     vector_artifact_model_id: Option<String>,
     vector_artifact_model_revision: Option<String>,
     vector_artifact_corpus_digest: Option<ContentDigest>,
+    vector_map_us: Option<u64>,
     vector_open_us: Option<u64>,
+    vector_hash_us: Option<u64>,
     vector_search_us: Option<u64>,
     vector_search_hits: Option<usize>,
     vector_search_digest: Option<ContentDigest>,
@@ -174,19 +176,38 @@ fn run_provider_lifecycle(args: &[String]) {
             .unwrap_or_else(|error| panic!("stat {}: {error}", path.display()))
             .len()
     });
+    let vector_map_started = std::time::Instant::now();
+    let mapped_vector_artifact = vector_artifact_path.as_ref().map(|path| {
+        FileBackedVectorArtifact::open_search_artifact(path)
+            .unwrap_or_else(|error| panic!("map {}: {error}", path.display()))
+    });
+    let vector_map_us = mapped_vector_artifact
+        .as_ref()
+        .map(|_| u64::try_from(vector_map_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    drop(mapped_vector_artifact);
     let vector_open_started = std::time::Instant::now();
     let opened_vector_artifact = vector_artifact_path.as_ref().map(|path| {
-        VectorArtifact::open_artifact_with_digest(path)
+        FileBackedVectorArtifact::open_artifact(path)
             .unwrap_or_else(|error| panic!("open {}: {error}", path.display()))
     });
     let vector_open_us = opened_vector_artifact
         .as_ref()
         .map(|_| u64::try_from(vector_open_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    let vector_hash_started = std::time::Instant::now();
     let vector_artifact_sha256 = opened_vector_artifact
         .as_ref()
-        .map(|(_, digest)| digest.clone());
-    let vector_artifact = opened_vector_artifact.map(|(artifact, _)| artifact);
-    let vector_artifact_rows = vector_artifact.as_ref().map(|artifact| artifact.ids.len());
+        .zip(vector_artifact_path.as_ref())
+        .map(|(_, path)| {
+            let digest = sha256_file(path)
+                .unwrap_or_else(|error| panic!("hash {}: {error}", path.display()));
+            ContentDigest::try_from(format!("sha256:{digest}"))
+                .expect("SHA-256 helper returns a valid digest")
+        });
+    let vector_hash_us = vector_artifact_sha256
+        .as_ref()
+        .map(|_| u64::try_from(vector_hash_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    let vector_artifact = opened_vector_artifact;
+    let vector_artifact_rows = vector_artifact.as_ref().map(FileBackedVectorArtifact::len);
     let vector_artifact_model_id = vector_artifact
         .as_ref()
         .map(|artifact| artifact.model_id.clone());
@@ -267,7 +288,9 @@ fn run_provider_lifecycle(args: &[String]) {
         vector_artifact_model_id,
         vector_artifact_model_revision,
         vector_artifact_corpus_digest,
+        vector_map_us,
         vector_open_us,
+        vector_hash_us,
         vector_search_us,
         vector_search_hits,
         vector_search_digest,
@@ -1854,8 +1877,10 @@ fn run_semantic_query_benchmark(
         },
         PathBuf::from,
     );
-    let vector = VectorArtifact::open_artifact(&vector_path)
+    let rss_before_vector_open_bytes = process_rss_bytes();
+    let vector = FileBackedVectorArtifact::open_artifact(&vector_path)
         .unwrap_or_else(|error| panic!("open semantic query artifact: {error}"));
+    let rss_after_vector_open_bytes = process_rss_bytes();
     let initialization_started = std::time::Instant::now();
     let mut provider = FastEmbedProvider::from_model_dir_with_profile_and_threads_and_provider_and_graph_optimization(
         &model_dir,
@@ -1879,6 +1904,8 @@ fn run_semantic_query_benchmark(
     )
     .unwrap_or_else(|error| panic!("run semantic query benchmark: {error}"));
     report.cold_initialization = Some(initialization);
+    report.rss_before_vector_open_bytes = rss_before_vector_open_bytes;
+    report.rss_after_vector_open_bytes = rss_after_vector_open_bytes;
     match format {
         "json" => println!(
             "{}",

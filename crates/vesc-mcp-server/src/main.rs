@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tracing_subscriber::EnvFilter;
@@ -13,8 +13,8 @@ use vesc_mcp_core::managed_snapshots::{
     KnowledgeSnapshotStore, SnapshotBuildPhase, SnapshotDisposition, SnapshotState,
 };
 use vesc_mcp_core::preparation_status::{
-    KnowledgePreparationStatus, PreparationPhase, PreparationState, read_preparation_status,
-    write_preparation_status,
+    KnowledgePreparationStatus, PreparationPhase, PreparationState, ValidatedVectorArtifact,
+    read_preparation_status, write_preparation_status,
 };
 use vesc_mcp_core::tools::prepare_knowledge::{
     PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, knowledge_config_fingerprint,
@@ -32,16 +32,20 @@ struct PreparationReporter {
     repositories_total: usize,
     repositories_completed: usize,
     freshness_required: bool,
+    validated_vector: Option<ValidatedVectorArtifact>,
     finished: bool,
 }
 
 impl PreparationReporter {
     fn new(data_root: PathBuf, repositories_total: usize, freshness_required: bool) -> Self {
+        let validated_vector =
+            read_preparation_status(&data_root).and_then(|status| status.validated_vector);
         let reporter = Self {
             data_root,
             repositories_total,
             repositories_completed: 0,
             freshness_required,
+            validated_vector,
             finished: false,
         };
         reporter.publish(&KnowledgePreparationStatus::preparing(
@@ -97,10 +101,15 @@ impl PreparationReporter {
         self.finished = true;
     }
 
+    fn validated_vector(&mut self, artifact_root: &Path) {
+        self.validated_vector = vesc_mcp_core::preparation_status::validated_vector(artifact_root);
+    }
+
     fn publish(&self, status: &KnowledgePreparationStatus) {
         let status = status
             .clone()
-            .with_freshness_required(self.freshness_required);
+            .with_freshness_required(self.freshness_required)
+            .with_validated_vector(self.validated_vector.clone());
         if let Err(error) = write_preparation_status(&self.data_root, &status) {
             tracing::warn!(%error, "could not publish knowledge preparation status");
         }
@@ -399,7 +408,10 @@ fn initialize_managed_repository_preparation(args: &[String]) -> anyhow::Result<
         0,
         config.knowledge.repositories.enabled_len(),
     )
-    .with_freshness_required(!StartupPolicy::from_args(args).allow_offline_restart);
+    .with_freshness_required(!StartupPolicy::from_args(args).allow_offline_restart)
+    .with_validated_vector(
+        read_preparation_status(data_root.as_path()).and_then(|status| status.validated_vector),
+    );
     write_preparation_status(data_root.as_path(), &status)
 }
 
@@ -530,7 +542,9 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
     let snapshot_store =
         KnowledgeSnapshotStore::new(layout.clone()).with_semantic_config(&config.knowledge)?;
     let current_snapshot_ready = snapshot_store.default_manifest().is_ok_and(|manifest| {
-        manifest.uses_current_components()
+        snapshot_store
+            .default_configuration_is_current(&config.knowledge.repositories)
+            .unwrap_or(false)
             && snapshot_store.status(&manifest.id) == SnapshotState::Ready
     });
     let policy = policy_for_available_data(policy, current_snapshot_ready);
@@ -589,10 +603,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
 
     reporter.planning_history();
     let progress = reporter.snapshot_progress_reporter();
-    let repositories = config
-        .knowledge
-        .repositories
-        .excluding(&unavailable_optional);
+    let repositories = &config.knowledge.repositories;
     let prewarm = config
         .knowledge
         .prewarm
@@ -607,7 +618,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
         .collect::<Vec<_>>();
     let prepared = snapshot_store
         .with_progress_reporter(progress)
-        .prepare_configured(&repositories, &prewarm)
+        .prepare_configured(repositories, &prewarm)
         .await?;
     if prepared.default.disposition == SnapshotDisposition::Stale {
         if !policy.allow_offline_restart {
@@ -633,6 +644,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
             "prepared historical knowledge snapshot"
         );
     }
+    reporter.validated_vector(&prepared.default.artifact_path);
     reporter.finish(terminal_preparation_state(
         used_stale_sources,
         prepared.default.disposition,

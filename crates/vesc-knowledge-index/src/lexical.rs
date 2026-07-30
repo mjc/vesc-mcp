@@ -27,7 +27,7 @@ use crate::corpus::{
 };
 use crate::{Category, RepositoryId, Revision};
 
-pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-blob-locators-v11";
+pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-object-locators-v12";
 const LEXICAL_DESCRIPTOR_SCHEMA: u16 = 7;
 const INDEX_WRITER_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;
@@ -195,7 +195,7 @@ struct LexicalFields {
     content_digest: Field,
     char_count: Field,
     byte_count: Field,
-    git_blob_id: Field,
+    git_object_id: Field,
     history_content_key: Field,
     repository_revision: Field,
 }
@@ -209,13 +209,13 @@ pub struct HistoryContentLookup {
 #[derive(Default)]
 pub(crate) struct EmbeddingTextHydrator {
     repositories: BTreeMap<RepositoryId, gix::Repository>,
-    cached_blob: Option<CachedEmbeddingBlob>,
+    cached_object: Option<CachedEmbeddingGitObject>,
     git_blob_loads: usize,
 }
 
-struct CachedEmbeddingBlob {
+struct CachedEmbeddingGitObject {
     repository: RepositoryId,
-    blob: gix::ObjectId,
+    object: gix::ObjectId,
     content: String,
 }
 
@@ -269,7 +269,7 @@ impl RepositoryFilter {
         if locator.repository == self.requested {
             return true;
         }
-        if locator.source_kind != SourceKind::GitBlob
+        if !locator.source_kind.is_git()
             || !self
                 .candidates
                 .iter()
@@ -346,20 +346,25 @@ impl EmbeddingTextHydrator {
         self.git_blob_loads
     }
 
-    fn git_blob_content<'content>(
+    fn git_object_content<'content>(
         &'content mut self,
         index: &LexicalIndex,
         locator: &ChunkLocator,
     ) -> Result<&'content str, LexicalError> {
         let repository =
             index.git_repository(&locator.repository, locator, &mut self.repositories)?;
-        let blob = locator
-            .git_blob_id
-            .map_or_else(|| locator.resolve_git_blob(repository), Ok)?;
-        let cached = self
-            .cached_blob
-            .as_ref()
-            .is_some_and(|cached| cached.repository == locator.repository && cached.blob == blob);
+        let object = match locator.source_kind {
+            SourceKind::GitBlob => locator
+                .git_object_id
+                .map_or_else(|| locator.resolve_git_blob(repository), Ok)?,
+            SourceKind::GitCommit => locator.git_object_id.ok_or_else(|| {
+                locator.git_error("commit locator has no persisted Git object ID")
+            })?,
+            _ => return Err(locator.git_error("source is not backed by Git")),
+        };
+        let cached = self.cached_object.as_ref().is_some_and(|cached| {
+            cached.repository == locator.repository && cached.object == object
+        });
         if !cached {
             let max_file_bytes = index
                 .git_sources
@@ -368,34 +373,48 @@ impl EmbeddingTextHydrator {
                 .ok_or_else(|| {
                     locator.git_error("managed Git repository has no persisted per-file limit")
                 })?;
-            let size = repository
-                .find_header(blob)
-                .map_err(|error| locator.git_error(format!("read blob header: {error}")))?
-                .size();
-            if size > max_file_bytes {
-                return Err(
-                    locator.git_error("Git blob exceeds the configured per-file byte limit")
-                );
-            }
-            let object = repository
-                .find_object(blob)
-                .map_err(|error| locator.git_error(format!("read blob: {error}")))?;
-            if object.data.contains(&0) {
-                return Err(locator.git_error("blob contains binary data"));
-            }
-            let content = crate::corpus::ingest::normalize_text_ref(&object.data)
-                .map_err(|error| locator.git_error(format!("decode blob as UTF-8: {error}")))?;
-            self.cached_blob = Some(CachedEmbeddingBlob {
+            let content = match locator.source_kind {
+                SourceKind::GitBlob => {
+                    let size = repository
+                        .find_header(object)
+                        .map_err(|error| locator.git_error(format!("read blob header: {error}")))?
+                        .size();
+                    if size > max_file_bytes {
+                        return Err(locator
+                            .git_error("Git blob exceeds the configured per-file byte limit"));
+                    }
+                    let object = repository
+                        .find_object(object)
+                        .map_err(|error| locator.git_error(format!("read blob: {error}")))?;
+                    if object.data.contains(&0) {
+                        return Err(locator.git_error("blob contains binary data"));
+                    }
+                    crate::corpus::ingest::normalize_text_ref(&object.data).map_err(|error| {
+                        locator.git_error(format!("decode blob as UTF-8: {error}"))
+                    })?
+                }
+                SourceKind::GitCommit => {
+                    let commit = repository.find_commit(object).map_err(|error| {
+                        locator.git_error(format!("read commit message: {error}"))
+                    })?;
+                    crate::corpus::git::commit_message_content(&commit, max_file_bytes)
+                        .ok_or_else(|| locator.git_error("commit message is empty or oversized"))?
+                }
+                _ => unreachable!("Git source kind checked above"),
+            };
+            self.cached_object = Some(CachedEmbeddingGitObject {
                 repository: locator.repository.clone(),
-                blob,
+                object,
                 content,
             });
-            self.git_blob_loads = self.git_blob_loads.saturating_add(1);
+            if locator.source_kind == SourceKind::GitBlob {
+                self.git_blob_loads = self.git_blob_loads.saturating_add(1);
+            }
         }
         Ok(&self
-            .cached_blob
+            .cached_object
             .as_ref()
-            .expect("requested Git blob was cached above")
+            .expect("requested Git object was cached above")
             .content)
     }
 
@@ -404,7 +423,7 @@ impl EmbeddingTextHydrator {
         index: &LexicalIndex,
         locator: &ChunkLocator,
     ) -> Result<String, LexicalError> {
-        let content = self.git_blob_content(index, locator)?;
+        let content = self.git_object_content(index, locator)?;
         let passage = locator.passage(content)?;
         Ok(crate::semantic::embedding_text_from_metadata(
             &locator.title,
@@ -420,7 +439,7 @@ impl EmbeddingTextHydrator {
         index: &LexicalIndex,
         locator: ChunkLocator,
     ) -> Result<Chunk, LexicalError> {
-        let content = self.git_blob_content(index, &locator)?;
+        let content = self.git_object_content(index, &locator)?;
         locator.hydrate(content)
     }
 }
@@ -441,20 +460,20 @@ impl HistoryContentLookup {
                         doc_id,
                     })
                     .map_err(LexicalError::Search)?;
-                if parse_source_kind(required_text(
+                let source_kind = parse_source_kind(required_text(
                     &document,
                     self.fields.source_kind,
                     "source_kind",
-                )?)? != SourceKind::GitBlob
-                {
+                )?)?;
+                if !matches!(source_kind, SourceKind::GitBlob | SourceKind::GitCommit) {
                     continue;
                 }
                 let blob = document
-                    .get_first(self.fields.git_blob_id)
+                    .get_first(self.fields.git_object_id)
                     .and_then(|value| value.as_bytes())
                     .map(gix::ObjectId::try_from)
                     .transpose()
-                    .map_err(|_| invalid_field("git_blob_id"))?;
+                    .map_err(|_| invalid_field("git_object_id"))?;
                 visit(CachedGitHistoryChunk {
                     document_id: required_text(&document, self.fields.document_id, "document_id")?,
                     repository: required_text(&document, self.fields.repository, "repository")?,
@@ -469,6 +488,7 @@ impl HistoryContentLookup {
                     has_previous: optional_text(&document, self.fields.previous_chunk).is_some(),
                     has_next: optional_text(&document, self.fields.next_chunk).is_some(),
                     blob,
+                    source_kind,
                 });
             }
         }
@@ -679,6 +699,9 @@ impl LexicalIndex {
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
+        for document_id in plan.removed_document_ids() {
+            writer.delete_term(Term::from_field_text(fields.document_id, document_id));
+        }
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
             #[cfg(feature = "coz-profile")]
@@ -1228,6 +1251,41 @@ impl LexicalIndex {
         {
             return Err(error);
         }
+        if filters.source_kind.is_none() {
+            let non_commit_query = BooleanQuery::new(vec![
+                (Occur::Must, Box::new(query.clone()) as Box<dyn Query>),
+                (
+                    Occur::MustNot,
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(
+                            self.fields.source_kind,
+                            source_kind_label(SourceKind::GitCommit),
+                        ),
+                        IndexRecordOption::Basic,
+                    )),
+                ),
+            ]);
+            let non_commit_docs = collect_top_docs(
+                &searcher,
+                &non_commit_query,
+                repository_filter.as_ref(),
+                candidate_limit,
+            )?;
+            if let Some(error) = repository_filter
+                .as_ref()
+                .and_then(RepositoryFilter::take_error)
+            {
+                return Err(error);
+            }
+            for (score, address) in non_commit_docs {
+                if !docs
+                    .iter()
+                    .any(|(_, existing_address)| *existing_address == address)
+                {
+                    docs.push((score, address));
+                }
+            }
+        }
         if raw_term_count > 2 {
             let full_coverage = BooleanQuery::new(
                 raw_terms
@@ -1274,7 +1332,7 @@ impl LexicalIndex {
             let document = searcher
                 .doc::<TantivyDocument>(address)
                 .map_err(LexicalError::Search)?;
-            let (chunk, exact_identifier) = if self.chunks.is_empty() {
+            let (chunk, exact_identifier, source_kind) = if self.chunks.is_empty() {
                 let locator = ChunkLocator::from_document(self.fields, &document)?;
                 if !Self::locator_matches_filters(&locator, filters, repository_filter.as_ref()) {
                     continue;
@@ -1283,7 +1341,11 @@ impl LexicalIndex {
                     .identifiers
                     .iter()
                     .any(|identifier| identifier.eq_ignore_ascii_case(&exact));
-                (locator.retrieval_metadata(), exact_identifier)
+                (
+                    locator.retrieval_metadata(),
+                    exact_identifier,
+                    locator.source_kind,
+                )
             } else {
                 let Some(id) = document
                     .get_first(self.fields.chunk_id)
@@ -1302,7 +1364,11 @@ impl LexicalIndex {
                     .identifiers
                     .iter()
                     .any(|identifier| identifier.eq_ignore_ascii_case(&exact));
-                (chunk.retrieval_metadata(), exact_identifier)
+                (
+                    chunk.retrieval_metadata(),
+                    exact_identifier,
+                    chunk.source_kind,
+                )
             };
             let term_coverage = indexed_term_coverage(&searcher, address, self.fields, &raw_terms)?;
             candidates.push((
@@ -1312,13 +1378,14 @@ impl LexicalIndex {
                     exact_identifier,
                 },
                 term_coverage,
+                source_kind == SourceKind::GitCommit,
             ));
         }
         sort_candidates(&mut candidates);
         candidates.truncate(limit.max(1));
         Ok(candidates
             .into_iter()
-            .map(|(candidate, _term_coverage)| candidate)
+            .map(|(candidate, _term_coverage, _is_commit)| candidate)
             .collect())
     }
 
@@ -1476,7 +1543,9 @@ impl LexicalIndex {
                     })?;
                     crate::semantic::embedding_text(&chunk)
                 }
-                SourceKind::GitBlob => hydrator.git_embedding_text(self, &locator)?,
+                SourceKind::GitBlob | SourceKind::GitCommit => {
+                    hydrator.git_embedding_text(self, &locator)?
+                }
                 source_kind => {
                     return Err(LexicalError::Artifact(format!(
                         "persisted {source_kind:?} chunk {id} has no canonical Git source"
@@ -1563,7 +1632,7 @@ impl LexicalIndex {
                     locator.chunk_id
                 ))
             }),
-            SourceKind::GitBlob => hydrator.git_chunk(self, locator),
+            SourceKind::GitBlob | SourceKind::GitCommit => hydrator.git_chunk(self, locator),
             source_kind => Err(LexicalError::Artifact(format!(
                 "persisted {source_kind:?} chunk {} has no canonical Git source",
                 locator.chunk_id
@@ -1714,14 +1783,14 @@ struct ChunkLocator {
     previous_chunk: Option<ChunkId>,
     next_chunk: Option<ChunkId>,
     content_digest: ContentDigest,
-    git_blob_id: Option<gix::ObjectId>,
+    git_object_id: Option<gix::ObjectId>,
 }
 
 impl ChunkLocator {
     fn compare_hydration_order(left: &Self, right: &Self) -> std::cmp::Ordering {
         left.repository
             .cmp(&right.repository)
-            .then_with(|| left.git_blob_id.cmp(&right.git_blob_id))
+            .then_with(|| left.git_object_id.cmp(&right.git_object_id))
             .then_with(|| left.chunk_id.cmp(&right.chunk_id))
     }
 
@@ -1831,12 +1900,12 @@ impl ChunkLocator {
                 "content_digest",
             )?)
             .map_err(|_| invalid_field("content_digest"))?,
-            git_blob_id: document
-                .get_first(fields.git_blob_id)
+            git_object_id: document
+                .get_first(fields.git_object_id)
                 .and_then(|value| value.as_bytes())
                 .map(gix::ObjectId::try_from)
                 .transpose()
-                .map_err(|_| invalid_field("git_blob_id"))?,
+                .map_err(|_| invalid_field("git_object_id"))?,
         })
     }
 
@@ -1994,6 +2063,7 @@ fn parse_source_kind(value: &str) -> Result<SourceKind, LexicalError> {
         "fixture" => Ok(SourceKind::Fixture),
         "vendor_file" => Ok(SourceKind::VendorFile),
         "git_blob" => Ok(SourceKind::GitBlob),
+        "git_commit" => Ok(SourceKind::GitCommit),
         "model_feedback" => Ok(SourceKind::ModelFeedback),
         _ => Err(invalid_field("source_kind")),
     }
@@ -2054,26 +2124,29 @@ fn collect_top_docs(
         .map_err(LexicalError::Search)
 }
 
-fn sort_candidates(candidates: &mut [(LexicalCandidate, usize)]) {
-    candidates.sort_by(|(left, left_coverage), (right, right_coverage)| {
-        right
-            .exact_identifier
-            .cmp(&left.exact_identifier)
-            .then_with(|| {
-                if left.exact_identifier && right.exact_identifier {
-                    right
-                        .chunk
-                        .registered_id
-                        .is_some()
-                        .cmp(&left.chunk.registered_id.is_some())
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .then_with(|| right_coverage.cmp(left_coverage))
-            .then_with(|| right.score.total_cmp(&left.score))
-            .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
-    });
+fn sort_candidates(candidates: &mut [(LexicalCandidate, usize, bool)]) {
+    candidates.sort_by(
+        |(left, left_coverage, left_is_commit), (right, right_coverage, right_is_commit)| {
+            right
+                .exact_identifier
+                .cmp(&left.exact_identifier)
+                .then_with(|| {
+                    if left.exact_identifier && right.exact_identifier {
+                        right
+                            .chunk
+                            .registered_id
+                            .is_some()
+                            .cmp(&left.chunk.registered_id.is_some())
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| right_coverage.cmp(left_coverage))
+                .then_with(|| left_is_commit.cmp(right_is_commit))
+                .then_with(|| right.score.total_cmp(&left.score))
+                .then_with(|| left.chunk.chunk_id.cmp(&right.chunk.chunk_id))
+        },
+    );
 }
 
 fn indexed_term_coverage(
@@ -2157,7 +2230,7 @@ fn schema() -> (Schema, LexicalFields) {
     let content_digest = builder.add_text_field("content_digest", STORED);
     let char_count = builder.add_u64_field("char_count", STORED);
     let byte_count = builder.add_u64_field("byte_count", STORED);
-    let git_blob_id = builder.add_bytes_field("git_blob_id", STORED);
+    let git_object_id = builder.add_bytes_field("git_object_id", STORED);
     let history_content_key = builder.add_text_field("history_content_key", STRING);
     let repository_revision = builder.add_bytes_field("repository_revision", tantivy::schema::FAST);
     let schema = builder.build();
@@ -2192,7 +2265,7 @@ fn schema() -> (Schema, LexicalFields) {
             content_digest,
             char_count,
             byte_count,
-            git_blob_id,
+            git_object_id,
             history_content_key,
             repository_revision,
         },
@@ -2209,10 +2282,10 @@ fn add_git_history_chunk(
     writer: &IndexWriter,
     fields: LexicalFields,
     chunk: &Chunk,
-    blob: gix::ObjectId,
+    object: gix::ObjectId,
 ) {
     writer
-        .add_document(tantivy_document(fields, chunk, Some(blob)))
+        .add_document(tantivy_document(fields, chunk, Some(object)))
         .expect("in-memory lexical document is valid");
 }
 
@@ -2220,7 +2293,7 @@ fn add_git_history_chunk(
 fn tantivy_document(
     fields: LexicalFields,
     chunk: &Chunk,
-    git_blob_id: Option<gix::ObjectId>,
+    git_object_id: Option<gix::ObjectId>,
 ) -> TantivyDocument {
     let history_content_key = crate::corpus::history_content_key_for_chunk(chunk);
     let content_digest = chunk.content_digest.encoded();
@@ -2243,8 +2316,8 @@ fn tantivy_document(
         .saturating_add(usize::from(chunk.registered_id.is_some()))
         .saturating_add(usize::from(chunk.previous_chunk.is_some()))
         .saturating_add(usize::from(chunk.next_chunk.is_some()))
-        .saturating_add(usize::from(git_blob_id.is_some()))
-        .saturating_add(usize::from(chunk.source_kind == SourceKind::GitBlob))
+        .saturating_add(usize::from(git_object_id.is_some()))
+        .saturating_add(usize::from(chunk.source_kind.is_git()))
         .saturating_add(1);
     let heading_bytes = chunk.heading_path.iter().map(String::len).sum::<usize>();
     let mut body = String::with_capacity(
@@ -2309,7 +2382,7 @@ fn tantivy_document(
                 .map_or(0, |_| ChunkId::ENCODED_LEN),
         )
         .saturating_add(content_digest.as_str().len())
-        .saturating_add(git_blob_id.as_ref().map_or(0, |id| id.as_bytes().len()))
+        .saturating_add(git_object_id.as_ref().map_or(0, |id| id.as_bytes().len()))
         .saturating_add(
             history_content_key_encoded
                 .as_ref()
@@ -2379,8 +2452,8 @@ fn tantivy_document(
     document.add_text(fields.content_digest, content_digest.as_str());
     document.add_u64(fields.char_count, u64::from(chunk.char_count));
     document.add_u64(fields.byte_count, chunk.byte_count);
-    if let Some(git_blob_id) = git_blob_id {
-        document.add_bytes(fields.git_blob_id, git_blob_id.as_bytes());
+    if let Some(git_object_id) = git_object_id {
+        document.add_bytes(fields.git_object_id, git_object_id.as_bytes());
     }
     if let Some(history_content_key) = history_content_key_encoded {
         document.add_text(fields.history_content_key, history_content_key.as_str());
@@ -2463,7 +2536,7 @@ fn repository_revision_key(chunk: &Chunk) -> Vec<u8> {
             .saturating_add(chunk.revision.as_str().len())
             .saturating_add(2),
     );
-    key.push(u8::from(chunk.source_kind == SourceKind::GitBlob));
+    key.push(u8::from(chunk.source_kind.is_git()));
     key.extend_from_slice(chunk.repository.as_str().as_bytes());
     key.push(0);
     key.extend_from_slice(chunk.revision.as_str().as_bytes());
@@ -2539,13 +2612,13 @@ fn write_unique_terms(
     field: Field,
     writer: &mut impl Write,
 ) -> Result<usize, LexicalError> {
-    let readers = searcher
+    let indexes = searcher
         .segment_readers()
         .iter()
         .map(|reader| reader.inverted_index(field))
         .collect::<Result<Vec<_>, _>>()
         .map_err(LexicalError::Search)?;
-    let streams = readers
+    let streams = indexes
         .iter()
         .map(|reader| reader.terms().stream())
         .collect::<Result<Vec<_>, _>>()
@@ -2553,6 +2626,26 @@ fn write_unique_terms(
     let mut terms = TermMerger::new(streams);
     let mut count = 0_usize;
     while terms.advance() {
+        let mut live = false;
+        for (segment_ord, term_info) in terms.current_segment_ords_and_term_infos() {
+            let reader = &searcher.segment_readers()[segment_ord];
+            let mut postings = indexes[segment_ord]
+                .read_postings_from_terminfo(&term_info, IndexRecordOption::Basic)
+                .map_err(|error| LexicalError::Io(error.to_string()))?;
+            while postings.doc() != TERMINATED {
+                if !reader.is_deleted(postings.doc()) {
+                    live = true;
+                    break;
+                }
+                postings.advance();
+            }
+            if live {
+                break;
+            }
+        }
+        if !live {
+            continue;
+        }
         writer
             .write_all(terms.key())
             .and_then(|()| writer.write_all(&[0]))
@@ -2680,6 +2773,7 @@ const fn source_kind_label(source_kind: SourceKind) -> &'static str {
         SourceKind::Fixture => "fixture",
         SourceKind::VendorFile => "vendor_file",
         SourceKind::GitBlob => "git_blob",
+        SourceKind::GitCommit => "git_commit",
         SourceKind::ModelFeedback => "model_feedback",
     }
 }

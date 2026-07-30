@@ -13,6 +13,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tantivy::directory::{Directory, MmapDirectory, OwnedBytes};
 
 use crate::corpus::{Chunk, ChunkId, ContentDigest};
 
@@ -2649,6 +2650,70 @@ pub struct VectorArtifact {
     pub values: Vec<f32>,
 }
 
+/// Read-only vector artifact backed directly by its memory-mapped file.
+#[derive(Debug)]
+pub struct FileBackedVectorArtifact {
+    bytes: OwnedBytes,
+    pub schema: u16,
+    pub model_id: String,
+    pub model_revision: String,
+    pub dimension: usize,
+    pub normalized: bool,
+    pub corpus_digest: ContentDigest,
+    count: usize,
+    rows_offset: usize,
+    row_bytes: usize,
+}
+
+/// Common exact-search surface for materialized and file-backed artifacts.
+pub trait VectorSearch {
+    /// Number of searchable vector rows.
+    fn len(&self) -> usize;
+
+    /// Returns whether the artifact contains no vector rows.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Vector dimension.
+    fn dimension(&self) -> usize;
+
+    /// Search normalized vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the query or artifact is invalid.
+    fn search(&self, query: &[f32], limit: usize) -> Result<Vec<SemanticHit>, EmbeddingError>;
+}
+
+impl VectorSearch for VectorArtifact {
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn search(&self, query: &[f32], limit: usize) -> Result<Vec<SemanticHit>, EmbeddingError> {
+        Self::search(self, query, limit)
+    }
+}
+
+impl VectorSearch for FileBackedVectorArtifact {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn search(&self, query: &[f32], limit: usize) -> Result<Vec<SemanticHit>, EmbeddingError> {
+        Self::search(self, query, limit)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ReconciledVectorArtifact<'a> {
     pub model_id: &'a str,
@@ -3937,11 +4002,256 @@ impl VectorArtifact {
     }
 }
 
+impl FileBackedVectorArtifact {
+    /// Opens and fully checks a vector artifact without materializing its rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when mapping, checksum verification, or row
+    /// validation fails.
+    pub fn open_artifact(path: &Path) -> Result<Self, EmbeddingError> {
+        let artifact = Self::map(path)?;
+        artifact.verify_checksum()?;
+        artifact.validate_rows()?;
+        Ok(artifact)
+    }
+
+    /// Opens an immutable, lifecycle-validated artifact for serving.
+    ///
+    /// The generation lifecycle checks the complete artifact checksum before
+    /// activation. Serving therefore only needs to map and validate the fixed
+    /// header and extent rather than rereading every vector at startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the file cannot be mapped or its fixed
+    /// layout is invalid.
+    pub fn open_search_artifact(path: &Path) -> Result<Self, EmbeddingError> {
+        Self::map(path)
+    }
+
+    fn map(path: &Path) -> Result<Self, EmbeddingError> {
+        let parent = path.parent().ok_or(EmbeddingError::InvalidHeader)?;
+        let file_name = path.file_name().ok_or(EmbeddingError::InvalidHeader)?;
+        let directory = MmapDirectory::open(parent).map_err(|error| {
+            EmbeddingError::Io(format!("open vector artifact directory: {error}"))
+        })?;
+        let bytes = directory
+            .open_read(Path::new(file_name))
+            .map_err(|error| EmbeddingError::Io(format!("open vector artifact: {error}")))?
+            .read_bytes()
+            .map_err(io_error)?;
+        if bytes.len() > MAX_ARTIFACT_BYTES {
+            return Err(EmbeddingError::TooLarge);
+        }
+        if bytes.len() < MAGIC.len() + CHECKSUM_LEN {
+            return Err(EmbeddingError::Truncated);
+        }
+
+        let body_length = bytes.len() - CHECKSUM_LEN;
+        let mut reader =
+            BinaryReader::new(std::io::Cursor::new(&bytes[..body_length]), body_length);
+        let header = read_vector_header(&mut reader)?;
+        let rows_offset = body_length - reader.remaining();
+        let vector_bytes = header
+            .dimension
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or(EmbeddingError::TooLarge)?;
+        let row_bytes = 2_usize
+            .checked_add(ChunkId::ENCODED_LEN)
+            .and_then(|length| length.checked_add(vector_bytes))
+            .ok_or(EmbeddingError::TooLarge)?;
+        let expected_body_length = header
+            .count
+            .checked_mul(row_bytes)
+            .and_then(|rows| rows_offset.checked_add(rows))
+            .ok_or(EmbeddingError::TooLarge)?;
+        if expected_body_length != body_length {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+
+        Ok(Self {
+            bytes,
+            schema: header.schema,
+            model_id: header.model_id,
+            model_revision: header.model_revision,
+            dimension: header.dimension,
+            normalized: header.normalized,
+            corpus_digest: header.corpus_digest,
+            count: header.count,
+            rows_offset,
+            row_bytes,
+        })
+    }
+
+    fn verify_checksum(&self) -> Result<(), EmbeddingError> {
+        let checksum_start = self.bytes.len() - CHECKSUM_LEN;
+        let actual = Sha256::digest(&self.bytes[..checksum_start]);
+        let expected = &self.bytes[checksum_start..];
+        if actual.as_slice() != expected {
+            return Err(EmbeddingError::ChecksumMismatch);
+        }
+        Ok(())
+    }
+
+    fn row(&self, row: usize) -> &[u8] {
+        let start = self.rows_offset + row * self.row_bytes;
+        &self.bytes[start..start + self.row_bytes]
+    }
+
+    fn row_id_bytes(&self, row: usize) -> Result<&[u8], EmbeddingError> {
+        let row = self.row(row);
+        let length = usize::from(u16::from_le_bytes(
+            row[..2].try_into().map_err(|_| EmbeddingError::Truncated)?,
+        ));
+        if length != ChunkId::ENCODED_LEN {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        Ok(&row[2..2 + length])
+    }
+
+    fn row_id(&self, row: usize) -> Result<ChunkId, EmbeddingError> {
+        let encoded = self.row_id_bytes(row)?;
+        let encoded = std::str::from_utf8(encoded).map_err(|_| EmbeddingError::InvalidHeader)?;
+        ChunkId::try_from(encoded).map_err(|_| EmbeddingError::InvalidHeader)
+    }
+
+    fn row_vector_bytes(&self, row: usize) -> Result<&[u8], EmbeddingError> {
+        self.row_id_bytes(row)?;
+        Ok(&self.row(row)[2 + ChunkId::ENCODED_LEN..])
+    }
+
+    fn validate_rows(&self) -> Result<(), EmbeddingError> {
+        let mut previous_id: Option<&[u8]> = None;
+        for row in 0..self.count {
+            let id = self.row_id_bytes(row)?;
+            if previous_id.is_some_and(|previous| previous >= id) {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            previous_id = Some(id);
+            validate_mapped_vector(self.row_vector_bytes(row)?, self.normalized)?;
+        }
+        Ok(())
+    }
+
+    /// Number of vector rows in the artifact.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Returns whether the artifact contains no vector rows.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Searches normalized vectors directly from the mapped artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the query or a mapped row is invalid.
+    pub fn search(&self, query: &[f32], limit: usize) -> Result<Vec<SemanticHit>, EmbeddingError> {
+        if query.len() != self.dimension {
+            return Err(EmbeddingError::DimensionMismatch {
+                expected: self.dimension,
+                actual: query.len(),
+            });
+        }
+        let mut query = query.to_vec();
+        normalize(&mut query)?;
+        let limit = limit.max(1).min(self.count);
+        let mut winners = Vec::with_capacity(limit);
+        for row in 0..self.count {
+            let similarity = dot_mapped(self.row_vector_bytes(row)?, &query)?;
+            if winners.len() < limit {
+                winners.push((row, similarity));
+                continue;
+            }
+            let Some((worst, _)) = winners
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| compare_mapped_rows(self, left, right))
+            else {
+                continue;
+            };
+            let candidate = (row, similarity);
+            if compare_mapped_rows(self, &candidate, &winners[worst]) == Ordering::Less {
+                winners[worst] = candidate;
+            }
+        }
+        winners.sort_by(|left, right| compare_mapped_rows(self, left, right));
+        winners
+            .into_iter()
+            .map(|(row, similarity)| {
+                Ok(SemanticHit {
+                    chunk_id: self.row_id(row)?,
+                    similarity,
+                })
+            })
+            .collect()
+    }
+}
+
 fn dot(left: &[f32], right: &[f32]) -> f32 {
     left.iter()
         .zip(right)
         .map(|(left, right)| left * right)
         .sum()
+}
+
+fn dot_mapped(bytes: &[u8], right: &[f32]) -> Result<f32, EmbeddingError> {
+    if bytes.len() != std::mem::size_of_val(right) {
+        return Err(EmbeddingError::InvalidHeader);
+    }
+    bytes
+        .chunks_exact(4)
+        .zip(right)
+        .try_fold(0.0, |sum, (bytes, right)| {
+            let value =
+                f32::from_le_bytes(bytes.try_into().map_err(|_| EmbeddingError::Truncated)?);
+            if !value.is_finite() {
+                return Err(EmbeddingError::NonFinite);
+            }
+            Ok(sum + value * right)
+        })
+}
+
+fn validate_mapped_vector(bytes: &[u8], normalized: bool) -> Result<(), EmbeddingError> {
+    let norm_squared = bytes.chunks_exact(4).try_fold(0.0, |sum, bytes| {
+        let value = f32::from_le_bytes(bytes.try_into().map_err(|_| EmbeddingError::Truncated)?);
+        if !value.is_finite() {
+            return Err(EmbeddingError::NonFinite);
+        }
+        Ok(value.mul_add(value, sum))
+    })?;
+    let norm = norm_squared.sqrt();
+    if norm == 0.0 {
+        return Err(EmbeddingError::ZeroNorm);
+    }
+    if normalized && (norm - 1.0).abs() > 0.01 {
+        return Err(EmbeddingError::Provider(
+            "provider declared normalized output but returned a non-unit vector".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn compare_mapped_rows(
+    artifact: &FileBackedVectorArtifact,
+    left: &(usize, f32),
+    right: &(usize, f32),
+) -> Ordering {
+    right.1.total_cmp(&left.1).then_with(|| {
+        artifact
+            .row_id_bytes(left.0)
+            .expect("candidate row was validated while scoring")
+            .cmp(
+                artifact
+                    .row_id_bytes(right.0)
+                    .expect("candidate row was validated while scoring"),
+            )
+    })
 }
 
 fn compare_ranked_rows(
@@ -4063,6 +4373,10 @@ impl<R: Read> BinaryReader<R> {
 
     const fn is_empty(&self) -> bool {
         self.remaining == 0
+    }
+
+    const fn remaining(&self) -> usize {
+        self.remaining
     }
 
     fn into_inner(self) -> R {
@@ -6041,5 +6355,57 @@ mod tests {
         let query = provider.embed_query("alpha").expect("query");
         let hits = artifact.search(&query, 2).expect("search");
         assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn file_backed_search_matches_materialized_artifact() {
+        let mut provider = FakeEmbeddingProvider::new(4);
+        let artifact = VectorArtifact::from_provider(
+            &mut provider,
+            &chunks(),
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("artifact");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("vectors.bin");
+        artifact.write_artifact(&path).expect("write artifact");
+        let query = provider.embed_query("alpha").expect("query");
+
+        let mapped = FileBackedVectorArtifact::open_artifact(&path).expect("mapped artifact");
+
+        assert_eq!(
+            mapped.search(&query, 2).expect("mapped search"),
+            artifact.search(&query, 2).expect("materialized search")
+        );
+    }
+
+    #[test]
+    fn file_backed_search_open_rejects_a_truncated_extent() {
+        let mut provider = FakeEmbeddingProvider::new(4);
+        let artifact = VectorArtifact::from_provider(
+            &mut provider,
+            &chunks(),
+            "fake",
+            "test",
+            ContentDigest::of(b"corpus"),
+        )
+        .expect("artifact");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("vectors.bin");
+        artifact.write_artifact(&path).expect("write artifact");
+        let length = fs::metadata(&path).expect("artifact metadata").len();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open artifact")
+            .set_len(length - 1)
+            .expect("truncate artifact");
+
+        assert!(matches!(
+            FileBackedVectorArtifact::open_search_artifact(&path),
+            Err(EmbeddingError::InvalidHeader)
+        ));
     }
 }

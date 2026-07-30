@@ -336,6 +336,12 @@ struct GitHistoryLexicalStageRefresh {
     ingested_blobs: usize,
     reused_blobs: usize,
     #[serde(default)]
+    ingested_commit_messages: usize,
+    #[serde(default)]
+    reused_commit_messages: usize,
+    #[serde(default)]
+    rejected_commit_messages: usize,
+    #[serde(default)]
     budget_rejections: usize,
     reused_contents: usize,
     candidate_chunks: usize,
@@ -353,6 +359,9 @@ impl GitHistoryLexicalStageRefresh {
             ingested_commits: refresh.ingested_commits,
             ingested_blobs: refresh.ingested_blobs,
             reused_blobs: refresh.reused_blobs,
+            ingested_commit_messages: refresh.ingested_commit_messages,
+            reused_commit_messages: refresh.reused_commit_messages,
+            rejected_commit_messages: refresh.rejected_commit_messages,
             budget_rejections: refresh.budget_rejections,
             reused_contents: refresh.reused_contents,
             candidate_chunks: refresh.candidate_chunks,
@@ -387,6 +396,9 @@ impl GitHistoryLexicalStageRefresh {
             ingested_commits: self.ingested_commits,
             ingested_blobs: self.ingested_blobs,
             reused_blobs: self.reused_blobs,
+            ingested_commit_messages: self.ingested_commit_messages,
+            reused_commit_messages: self.reused_commit_messages,
+            rejected_commit_messages: self.rejected_commit_messages,
             budget_rejections: self.budget_rejections,
             reused_contents: self.reused_contents,
             candidate_chunks: self.candidate_chunks,
@@ -1566,7 +1578,7 @@ fn git_history_lexical_component_versions() -> BTreeMap<String, String> {
             "embedded-catalog".into(),
             ContentDigest::of(include_bytes!("../generated/knowledge_index.json")).to_string(),
         ),
-        ("git-history-corpus".into(), "1".into()),
+        ("git-history-corpus".into(), "2".into()),
         (
             "git-policy".into(),
             crate::corpus::git::GIT_CORPUS_POLICY_VERSION.into(),
