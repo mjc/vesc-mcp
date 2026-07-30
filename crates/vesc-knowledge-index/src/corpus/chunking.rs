@@ -200,6 +200,9 @@ pub(crate) fn chunk_document_drafts(
         return chunk_markdown_drafts(document, config);
     }
     validate_config(config)?;
+    if document.content.trim().is_empty() {
+        return finish_drafts(document, Vec::new());
+    }
     let headings = document
         .path
         .split_once('#')
@@ -522,6 +525,26 @@ mod tests {
 
         assert!(history_chunk.resource_uri.is_none());
         assert!(public_chunk.resource_uri.is_some());
+    }
+
+    #[test]
+    fn whitespace_only_plain_text_produces_no_chunks() {
+        let document = NormalizedDocument::new(
+            "Empty source file",
+            SourceKind::GitBlob,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("revision").expect("revision"),
+            "src/empty.c",
+            "text/x-c",
+            " \n\t",
+        )
+        .expect("document");
+
+        assert!(
+            chunk_document(&document, ChunkingConfig::default())
+                .expect("empty document is skipped")
+                .is_empty()
+        );
     }
 
     #[test]
