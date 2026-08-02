@@ -887,6 +887,7 @@ impl CorpusManifest {
         mut chunks: Vec<ChunkId>,
     ) -> Self {
         documents.sort_unstable();
+        documents.dedup();
         chunks.sort_unstable();
         let mut digest_input = Sha256::new();
         for id in &documents {

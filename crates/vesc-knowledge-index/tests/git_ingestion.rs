@@ -9,7 +9,7 @@ use vesc_knowledge_index::corpus::git::{
 };
 use vesc_knowledge_index::{
     Chunk, LexicalFilters, LexicalIndex, LicenseStatus, RepositoryId, Revision, TrustTier,
-    build_git_artifacts,
+    build_git_artifacts, embedded_entries,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -615,6 +615,32 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
             .path,
         "imu/imu.c"
     );
+}
+
+#[test]
+fn git_artifact_counts_a_multi_chunk_document_once() {
+    let content = format!(
+        "# First\n\n{}\n\n# Second\n\n{}\n",
+        "alpha passage ".repeat(200),
+        "beta passage ".repeat(200)
+    );
+    let (_root, bare, revision) = single_file_bare("README.md", &content);
+    let artifacts = tempdir().expect("artifact root");
+    let managed = tempdir().expect("managed repository root");
+    let bare = manage_repository(managed.path(), "vesc", &bare);
+    let source = GitCorpusSource {
+        repository_path: bare,
+        repository_id: RepositoryId::try_from("vesc").expect("repository"),
+        revision: Revision::try_from(revision).expect("revision"),
+        trust_tier: TrustTier::CuratedUpstream,
+        license: LicenseStatus::ReferenceOnly,
+        policy: GitCorpusPolicy::default(),
+    };
+
+    let summary = build_git_artifacts(artifacts.path(), &[source]).expect("build Git corpus");
+
+    assert_eq!(summary.document_count, embedded_entries().len() + 1);
+    assert!(summary.chunk_count > summary.document_count);
 }
 
 #[test]
