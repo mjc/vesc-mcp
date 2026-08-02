@@ -124,6 +124,7 @@ services.vesc-mcp = {
   ];
 
   startup = {
+    cachedOnly = false;
     refresh = true;
     eagerIndex = true;
     allowOfflineRestart = true;
@@ -155,8 +156,11 @@ indexing policies still match. Build or configuration failures do not silently
 fall back. A cached outage restart and an intentionally skipped refresh publish
 `ping.knowledge.state = "stale"`; strict preparation, terminal failure, or an
 invalid managed artifact makes search explicitly unavailable. Set
-`refresh = false` for an intentionally offline cached restart, or
-`eagerIndex = false` to defer new snapshot preparation.
+`refresh = false` for an intentionally offline cached restart. Set
+`cachedOnly = true` on serving-only hosts to prohibit repository refresh and
+snapshot preparation even when compatible persisted knowledge is missing; the
+service remains available, but search reports unavailable until an artifact is
+installed. `eagerIndex = false` avoids updating an already compatible snapshot.
 
 Only credential-free HTTPS repository URLs are accepted in evaluated Nix
 configuration. Put bearer tokens or Git credential environment settings in a

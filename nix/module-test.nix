@@ -60,6 +60,7 @@ let
   service = evaluated.config.systemd.services.vesc-mcp;
   strictLazy = (evaluate {
     startup = {
+      cachedOnly = true;
       refresh = false;
       eagerIndex = false;
       allowOfflineRestart = false;
@@ -82,7 +83,7 @@ assert !invalidRef.success;
 pkgs.runCommand "vesc-mcp-nixos-module-smoke" { } ''
   test "${defaults.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 900"
   test "${toString defaults.serviceConfig.TimeoutStartSec}" = "900"
-  test "${strictLazy.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 900 --require-fresh-repositories"
+  test "${strictLazy.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 900 --cached-only --require-fresh-repositories"
   test "${service.serviceConfig.ExecStart}" = "${testPackage}/bin/vesc-mcp-server --http --repository-preparation-timeout-secs 600"
   test "${nixpkgs.lib.boolToString service.serviceConfig.DynamicUser}" = "true"
   test "${service.serviceConfig.StateDirectory}" = "vesc-mcp"

@@ -25,6 +25,7 @@ const PROFILE_INITIAL_TRAINING_ARG: &str = "--profile-initial-training";
 const REPOSITORY_PREPARATION_TIMEOUT_ARG: &str = "--repository-preparation-timeout-secs";
 const REFRESH_ON_STARTUP_ARG: &str = "--refresh-on-startup";
 const EAGER_INDEX_ARG: &str = "--eager-index";
+const CACHED_ONLY_ARG: &str = "--cached-only";
 const DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS: u64 = 900;
 
 struct PreparationReporter {
@@ -172,23 +173,38 @@ impl RuntimeProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissingDataPolicy {
+    Prepare,
+    CachedOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StartupPolicy {
     refresh: bool,
     eager_index: bool,
     allow_offline_restart: bool,
+    missing_data: MissingDataPolicy,
 }
 
 impl StartupPolicy {
     fn from_args(args: &[String]) -> Self {
+        let cached_only = args.iter().any(|arg| arg == CACHED_ONLY_ARG);
         Self {
-            refresh: args.iter().any(|arg| {
-                matches!(
-                    arg.as_str(),
-                    "--refresh-repositories" | REFRESH_ON_STARTUP_ARG
-                )
-            }) && !args.iter().any(|arg| arg == "--skip-repository-refresh"),
-            eager_index: args.iter().any(|arg| arg == EAGER_INDEX_ARG),
+            refresh: !cached_only
+                && args.iter().any(|arg| {
+                    matches!(
+                        arg.as_str(),
+                        "--refresh-repositories" | REFRESH_ON_STARTUP_ARG
+                    )
+                })
+                && !args.iter().any(|arg| arg == "--skip-repository-refresh"),
+            eager_index: !cached_only && args.iter().any(|arg| arg == EAGER_INDEX_ARG),
             allow_offline_restart: !args.iter().any(|arg| arg == "--require-fresh-repositories"),
+            missing_data: if cached_only {
+                MissingDataPolicy::CachedOnly
+            } else {
+                MissingDataPolicy::Prepare
+            },
         }
     }
 }
@@ -197,13 +213,14 @@ const fn policy_for_available_data(
     policy: StartupPolicy,
     current_snapshot_ready: bool,
 ) -> StartupPolicy {
-    if current_snapshot_ready {
+    if current_snapshot_ready || matches!(policy.missing_data, MissingDataPolicy::CachedOnly) {
         policy
     } else {
         StartupPolicy {
             refresh: true,
             eager_index: true,
             allow_offline_restart: policy.allow_offline_restart,
+            missing_data: MissingDataPolicy::Prepare,
         }
     }
 }
@@ -281,6 +298,7 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
                 refresh: false,
                 eager_index: true,
                 allow_offline_restart: true,
+                missing_data: MissingDataPolicy::Prepare,
             })
             .await?;
             return Ok(());
@@ -354,7 +372,10 @@ fn repository_refresh_args(args: &[String]) -> Vec<String> {
             .filter(|arg| {
                 matches!(
                     arg.as_str(),
-                    REFRESH_ON_STARTUP_ARG | EAGER_INDEX_ARG | "--require-fresh-repositories"
+                    REFRESH_ON_STARTUP_ARG
+                        | EAGER_INDEX_ARG
+                        | CACHED_ONLY_ARG
+                        | "--require-fresh-repositories"
                 )
             })
             .cloned(),
@@ -767,9 +788,10 @@ mod tests {
     use vesc_mcp_core::preparation_status::PreparationPhase;
 
     use super::{
-        EAGER_INDEX_ARG, PROFILE_INITIAL_TRAINING_ARG, PreparationReporter, REFRESH_ON_STARTUP_ARG,
-        REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy, migraphx_cache_path,
-        policy_for_available_data, preparation_phase_for_build, publish_child_preparation_failure,
+        CACHED_ONLY_ARG, EAGER_INDEX_ARG, MissingDataPolicy, PROFILE_INITIAL_TRAINING_ARG,
+        PreparationReporter, REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG,
+        RuntimeProfile, StartupPolicy, migraphx_cache_path, policy_for_available_data,
+        preparation_phase_for_build, publish_child_preparation_failure,
         repository_preparation_timeout, repository_refresh_args, run_http,
         supervise_preparation_child, terminal_preparation_state,
     };
@@ -796,6 +818,7 @@ mod tests {
                 refresh: false,
                 eager_index: false,
                 allow_offline_restart: true,
+                missing_data: MissingDataPolicy::Prepare,
             }
         );
     }
@@ -814,6 +837,7 @@ mod tests {
                 refresh: true,
                 eager_index: true,
                 allow_offline_restart: false,
+                missing_data: MissingDataPolicy::Prepare,
             }
         );
     }
@@ -826,6 +850,7 @@ mod tests {
                 refresh: true,
                 eager_index: true,
                 allow_offline_restart: true,
+                missing_data: MissingDataPolicy::Prepare,
             }
         );
     }
@@ -834,6 +859,29 @@ mod tests {
     fn existing_data_preserves_lazy_startup_policy() {
         let policy = StartupPolicy::from_args(&[]);
         assert_eq!(policy_for_available_data(policy, true), policy);
+    }
+
+    #[test]
+    fn cached_only_never_bootstraps_missing_data() {
+        let policy = StartupPolicy::from_args(&["--cached-only".into()]);
+        assert_eq!(policy_for_available_data(policy, false), policy);
+    }
+
+    #[test]
+    fn cached_only_disables_requested_background_work() {
+        assert_eq!(
+            StartupPolicy::from_args(&[
+                CACHED_ONLY_ARG.into(),
+                REFRESH_ON_STARTUP_ARG.into(),
+                EAGER_INDEX_ARG.into(),
+            ]),
+            StartupPolicy {
+                refresh: false,
+                eager_index: false,
+                allow_offline_restart: true,
+                missing_data: MissingDataPolicy::CachedOnly,
+            }
+        );
     }
 
     #[test]
@@ -891,6 +939,7 @@ mod tests {
             "--benchmark-search".to_owned(),
             REFRESH_ON_STARTUP_ARG.to_owned(),
             EAGER_INDEX_ARG.to_owned(),
+            CACHED_ONLY_ARG.to_owned(),
             "--require-fresh-repositories".to_owned(),
             REPOSITORY_PREPARATION_TIMEOUT_ARG.to_owned(),
             "42".to_owned(),
@@ -902,6 +951,7 @@ mod tests {
                 "--refresh-repositories",
                 REFRESH_ON_STARTUP_ARG,
                 EAGER_INDEX_ARG,
+                CACHED_ONLY_ARG,
                 "--require-fresh-repositories",
                 REPOSITORY_PREPARATION_TIMEOUT_ARG,
                 "42",

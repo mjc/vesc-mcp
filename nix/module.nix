@@ -15,6 +15,7 @@ let
     "--repository-preparation-timeout-secs"
     (toString cfg.startup.timeoutSecs)
   ]
+    ++ lib.optional cfg.startup.cachedOnly "--cached-only"
     ++ lib.optional cfg.startup.refresh "--refresh-on-startup"
     ++ lib.optional cfg.startup.eagerIndex "--eager-index"
     ++ lib.optional (!cfg.startup.allowOfflineRestart) "--require-fresh-repositories";
@@ -238,6 +239,11 @@ in
       description = "Historical repository-version sets to prepare eagerly.";
     };
     startup = {
+      cachedOnly = lib.mkOption {
+        type = types.bool;
+        default = false;
+        description = "Serve compatible persisted knowledge without refreshing repositories or preparing missing snapshots.";
+      };
       refresh = lib.mkOption {
         type = types.bool;
         default = false;
