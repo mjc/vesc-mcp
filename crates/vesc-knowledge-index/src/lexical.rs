@@ -445,6 +445,81 @@ impl EmbeddingTextHydrator {
 }
 
 impl HistoryContentLookup {
+    pub(crate) fn matching_chunk_ids(
+        &self,
+        keys: &BTreeSet<ContentDigest>,
+    ) -> Result<BTreeMap<ContentDigest, ChunkId>, LexicalError> {
+        let searcher = self.reader.searcher();
+        let segment_readers = searcher.segment_readers();
+        let history_indexes = segment_readers
+            .iter()
+            .map(|reader| reader.inverted_index(self.fields.history_content_key))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(LexicalError::Search)?;
+        let streams = history_indexes
+            .iter()
+            .map(|index| index.terms().stream())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        let chunk_digests = segment_readers
+            .iter()
+            .map(|reader| {
+                let fast_fields = reader.fast_fields();
+                Ok([
+                    fast_fields.u64("chunk_digest_0")?,
+                    fast_fields.u64("chunk_digest_1")?,
+                    fast_fields.u64("chunk_digest_2")?,
+                    fast_fields.u64("chunk_digest_3")?,
+                ])
+            })
+            .collect::<Result<Vec<_>, tantivy::TantivyError>>()
+            .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        let mut terms = TermMerger::new(streams);
+        let mut matches = BTreeMap::new();
+        while terms.advance() {
+            let key = std::str::from_utf8(terms.key())
+                .ok()
+                .and_then(|value| ContentDigest::try_from(value).ok())
+                .ok_or_else(|| invalid_field("history_content_key"))?;
+            if !keys.contains(&key) {
+                continue;
+            }
+            for (segment_ord, term_info) in terms.current_segment_ords_and_term_infos() {
+                let reader = &segment_readers[segment_ord];
+                let mut postings = history_indexes[segment_ord]
+                    .read_postings_from_terminfo(&term_info, IndexRecordOption::Basic)
+                    .map_err(|error| LexicalError::Io(error.to_string()))?;
+                while postings.doc() != TERMINATED {
+                    let doc_id = postings.doc();
+                    if !reader.is_deleted(doc_id) {
+                        let mut digest = [0_u8; 32];
+                        for (part, column) in chunk_digests[segment_ord].iter().enumerate() {
+                            let mut values = column.values_for_doc(doc_id);
+                            let value = values
+                                .next()
+                                .ok_or_else(|| invalid_field("chunk digest fast field"))?;
+                            if values.next().is_some() {
+                                return Err(invalid_field("chunk digest fast field"));
+                            }
+                            digest[part * 8..(part + 1) * 8].copy_from_slice(&value.to_be_bytes());
+                        }
+                        let chunk_id = ChunkId::from_sha256(digest);
+                        matches
+                            .entry(key.clone())
+                            .and_modify(|previous| {
+                                if chunk_id < *previous {
+                                    previous.clone_from(&chunk_id);
+                                }
+                            })
+                            .or_insert(chunk_id);
+                    }
+                    postings.advance();
+                }
+            }
+        }
+        Ok(matches)
+    }
+
     pub(crate) fn visit_git_history_chunks(
         &self,
         mut visit: impl FnMut(CachedGitHistoryChunk<'_>),
@@ -3248,6 +3323,15 @@ mod tests {
                     .expect("contains")
             );
         }
+
+        let underscored_key = crate::corpus::history_content_key_for_chunk(&underscored)
+            .expect("underscored history content key");
+        assert_eq!(
+            lookup
+                .matching_chunk_ids(&BTreeSet::from([underscored_key.clone()]))
+                .expect("matching chunk IDs"),
+            BTreeMap::from([(underscored_key, underscored.chunk_id)])
+        );
     }
 
     #[test]

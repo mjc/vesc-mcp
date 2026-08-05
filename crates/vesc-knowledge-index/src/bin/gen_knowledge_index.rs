@@ -524,6 +524,8 @@ fn run_build_default(args: &[String]) {
                 &staging,
                 &sources,
                 Some((&mut provider, &model_id, &model_revision)),
+                None,
+                None,
             )
         }
         #[cfg(not(feature = "semantic-fastembed"))]

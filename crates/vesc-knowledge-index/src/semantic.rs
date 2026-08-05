@@ -24,6 +24,7 @@ const MAX_ARTIFACT_BYTES: usize = 1024 * 1024 * 1024;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_VECTOR_DIMENSION: usize = STREAM_BUFFER_BYTES / std::mem::size_of::<f32>();
 const VECTOR_CHECKPOINT_SYNC_ROWS: usize = 256;
+const VECTOR_REUSE_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Conservative outer batch size for the production embedding build.
 pub const DEFAULT_SEMANTIC_BATCH_SIZE: usize = 8;
@@ -2272,6 +2273,15 @@ impl VectorCheckpoint {
         rows: &[usize],
         vectors: &[V],
     ) -> Result<(), EmbeddingError> {
+        self.write_batch_uncommitted(rows, vectors)?;
+        self.commit_completed()
+    }
+
+    fn write_batch_uncommitted<V: AsRef<[f32]>>(
+        &mut self,
+        rows: &[usize],
+        vectors: &[V],
+    ) -> Result<(), EmbeddingError> {
         if rows.len() != vectors.len() {
             return Err(EmbeddingError::InvalidHeader);
         }
@@ -2294,17 +2304,15 @@ impl VectorCheckpoint {
             }
             self.file.write_all(&bytes).map_err(io_error)?;
         }
-        self.file
-            .sync_data()
-            .map_err(|error| EmbeddingError::Io(error.to_string()))?;
         for &row in rows {
             self.completed[row / 8] |= 1 << (row % 8);
         }
-        self.file
-            .seek(SeekFrom::Start(48))
-            .and_then(|_| self.file.write_all(&self.completed))
-            .and_then(|()| self.file.sync_data())
-            .map_err(|error| EmbeddingError::Io(error.to_string()))
+        Ok(())
+    }
+
+    fn commit_completed(&mut self) -> Result<(), EmbeddingError> {
+        self.file.sync_data().map_err(io_error)?;
+        self.persist_completed()
     }
 
     fn row_offset(&self, row: usize) -> Result<u64, EmbeddingError> {
@@ -2338,6 +2346,20 @@ fn flush_checkpoint_batch(
     vectors.clear();
     #[cfg(feature = "coz-profile")]
     coz::progress!("semantic_checkpoint_batch");
+    Ok(())
+}
+
+fn flush_uncommitted_checkpoint_batch(
+    checkpoint: &mut VectorCheckpoint,
+    rows: &mut Vec<usize>,
+    vectors: &mut Vec<Vec<f32>>,
+) -> Result<(), EmbeddingError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    checkpoint.write_batch_uncommitted(rows, vectors)?;
+    rows.clear();
+    vectors.clear();
     Ok(())
 }
 
@@ -2630,6 +2652,36 @@ fn reconciliation_checkpoint_identity<'a>(
                 .to_le_bytes(),
         );
         digest.update(bytes);
+    }
+    digest_from_bytes(&digest.finalize())
+}
+
+fn aliased_reconciliation_checkpoint_identity(
+    ids: &[ChunkId],
+    previous_ids: &[ChunkId],
+    corpus_digest: &ContentDigest,
+    previous_checksum: &ContentDigest,
+    model_id: &str,
+    model_revision: &str,
+) -> Result<ContentDigest, EmbeddingError> {
+    let mut digest = Sha256::new();
+    for bytes in [
+        b"vesc-aliased-reconciliation-checkpoint-v2".as_slice(),
+        corpus_digest.as_bytes(),
+        previous_checksum.as_bytes(),
+        model_id.as_bytes(),
+        model_revision.as_bytes(),
+    ] {
+        digest.update(
+            u64::try_from(bytes.len())
+                .map_err(|_| EmbeddingError::TooLarge)?
+                .to_le_bytes(),
+        );
+        digest.update(bytes);
+    }
+    for (id, previous_id) in ids.iter().zip(previous_ids) {
+        digest.update(id.as_bytes());
+        digest.update(previous_id.as_bytes());
     }
     digest_from_bytes(&digest.finalize())
 }
@@ -3217,6 +3269,207 @@ impl VectorArtifact {
             },
             request,
         )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn write_provider_reconciling_aliased_ids_artifact_with_observations<P, F>(
+        provider: &mut P,
+        ids: &[ChunkId],
+        previous_ids: &[ChunkId],
+        mut embedding_texts: F,
+        request: ReconciledVectorArtifact<'_>,
+    ) -> Result<(ContentDigest, u64, usize, usize, VectorBuildObservations), EmbeddingError>
+    where
+        P: EmbeddingProvider + ?Sized,
+        F: FnMut(&[usize]) -> Result<Vec<String>, EmbeddingError>,
+    {
+        let ReconciledVectorArtifact {
+            model_id,
+            model_revision,
+            corpus_digest,
+            previous_corpus_digest,
+            previous_checksum,
+            previous_path,
+            path,
+            checkpoint_path,
+        } = request;
+        if ids.len() != previous_ids.len() || previous_path == path {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        let mut order = (0..ids.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| ids[*left].cmp(&ids[*right]));
+        if order
+            .windows(2)
+            .any(|indices| ids[indices[0]] == ids[indices[1]])
+        {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        let mut checkpoint_row_by_input = vec![0_usize; ids.len()];
+        for (row, &input) in order.iter().enumerate() {
+            checkpoint_row_by_input[input] = row;
+        }
+        let mut reuse_order = (0..previous_ids.len()).collect::<Vec<_>>();
+        reuse_order.sort_unstable_by(|left, right| {
+            previous_ids[*left]
+                .cmp(&previous_ids[*right])
+                .then_with(|| ids[*left].cmp(&ids[*right]))
+        });
+
+        let (mut source, header) = open_verified_vector_reader(previous_path, previous_checksum)?;
+        validate_reconciled_header(
+            &header,
+            provider,
+            model_id,
+            model_revision,
+            previous_corpus_digest,
+        )?;
+        let temporary_checkpoint = if checkpoint_path.is_none() {
+            Some(
+                tempfile::Builder::new()
+                    .prefix(".vector-reconciliation-")
+                    .tempdir_in(path.parent().ok_or_else(|| {
+                        EmbeddingError::Io(
+                            "reconciled vector destination has no parent directory".into(),
+                        )
+                    })?)
+                    .map_err(io_error)?,
+            )
+        } else {
+            None
+        };
+        let temporary_checkpoint_path = temporary_checkpoint
+            .as_ref()
+            .map(|directory| directory.path().join("vectors.checkpoint"));
+        let checkpoint_path = checkpoint_path
+            .or(temporary_checkpoint_path.as_deref())
+            .ok_or(EmbeddingError::InvalidHeader)?;
+        let identity = aliased_reconciliation_checkpoint_identity(
+            ids,
+            previous_ids,
+            corpus_digest,
+            previous_checksum,
+            model_id,
+            model_revision,
+        )?;
+        let mut checkpoint =
+            VectorCheckpoint::open(checkpoint_path, header.dimension, ids.len(), &identity)?;
+        checkpoint.validate_completed_rows()?;
+
+        let batch_size = provider.embedding_batch_size().get();
+        let row_bytes = header
+            .dimension
+            .checked_mul(std::mem::size_of::<f32>())
+            .filter(|&bytes| bytes != 0)
+            .ok_or(EmbeddingError::InvalidHeader)?;
+        let reuse_batch_size = (VECTOR_REUSE_BUFFER_BYTES / row_bytes).max(1);
+        let mut checkpoint_rows = Vec::with_capacity(reuse_batch_size);
+        let mut checkpoint_vectors = Vec::with_capacity(reuse_batch_size);
+        let mut row = Vec::with_capacity(header.dimension);
+        let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+        let mut reuse_index = 0;
+        let mut copied_reused_rows = false;
+        while reuse_index < reuse_order.len() {
+            let desired = &previous_ids[reuse_order[reuse_index]];
+            while previous_id
+                .as_ref()
+                .is_some_and(|previous| previous < desired)
+            {
+                previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+            }
+            let mut group_end = reuse_index + 1;
+            while group_end < reuse_order.len() && previous_ids[reuse_order[group_end]] == *desired
+            {
+                group_end += 1;
+            }
+            if previous_id.as_ref() == Some(desired) {
+                validate_vector(&row, true)?;
+                for &target in &reuse_order[reuse_index..group_end] {
+                    let checkpoint_row = checkpoint_row_by_input[target];
+                    if checkpoint.is_complete(checkpoint_row) {
+                        continue;
+                    }
+                    checkpoint_rows.push(checkpoint_row);
+                    checkpoint_vectors.push(row.clone());
+                    copied_reused_rows = true;
+                    if checkpoint_rows.len() == reuse_batch_size {
+                        flush_uncommitted_checkpoint_batch(
+                            &mut checkpoint,
+                            &mut checkpoint_rows,
+                            &mut checkpoint_vectors,
+                        )?;
+                    }
+                }
+            }
+            reuse_index = group_end;
+        }
+        flush_uncommitted_checkpoint_batch(
+            &mut checkpoint,
+            &mut checkpoint_rows,
+            &mut checkpoint_vectors,
+        )?;
+        if copied_reused_rows {
+            checkpoint.commit_completed()?;
+        }
+
+        let missing = (0..ids.len())
+            .filter(|&index| !checkpoint.is_complete(checkpoint_row_by_input[index]))
+            .collect::<Vec<_>>();
+        let mut observations = VectorBuildObservations::default();
+        for batch in missing.chunks(batch_size) {
+            let input_started = Instant::now();
+            let texts = embedding_texts(batch)?;
+            observations.embedding_input_us = observations
+                .embedding_input_us
+                .saturating_add(elapsed_us(input_started));
+            let vectors =
+                embed_reconciliation_texts(provider, &texts, header.dimension, &mut observations)?;
+            let checkpoint_rows = batch
+                .iter()
+                .map(|&index| checkpoint_row_by_input[index])
+                .collect::<Vec<_>>();
+            checkpoint.write_batch(&checkpoint_rows, &vectors)?;
+        }
+
+        let expected_length =
+            encoded_artifact_len_from_count(ids.len(), header.dimension, model_id, model_revision)?;
+        let destination = File::create(path).map_err(io_error)?;
+        let mut artifact = DigestingWriter::new(BufWriter::new(destination));
+        let checksum = {
+            let mut body = DigestingWriter::new(&mut artifact);
+            write_vector_header(
+                &mut body,
+                2,
+                header.dimension,
+                ids.len(),
+                model_id,
+                model_revision,
+                true,
+                corpus_digest,
+            )?;
+            checkpoint.try_for_each_value_row(|row, vector, bytes| {
+                validate_vector(vector, true)?;
+                write_vector_row_bytes(&mut body, &ids[order[row]], bytes)
+            })?;
+            let (_, checksum, body_length) = body.finish();
+            if body_length != (expected_length - CHECKSUM_LEN) as u64 {
+                return Err(EmbeddingError::InvalidHeader);
+            }
+            checksum
+        };
+        artifact.write_all(&checksum).map_err(io_error)?;
+        artifact.flush().map_err(io_error)?;
+        let (_, digest, length) = artifact.finish();
+        if length != expected_length as u64 {
+            return Err(EmbeddingError::InvalidHeader);
+        }
+        observations.reused_vectors = ids.len().saturating_sub(observations.embedded_vectors);
+        Ok((
+            digest_from_bytes(&digest)?,
+            length,
+            ids.len(),
+            header.dimension,
+            observations,
+        ))
     }
 
     #[allow(clippy::too_many_lines)]

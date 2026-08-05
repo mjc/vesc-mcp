@@ -1190,6 +1190,12 @@ fn remove_if_present(path: &Path) -> Result<(), SnapshotError> {
     }
 }
 
+fn report_progress(progress: Option<&SnapshotProgressReporter>, phase: SnapshotBuildPhase) {
+    if let Some(progress) = progress {
+        progress(phase);
+    }
+}
+
 fn build_snapshot_artifact(
     layout: &KnowledgeDataLayout,
     manifest: &KnowledgeSnapshotManifest,
@@ -1198,13 +1204,13 @@ fn build_snapshot_artifact(
     semantic: Option<&SnapshotSemanticConfig>,
     progress: Option<&SnapshotProgressReporter>,
 ) -> Result<SnapshotArtifactBuild, SnapshotError> {
-    if let Some(progress) = progress {
-        progress(SnapshotBuildPhase::PlanningHistory);
-    }
+    report_progress(progress, SnapshotBuildPhase::PlanningHistory);
     let mut provider = semantic.map(semantic_provider).transpose()?;
     let vector_checkpoint_path = semantic.map(|_| vector_checkpoint_path(layout, &manifest.id));
     let summary = match manifest.profile {
         SnapshotProfile::SelectedTrees => {
+            let previous_vectors =
+                semantic.and_then(|_| load_previous_vector_artifact(layout, manifest));
             let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
                 (
                     provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
@@ -1212,18 +1218,16 @@ fn build_snapshot_artifact(
                     semantic.model.model_revision.as_str(),
                 )
             });
-            if let Some(progress) = progress {
-                progress(SnapshotBuildPhase::BuildingLexicalIndex);
-            }
+            report_progress(progress, SnapshotBuildPhase::BuildingLexicalIndex);
             let summary = vesc_knowledge_index::build_git_artifacts_with_provider(
                 artifact_path,
                 sources,
                 semantic_build,
+                previous_vectors.as_ref(),
+                vector_checkpoint_path.as_deref(),
             )
             .map_err(|error| SnapshotError::Build(error.to_string()))?;
-            if let Some(progress) = progress {
-                progress(SnapshotBuildPhase::Publishing);
-            }
+            report_progress(progress, SnapshotBuildPhase::Publishing);
             summary
         }
         SnapshotProfile::CompleteHistory => {
@@ -1248,8 +1252,8 @@ fn build_snapshot_artifact(
                     }
                     _ => None,
                 };
-                if let (Some(progress), Some(phase)) = (progress, phase) {
-                    progress(phase);
+                if let Some(phase) = phase {
+                    report_progress(progress, phase);
                 }
             };
             let summary = vesc_knowledge_index::build_git_history_artifacts_from_previous(
@@ -1318,6 +1322,57 @@ struct PreviousSnapshotArtifacts {
     vector_path: Option<PathBuf>,
     vector_checksum: Option<vesc_knowledge_index::ContentDigest>,
     lexical_format_compatible: bool,
+}
+
+fn load_previous_vector_artifact(
+    layout: &KnowledgeDataLayout,
+    current: &KnowledgeSnapshotManifest,
+) -> Option<vesc_knowledge_index::PreviousVectorArtifact> {
+    let snapshots = fs::read_dir(layout.root().as_path().join("snapshots")).ok()?;
+    let default = crate::read_default_snapshot(layout.root().as_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<KnowledgeSnapshotManifest>(&bytes).ok())
+        .filter(KnowledgeSnapshotManifest::has_valid_identity)
+        .map(|manifest| manifest.id);
+    let mut candidates = snapshots
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .filter_map(|entry| read_and_validate_manifest(&entry.path()).ok())
+        .filter(|previous| previous_vector_snapshot_is_compatible(previous, current))
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|left, right| {
+        let left_is_default = default.as_ref().is_some_and(|id| id == &left.id);
+        let right_is_default = default.as_ref().is_some_and(|id| id == &right.id);
+        right_is_default
+            .cmp(&left_is_default)
+            .then_with(|| {
+                previous_snapshot_score(right, current).cmp(&previous_snapshot_score(left, current))
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    candidates.into_iter().find_map(|previous| {
+        let previous = load_previous_snapshot_candidate(layout, current, &previous)?;
+        Some(vesc_knowledge_index::PreviousVectorArtifact {
+            lexical_path: previous.lexical_path,
+            corpus_digest: previous.artifact.corpus_digest,
+            checksum: previous.vector_checksum?,
+            path: previous.vector_path?,
+        })
+    })
+}
+
+fn previous_vector_snapshot_is_compatible(
+    previous: &KnowledgeSnapshotManifest,
+    current: &KnowledgeSnapshotManifest,
+) -> bool {
+    previous_snapshot_is_incrementally_compatible(previous, current)
+        && previous.component_versions.get("lexical-format")
+            == current.component_versions.get("lexical-format")
 }
 
 fn load_previous_snapshot(
@@ -2621,6 +2676,26 @@ max_total_bytes = 10485760
         assert!(component_versions_are_incrementally_compatible(
             &previous, &current
         ));
+    }
+
+    #[test]
+    fn selected_tree_vector_aliases_require_the_current_lexical_format() {
+        let repository = RepositoryId::new("one").expect("repository id");
+        let selected = vec![selected(repository, "a".repeat(40))];
+        let mut previous = KnowledgeSnapshotManifest::with_profile(
+            selected.clone(),
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("complete-history manifest");
+        previous
+            .component_versions
+            .insert("lexical-format".into(), "previous-format".into());
+        let current =
+            KnowledgeSnapshotManifest::with_profile(selected, None, SnapshotProfile::SelectedTrees)
+                .expect("selected-tree manifest");
+
+        assert!(!previous_vector_snapshot_is_compatible(&previous, &current));
     }
 
     #[test]

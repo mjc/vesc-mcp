@@ -237,9 +237,19 @@ struct IncrementalStage {
 }
 
 struct ReconciledVectorStage {
+    lexical_path: PathBuf,
     path: PathBuf,
     checksum: ContentDigest,
     corpus_digest: ContentDigest,
+}
+
+/// Persisted vector data eligible for content-addressed reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviousVectorArtifact {
+    pub lexical_path: PathBuf,
+    pub corpus_digest: ContentDigest,
+    pub checksum: ContentDigest,
+    pub path: PathBuf,
 }
 
 /// Validated predecessor data used by a complete-history fast-forward build.
@@ -596,6 +606,8 @@ fn build_artifacts(
         Vec::new(),
         started,
         observations,
+        None,
+        None,
     )
 }
 
@@ -695,6 +707,8 @@ pub fn build_allowlisted_artifacts_with_provider(
         sources,
         started,
         observations,
+        None,
+        None,
     )
 }
 
@@ -707,7 +721,7 @@ pub fn build_git_artifacts(
     root: &Path,
     sources: &[GitCorpusSource],
 ) -> Result<BuildSummary, LifecycleError> {
-    build_git_artifacts_with_provider(root, sources, None)
+    build_git_artifacts_with_provider(root, sources, None, None, None)
 }
 
 /// Build complete Git history, reusing cached chunks for a verified fast-forward.
@@ -916,8 +930,31 @@ fn reusable_previous_vector_stage(
     )
     .ok()?;
     Some(ReconciledVectorStage {
+        lexical_path: previous.lexical_path.clone(),
         path: vector_path.clone(),
         checksum: vector_checksum.clone(),
+        corpus_digest: previous.corpus_digest.clone(),
+    })
+}
+
+fn reusable_vector_stage(
+    previous: &PreviousVectorArtifact,
+    semantic: Option<&(&mut dyn EmbeddingProvider, &str, &str)>,
+) -> Option<ReconciledVectorStage> {
+    let (provider, model_id, model_revision) = semantic?;
+    VectorArtifact::validate_reusable_artifact(
+        &previous.path,
+        &previous.checksum,
+        &previous.corpus_digest,
+        model_id,
+        model_revision,
+        provider.embedding_dimension(),
+    )
+    .ok()?;
+    Some(ReconciledVectorStage {
+        lexical_path: previous.lexical_path.clone(),
+        path: previous.path.clone(),
+        checksum: previous.checksum.clone(),
         corpus_digest: previous.corpus_digest.clone(),
     })
 }
@@ -1284,6 +1321,8 @@ pub fn build_git_artifacts_with_provider(
     root: &Path,
     sources: &[GitCorpusSource],
     semantic: Option<(&mut dyn EmbeddingProvider, &str, &str)>,
+    previous_vectors: Option<&PreviousVectorArtifact>,
+    vector_checkpoint_path: Option<&Path>,
 ) -> Result<BuildSummary, LifecycleError> {
     let started = Instant::now();
     let mut ingestion_us = 0_u64;
@@ -1346,6 +1385,8 @@ pub fn build_git_artifacts_with_provider(
         .filter_map(|source| source.byte_count)
         .sum();
     observations.git_ingestion = Some(git_ingestion);
+    let reconciled_vectors =
+        previous_vectors.and_then(|previous| reusable_vector_stage(previous, semantic.as_ref()));
     let semantic = semantic.map(|(provider, model_id, model_revision)| SemanticBuild {
         provider,
         model_id,
@@ -1361,6 +1402,8 @@ pub fn build_git_artifacts_with_provider(
         inventory,
         started,
         observations,
+        reconciled_vectors,
+        vector_checkpoint_path,
     )
 }
 
@@ -1375,6 +1418,8 @@ fn stage_chunks(
     sources: Vec<SourceInventory>,
     started: Instant,
     mut observations: BuildObservations,
+    reconciled_vectors: Option<ReconciledVectorStage>,
+    vector_checkpoint_path: Option<&Path>,
 ) -> Result<BuildSummary, LifecycleError> {
     observations.chunks = chunks.len();
     observations.inventory_count = observations.inventory_count.max(sources.len());
@@ -1424,13 +1469,113 @@ fn stage_chunks(
     observations.record(BuildPhase::Corpus, corpus_started);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
         let vector_path = temp_root.join("vectors.bin");
-        let (vector, vector_build) = VectorArtifact::from_provider_with_observations(
-            semantic.provider,
-            chunks,
-            semantic.model_id,
-            semantic.model_revision,
-            corpus.content_digest.clone(),
-        )?;
+        let (checksum, bytes, count, dimension, vector_build, git_blob_loads) = if let Some(
+            previous,
+        ) =
+            reconciled_vectors
+        {
+            let sources = git_sources.ok_or_else(|| {
+                LifecycleError::Contract(
+                    "vector reconciliation requires immutable Git sources".into(),
+                )
+            })?;
+            let index =
+                LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
+            let ids = index.embedding_chunk_ids()?;
+            let history_keys = chunks
+                .iter()
+                .filter_map(|chunk| {
+                    crate::corpus::history_content_key_for_chunk(chunk)
+                        .map(|key| (chunk.chunk_id.clone(), key))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let wanted_keys = history_keys.values().cloned().collect::<BTreeSet<_>>();
+            let matching_ids = LexicalIndex::open_history_content_lookup(&previous.lexical_path)?
+                .matching_chunk_ids(&wanted_keys)?;
+            let previous_ids = ids
+                .iter()
+                .map(|id| {
+                    history_keys
+                        .get(id)
+                        .and_then(|key| matching_ids.get(key))
+                        .unwrap_or(id)
+                        .clone()
+                })
+                .collect::<Vec<_>>();
+            let mut hydrator = EmbeddingTextHydrator::default();
+            let mut embedding_texts = |indices: &[usize]| {
+                let requested = indices
+                    .iter()
+                    .map(|&index| ids.get(index).cloned().ok_or(EmbeddingError::InvalidHeader))
+                    .collect::<Result<Vec<_>, _>>()?;
+                index
+                    .embedding_texts_by_id(&requested, &mut hydrator)
+                    .map_err(|error| EmbeddingError::Provider(error.to_string()))
+            };
+            let temporary_checkpoint = temp_root.join("vectors.checkpoint");
+            let checkpoint_path = vector_checkpoint_path.unwrap_or(temporary_checkpoint.as_path());
+            let result = if previous_ids == ids {
+                VectorArtifact::write_provider_reconciling_ids_artifact_with_observations(
+                    semantic.provider,
+                    &ids,
+                    &mut embedding_texts,
+                    ReconciledVectorArtifact {
+                        model_id: semantic.model_id,
+                        model_revision: semantic.model_revision,
+                        corpus_digest: &corpus.content_digest,
+                        previous_corpus_digest: &previous.corpus_digest,
+                        previous_checksum: &previous.checksum,
+                        previous_path: &previous.path,
+                        path: &vector_path,
+                        checkpoint_path: Some(checkpoint_path),
+                    },
+                )
+            } else {
+                VectorArtifact::write_provider_reconciling_aliased_ids_artifact_with_observations(
+                    semantic.provider,
+                    &ids,
+                    &previous_ids,
+                    &mut embedding_texts,
+                    ReconciledVectorArtifact {
+                        model_id: semantic.model_id,
+                        model_revision: semantic.model_revision,
+                        corpus_digest: &corpus.content_digest,
+                        previous_corpus_digest: &previous.corpus_digest,
+                        previous_checksum: &previous.checksum,
+                        previous_path: &previous.path,
+                        path: &vector_path,
+                        checkpoint_path: Some(checkpoint_path),
+                    },
+                )
+            };
+            if vector_checkpoint_path.is_none() && temporary_checkpoint.exists() {
+                fs::remove_file(&temporary_checkpoint)?;
+            }
+            let (checksum, bytes, count, dimension, vector_build) = result?;
+            (
+                checksum,
+                bytes,
+                count,
+                dimension,
+                vector_build,
+                hydrator.git_blob_loads(),
+            )
+        } else {
+            let (vector, vector_build) = VectorArtifact::from_provider_with_observations(
+                semantic.provider,
+                chunks,
+                semantic.model_id,
+                semantic.model_revision,
+                corpus.content_digest.clone(),
+            )?;
+            let count = vector.ids.len();
+            let dimension = vector.dimension;
+            let write_started = Instant::now();
+            let (checksum, bytes) = vector.write_artifact_with_digest(&vector_path)?;
+            observations.record(BuildPhase::Writing, write_started);
+            (checksum, bytes, count, dimension, vector_build, 0)
+        };
+        observations.embedding_git_blob_loads = git_blob_loads;
         observations.embedding_input_bytes = vector_build.input_bytes;
         observations.record_duration(BuildPhase::EmbeddingInput, vector_build.embedding_input_us);
         observations.record_duration(BuildPhase::Inference, vector_build.provider_us);
@@ -1438,13 +1583,10 @@ fn stage_chunks(
             BuildPhase::VectorFinalization,
             vector_build.vector_finalization_us,
         );
-        observations.vector_count = vector.ids.len();
-        observations.vector_dimension = Some(vector.dimension);
+        observations.vector_count = count;
+        observations.vector_dimension = Some(dimension);
         observations.resolved_batch_size = Some(semantic.provider.embedding_batch_size().get());
         observations.vector_build = Some(vector_build);
-        let write_started = Instant::now();
-        let (checksum, bytes) = vector.write_artifact_with_digest(&vector_path)?;
-        observations.record(BuildPhase::Writing, write_started);
         (Some(checksum), Some(bytes))
     } else {
         (None, None)

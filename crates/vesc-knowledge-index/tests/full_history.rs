@@ -10,9 +10,10 @@ use vesc_knowledge_index::{
     BuildPhase, Chunk, ContentDigest, EmbeddingBatchSize, EmbeddingError, EmbeddingProvider,
     FakeEmbeddingProvider, FusionConfig, GitHistoryRefreshObservations, GitHistoryTip,
     LexicalFilters, LexicalIndex, LicenseStatus, OutputNormalization, PreviousGitHistoryArtifact,
-    RepositoryId, Revision, SourceKind, TrustTier, VectorArtifact,
-    build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
-    fuse_candidate_metadata, ingest_git_history_fast_forward,
+    PreviousVectorArtifact, RepositoryId, Revision, SourceKind, TrustTier, VectorArtifact,
+    build_git_artifacts_with_provider, build_git_history_artifacts_from_previous,
+    build_git_history_artifacts_incrementally, fuse_candidate_metadata,
+    ingest_git_history_fast_forward,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -1635,6 +1636,136 @@ fn enabling_semantic_reuses_lexical_history_and_builds_only_vectors() {
     assert_eq!(second.refresh.ingested_commits, 0);
     assert_eq!(vectors.reused_vectors, 0);
     assert_eq!(vectors.embedded_vectors, second.artifacts.chunk_count);
+}
+
+#[test]
+fn selected_tree_reuses_every_vector_already_present_in_complete_history() {
+    let (_root, work) = fixture();
+    let history_source = at_head(source(work.clone(), "fixture"), &work);
+    let history_root = tempdir().expect("history artifact root");
+    let mut history_provider = FakeEmbeddingProvider::new(8);
+    let history = build_git_history_artifacts_incrementally(
+        history_root.path(),
+        std::slice::from_ref(&history_source),
+        None,
+        None,
+        Some((&mut history_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("complete-history semantic build");
+    let history_generation = history_root
+        .path()
+        .join("generations")
+        .join(&history.artifacts.generation);
+    let selected_source = GitCorpusSource {
+        revision: Revision::try_from(git(&work, &["rev-parse", "v1"])).expect("v1 revision"),
+        ..history_source
+    };
+    let selected_root = tempdir().expect("selected artifact root");
+
+    let selected = build_git_artifacts_with_provider(
+        selected_root.path(),
+        std::slice::from_ref(&selected_source),
+        Some((&mut FailingEmbeddingProvider, "fake", "test-revision")),
+        Some(&PreviousVectorArtifact {
+            lexical_path: history_generation.join("lexical.json"),
+            corpus_digest: history.artifacts.manifest.corpus.content_digest,
+            checksum: history
+                .artifacts
+                .manifest
+                .vector_checksum
+                .expect("history vector checksum"),
+            path: history_generation.join("vectors.bin"),
+        }),
+        None,
+    )
+    .expect("selected tree reuses history vectors");
+    let vectors = selected
+        .observations
+        .vector_build
+        .expect("vector observations");
+
+    assert_eq!(vectors.reused_vectors, selected.chunk_count);
+    assert_eq!(vectors.embedded_vectors, 0);
+    let lexical = LexicalIndex::open_git_search_artifact(
+        &selected_root
+            .path()
+            .join("generations")
+            .join(selected.generation)
+            .join("lexical.json"),
+        work.parent().expect("fixture repository parent"),
+    )
+    .expect("selected lexical index");
+    let filters = LexicalFilters {
+        repository: Some(RepositoryId::try_from("fixture").expect("repository")),
+        ..LexicalFilters::default()
+    };
+    assert!(
+        lexical
+            .search_candidates("second", &filters, 1)
+            .expect("selected search")
+            .is_empty(),
+        "the selected-tree index must not expose later history"
+    );
+}
+
+#[test]
+fn selected_tree_embeds_only_chunks_missing_from_complete_history() {
+    let (_root, work) = fixture();
+    let history_source = at_head(source(work.clone(), "fixture"), &work);
+    let history_root = tempdir().expect("history artifact root");
+    let mut history_provider = FakeEmbeddingProvider::new(8);
+    let history = build_git_history_artifacts_incrementally(
+        history_root.path(),
+        std::slice::from_ref(&history_source),
+        None,
+        None,
+        Some((&mut history_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("complete-history semantic build");
+    let history_generation = history_root
+        .path()
+        .join("generations")
+        .join(&history.artifacts.generation);
+    fs::write(work.join("src/novel.rs"), "pub fn novel_vector() {}\n").expect("novel source");
+    git(&work, &["add", "src/novel.rs"]);
+    git(&work, &["commit", "-qm", "novel source"]);
+    let selected_source = at_head(history_source, &work);
+    let selected_root = tempdir().expect("selected artifact root");
+    let mut selected_provider = FakeEmbeddingProvider::new(8);
+
+    let selected = build_git_artifacts_with_provider(
+        selected_root.path(),
+        std::slice::from_ref(&selected_source),
+        Some((&mut selected_provider, "fake", "test-revision")),
+        Some(&PreviousVectorArtifact {
+            lexical_path: history_generation.join("lexical.json"),
+            corpus_digest: history.artifacts.manifest.corpus.content_digest,
+            checksum: history
+                .artifacts
+                .manifest
+                .vector_checksum
+                .expect("history vector checksum"),
+            path: history_generation.join("vectors.bin"),
+        }),
+        None,
+    )
+    .expect("selected tree reconciles history vectors");
+    let vectors = selected
+        .observations
+        .vector_build
+        .expect("vector observations");
+
+    assert_eq!(vectors.embedded_vectors, 1);
+    assert_eq!(
+        vectors.reused_vectors + vectors.embedded_vectors,
+        selected.chunk_count
+    );
 }
 
 #[test]

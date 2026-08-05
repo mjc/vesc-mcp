@@ -56,7 +56,7 @@ pub use lifecycle::{
 };
 pub use lifecycle::{
     IncrementalGitHistoryBuildSummary, PreviousArtifactSummary, PreviousGitHistoryArtifact,
-    build_git_artifacts, build_git_artifacts_with_provider,
+    PreviousVectorArtifact, build_git_artifacts, build_git_artifacts_with_provider,
     build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
     remove_git_history_lexical_stage,
 };
