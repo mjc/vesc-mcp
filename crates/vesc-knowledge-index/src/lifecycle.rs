@@ -8,18 +8,18 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 
-use crate::corpus::chunking::{ChunkingConfig, chunk_document};
+use crate::corpus::chunking::{ChunkingConfig, chunk_document, chunk_document_drafts};
 use crate::corpus::full_history::{
     CachedGitHistory, GitHistoryBuildPlan, GitHistoryError, GitHistoryRefreshObservations,
     GitHistoryTip, plan_git_history_fast_forward_delta, plan_git_history_fast_forward_owned,
 };
 use crate::corpus::git::{
     GitCorpusSource, GitIngestionError, GitIngestionObservations, MAX_IDENTIFIERS,
-    MAX_REJECTION_SAMPLES, ingest_git_commit,
+    MAX_REJECTION_SAMPLES, identifier_values, ingest_git_commit,
 };
 use crate::corpus::ingest::{SourceInventory, SourceRejection, SourceSpec, ingest_allowlisted};
 use crate::corpus::{
-    ARTIFACT_SCHEMA_V1, ArtifactManifest, ContentDigest, CorpusManifest, CorpusVersion,
+    ARTIFACT_SCHEMA_V1, ArtifactManifest, Chunk, ContentDigest, CorpusManifest, CorpusVersion,
     NormalizedDocument, RepositoryId, Revision, SchemaVersion,
 };
 use crate::lexical::EmbeddingTextHydrator;
@@ -1363,11 +1363,7 @@ pub fn build_git_artifacts_with_provider(
         }
         let chunking_started = Instant::now();
         for document in report.documents {
-            chunks.extend(
-                chunk_document(&document, ChunkingConfig::default()).map_err(|error| {
-                    LifecycleError::Contract(format!("{}: {error}", document.path))
-                })?,
-            );
+            chunks.extend(chunk_git_document(&document)?);
         }
         chunking_us = chunking_us.saturating_add(elapsed_us(chunking_started));
         let remaining_samples = MAX_REJECTION_SAMPLES.saturating_sub(rejected.len());
@@ -1412,6 +1408,20 @@ pub fn build_git_artifacts_with_provider(
         reconciled_vectors,
         vector_checkpoint_path,
     )
+}
+
+fn chunk_git_document(document: &NormalizedDocument) -> Result<Vec<Chunk>, LifecycleError> {
+    let drafts = chunk_document_drafts(document, ChunkingConfig::default())
+        .map_err(|error| LifecycleError::Contract(format!("{}: {error}", document.path)))?;
+    (0..drafts.len())
+        .map(|index| {
+            let identifiers = identifier_values(&document.path, drafts.get(index).text());
+            drafts
+                .materialize(index, Some(identifiers))
+                .and_then(Chunk::with_derived_resource_uri)
+                .map_err(|error| LifecycleError::Contract(format!("{}: {error}", document.path)))
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]

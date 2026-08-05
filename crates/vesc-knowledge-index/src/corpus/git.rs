@@ -795,7 +795,7 @@ pub(super) fn identifiers(path: &str, content: &str) -> BTreeSet<String> {
         .collect()
 }
 
-pub(super) fn identifier_values(path: &str, content: &str) -> Vec<CompactString> {
+pub(crate) fn identifier_values(path: &str, content: &str) -> Vec<CompactString> {
     let mut buffer = [""; MAX_IDENTIFIERS];
     identifier_refs(path, content, &mut buffer)
         .iter()

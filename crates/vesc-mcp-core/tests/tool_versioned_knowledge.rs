@@ -37,9 +37,10 @@ async fn assert_default_snapshot_compatibility(
         unversioned["index"]["snapshot_id"],
         default.manifest.id.as_str()
     );
+    // Complete-history manifests use their sorted first tip as the stable anchor.
     assert_eq!(
         unversioned["index"]["repositories"]["bldc"],
-        fixture.tagged_commit()
+        std::cmp::min(fixture.old_commit(), fixture.tagged_commit())
     );
     assert!(
         unversioned["results"][0]["resource_uri"]

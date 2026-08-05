@@ -1949,6 +1949,79 @@ fn selected_tree_reuses_every_vector_already_present_in_complete_history() {
 }
 
 #[test]
+fn selected_tree_reuses_split_source_vectors_with_passage_local_identifiers() {
+    let (_root, work) = fixture();
+    let mut source_text = String::with_capacity(16 * 1024);
+    for index in 0..256 {
+        writeln!(
+            source_text,
+            "int release_symbol_{index}(void) {{ return {index}; }}"
+        )
+        .expect("write source fixture");
+    }
+    fs::write(work.join("src/release.c"), source_text).expect("split source");
+    git(&work, &["add", "src/release.c"]);
+    git(&work, &["commit", "-qm", "add split release source"]);
+    fs::write(
+        work.join("README.md"),
+        "# Fixture\n\nLater documentation.\n",
+    )
+    .expect("later source");
+    git(&work, &["commit", "-qam", "later documentation"]);
+    let selected_revision = git(&work, &["rev-parse", "HEAD"]);
+
+    let history_source = at_head(source(work.clone(), "fixture"), &work);
+    let history_root = tempdir().expect("history artifact root");
+    let mut history_provider = FakeEmbeddingProvider::new(8);
+    let history = build_git_history_artifacts_incrementally(
+        history_root.path(),
+        std::slice::from_ref(&history_source),
+        None,
+        None,
+        Some((&mut history_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("complete-history semantic build");
+    let history_generation = history_root
+        .path()
+        .join("generations")
+        .join(&history.artifacts.generation);
+    let selected_source = GitCorpusSource {
+        revision: Revision::try_from(selected_revision).expect("selected revision"),
+        history_tips: Vec::new(),
+        ..history_source
+    };
+    let selected_root = tempdir().expect("selected artifact root");
+
+    let selected = build_git_artifacts_with_provider(
+        selected_root.path(),
+        std::slice::from_ref(&selected_source),
+        Some((&mut FailingEmbeddingProvider, "fake", "test-revision")),
+        Some(&PreviousVectorArtifact {
+            lexical_path: history_generation.join("lexical.json"),
+            corpus_digest: history.artifacts.manifest.corpus.content_digest,
+            checksum: history
+                .artifacts
+                .manifest
+                .vector_checksum
+                .expect("history vector checksum"),
+            path: history_generation.join("vectors.bin"),
+        }),
+        None,
+    )
+    .expect("selected split source reuses history vectors");
+    let vectors = selected
+        .observations
+        .vector_build
+        .expect("vector observations");
+
+    assert_eq!(vectors.reused_vectors, selected.chunk_count);
+    assert_eq!(vectors.embedded_vectors, 0);
+}
+
+#[test]
 fn selected_tree_embeds_only_chunks_missing_from_complete_history() {
     let (_root, work) = fixture();
     let history_source = at_head(source(work.clone(), "fixture"), &work);
