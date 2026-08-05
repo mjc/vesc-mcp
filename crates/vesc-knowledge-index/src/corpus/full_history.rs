@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use gix::bstr::ByteSlice;
 use sha2::{Digest, Sha256};
 
 use super::chunking::{ChunkingConfig, chunk_document_drafts};
@@ -84,32 +85,23 @@ struct ReachableCommit {
 
 struct ProcessedHistory<'a> {
     source: &'a GitCorpusSource,
-    represented_tips: HashMap<gix::ObjectId, usize>,
+    represented_tips: HashMap<Vec<gix::ObjectId>, usize>,
     reusable_blobs: HistoryBlobDeduper,
 }
 
 struct SourceHistory {
     repository: gix::Repository,
-    current_id: gix::ObjectId,
-    previous_id: Option<gix::ObjectId>,
+    current_ids: Vec<gix::ObjectId>,
+    previous_ids: Vec<gix::ObjectId>,
 }
 
-struct TipAdmissions<'repo> {
-    tree: gix::Tree<'repo>,
-    blobs: HashMap<String, gix::ObjectId>,
+struct TipAdmissions {
+    blobs: HashMap<String, Vec<gix::ObjectId>>,
 }
 
-impl TipAdmissions<'_> {
+impl TipAdmissions {
     fn is_admitted(&self, path: &str, id: gix::ObjectId) -> bool {
-        self.blobs.get(path).is_some_and(|admitted| *admitted == id)
-    }
-
-    fn contains_tip_blob(&self, path: &str, id: gix::ObjectId) -> Result<bool, GitHistoryError> {
-        let entry = self
-            .tree
-            .lookup_entry_by_path(path)
-            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        Ok(entry.is_some_and(|entry| entry.mode().is_blob() && entry.object_id() == id))
+        self.blobs.get(path).is_some_and(|ids| ids.contains(&id))
     }
 }
 
@@ -1005,8 +997,8 @@ fn ingest_git_history_fast_forward_with_contents(
     for (source_index, source) in ordered_sources {
         let Some(SourceHistory {
             repository: repo,
-            current_id,
-            previous_id,
+            current_ids,
+            previous_ids,
         }) = source_history(source, &tips)?
         else {
             return Ok(None);
@@ -1015,7 +1007,7 @@ fn ingest_git_history_fast_forward_with_contents(
             .iter()
             .position(|known| same_corpus_contract(source, known.source));
         if let Some(reachable) = known_history
-            .and_then(|index| processed[index].represented_tips.get(&current_id))
+            .and_then(|index| processed[index].represented_tips.get(&current_ids))
             .copied()
         {
             observations.reachable_commits =
@@ -1024,8 +1016,11 @@ fn ingest_git_history_fast_forward_with_contents(
             continue;
         }
         let reusable_blobs = known_history.map(|index| &processed[index].reusable_blobs);
-        let (admitted_messages, source_reachable) =
-            select_commit_messages(&repo, current_id, source.policy.limits)?;
+        let (admitted_messages, source_reachable, previous_reachable) =
+            select_commit_messages(&repo, &current_ids, &previous_ids, source.policy.limits)?;
+        if !previous_reachable {
+            return Ok(None);
+        }
         observations.reused_commit_messages =
             observations
                 .reused_commit_messages
@@ -1038,10 +1033,12 @@ fn ingest_git_history_fast_forward_with_contents(
         observations.reachable_commits = observations
             .reachable_commits
             .saturating_add(source_reachable);
-        let walk = previous_id.map_or_else(
-            || repo.rev_walk([current_id]),
-            |previous_id| repo.rev_walk([current_id]).with_hidden([previous_id]),
-        );
+        let walk = if previous_ids.is_empty() {
+            repo.rev_walk(current_ids.iter().copied())
+        } else {
+            repo.rev_walk(current_ids.iter().copied())
+                .with_hidden(previous_ids.iter().copied())
+        };
         let walk = walk
             .all()
             .map_err(|error| GitHistoryError::Git(error.to_string()))?;
@@ -1059,7 +1056,7 @@ fn ingest_git_history_fast_forward_with_contents(
             if let Some(reachable) = reuse_reachability.get(&revision).copied() {
                 return Ok(reachable);
             }
-            let reachable = if revision == current_id {
+            let reachable = if current_ids.contains(&revision) {
                 true
             } else if !repo.has_object(revision) {
                 false
@@ -1067,36 +1064,48 @@ fn ingest_git_history_fast_forward_with_contents(
                 let graph = reuse_graph
                     .as_mut()
                     .expect("reusable blobs initialize a revision graph");
-                match repo.merge_base_with_graph(current_id, revision, graph) {
-                    Ok(base) => base.detach() == revision,
-                    Err(gix::repository::merge_base_with_graph::Error::NotFound { .. }) => false,
-                    Err(error) => return Err(GitHistoryError::Git(error.to_string())),
-                }
+                current_ids
+                    .iter()
+                    .try_fold(false, |reachable, current_id| {
+                        if reachable {
+                            return Ok(true);
+                        }
+                        match repo.merge_base_with_graph(*current_id, revision, graph) {
+                            Ok(base) => Ok(base.detach() == revision),
+                            Err(gix::repository::merge_base_with_graph::Error::NotFound {
+                                ..
+                            }) => Ok(false),
+                            Err(error) => Err(GitHistoryError::Git(error.to_string())),
+                        }
+                    })?
             };
             reuse_reachability.insert(revision, reachable);
             Ok(reachable)
         };
         let mut budget = GitCorpusBudget::new(source.policy.limits);
         let mut ingested_commits = 0_usize;
-        let tip_admissions = if previous_id.is_none() {
-            resource_cache = Some(
-                repo.diff_resource_cache_for_tree_diff()
-                    .map_err(|error| GitHistoryError::Git(error.to_string()))?,
-            );
+        let reservation_ids = if previous_ids.is_empty() {
+            current_ids.clone()
+        } else {
+            current_ids
+                .iter()
+                .filter(|id| !previous_ids.contains(id))
+                .copied()
+                .collect()
+        };
+        let tip_admissions = if reservation_ids.is_empty() {
+            None
+        } else {
             Some(reserve_tip_blobs(
                 &repo,
                 source,
-                current_id,
-                resource_cache
-                    .as_mut()
-                    .expect("resource cache initialized above"),
+                &reservation_ids,
+                &previous_ids,
+                &seen_blobs,
                 reusable_blobs,
                 &mut revision_is_reachable,
                 &mut budget,
-                &mut observations,
             )?)
-        } else {
-            None
         };
         let mut commits = Vec::new();
         for info in walk {
@@ -1153,14 +1162,14 @@ fn ingest_git_history_fast_forward_with_contents(
             .saturating_add(ingested_commits);
         if let Some(index) = known_history {
             let known = &mut processed[index];
-            known.represented_tips.insert(current_id, source_reachable);
+            known.represented_tips.insert(current_ids, source_reachable);
             known.reusable_blobs.merge_reusable(seen_blobs);
         } else {
             let mut reusable_blobs = HistoryBlobDeduper::default();
             reusable_blobs.merge_reusable(seen_blobs);
             processed.push(ProcessedHistory {
                 source,
-                represented_tips: HashMap::from([(current_id, source_reachable)]),
+                represented_tips: HashMap::from([(current_ids, source_reachable)]),
                 reusable_blobs,
             });
         }
@@ -1171,11 +1180,17 @@ fn ingest_git_history_fast_forward_with_contents(
 fn validated_history_tips(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
-) -> Option<BTreeMap<RepositoryId, Revision>> {
-    let tips = previous_tips
-        .iter()
-        .map(|tip| (tip.repository.clone(), tip.revision.clone()))
-        .collect::<BTreeMap<_, _>>();
+) -> Option<BTreeMap<RepositoryId, Vec<Revision>>> {
+    let mut tips = BTreeMap::<RepositoryId, Vec<Revision>>::new();
+    for tip in previous_tips {
+        tips.entry(tip.repository.clone())
+            .or_default()
+            .push(tip.revision.clone());
+    }
+    for revisions in tips.values_mut() {
+        revisions.sort();
+        revisions.dedup();
+    }
     let repositories = sources
         .iter()
         .map(|source| source.repository_id.clone())
@@ -1189,29 +1204,46 @@ fn validated_history_tips(
 
 fn source_history(
     source: &GitCorpusSource,
-    tips: &BTreeMap<RepositoryId, Revision>,
+    tips: &BTreeMap<RepositoryId, Vec<Revision>>,
 ) -> Result<Option<SourceHistory>, GitHistoryError> {
     validate_policy(&source.policy)?;
     let repository = gix::open(&source.repository_path)
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let current_id = gix::ObjectId::from_hex(source.revision.as_str().as_bytes())
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let previous_id = tips
-        .get(&source.repository_id)
+    let mut current_ids = source
+        .history_tips
+        .iter()
         .map(|revision| {
             gix::ObjectId::from_hex(revision.as_str().as_bytes())
                 .map_err(|error| GitHistoryError::Git(error.to_string()))
         })
-        .transpose()?;
-    if let Some(previous) = previous_id
-        && !is_ancestor(&repository, current_id, previous)?
-    {
-        return Ok(None);
+        .collect::<Result<Vec<_>, _>>()?;
+    current_ids.sort_unstable();
+    current_ids.dedup();
+    if current_ids.is_empty() {
+        return Err(GitHistoryError::Invalid(
+            "Git history source has no current tips".into(),
+        ));
     }
+    let selected_id = gix::ObjectId::from_hex(source.revision.as_str().as_bytes())
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    if !current_ids.contains(&selected_id) {
+        return Err(GitHistoryError::Invalid(
+            "Git history source revision is not one of its current tips".into(),
+        ));
+    }
+    let previous_ids = tips
+        .get(&source.repository_id)
+        .into_iter()
+        .flatten()
+        .map(|revision| {
+            gix::ObjectId::from_hex(revision.as_str().as_bytes())
+                .map_err(|error| GitHistoryError::Git(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(SourceHistory {
         repository,
-        current_id,
-        previous_id,
+        current_ids,
+        previous_ids,
     }))
 }
 
@@ -1221,35 +1253,23 @@ fn same_corpus_contract(left: &GitCorpusSource, right: &GitCorpusSource) -> bool
         && left.policy == right.policy
 }
 
-fn is_ancestor(
-    repo: &gix::Repository,
-    tip: gix::ObjectId,
-    ancestor: gix::ObjectId,
-) -> Result<bool, GitHistoryError> {
-    if tip == ancestor {
-        return Ok(true);
-    }
-    match repo.merge_base(tip, ancestor) {
-        Ok(base) => Ok(base.detach() == ancestor),
-        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(false),
-        Err(error) => Err(GitHistoryError::Git(error.to_string())),
-    }
-}
-
 fn select_commit_messages(
     repo: &gix::Repository,
-    tip: gix::ObjectId,
+    tips: &[gix::ObjectId],
+    previous_tips: &[gix::ObjectId],
     limits: super::git::GitCorpusLimits,
-) -> Result<(HashSet<gix::ObjectId>, usize), GitHistoryError> {
+) -> Result<(HashSet<gix::ObjectId>, usize, bool), GitHistoryError> {
     let mut walk = repo
-        .rev_walk([tip])
+        .rev_walk(tips.iter().copied())
         .all()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let mut budget = GitCorpusBudget::new(limits);
     let mut admitted = HashSet::new();
+    let mut missing_previous = previous_tips.iter().copied().collect::<HashSet<_>>();
     let mut reachable = 0_usize;
     for info in &mut walk {
         let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        missing_previous.remove(&info.id);
         reachable = reachable.saturating_add(1);
         #[cfg(feature = "coz-profile")]
         coz::progress!("git_history_walk_commit");
@@ -1262,70 +1282,223 @@ fn select_commit_messages(
             admitted.insert(info.id);
         }
     }
-    Ok((admitted, reachable))
+    Ok((admitted, reachable, missing_previous.is_empty()))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reserve_tip_blobs<'repo>(
-    repo: &'repo gix::Repository,
+fn reserve_tip_blobs(
+    repo: &gix::Repository,
     source: &GitCorpusSource,
-    current_id: gix::ObjectId,
-    resource_cache: &mut gix::diff::blob::Platform,
+    current_ids: &[gix::ObjectId],
+    previous_ids: &[gix::ObjectId],
+    seen_blobs: &HistoryBlobDeduper,
     reusable_blobs: Option<&HistoryBlobDeduper>,
     revision_is_reachable: &mut dyn FnMut(gix::ObjectId) -> Result<bool, GitHistoryError>,
     budget: &mut GitCorpusBudget,
-    observations: &mut GitHistoryRefreshObservations,
-) -> Result<TipAdmissions<'repo>, GitHistoryError> {
-    let current = repo
-        .find_commit(current_id)
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?
-        .tree()
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    let mut blobs = HashMap::new();
-    let mut callback_error = None;
-    let diff = repo
-        .empty_tree()
-        .changes()
-        .map_err(|error| GitHistoryError::Git(error.to_string()))?
-        .options(|options| {
-            options.track_path();
-            options.track_rewrites(None);
-        })
-        .for_each_to_obtain_tree_with_cache(&current, resource_cache, |change| {
-            let Some((path, id)) = selected_change(change, &source.policy) else {
-                return Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()));
+) -> Result<TipAdmissions, GitHistoryError> {
+    let mut admissions = TipAdmissions {
+        blobs: HashMap::new(),
+    };
+    if !previous_ids.is_empty() {
+        reserve_incremental_tip_blobs(
+            repo,
+            source,
+            current_ids,
+            previous_ids,
+            seen_blobs,
+            reusable_blobs,
+            revision_is_reachable,
+            budget,
+            &mut admissions,
+        )?;
+        return Ok(admissions);
+    }
+    let mut trees = Vec::new();
+    for current_id in current_ids {
+        let current = repo
+            .find_commit(*current_id)
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?
+            .tree()
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        trees.push((String::new(), current.id));
+    }
+    let mut seen_trees = HashSet::new();
+    while let Some((prefix, tree_id)) = trees.pop() {
+        if !seen_trees.insert((prefix.clone(), tree_id)) {
+            continue;
+        }
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        for entry in tree.iter() {
+            let entry = entry.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+            let filename = entry.filename().to_str_lossy();
+            let path = if prefix.is_empty() {
+                filename.into_owned()
+            } else {
+                format!("{prefix}/{filename}")
             };
-            match has_reachable_reusable_blob(reusable_blobs, &path, id, revision_is_reachable) {
-                Ok(true) => return Ok(std::ops::ControlFlow::Continue(())),
-                Ok(false) => {}
-                Err(error) => {
+            let id = entry.object_id();
+            if entry.mode().is_tree() {
+                trees.push((path, id));
+                continue;
+            }
+            if !entry.mode().is_blob() || !is_selected(&path, &source.policy) {
+                continue;
+            }
+            reserve_tip_blob(
+                repo,
+                &path,
+                id,
+                seen_blobs,
+                reusable_blobs,
+                revision_is_reachable,
+                budget,
+                &mut admissions,
+            )?;
+        }
+    }
+    Ok(admissions)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reserve_incremental_tip_blobs(
+    repo: &gix::Repository,
+    source: &GitCorpusSource,
+    current_ids: &[gix::ObjectId],
+    previous_ids: &[gix::ObjectId],
+    seen_blobs: &HistoryBlobDeduper,
+    reusable_blobs: Option<&HistoryBlobDeduper>,
+    revision_is_reachable: &mut dyn FnMut(gix::ObjectId) -> Result<bool, GitHistoryError>,
+    budget: &mut GitCorpusBudget,
+    admissions: &mut TipAdmissions,
+) -> Result<(), GitHistoryError> {
+    let mut resource_cache = repo
+        .diff_resource_cache_for_tree_diff()
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    let commit_graph = repo
+        .commit_graph_if_enabled()
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    let mut graph = repo.revision_graph(commit_graph.as_ref());
+    for current_id in current_ids {
+        let baseline =
+            match nearest_previous_merge_base(repo, *current_id, previous_ids, &mut graph)? {
+                Some(baseline_id) => repo
+                    .find_commit(baseline_id)
+                    .map_err(|error| GitHistoryError::Git(error.to_string()))?
+                    .tree()
+                    .map_err(|error| GitHistoryError::Git(error.to_string()))?,
+                None => repo.empty_tree(),
+            };
+        let current = repo
+            .find_commit(*current_id)
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?
+            .tree()
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        let mut callback_error = None;
+        let diff = baseline
+            .changes()
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?
+            .options(|options| {
+                options.track_path();
+                options.track_rewrites(None);
+            })
+            .for_each_to_obtain_tree_with_cache(&current, &mut resource_cache, |change| {
+                let Some((path, id)) = selected_change(change, &source.policy) else {
+                    return Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()));
+                };
+                if let Err(error) = reserve_tip_blob(
+                    repo,
+                    &path,
+                    id,
+                    seen_blobs,
+                    reusable_blobs,
+                    revision_is_reachable,
+                    budget,
+                    admissions,
+                ) {
                     callback_error = Some(error);
                     return Ok(std::ops::ControlFlow::Break(()));
                 }
-            }
-            let size = match repo.find_header(id) {
-                Ok(header) => header.size(),
-                Err(error) => {
-                    callback_error = Some(GitHistoryError::Git(error.to_string()));
-                    return Ok(std::ops::ControlFlow::Break(()));
-                }
-            };
-            if budget.reserve(size).is_err() {
-                observations.budget_rejections = observations.budget_rejections.saturating_add(1);
-                return Ok(std::ops::ControlFlow::Continue(()));
-            }
-            blobs.insert(path, id);
-            Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
-        });
-    resource_cache.clear_resource_cache_keep_allocation();
-    diff.map_err(|error| GitHistoryError::Git(error.to_string()))?;
-    if let Some(error) = callback_error {
-        return Err(error);
+                Ok(std::ops::ControlFlow::Continue(()))
+            });
+        resource_cache.clear_resource_cache_keep_allocation();
+        diff.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
     }
-    Ok(TipAdmissions {
-        tree: current,
-        blobs,
-    })
+    Ok(())
+}
+
+fn nearest_previous_merge_base(
+    repo: &gix::Repository,
+    current: gix::ObjectId,
+    previous_ids: &[gix::ObjectId],
+    graph: &mut gix::revwalk::Graph<
+        '_,
+        '_,
+        gix::revwalk::graph::Commit<gix::revision::plumbing::merge_base::Flags>,
+    >,
+) -> Result<Option<gix::ObjectId>, GitHistoryError> {
+    let mut merge_bases = HashSet::new();
+    for previous in previous_ids {
+        match repo.merge_base_with_graph(current, *previous, graph) {
+            Ok(base) => {
+                merge_bases.insert(base.detach());
+            }
+            Err(gix::repository::merge_base_with_graph::Error::NotFound { .. }) => {}
+            Err(error) => return Err(GitHistoryError::Git(error.to_string())),
+        }
+    }
+    if merge_bases.len() == 1 {
+        return Ok(merge_bases.into_iter().next());
+    }
+    let walk = repo
+        .rev_walk([current])
+        .all()
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    for info in walk {
+        let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        if merge_bases.contains(&info.id) {
+            return Ok(Some(info.id));
+        }
+    }
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reserve_tip_blob(
+    repo: &gix::Repository,
+    path: &str,
+    id: gix::ObjectId,
+    seen_blobs: &HistoryBlobDeduper,
+    reusable_blobs: Option<&HistoryBlobDeduper>,
+    revision_is_reachable: &mut dyn FnMut(gix::ObjectId) -> Result<bool, GitHistoryError>,
+    budget: &mut GitCorpusBudget,
+    admissions: &mut TipAdmissions,
+) -> Result<(), GitHistoryError> {
+    if seen_blobs.contains(path, id)
+        || admissions
+            .blobs
+            .get(path)
+            .is_some_and(|ids| ids.contains(&id))
+        || has_reachable_reusable_blob(reusable_blobs, path, id, revision_is_reachable)?
+    {
+        return Ok(());
+    }
+    let size = repo
+        .find_header(id)
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?
+        .size();
+    if budget.reserve(size).is_ok() {
+        admissions
+            .blobs
+            .entry(path.to_owned())
+            .or_default()
+            .push(id);
+    }
+    Ok(())
 }
 
 fn has_reachable_reusable_blob(
@@ -1356,7 +1529,7 @@ fn ingest_commit_changes(
     reusable_blobs: Option<&HistoryBlobDeduper>,
     revision_is_reachable: &mut dyn FnMut(gix::ObjectId) -> Result<bool, GitHistoryError>,
     budget: &mut GitCorpusBudget,
-    tip_admissions: Option<&TipAdmissions<'_>>,
+    tip_admissions: Option<&TipAdmissions>,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
 ) -> Result<CommitCoverage, GitHistoryError> {
@@ -1419,16 +1592,6 @@ fn ingest_commit_changes(
                 }
             };
             if !reserved_at_tip && budget.reserve(size).is_err() {
-                if let Some(admissions) = tip_admissions {
-                    match admissions.contains_tip_blob(&path, id) {
-                        Ok(true) => return Ok(std::ops::ControlFlow::Continue(())),
-                        Ok(false) => {}
-                        Err(error) => {
-                            callback_error = Some(error);
-                            return Ok(std::ops::ControlFlow::Break(()));
-                        }
-                    }
-                }
                 observations.budget_rejections = observations.budget_rejections.saturating_add(1);
                 return Ok(std::ops::ControlFlow::Continue(()));
             }

@@ -504,6 +504,7 @@ max_total_bytes = 10000
             vec![SnapshotRepository {
                 repository: crate::managed_repositories::RepositoryId::new(repository)
                     .expect("repository id"),
+                history_tips: vec![commit.to_owned()],
                 commit: commit.to_owned(),
                 policy_digest: String::from("fixture-policy"),
             }],

@@ -306,7 +306,7 @@ struct PreviousCorpusProjection {
     content_digest: ContentDigest,
 }
 
-const GIT_HISTORY_LEXICAL_STAGE_SCHEMA: SchemaVersion = SchemaVersion { major: 1, minor: 2 };
+const GIT_HISTORY_LEXICAL_STAGE_SCHEMA: SchemaVersion = SchemaVersion { major: 1, minor: 3 };
 const GIT_HISTORY_LEXICAL_STAGE_DIR: &str = "lexical-stage";
 const GIT_HISTORY_LEXICAL_STAGE_MARKER: &str = "complete.json";
 
@@ -324,6 +324,7 @@ struct GitHistoryLexicalContract<'a> {
 struct GitHistorySourceContract<'a> {
     repository: &'a RepositoryId,
     revision: &'a Revision,
+    history_tips: Vec<&'a Revision>,
     trust_tier: crate::TrustTier,
     license: &'a crate::LicenseStatus,
     include_prefixes: &'a [String],
@@ -456,20 +457,26 @@ fn git_history_lexical_contract_digest(
     let embedded_catalog = ContentDigest::of(&serde_json::to_vec(&embedded_catalog_chunks()?)?);
     let sources = sources
         .iter()
-        .map(|source| GitHistorySourceContract {
-            repository: &source.repository_id,
-            revision: &source.revision,
-            trust_tier: source.trust_tier,
-            license: &source.license,
-            include_prefixes: &source.policy.include_prefixes,
-            exclude_prefixes: &source.policy.exclude_prefixes,
-            include_patterns: &source.policy.include_patterns,
-            exclude_patterns: &source.policy.exclude_patterns,
-            extensions: &source.policy.extensions,
-            filenames: &source.policy.filenames,
-            max_file_bytes: source.policy.limits.max_file_bytes(),
-            max_files: source.policy.limits.max_files(),
-            max_total_bytes: source.policy.limits.max_total_bytes(),
+        .map(|source| {
+            let mut history_tips = source.history_tips.iter().collect::<Vec<_>>();
+            history_tips.sort_unstable();
+            history_tips.dedup();
+            GitHistorySourceContract {
+                repository: &source.repository_id,
+                revision: &source.revision,
+                history_tips,
+                trust_tier: source.trust_tier,
+                license: &source.license,
+                include_prefixes: &source.policy.include_prefixes,
+                exclude_prefixes: &source.policy.exclude_prefixes,
+                include_patterns: &source.policy.include_patterns,
+                exclude_patterns: &source.policy.exclude_patterns,
+                extensions: &source.policy.extensions,
+                filenames: &source.policy.filenames,
+                max_file_bytes: source.policy.limits.max_file_bytes(),
+                max_files: source.policy.limits.max_files(),
+                max_total_bytes: source.policy.limits.max_total_bytes(),
+            }
         })
         .collect();
     let contract = GitHistoryLexicalContract {
@@ -2010,6 +2017,7 @@ mod tests {
             repository_path: PathBuf::from("fixture.git"),
             repository_id: RepositoryId::try_from("fixture").expect("repository"),
             revision: Revision::try_from("0".repeat(40)).expect("revision"),
+            history_tips: vec![Revision::try_from("0".repeat(40)).expect("history tip")],
             trust_tier: crate::TrustTier::CuratedUpstream,
             license: crate::LicenseStatus::ReferenceOnly,
             policy: crate::corpus::git::GitCorpusPolicy::default(),
@@ -2031,6 +2039,30 @@ mod tests {
                     .expect("changed contract")
             );
         }
+    }
+
+    #[test]
+    fn lexical_stage_contract_includes_every_history_tip() {
+        let mut source = GitCorpusSource {
+            repository_path: PathBuf::from("fixture.git"),
+            repository_id: RepositoryId::try_from("fixture").expect("repository"),
+            revision: Revision::try_from("0".repeat(40)).expect("revision"),
+            history_tips: vec![Revision::try_from("0".repeat(40)).expect("history tip")],
+            trust_tier: crate::TrustTier::CuratedUpstream,
+            license: crate::LicenseStatus::ReferenceOnly,
+            policy: crate::corpus::git::GitCorpusPolicy::default(),
+        };
+        let baseline = git_history_lexical_contract_digest(std::slice::from_ref(&source))
+            .expect("baseline contract");
+
+        source
+            .history_tips
+            .push(Revision::try_from("1".repeat(40)).expect("second history tip"));
+
+        assert_ne!(
+            baseline,
+            git_history_lexical_contract_digest(&[source]).expect("changed contract")
+        );
     }
 
     #[test]

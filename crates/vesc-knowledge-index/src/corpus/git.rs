@@ -139,6 +139,7 @@ pub struct GitCorpusSource {
     pub repository_path: PathBuf,
     pub repository_id: RepositoryId,
     pub revision: Revision,
+    pub history_tips: Vec<Revision>,
     pub trust_tier: TrustTier,
     pub license: LicenseStatus,
     pub policy: GitCorpusPolicy,

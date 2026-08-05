@@ -21,7 +21,8 @@ use crate::managed_repositories::{
     TrustTier,
 };
 
-const SNAPSHOT_SCHEMA: u16 = 2;
+const LEGACY_SNAPSHOT_SCHEMA: u16 = 2;
+const SNAPSHOT_SCHEMA: u16 = 3;
 
 // Avoid queueing duplicate build tasks inside one process. The filesystem lock
 // below extends the same one-working-set limit across preparation children.
@@ -72,6 +73,8 @@ struct SnapshotSemanticConfig {
 pub struct SnapshotRepository {
     pub repository: RepositoryId,
     pub commit: String,
+    #[serde(default)]
+    pub history_tips: Vec<String>,
     pub policy_digest: String,
 }
 
@@ -139,6 +142,20 @@ impl KnowledgeSnapshotManifest {
         if repositories.is_empty() {
             return Err(SnapshotError::EmptySelection);
         }
+        for repository in &mut repositories {
+            repository.history_tips.sort_unstable();
+            repository.history_tips.dedup();
+            if repository.history_tips.is_empty()
+                || !repository.history_tips.contains(&repository.commit)
+                || profile == SnapshotProfile::SelectedTrees
+                    && repository.history_tips.as_slice() != [repository.commit.as_str()]
+            {
+                return Err(SnapshotError::InvalidHistoryTips);
+            }
+            if profile == SnapshotProfile::CompleteHistory {
+                repository.commit = repository.history_tips[0].clone();
+            }
+        }
         repositories.sort_by(|left, right| left.repository.cmp(&right.repository));
         configured_repositories.sort();
         if repositories
@@ -179,8 +196,7 @@ impl KnowledgeSnapshotManifest {
     }
 
     fn has_valid_identity(&self) -> bool {
-        if self.schema != SNAPSHOT_SCHEMA
-            || self.repositories.is_empty()
+        if self.repositories.is_empty()
             || self.configured_repositories.is_empty()
             || self
                 .repositories
@@ -196,6 +212,42 @@ impl KnowledgeSnapshotManifest {
                         && configured.policy_digest == selected.policy_digest
                 })
             })
+        {
+            return false;
+        }
+        if self.schema == LEGACY_SNAPSHOT_SCHEMA
+            && self
+                .repositories
+                .iter()
+                .all(|repository| repository.history_tips.is_empty())
+        {
+            let repositories = self
+                .repositories
+                .iter()
+                .map(|repository| LegacySnapshotRepository {
+                    repository: &repository.repository,
+                    commit: &repository.commit,
+                    policy_digest: &repository.policy_digest,
+                })
+                .collect::<Vec<_>>();
+            let identity = LegacySnapshotIdentity {
+                schema: self.schema,
+                profile: self.profile,
+                repositories: &repositories,
+                configured_repositories: &self.configured_repositories,
+                component_versions: &self.component_versions,
+                semantic: self.semantic.as_ref(),
+            };
+            return serde_json::to_vec(&identity)
+                .ok()
+                .and_then(|identity| KnowledgeSnapshotId::new(hex_sha256(&identity)).ok())
+                .is_some_and(|id| id == self.id);
+        }
+        if self.schema != SNAPSHOT_SCHEMA
+            || self
+                .repositories
+                .iter()
+                .any(|repository| !history_tips_are_canonical(self.profile, repository))
         {
             return false;
         }
@@ -220,11 +272,49 @@ impl KnowledgeSnapshotManifest {
     }
 }
 
+fn history_tips_are_canonical(profile: SnapshotProfile, repository: &SnapshotRepository) -> bool {
+    let canonical = !repository.history_tips.is_empty()
+        && repository
+            .history_tips
+            .iter()
+            .any(|tip| tip == &repository.commit)
+        && repository
+            .history_tips
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]);
+    canonical
+        && match profile {
+            SnapshotProfile::SelectedTrees => {
+                repository.history_tips.as_slice() == [repository.commit.as_str()]
+            }
+            SnapshotProfile::CompleteHistory => {
+                repository.history_tips.first() == Some(&repository.commit)
+            }
+        }
+}
+
 #[derive(Serialize)]
 struct SnapshotIdentity<'a> {
     schema: u16,
     profile: SnapshotProfile,
     repositories: &'a [SnapshotRepository],
+    configured_repositories: &'a [SnapshotRepositoryConfiguration],
+    component_versions: &'a BTreeMap<String, String>,
+    semantic: Option<&'a SnapshotSemanticModel>,
+}
+
+#[derive(Serialize)]
+struct LegacySnapshotRepository<'a> {
+    repository: &'a RepositoryId,
+    commit: &'a str,
+    policy_digest: &'a str,
+}
+
+#[derive(Serialize)]
+struct LegacySnapshotIdentity<'a> {
+    schema: u16,
+    profile: SnapshotProfile,
+    repositories: &'a [LegacySnapshotRepository<'a>],
     configured_repositories: &'a [SnapshotRepositoryConfiguration],
     component_versions: &'a BTreeMap<String, String>,
     semantic: Option<&'a SnapshotSemanticModel>,
@@ -304,6 +394,8 @@ pub enum SnapshotError {
     EmptySelection,
     #[error("snapshot selection contains a duplicate repository")]
     DuplicateRepository,
+    #[error("snapshot history tips are empty or do not contain the selected commit")]
+    InvalidHistoryTips,
     #[error("snapshot repository is not configured: {0}")]
     UnknownRepository(RepositoryId),
     #[error("managed repository resolution failed")]
@@ -593,11 +685,23 @@ impl KnowledgeSnapshotStore {
             let selector = selectors
                 .get(repository.id())
                 .map_or_else(|| repository.default_ref(), String::as_str);
-            match self.git.resolve_configured(repository, selector) {
-                Ok(resolved) => {
+            match self
+                .git
+                .resolve_configured(repository, selector)
+                .and_then(|resolved| {
+                    let history_tips = match profile {
+                        SnapshotProfile::SelectedTrees => vec![resolved.commit.clone()],
+                        SnapshotProfile::CompleteHistory => {
+                            self.git.history_tips_configured(repository)?
+                        }
+                    };
+                    Ok((resolved, history_tips))
+                }) {
+                Ok((resolved, history_tips)) => {
                     selected.push(SnapshotRepository {
                         repository: repository.id().clone(),
                         commit: resolved.commit,
+                        history_tips,
                         policy_digest: repository_policy_digest(repository)?,
                     });
                 }
@@ -723,9 +827,16 @@ impl KnowledgeSnapshotStore {
             match self
                 .git
                 .resolve_configured(repository, repository.default_ref())
+                .and_then(|resolved| Ok((resolved, self.git.history_tips_configured(repository)?)))
             {
-                Ok(resolved)
-                    if selected.is_some_and(|selected| selected.commit == resolved.commit) => {}
+                Ok((resolved, history_tips))
+                    if selected.is_some_and(|selected| {
+                        manifest.profile == SnapshotProfile::CompleteHistory
+                            && selected.history_tips == history_tips
+                            || manifest.profile == SnapshotProfile::SelectedTrees
+                                && selected.commit == resolved.commit
+                                && selected.history_tips == history_tips
+                    }) => {}
                 Err(ManagedGitError::Storage(_) | ManagedGitError::Git(_))
                     if allow_unavailable
                         && (selected.is_some()
@@ -887,12 +998,13 @@ fn build_or_reuse(
                 .iter()
                 .find(|repository| repository.id() == &selected.repository)
                 .ok_or_else(|| SnapshotError::UnknownRepository(selected.repository.clone()))?;
-            corpus_source(layout, repository, &selected.commit)
+            corpus_source(layout, repository, &selected.commit, &selected.history_tips)
         })
         .collect::<Result<Vec<_>, _>>()?;
     pin_snapshot_commits(layout, manifest)?;
     let build = build_snapshot_artifact(
         layout,
+        repositories,
         manifest,
         &artifact_path,
         &sources,
@@ -968,24 +1080,31 @@ fn pin_snapshot_commits(
     layout: &KnowledgeDataLayout,
     manifest: &KnowledgeSnapshotManifest,
 ) -> Result<(), SnapshotError> {
-    let reference = format!("refs/vesc-mcp/snapshots/{}", manifest.id.as_str());
     for selected in &manifest.repositories {
         let repository = gix::open(layout.repository(&selected.repository)).map_err(|error| {
             SnapshotError::Build(format!("open managed Git repository: {error}"))
         })?;
-        let commit = gix::ObjectId::from_hex(selected.commit.as_bytes())
-            .map_err(|error| SnapshotError::Build(format!("parse snapshot commit: {error}")))?;
-        repository
-            .find_commit(commit)
-            .map_err(|error| SnapshotError::Build(format!("read snapshot commit: {error}")))?;
-        repository
-            .reference(
-                reference.as_str(),
-                commit,
-                gix::refs::transaction::PreviousValue::Any,
-                "vesc-mcp snapshot pin",
-            )
-            .map_err(|error| SnapshotError::Build(format!("pin snapshot commit: {error}")))?;
+        let tips = if selected.history_tips.is_empty() {
+            std::slice::from_ref(&selected.commit)
+        } else {
+            selected.history_tips.as_slice()
+        };
+        for tip in tips {
+            let commit = gix::ObjectId::from_hex(tip.as_bytes())
+                .map_err(|error| SnapshotError::Build(format!("parse snapshot commit: {error}")))?;
+            repository
+                .find_commit(commit)
+                .map_err(|error| SnapshotError::Build(format!("read snapshot commit: {error}")))?;
+            let reference = format!("refs/vesc-mcp/snapshots/{}/{}", manifest.id.as_str(), tip);
+            repository
+                .reference(
+                    reference.as_str(),
+                    commit,
+                    gix::refs::transaction::PreviousValue::Any,
+                    "vesc-mcp snapshot pin",
+                )
+                .map_err(|error| SnapshotError::Build(format!("pin snapshot commit: {error}")))?;
+        }
     }
     Ok(())
 }
@@ -1134,6 +1253,7 @@ fn prune_obsolete_incomplete_snapshots(
                     let name = reference.name().as_bstr().to_string();
                     if let Some(id) = name
                         .strip_prefix(PIN_PREFIX)
+                        .and_then(|name| name.split('/').next())
                         .and_then(|name| KnowledgeSnapshotId::new(name).ok())
                     {
                         candidates.insert(id);
@@ -1151,17 +1271,44 @@ fn prune_obsolete_incomplete_snapshots(
     }
     candidates.retain(|id| id != current && !layout.snapshot(id).is_file());
     for id in candidates {
-        let reference_name = format!("{PIN_PREFIX}{}", id.as_str());
         for repository in &repositories {
-            if let Some(reference) = repository
-                .try_find_reference(reference_name.as_str())
+            let prefix = format!("{PIN_PREFIX}{}/", id.as_str());
+            let references = repository.references().map_err(|error| {
+                SnapshotError::Build(format!("read snapshot pins for cleanup: {error}"))
+            })?;
+            let mut names = references
+                .prefixed(prefix.as_str())
                 .map_err(|error| {
-                    SnapshotError::Build(format!("find obsolete snapshot pin: {error}"))
+                    SnapshotError::Build(format!("list obsolete snapshot pins: {error}"))
                 })?
+                .map(|reference| {
+                    reference
+                        .map(|reference| reference.name().as_bstr().to_string())
+                        .map_err(|error| {
+                            SnapshotError::Build(format!("read obsolete snapshot pin: {error}"))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let legacy = format!("{PIN_PREFIX}{}", id.as_str());
+            if repository
+                .try_find_reference(legacy.as_str())
+                .map_err(|error| {
+                    SnapshotError::Build(format!("find legacy snapshot pin: {error}"))
+                })?
+                .is_some()
             {
-                reference.delete().map_err(|error| {
-                    SnapshotError::Build(format!("delete obsolete snapshot pin: {error}"))
-                })?;
+                names.push(legacy);
+            }
+            for name in names {
+                repository
+                    .find_reference(name.as_str())
+                    .map_err(|error| {
+                        SnapshotError::Build(format!("find obsolete snapshot pin: {error}"))
+                    })?
+                    .delete()
+                    .map_err(|error| {
+                        SnapshotError::Build(format!("delete obsolete snapshot pin: {error}"))
+                    })?;
             }
         }
         remove_if_present(&layout.artifact(&id))?;
@@ -1198,6 +1345,7 @@ fn report_progress(progress: Option<&SnapshotProgressReporter>, phase: SnapshotB
 
 fn build_snapshot_artifact(
     layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
     manifest: &KnowledgeSnapshotManifest,
     artifact_path: &Path,
     sources: &[GitCorpusSource],
@@ -1209,8 +1357,8 @@ fn build_snapshot_artifact(
     let vector_checkpoint_path = semantic.map(|_| vector_checkpoint_path(layout, &manifest.id));
     let summary = match manifest.profile {
         SnapshotProfile::SelectedTrees => {
-            let previous_vectors =
-                semantic.and_then(|_| load_previous_vector_artifact(layout, manifest));
+            let previous_vectors = semantic
+                .and_then(|_| load_previous_vector_artifact(layout, repositories, manifest));
             let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
                 (
                     provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
@@ -1231,7 +1379,7 @@ fn build_snapshot_artifact(
             summary
         }
         SnapshotProfile::CompleteHistory => {
-            let previous = load_previous_snapshot(layout, manifest);
+            let previous = load_previous_snapshot(layout, repositories, manifest);
             let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
                 (
                     provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
@@ -1326,8 +1474,10 @@ struct PreviousSnapshotArtifacts {
 
 fn load_previous_vector_artifact(
     layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
     current: &KnowledgeSnapshotManifest,
 ) -> Option<vesc_knowledge_index::PreviousVectorArtifact> {
+    let legacy_policy_digests = legacy_policy_digests(repositories)?;
     let snapshots = fs::read_dir(layout.root().as_path().join("snapshots")).ok()?;
     let default = crate::read_default_snapshot(layout.root().as_path())
         .ok()
@@ -1343,7 +1493,13 @@ fn load_previous_vector_artifact(
                 .is_some_and(|extension| extension == "json")
         })
         .filter_map(|entry| read_and_validate_manifest(&entry.path()).ok())
-        .filter(|previous| previous_vector_snapshot_is_compatible(previous, current))
+        .filter(|previous| {
+            previous_vector_snapshot_is_compatible_with_legacy(
+                previous,
+                current,
+                &legacy_policy_digests,
+            )
+        })
         .collect::<Vec<_>>();
     candidates.sort_unstable_by(|left, right| {
         let left_is_default = default.as_ref().is_some_and(|id| id == &left.id);
@@ -1355,14 +1511,23 @@ fn load_previous_vector_artifact(
             })
             .then_with(|| left.id.cmp(&right.id))
     });
-    candidates
-        .into_iter()
-        .find_map(|previous| load_previous_vector_snapshot_candidate(layout, current, &previous))
+    candidates.into_iter().find_map(|previous| {
+        load_previous_vector_snapshot_candidate(layout, current, &previous, &legacy_policy_digests)
+    })
 }
 
+#[cfg(test)]
 fn previous_vector_snapshot_is_compatible(
     previous: &KnowledgeSnapshotManifest,
     current: &KnowledgeSnapshotManifest,
+) -> bool {
+    previous_vector_snapshot_is_compatible_with_legacy(previous, current, &HashMap::new())
+}
+
+fn previous_vector_snapshot_is_compatible_with_legacy(
+    previous: &KnowledgeSnapshotManifest,
+    current: &KnowledgeSnapshotManifest,
+    legacy_policy_digests: &HashMap<RepositoryId, String>,
 ) -> bool {
     previous.profile == SnapshotProfile::CompleteHistory
         && current.profile == SnapshotProfile::SelectedTrees
@@ -1375,8 +1540,12 @@ fn previous_vector_snapshot_is_compatible(
         && previous.semantic == current.semantic
         && current.repositories.iter().all(|selected| {
             previous.repositories.iter().any(|candidate| {
-                candidate.repository == selected.repository
-                    && candidate.policy_digest == selected.policy_digest
+                previous_repository_policy_is_compatible(
+                    previous.schema,
+                    candidate,
+                    selected,
+                    legacy_policy_digests,
+                )
             })
         })
 }
@@ -1385,8 +1554,14 @@ fn load_previous_vector_snapshot_candidate(
     layout: &KnowledgeDataLayout,
     current: &KnowledgeSnapshotManifest,
     previous: &KnowledgeSnapshotManifest,
+    legacy_policy_digests: &HashMap<RepositoryId, String>,
 ) -> Option<vesc_knowledge_index::PreviousVectorArtifact> {
-    if !previous.has_valid_identity() || !previous_vector_snapshot_is_compatible(previous, current)
+    if !previous.has_valid_identity()
+        || !previous_vector_snapshot_is_compatible_with_legacy(
+            previous,
+            current,
+            legacy_policy_digests,
+        )
     {
         return None;
     }
@@ -1430,8 +1605,10 @@ fn load_previous_vector_snapshot_candidate(
 
 fn load_previous_snapshot(
     layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
     current: &KnowledgeSnapshotManifest,
 ) -> Option<PreviousSnapshotArtifacts> {
+    let legacy_policy_digests = legacy_policy_digests(repositories)?;
     let snapshots = fs::read_dir(layout.root().as_path().join("snapshots")).ok()?;
     let candidates = snapshots
         .filter_map(Result::ok)
@@ -1442,7 +1619,13 @@ fn load_previous_snapshot(
                 .is_some_and(|extension| extension == "json")
         })
         .filter_map(|entry| read_and_validate_manifest(&entry.path()).ok())
-        .filter(|previous| previous_snapshot_is_incrementally_compatible(previous, current))
+        .filter(|previous| {
+            previous_snapshot_is_incrementally_compatible_with_legacy(
+                previous,
+                current,
+                &legacy_policy_digests,
+            )
+        })
         .collect::<Vec<_>>();
     let distances = reachable_previous_commit_distances(layout, current, &candidates);
     let mut candidates = candidates
@@ -1457,9 +1640,28 @@ fn load_previous_snapshot(
         .filter(KnowledgeSnapshotManifest::has_valid_identity)
         .map(|manifest| manifest.id);
     sort_previous_snapshot_candidates(&mut candidates, current, default.as_ref());
-    candidates
-        .into_iter()
-        .find_map(|(previous, _)| load_previous_snapshot_candidate(layout, current, &previous))
+    candidates.into_iter().find_map(|(previous, _)| {
+        load_previous_snapshot_candidate_with_legacy(
+            layout,
+            current,
+            &previous,
+            &legacy_policy_digests,
+        )
+    })
+}
+
+fn legacy_policy_digests(
+    repositories: &[KnowledgeRepository],
+) -> Option<HashMap<RepositoryId, String>> {
+    repositories
+        .iter()
+        .map(|repository| {
+            Some((
+                repository.id().clone(),
+                legacy_repository_policy_digest(repository).ok()?,
+            ))
+        })
+        .collect()
 }
 
 fn reachable_previous_commit_distances(
@@ -1470,11 +1672,13 @@ fn reachable_previous_commit_distances(
     let mut wanted = BTreeMap::<RepositoryId, BTreeSet<gix::ObjectId>>::new();
     for previous in candidates {
         for selected in &previous.repositories {
-            if let Ok(commit) = gix::ObjectId::from_hex(selected.commit.as_bytes()) {
-                wanted
-                    .entry(selected.repository.clone())
-                    .or_default()
-                    .insert(commit);
+            for tip in snapshot_repository_tips(selected) {
+                if let Ok(commit) = gix::ObjectId::from_hex(tip.as_bytes()) {
+                    wanted
+                        .entry(selected.repository.clone())
+                        .or_default()
+                        .insert(commit);
+                }
             }
         }
     }
@@ -1487,10 +1691,11 @@ fn reachable_previous_commit_distances(
         let Ok(repository) = gix::open(layout.repository(&selected.repository)) else {
             continue;
         };
-        let Ok(tip) = gix::ObjectId::from_hex(selected.commit.as_bytes()) else {
-            continue;
-        };
-        let Ok(walk) = repository.rev_walk([tip]).all() else {
+        let tips = snapshot_repository_tips(selected)
+            .iter()
+            .filter_map(|tip| gix::ObjectId::from_hex(tip.as_bytes()).ok())
+            .collect::<Vec<_>>();
+        let Ok(walk) = repository.rev_walk(tips).all() else {
             continue;
         };
         let mut found = HashMap::with_capacity(wanted.len());
@@ -1519,12 +1724,26 @@ fn previous_snapshot_distance(
         .repositories
         .iter()
         .try_fold(0_usize, |total, selected| {
-            let commit = gix::ObjectId::from_hex(selected.commit.as_bytes()).ok()?;
-            distances
-                .get(&selected.repository)?
-                .get(&commit)
-                .map(|distance| total.saturating_add(*distance))
+            let repository_distances = distances.get(&selected.repository)?;
+            snapshot_repository_tips(selected)
+                .iter()
+                .map(|tip| {
+                    let commit = gix::ObjectId::from_hex(tip.as_bytes()).ok()?;
+                    repository_distances.get(&commit).copied()
+                })
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
+                .max()
+                .map(|distance| total.saturating_add(distance))
         })
+}
+
+fn snapshot_repository_tips(repository: &SnapshotRepository) -> &[String] {
+    if repository.history_tips.is_empty() {
+        std::slice::from_ref(&repository.commit)
+    } else {
+        &repository.history_tips
+    }
 }
 
 fn sort_previous_snapshot_candidates(
@@ -1553,28 +1772,54 @@ fn previous_snapshot_score(
         previous
             .repositories
             .iter()
-            .filter(|repository| {
-                current.repositories.iter().any(|candidate| {
-                    candidate.repository == repository.repository
-                        && candidate.commit == repository.commit
-                })
+            .map(|repository| {
+                let Some(candidate) = current
+                    .repositories
+                    .iter()
+                    .find(|candidate| candidate.repository == repository.repository)
+                else {
+                    return 0;
+                };
+                let current_tips = snapshot_repository_tips(candidate);
+                snapshot_repository_tips(repository)
+                    .iter()
+                    .filter(|tip| current_tips.contains(tip))
+                    .count()
             })
-            .count(),
-        previous.repositories.len(),
+            .sum(),
+        previous
+            .repositories
+            .iter()
+            .map(|repository| snapshot_repository_tips(repository).len())
+            .sum(),
         previous.component_versions.get("lexical-format")
             == current.component_versions.get("lexical-format"),
     )
 }
 
+#[cfg(test)]
 fn load_previous_snapshot_candidate(
     layout: &KnowledgeDataLayout,
     current: &KnowledgeSnapshotManifest,
     previous: &KnowledgeSnapshotManifest,
 ) -> Option<PreviousSnapshotArtifacts> {
+    load_previous_snapshot_candidate_with_legacy(layout, current, previous, &HashMap::new())
+}
+
+fn load_previous_snapshot_candidate_with_legacy(
+    layout: &KnowledgeDataLayout,
+    current: &KnowledgeSnapshotManifest,
+    previous: &KnowledgeSnapshotManifest,
+    legacy_policy_digests: &HashMap<RepositoryId, String>,
+) -> Option<PreviousSnapshotArtifacts> {
     if !previous.has_valid_identity() {
         return None;
     }
-    if !previous_snapshot_is_incrementally_compatible(previous, current) {
+    if !previous_snapshot_is_incrementally_compatible_with_legacy(
+        previous,
+        current,
+        legacy_policy_digests,
+    ) {
         return None;
     }
 
@@ -1628,14 +1873,26 @@ fn load_previous_snapshot_candidate(
         .iter()
         .filter(|repository| {
             current.repositories.iter().any(|candidate| {
-                candidate.repository == repository.repository
-                    && candidate.policy_digest == repository.policy_digest
+                previous_repository_policy_is_compatible(
+                    previous.schema,
+                    repository,
+                    candidate,
+                    legacy_policy_digests,
+                )
             })
         })
-        .map(|repository| {
-            Some(vesc_knowledge_index::GitHistoryTip {
-                repository: CorpusRepositoryId::try_from(repository.repository.as_str()).ok()?,
-                revision: Revision::try_from(repository.commit.clone()).ok()?,
+        .flat_map(|repository| {
+            let tips = if repository.history_tips.is_empty() {
+                std::slice::from_ref(&repository.commit)
+            } else {
+                repository.history_tips.as_slice()
+            };
+            tips.iter().map(move |revision| {
+                Some(vesc_knowledge_index::GitHistoryTip {
+                    repository: CorpusRepositoryId::try_from(repository.repository.as_str())
+                        .ok()?,
+                    revision: Revision::try_from(revision.clone()).ok()?,
+                })
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -1649,9 +1906,18 @@ fn load_previous_snapshot_candidate(
     })
 }
 
+#[cfg(test)]
 fn previous_snapshot_is_incrementally_compatible(
     previous: &KnowledgeSnapshotManifest,
     current: &KnowledgeSnapshotManifest,
+) -> bool {
+    previous_snapshot_is_incrementally_compatible_with_legacy(previous, current, &HashMap::new())
+}
+
+fn previous_snapshot_is_incrementally_compatible_with_legacy(
+    previous: &KnowledgeSnapshotManifest,
+    current: &KnowledgeSnapshotManifest,
+    legacy_policy_digests: &HashMap<RepositoryId, String>,
 ) -> bool {
     previous.profile == SnapshotProfile::CompleteHistory
         && component_versions_are_incrementally_compatible(
@@ -1660,10 +1926,26 @@ fn previous_snapshot_is_incrementally_compatible(
         )
         && previous.repositories.iter().all(|repository| {
             current.repositories.iter().any(|candidate| {
-                candidate.repository == repository.repository
-                    && candidate.policy_digest == repository.policy_digest
+                previous_repository_policy_is_compatible(
+                    previous.schema,
+                    repository,
+                    candidate,
+                    legacy_policy_digests,
+                )
             })
         })
+}
+
+fn previous_repository_policy_is_compatible(
+    previous_schema: u16,
+    previous: &SnapshotRepository,
+    current: &SnapshotRepository,
+    legacy_policy_digests: &HashMap<RepositoryId, String>,
+) -> bool {
+    previous.repository == current.repository
+        && (previous.policy_digest == current.policy_digest
+            || previous_schema == LEGACY_SNAPSHOT_SCHEMA
+                && legacy_policy_digests.get(&previous.repository) == Some(&previous.policy_digest))
 }
 
 fn component_versions_are_incrementally_compatible(
@@ -1693,6 +1975,7 @@ fn corpus_source(
     layout: &KnowledgeDataLayout,
     repository: &KnowledgeRepository,
     commit: &str,
+    history_tips: &[String],
 ) -> Result<GitCorpusSource, SnapshotError> {
     let repository_id = CorpusRepositoryId::try_from(repository.id().as_str())
         .map_err(|error| SnapshotError::Build(error.to_string()))?;
@@ -1717,6 +2000,13 @@ fn corpus_source(
         repository_path: layout.repository(repository.id()),
         repository_id,
         revision,
+        history_tips: history_tips
+            .iter()
+            .map(|tip| {
+                Revision::try_from(tip.clone())
+                    .map_err(|error| SnapshotError::Build(error.to_string()))
+            })
+            .collect::<Result<_, _>>()?,
         trust_tier,
         license: LicenseStatus::Redistributable {
             spdx: repository.license().to_owned(),
@@ -1907,6 +2197,33 @@ fn read_and_validate_manifest(path: &Path) -> Result<KnowledgeSnapshotManifest, 
 fn repository_policy_digest(repository: &KnowledgeRepository) -> Result<String, SnapshotError> {
     #[derive(Serialize)]
     struct PolicyIdentity<'a> {
+        policy: RepositoryPolicy,
+        include: BTreeSet<&'a str>,
+        exclude: BTreeSet<&'a str>,
+        trust_tier: TrustTier,
+        license: &'a str,
+        max_file_bytes: u64,
+        max_files: usize,
+        max_total_bytes: u64,
+    }
+
+    Ok(hex_sha256(&serde_json::to_vec(&PolicyIdentity {
+        policy: repository.policy(),
+        include: repository.include().iter().map(String::as_str).collect(),
+        exclude: repository.exclude().iter().map(String::as_str).collect(),
+        trust_tier: repository.trust_tier(),
+        license: repository.license(),
+        max_file_bytes: repository.max_file_bytes(),
+        max_files: repository.max_files(),
+        max_total_bytes: repository.max_total_bytes(),
+    })?))
+}
+
+fn legacy_repository_policy_digest(
+    repository: &KnowledgeRepository,
+) -> Result<String, SnapshotError> {
+    #[derive(Serialize)]
+    struct PolicyIdentity<'a> {
         remote_url: &'a str,
         default_ref: &'a str,
         policy: RepositoryPolicy,
@@ -2016,9 +2333,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // The cleanup proof covers files and every nested Git pin.
     fn obsolete_incomplete_snapshots_and_pins_are_pruned() {
         let temp = tempfile::tempdir().expect("temporary directory");
-        let (_work, remote, _first, second) = fixture_remote(temp.path());
+        let (_work, remote, first, second) = fixture_remote(temp.path());
         let layout = KnowledgeDataLayout::new(
             DataRoot::new(temp.path().join("data")).expect("absolute data root"),
         );
@@ -2065,13 +2383,21 @@ mod tests {
         for id in [&current, &completed, &obsolete] {
             repository
                 .reference(
-                    format!("refs/vesc-mcp/snapshots/{}", id.as_str()),
+                    format!("refs/vesc-mcp/snapshots/{}/{}", id.as_str(), second),
                     commit,
                     gix::refs::transaction::PreviousValue::Any,
                     "test snapshot pin",
                 )
                 .expect("snapshot pin");
         }
+        repository
+            .reference(
+                format!("refs/vesc-mcp/snapshots/{}/{}", obsolete.as_str(), first),
+                gix::ObjectId::from_hex(first.as_bytes()).expect("first fixture commit"),
+                gix::refs::transaction::PreviousValue::Any,
+                "second obsolete snapshot pin",
+            )
+            .expect("second obsolete snapshot pin");
 
         prune_obsolete_incomplete_snapshots(&layout, &current).expect("prune incomplete snapshots");
 
@@ -2101,20 +2427,26 @@ mod tests {
         );
         assert!(
             repository
-                .try_find_reference("refs/vesc-mcp/snapshots/current")
+                .try_find_reference(format!("refs/vesc-mcp/snapshots/current/{second}").as_str(),)
                 .expect("find current pin")
                 .is_some()
         );
         assert!(
             repository
-                .try_find_reference("refs/vesc-mcp/snapshots/completed")
+                .try_find_reference(format!("refs/vesc-mcp/snapshots/completed/{second}").as_str(),)
                 .expect("find completed pin")
                 .is_some()
         );
         assert!(
             repository
-                .try_find_reference("refs/vesc-mcp/snapshots/obsolete")
+                .try_find_reference(format!("refs/vesc-mcp/snapshots/obsolete/{second}").as_str(),)
                 .expect("find obsolete pin")
+                .is_none()
+        );
+        assert!(
+            repository
+                .try_find_reference(format!("refs/vesc-mcp/snapshots/obsolete/{first}").as_str(),)
+                .expect("find second obsolete pin")
                 .is_none()
         );
     }
@@ -2260,8 +2592,8 @@ max_total_bytes = 10485760
         let repositories = fixture_registry(&data_root, "refs/heads/main");
         let repository = repositories.iter().next().expect("fixture repository");
 
-        let source =
-            corpus_source(&layout, repository, &"a".repeat(40)).expect("configured corpus source");
+        let source = corpus_source(&layout, repository, &"a".repeat(40), &["a".repeat(40)])
+            .expect("configured corpus source");
 
         assert_eq!(
             source.policy.limits.max_file_bytes(),
@@ -2300,6 +2632,96 @@ max_total_bytes = 10485760
             .expect_err("explicit missing ref must fail");
 
         assert!(matches!(error, SnapshotError::ManagedGit(_)));
+    }
+
+    #[tokio::test]
+    async fn complete_history_manifest_records_every_unique_managed_ref_tip() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (work, remote, first, second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let id = RepositoryId::new("fixture").expect("repository ID");
+        let git = ManagedGitStore::new(layout.clone());
+        git.sync_source(
+            &id,
+            remote.to_str().expect("UTF-8 remote path"),
+            "refs/heads/main",
+        )
+        .await
+        .expect("initial managed repository sync");
+        let store = KnowledgeSnapshotStore::new(layout);
+        let initial_history = store
+            .resolve_manifest(
+                &repositories,
+                &BTreeMap::new(),
+                SnapshotProfile::CompleteHistory,
+            )
+            .expect("initial complete-history manifest");
+        let initial_selected = store
+            .resolve_manifest(
+                &repositories,
+                &BTreeMap::new(),
+                SnapshotProfile::SelectedTrees,
+            )
+            .expect("initial selected-tree manifest");
+
+        run_git(&work, &["switch", "-c", "release/7", &first]);
+        fs::write(work.join("release.md"), "release only\n").expect("release file");
+        run_git(&work, &["add", "release.md"]);
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "release",
+            ],
+        );
+        let release = run_git(&work, &["rev-parse", "HEAD"]);
+        run_git(
+            &work,
+            &[
+                "push",
+                remote.to_str().expect("UTF-8 remote path"),
+                "release/7",
+            ],
+        );
+        git.sync_source(
+            &id,
+            remote.to_str().expect("UTF-8 remote path"),
+            "refs/heads/main",
+        )
+        .await
+        .expect("managed repository refresh");
+
+        let manifest = store
+            .resolve_manifest(
+                &repositories,
+                &BTreeMap::new(),
+                SnapshotProfile::CompleteHistory,
+            )
+            .expect("complete-history manifest");
+        let selected_manifest = store
+            .resolve_manifest(
+                &repositories,
+                &BTreeMap::new(),
+                SnapshotProfile::SelectedTrees,
+            )
+            .expect("selected-tree manifest");
+        let selected = manifest.repositories.first().expect("selected repository");
+        let mut expected = vec![first, second.clone(), release];
+        expected.sort();
+        expected.dedup();
+
+        assert_eq!(selected.history_tips, expected);
+        assert_eq!(selected.commit, selected.history_tips[0]);
+        assert_ne!(manifest.id, initial_history.id);
+        assert_eq!(selected_manifest.id, initial_selected.id);
     }
 
     #[tokio::test]
@@ -2354,7 +2776,7 @@ max_total_bytes = 10485760
     #[tokio::test]
     async fn prepared_snapshot_pins_commits_across_git_gc() {
         let temp = tempfile::tempdir().expect("temporary directory");
-        let (_work, remote, _first, second) = fixture_remote(temp.path());
+        let (_work, remote, first, second) = fixture_remote(temp.path());
         let data_root = temp.path().join("data");
         let layout =
             KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
@@ -2391,13 +2813,22 @@ max_total_bytes = 10485760
             "published snapshot must not retain private lexical staging"
         );
         let managed = layout.repository(&id);
-        let pin = format!("refs/vesc-mcp/snapshots/{}", prepared.manifest.id.as_str());
-        assert_eq!(run_git(&managed, &["rev-parse", &pin]), second);
+        let pin = |tip: &str| {
+            format!(
+                "refs/vesc-mcp/snapshots/{}/{}",
+                prepared.manifest.id.as_str(),
+                tip
+            )
+        };
+        assert_eq!(run_git(&managed, &["rev-parse", &pin(&first)]), first);
+        assert_eq!(run_git(&managed, &["rev-parse", &pin(&second)]), second);
 
         run_git(&managed, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        run_git(&managed, &["update-ref", "-d", "refs/tags/v1"]);
         run_git(&managed, &["reflog", "expire", "--expire=now", "--all"]);
         run_git(&managed, &["gc", "--prune=now"]);
-        assert_eq!(run_git(&managed, &["rev-parse", &pin]), second);
+        assert_eq!(run_git(&managed, &["rev-parse", &pin(&first)]), first);
+        assert_eq!(run_git(&managed, &["rev-parse", &pin(&second)]), second);
         run_git(
             &managed,
             &["cat-file", "-e", &format!("{second}^{{commit}}")],
@@ -2407,7 +2838,7 @@ max_total_bytes = 10485760
     #[tokio::test]
     async fn cpu_runtime_reuses_snapshot_built_with_accelerated_ingestion() {
         let temp = tempfile::tempdir().expect("temporary directory");
-        let (_work, remote, _first, second) = fixture_remote(temp.path());
+        let (_work, remote, first, second) = fixture_remote(temp.path());
         let data_root = temp.path().join("data");
         let layout =
             KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
@@ -2441,6 +2872,7 @@ max_total_bytes = 10485760
         let accelerated = KnowledgeSnapshotManifest::with_profile(
             vec![SnapshotRepository {
                 repository: repository_id,
+                history_tips: vec![first, second.clone()],
                 commit: second,
                 policy_digest: repository_policy_digest(repository).expect("policy digest"),
             }],
@@ -2522,6 +2954,7 @@ max_total_bytes = 10485760
     fn selected(repository: RepositoryId, commit: String) -> SnapshotRepository {
         SnapshotRepository {
             repository,
+            history_tips: vec![commit.clone()],
             commit,
             policy_digest: String::from("fixture-policy-v1"),
         }
@@ -2616,6 +3049,154 @@ max_total_bytes = 10485760
             accelerated_semantic.semantic.as_ref(),
         ));
         assert_eq!(left.id.as_str().len(), 64);
+    }
+
+    #[test]
+    fn selected_tree_manifest_rejects_history_beyond_the_selected_commit() {
+        let repository = RepositoryId::new("fixture").expect("repository ID");
+        let error = KnowledgeSnapshotManifest::new(
+            vec![SnapshotRepository {
+                repository,
+                commit: "b".repeat(40),
+                history_tips: vec!["a".repeat(40), "b".repeat(40)],
+                policy_digest: "fixture-policy-v1".into(),
+            }],
+            None,
+        )
+        .expect_err("selected-tree identity cannot contain other history tips");
+
+        assert!(matches!(error, SnapshotError::InvalidHistoryTips));
+    }
+
+    #[test]
+    fn complete_history_manifest_rejects_a_noncanonical_anchor() {
+        let repository = RepositoryId::new("fixture").expect("repository ID");
+        let mut manifest = KnowledgeSnapshotManifest::with_profile(
+            vec![SnapshotRepository {
+                repository,
+                commit: "b".repeat(40),
+                history_tips: vec!["a".repeat(40), "b".repeat(40)],
+                policy_digest: "fixture-policy-v1".into(),
+            }],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("canonical complete-history manifest");
+        manifest.repositories[0].commit = "b".repeat(40);
+        let identity = SnapshotIdentity {
+            schema: manifest.schema,
+            profile: manifest.profile,
+            repositories: &manifest.repositories,
+            configured_repositories: &manifest.configured_repositories,
+            component_versions: &manifest.component_versions,
+            semantic: manifest.semantic.as_ref(),
+        };
+        manifest.id = KnowledgeSnapshotId::new(hex_sha256(
+            &serde_json::to_vec(&identity).expect("forged identity JSON"),
+        ))
+        .expect("forged snapshot ID");
+
+        assert!(
+            !manifest.has_valid_identity(),
+            "all-ref manifests have exactly one canonical anchor"
+        );
+    }
+
+    #[test]
+    fn schema_two_manifest_remains_a_valid_incremental_predecessor() {
+        let repository = RepositoryId::new("fixture").expect("repository ID");
+        let repositories = vec![SnapshotRepository {
+            repository: repository.clone(),
+            commit: "a".repeat(40),
+            history_tips: Vec::new(),
+            policy_digest: "fixture-policy-v1".into(),
+        }];
+        let configured_repositories = vec![SnapshotRepositoryConfiguration {
+            repository,
+            policy_digest: "fixture-policy-v1".into(),
+        }];
+        let component_versions = vesc_knowledge_index::artifact_component_versions();
+        let legacy_repositories = repositories
+            .iter()
+            .map(|repository| LegacySnapshotRepository {
+                repository: &repository.repository,
+                commit: &repository.commit,
+                policy_digest: &repository.policy_digest,
+            })
+            .collect::<Vec<_>>();
+        let identity = LegacySnapshotIdentity {
+            schema: LEGACY_SNAPSHOT_SCHEMA,
+            profile: SnapshotProfile::CompleteHistory,
+            repositories: &legacy_repositories,
+            configured_repositories: &configured_repositories,
+            component_versions: &component_versions,
+            semantic: None,
+        };
+        let id = KnowledgeSnapshotId::new(hex_sha256(
+            &serde_json::to_vec(&identity).expect("legacy identity"),
+        ))
+        .expect("snapshot ID");
+        let manifest = KnowledgeSnapshotManifest {
+            schema: LEGACY_SNAPSHOT_SCHEMA,
+            id,
+            profile: SnapshotProfile::CompleteHistory,
+            repositories,
+            configured_repositories,
+            component_versions,
+            semantic: None,
+        };
+
+        assert!(manifest.has_valid_identity());
+    }
+
+    #[test]
+    fn schema_two_policy_digest_bridges_to_the_corpus_only_digest() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, _remote, _first, _second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let repository = repositories.iter().next().expect("fixture repository");
+        let selected_repository = repository.id().clone();
+        let previous = KnowledgeSnapshotManifest {
+            schema: LEGACY_SNAPSHOT_SCHEMA,
+            id: KnowledgeSnapshotId::new("a".repeat(64)).expect("snapshot ID"),
+            profile: SnapshotProfile::CompleteHistory,
+            repositories: vec![SnapshotRepository {
+                repository: selected_repository.clone(),
+                commit: "b".repeat(40),
+                history_tips: Vec::new(),
+                policy_digest: legacy_repository_policy_digest(repository)
+                    .expect("legacy policy digest"),
+            }],
+            configured_repositories: Vec::new(),
+            component_versions: vesc_knowledge_index::artifact_component_versions(),
+            semantic: None,
+        };
+        let current = KnowledgeSnapshotManifest::with_profile(
+            vec![SnapshotRepository {
+                repository: selected_repository.clone(),
+                commit: "b".repeat(40),
+                history_tips: vec!["b".repeat(40)],
+                policy_digest: repository_policy_digest(repository).expect("corpus policy digest"),
+            }],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("current manifest");
+        let legacy_policy_digests = HashMap::from([(
+            selected_repository,
+            legacy_repository_policy_digest(repository).expect("legacy policy digest"),
+        )]);
+
+        assert!(previous_snapshot_is_incrementally_compatible_with_legacy(
+            &previous,
+            &current,
+            &legacy_policy_digests,
+        ));
+        assert_ne!(
+            previous.repositories[0].policy_digest, current.repositories[0].policy_digest,
+            "the bridge must cover the deployed schema-two digest"
+        );
     }
 
     #[test]
@@ -2781,6 +3362,86 @@ max_total_bytes = 10485760
     }
 
     #[test]
+    fn selected_tree_vectors_reuse_a_schema_two_complete_history_artifact() {
+        let root = tempfile::tempdir().expect("data root");
+        let data_root = root.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        fs::create_dir_all(data_root.join("snapshots")).expect("snapshot directory");
+        let registry = fixture_registry(&data_root, "refs/heads/main");
+        let repositories = registry.iter().cloned().collect::<Vec<_>>();
+        let repository = repositories.first().expect("fixture repository");
+        let semantic = SnapshotSemanticModel {
+            model_id: "fake".into(),
+            model_revision: "test-revision".into(),
+            max_length: 1,
+            ingestion: None,
+        };
+        let previous_repositories = vec![SnapshotRepository {
+            repository: repository.id().clone(),
+            commit: "a".repeat(40),
+            history_tips: Vec::new(),
+            policy_digest: legacy_repository_policy_digest(repository)
+                .expect("legacy policy digest"),
+        }];
+        let previous_configuration = vec![SnapshotRepositoryConfiguration {
+            repository: repository.id().clone(),
+            policy_digest: previous_repositories[0].policy_digest.clone(),
+        }];
+        let component_versions = vesc_knowledge_index::artifact_component_versions();
+        let legacy_repositories = previous_repositories
+            .iter()
+            .map(|repository| LegacySnapshotRepository {
+                repository: &repository.repository,
+                commit: &repository.commit,
+                policy_digest: &repository.policy_digest,
+            })
+            .collect::<Vec<_>>();
+        let identity = LegacySnapshotIdentity {
+            schema: LEGACY_SNAPSHOT_SCHEMA,
+            profile: SnapshotProfile::CompleteHistory,
+            repositories: &legacy_repositories,
+            configured_repositories: &previous_configuration,
+            component_versions: &component_versions,
+            semantic: Some(&semantic),
+        };
+        let previous = KnowledgeSnapshotManifest {
+            schema: LEGACY_SNAPSHOT_SCHEMA,
+            id: KnowledgeSnapshotId::new(hex_sha256(
+                &serde_json::to_vec(&identity).expect("legacy identity"),
+            ))
+            .expect("snapshot ID"),
+            profile: SnapshotProfile::CompleteHistory,
+            repositories: previous_repositories,
+            configured_repositories: previous_configuration,
+            component_versions,
+            semantic: Some(semantic.clone()),
+        };
+        write_json_atomic(&layout.snapshot(&previous.id), &previous).expect("snapshot manifest");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            &layout.artifact(&previous.id),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("semantic predecessor artifact");
+        let current = KnowledgeSnapshotManifest::with_profile(
+            vec![SnapshotRepository {
+                repository: repository.id().clone(),
+                commit: "a".repeat(40),
+                history_tips: vec!["a".repeat(40)],
+                policy_digest: repository_policy_digest(repository).expect("corpus policy digest"),
+            }],
+            Some(semantic),
+            SnapshotProfile::SelectedTrees,
+        )
+        .expect("selected-tree manifest");
+
+        assert!(load_previous_vector_artifact(&layout, &repositories, &current).is_some());
+    }
+
+    #[test]
     fn vector_only_component_changes_keep_the_corpus_incrementally_compatible() {
         let mut previous = vesc_knowledge_index::artifact_component_versions();
         previous.insert("vector-format".into(), "previous-vector-format".into());
@@ -2915,9 +3576,75 @@ max_total_bytes = 10485760
                 .expect("candidate artifact");
         }
 
-        let previous = load_previous_snapshot(&layout, &current).expect("reachable predecessor");
+        let previous =
+            load_previous_snapshot(&layout, &[], &current).expect("reachable predecessor");
 
         assert_eq!(previous.tips[0].revision.as_str(), first.as_str());
+    }
+
+    #[test]
+    fn default_switch_keeps_the_all_ref_snapshot_as_a_reachable_predecessor() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (work, remote, _first, second) = fixture_remote(temp.path());
+        run_git(&work, &["switch", "-c", "release/7", "v1"]);
+        fs::write(work.join("README.md"), "release seven evidence\n").expect("release file");
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-am",
+                "release seven",
+            ],
+        );
+        let release = run_git(&work, &["rev-parse", "HEAD"]);
+        run_git(
+            &work,
+            &["push", remote.to_str().expect("UTF-8 remote"), "release/7"],
+        );
+        let layout = KnowledgeDataLayout::new(
+            DataRoot::new(temp.path().join("data")).expect("absolute data root"),
+        );
+        let repository = RepositoryId::new("fixture").expect("repository id");
+        fs::create_dir_all(layout.root().as_path().join("repositories"))
+            .expect("repositories directory");
+        run_git(
+            temp.path(),
+            &[
+                "clone",
+                "--bare",
+                remote.to_str().expect("UTF-8 remote"),
+                layout
+                    .repository(&repository)
+                    .to_str()
+                    .expect("UTF-8 managed repository"),
+            ],
+        );
+        let previous = KnowledgeSnapshotManifest::with_profile(
+            vec![selected(repository.clone(), second.clone())],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("previous all-ref manifest");
+        let mut current_repository = selected(repository, release.clone());
+        current_repository.history_tips = vec![second, release];
+        let current = KnowledgeSnapshotManifest::with_profile(
+            vec![current_repository],
+            None,
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("current all-ref manifest");
+
+        let distances =
+            reachable_previous_commit_distances(&layout, &current, std::slice::from_ref(&previous));
+
+        assert!(
+            previous_snapshot_distance(&previous, &distances).is_some(),
+            "the old default remains reachable from the current all-ref tip union"
+        );
     }
 
     #[test]
@@ -2989,7 +3716,7 @@ max_total_bytes = 10485760
         corrupt[16] ^= 0xff;
         fs::write(&best_vector, corrupt).expect("corrupt best vectors");
 
-        let previous = load_previous_snapshot(&layout, &current).expect("lexical predecessor");
+        let previous = load_previous_snapshot(&layout, &[], &current).expect("lexical predecessor");
 
         assert_eq!(previous.tips[0].revision.as_str(), second);
         assert_eq!(
@@ -3000,7 +3727,7 @@ max_total_bytes = 10485760
         assert!(previous.vector_checksum.is_none());
 
         fs::remove_file(best_vector).expect("remove best vectors");
-        let previous = load_previous_snapshot(&layout, &current).expect("lexical predecessor");
+        let previous = load_previous_snapshot(&layout, &[], &current).expect("lexical predecessor");
         assert_eq!(previous.tips[0].revision.as_str(), second);
         assert!(previous.vector_path.is_none());
 
@@ -3013,7 +3740,7 @@ max_total_bytes = 10485760
         fs::remove_dir_all(repaired_lexical.with_extension("tantivy"))
             .expect("remove best lexical index");
 
-        let previous = load_previous_snapshot(&layout, &current).expect("lexical fallback");
+        let previous = load_previous_snapshot(&layout, &[], &current).expect("lexical fallback");
 
         assert_eq!(previous.tips[0].revision.as_str(), first);
         assert_eq!(
@@ -3134,7 +3861,11 @@ max_total_bytes = 10485760
             .await
             .expect("configured snapshots");
 
-        assert_eq!(prepared.default.manifest.repositories[0].commit, second);
+        assert!(
+            prepared.default.manifest.repositories[0]
+                .history_tips
+                .contains(&second)
+        );
         assert_eq!(prepared.prewarmed[0].manifest.repositories[0].commit, first);
         assert_eq!(
             prepared.prewarmed[1].manifest.repositories[0].commit,
@@ -3190,7 +3921,10 @@ max_total_bytes = 10485760
             Some(prepared.default.manifest.id.as_str())
         );
         assert_eq!(index.snapshot_profile.as_deref(), Some("complete_history"));
-        assert_eq!(index.repositories.get("fixture"), Some(&second));
+        assert_eq!(
+            index.repositories.get("fixture"),
+            Some(&prepared.default.manifest.repositories[0].commit)
+        );
         assert_eq!(
             store.status(&prepared.default.manifest.id),
             SnapshotState::Ready
@@ -3475,6 +4209,57 @@ max_total_bytes = 10485760
     }
 
     #[tokio::test]
+    async fn changing_default_ref_reuses_the_same_all_ref_snapshot() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (work, remote, _first, _second) = fixture_remote(temp.path());
+        run_git(&work, &["switch", "-c", "release/7", "v1"]);
+        fs::write(work.join("README.md"), "release seven evidence\n").expect("release file");
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-am",
+                "release seven",
+            ],
+        );
+        run_git(
+            &work,
+            &["push", remote.to_str().expect("UTF-8 remote"), "release/7"],
+        );
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let main = fixture_registry(&data_root, "refs/heads/main");
+        let release = fixture_registry(&data_root, "refs/heads/release/7");
+        let id = RepositoryId::new("fixture").expect("repository id");
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                &id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+        let store = KnowledgeSnapshotStore::new(layout);
+        let initial = store
+            .prepare_default(&main)
+            .await
+            .expect("initial all-ref snapshot");
+        let switched = store
+            .prepare_default(&release)
+            .await
+            .expect("switched all-ref snapshot");
+
+        assert_eq!(switched.disposition, SnapshotDisposition::Reused);
+        assert_eq!(switched.manifest.id, initial.manifest.id);
+        assert_eq!(switched.artifact_path, initial.artifact_path);
+    }
+
+    #[tokio::test]
     async fn failed_default_build_does_not_mask_the_error_with_a_stale_snapshot() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let (_work, remote, _first, _second) = fixture_remote(temp.path());
@@ -3553,10 +4338,12 @@ max_total_bytes = 10485760
         fs::remove_file(data_root.join("repositories/fixture.refs.json"))
             .expect("remove source catalog");
 
-        store
+        let changed_default = store
             .prepare_default(&fixture_registry(&data_root, "refs/tags/v1"))
             .await
-            .expect_err("changed default ref cannot use stale snapshot");
+            .expect("all-ref snapshot remains valid when only the default selector changes");
+        assert_eq!(changed_default.manifest.id, initial.manifest.id);
+        assert_eq!(changed_default.disposition, SnapshotDisposition::Stale);
         store
             .prepare_default(&fixture_registry_with_source(
                 &data_root,
@@ -3645,6 +4432,7 @@ max_total_bytes = 10485760
         let manifest_before_optional = KnowledgeSnapshotManifest::with_profile(
             vec![SnapshotRepository {
                 repository: required.id().clone(),
+                history_tips: vec!["a".repeat(40)],
                 commit: "a".repeat(40),
                 policy_digest: repository_policy_digest(required).expect("policy digest"),
             }],

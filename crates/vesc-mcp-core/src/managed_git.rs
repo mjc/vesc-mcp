@@ -1,6 +1,6 @@
 //! Persistent bare Git repositories used by managed knowledge sources.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -445,6 +445,42 @@ impl ManagedGitStore {
         validate_cached_origin(&cached, repository.remote_url())?;
         self.resolve(repository.id(), selector)
     }
+
+    /// Return the sorted, unique commit tips named by every managed branch or tag.
+    ///
+    /// The configured default is included even if an older catalog omitted its
+    /// reference, and the cached origin is validated before catalog contents
+    /// are trusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the managed repository, origin, catalog, or
+    /// configured default cannot be validated.
+    pub fn history_tips_configured(
+        &self,
+        repository: &KnowledgeRepository,
+    ) -> Result<Vec<String>, ManagedGitError> {
+        let cached = gix::open(self.repository_path(repository.id())).map_err(git_error)?;
+        validate_cached_origin(&cached, repository.remote_url())?;
+        let catalog = read_catalog(&self.layout, repository.id())?;
+        if catalog.repository != *repository.id() {
+            return Err(ManagedGitError::Git(
+                "managed ref catalog repository does not match configuration".to_owned(),
+            ));
+        }
+        let mut tips = catalog
+            .refs
+            .into_iter()
+            .map(|entry| entry.commit)
+            .collect::<Vec<_>>();
+        tips.push(
+            self.resolve(repository.id(), repository.default_ref())?
+                .commit,
+        );
+        tips.sort_unstable();
+        tips.dedup();
+        Ok(tips)
+    }
 }
 
 fn synchronize(
@@ -543,7 +579,7 @@ fn fetch_existing(
     let connection = remote
         .connect(gix::remote::Direction::Fetch)
         .map_err(git_error)?;
-    connection
+    let outcome = connection
         .prepare_fetch(
             gix::progress::Discard,
             gix::remote::ref_map::Options::default(),
@@ -551,6 +587,44 @@ fn fetch_existing(
         .map_err(git_error)?
         .receive(gix::progress::Discard, interrupt)
         .map_err(git_error)?;
+    let retained = outcome
+        .ref_map
+        .mappings
+        .iter()
+        .filter_map(|mapping| mapping.local.as_ref())
+        .map(ToString::to_string)
+        .filter(|name| is_managed_remote_ref(name))
+        .collect::<BTreeSet<_>>();
+    prune_deleted_remote_refs(&repo, &retained)?;
+    Ok(())
+}
+
+fn is_managed_remote_ref(name: &str) -> bool {
+    name.starts_with("refs/remotes/origin/") || name.starts_with("refs/tags/")
+}
+
+fn prune_deleted_remote_refs(
+    repository: &gix::Repository,
+    retained: &BTreeSet<String>,
+) -> Result<(), ManagedGitError> {
+    let references = repository.references().map_err(git_error)?;
+    let mut obsolete = Vec::new();
+    for prefix in ["refs/remotes/origin/", "refs/tags/"] {
+        for reference in references.prefixed(prefix).map_err(git_error)? {
+            let reference = reference.map_err(git_error)?;
+            let name = reference.name().as_bstr().to_string();
+            if name != "refs/remotes/origin/HEAD" && !retained.contains(&name) {
+                obsolete.push(name);
+            }
+        }
+    }
+    for name in obsolete {
+        repository
+            .find_reference(name.as_str())
+            .map_err(git_error)?
+            .delete()
+            .map_err(git_error)?;
+    }
     Ok(())
 }
 
@@ -803,6 +877,57 @@ mod tests {
         assert_eq!(store.resolve(&id, "v2").expect("new tag").commit, second);
         assert_eq!(
             store.resolve(&id, &first).expect("old exact commit").commit,
+            first
+        );
+
+        run_git(&work, &["push", "origin", "--delete", "release/1"]);
+        run_git(&work, &["tag", "-d", "v2"]);
+        run_git(&work, &["push", "origin", ":refs/tags/v2"]);
+        let pruned = store
+            .sync_source(&id, remote, "refs/heads/main")
+            .await
+            .expect("pruning refresh succeeds");
+        assert!(
+            pruned
+                .catalog
+                .refs
+                .iter()
+                .all(|entry| entry.display_version != "release/1" && entry.display_version != "v2")
+        );
+        assert!(
+            pruned
+                .catalog
+                .refs
+                .iter()
+                .any(|entry| entry.display_version == "main" && entry.commit == second)
+        );
+        assert!(
+            pruned
+                .catalog
+                .refs
+                .iter()
+                .any(|entry| entry.display_version == "v1" && entry.commit == first)
+        );
+        assert!(
+            pruned
+                .catalog
+                .refs
+                .iter()
+                .any(|entry| entry.display_version == "v1-annotated" && entry.commit == first)
+        );
+        assert_eq!(
+            store.resolve(&id, "main").expect("main survives").commit,
+            second
+        );
+        assert_eq!(
+            store.resolve(&id, "v1").expect("tag survives").commit,
+            first
+        );
+        assert_eq!(
+            store
+                .resolve(&id, "v1-annotated")
+                .expect("annotated tag survives")
+                .commit,
             first
         );
     }

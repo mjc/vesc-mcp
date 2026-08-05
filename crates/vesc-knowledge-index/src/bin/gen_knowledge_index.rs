@@ -666,6 +666,7 @@ fn corpus_source(
     GitCorpusSource {
         repository_path,
         repository_id,
+        history_tips: vec![revision.clone()],
         revision,
         trust_tier: TrustTier::CuratedUpstream,
         license: LicenseStatus::ReferenceOnly,

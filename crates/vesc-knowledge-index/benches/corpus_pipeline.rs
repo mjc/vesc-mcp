@@ -1,16 +1,23 @@
+#![allow(clippy::must_use_candidate)] // Gungraun generates the public benchmark shim.
+
 use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use gungraun::prelude::*;
+use gungraun::{Dhat, DhatMetric, Massif};
 use tempfile::{TempDir, tempdir};
 use vesc_knowledge_index::benchmark::embedding_chunk_ids;
-use vesc_knowledge_index::corpus::git::{GitCorpusPolicy, ingest_git_commit};
+use vesc_knowledge_index::corpus::git::{
+    GitCorpusLimits, GitCorpusPolicy, GitCorpusSource, ingest_git_commit,
+};
 use vesc_knowledge_index::{
-    Chunk, ChunkId, ChunkingConfig, ContentDigest, FakeEmbeddingProvider, LexicalFilters,
-    LexicalHit, LexicalIndex, LicenseStatus, NormalizedDocument, RepositoryId, Revision,
-    SourceKind, TrustTier, VectorArtifact, chunk_document,
+    Chunk, ChunkId, ChunkingConfig, ContentDigest, FakeEmbeddingProvider, GitHistoryTip,
+    LexicalFilters, LexicalHit, LexicalIndex, LicenseStatus, NormalizedDocument, RepositoryId,
+    Revision, SourceKind, TrustTier, VectorArtifact, chunk_document,
+    ingest_git_history_fast_forward,
 };
 
 const CHUNK_COUNT: usize = 256;
@@ -95,6 +102,15 @@ struct GitFixture {
     revision: Revision,
 }
 
+struct HistoryGitFixture {
+    _root: TempDir,
+    source: GitCorpusSource,
+    previous_tips: Vec<GitHistoryTip>,
+    cached: Vec<Chunk>,
+}
+
+static HISTORY_FIXTURE_TEARDOWN: Mutex<Option<HistoryGitFixture>> = Mutex::new(None);
+
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args(args)
@@ -157,6 +173,90 @@ fn fixture_git() -> GitFixture {
     }
 }
 
+fn fixture_git_many_tips() -> HistoryGitFixture {
+    const DIRECTORY_COUNT: usize = 16;
+    const FILES_PER_DIRECTORY: usize = 8;
+    const TIP_COUNT: usize = 64;
+
+    let root = tempdir().expect("Git fixture root");
+    let work = root.path().join("work");
+    let repository = root.path().join("fixture.git");
+    fs::create_dir(&work).expect("worktree");
+    git(&work, &["init", "-q", "-b", "main"]);
+    git(
+        &work,
+        &["config", "user.email", "benchmark@example.invalid"],
+    );
+    git(&work, &["config", "user.name", "Benchmark"]);
+    for directory in 0..DIRECTORY_COUNT {
+        let path = work.join(format!("src/dir_{directory:02}"));
+        fs::create_dir_all(&path).expect("source directory");
+        for file in 0..FILES_PER_DIRECTORY {
+            fs::write(
+                path.join(format!("motor_{file:02}.c")),
+                format!("static int motor_{directory}_{file};\n"),
+            )
+            .expect("fixture source");
+        }
+    }
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "base tree"]);
+    let base = git(&work, &["rev-parse", "HEAD"]);
+    let mut tips = vec![Revision::try_from(base.clone()).expect("base revision")];
+    for index in 0..TIP_COUNT {
+        let branch = format!("branch-{index:03}");
+        git(&work, &["switch", "-q", "-c", &branch, &base]);
+        let directory = index % DIRECTORY_COUNT;
+        fs::write(
+            work.join(format!("src/dir_{directory:02}/branch.c")),
+            format!("static int branch_{index};\n"),
+        )
+        .expect("branch source");
+        git(&work, &["add", "."]);
+        git(&work, &["commit", "-qm", "branch tip"]);
+        tips.push(Revision::try_from(git(&work, &["rev-parse", "HEAD"])).expect("branch revision"));
+    }
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--mirror",
+            "-q",
+            work.to_str().expect("UTF-8 worktree path"),
+            repository.to_str().expect("UTF-8 repository path"),
+        ],
+    );
+    let policy = GitCorpusPolicy {
+        limits: GitCorpusLimits::new(4_096, 1, 4_096).expect("benchmark limits"),
+        ..GitCorpusPolicy::default()
+    };
+    let source = GitCorpusSource {
+        repository_path: repository,
+        repository_id: RepositoryId::try_from("many-tips").expect("repository ID"),
+        revision: tips[0].clone(),
+        history_tips: tips,
+        trust_tier: TrustTier::Fixture,
+        license: LicenseStatus::InRepo,
+        policy,
+    };
+    let mut previous = source.clone();
+    previous.history_tips.truncate(1);
+    let cached = ingest_git_history_fast_forward(std::slice::from_ref(&previous), &[], &[])
+        .expect("ingest predecessor fixture")
+        .expect("cold predecessor is accepted")
+        .0;
+    let previous_tips = vec![GitHistoryTip {
+        repository: previous.repository_id,
+        revision: previous.revision,
+    }];
+    HistoryGitFixture {
+        _root: root,
+        source,
+        previous_tips,
+        cached,
+    }
+}
+
 #[library_benchmark(setup = fixture_document)]
 fn bench_chunk_document(document: NormalizedDocument) -> Vec<Chunk> {
     let document = black_box(document);
@@ -179,6 +279,70 @@ fn bench_ingest_git_commit(fixture: GitFixture) -> usize {
         .documents
         .len(),
     )
+}
+
+fn history_memory_benchmark_config() -> LibraryBenchmarkConfig {
+    let mut dhat = Dhat::default();
+    dhat.format([
+        DhatMetric::TotalBytes,
+        DhatMetric::TotalBlocks,
+        DhatMetric::AtTGmaxBytes,
+        DhatMetric::AtTGmaxBlocks,
+    ]);
+    let mut config = LibraryBenchmarkConfig::default();
+    config.tool(dhat).tool(Massif::default());
+    config
+}
+
+fn teardown_history_fixture(_: ()) {
+    drop(
+        HISTORY_FIXTURE_TEARDOWN
+            .lock()
+            .expect("history fixture teardown mutex")
+            .take(),
+    );
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_git_many_tips,
+    teardown = teardown_history_fixture
+)]
+fn bench_ingest_many_mostly_shared_tips(fixture: HistoryGitFixture) {
+    let fixture = black_box(fixture);
+    black_box(
+        ingest_git_history_fast_forward(std::slice::from_ref(&fixture.source), &[], &[])
+            .expect("ingest many-tip fixture")
+            .expect("cold history is accepted")
+            .0
+            .len(),
+    );
+    *HISTORY_FIXTURE_TEARDOWN
+        .lock()
+        .expect("history fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_git_many_tips,
+    teardown = teardown_history_fixture
+)]
+fn bench_incremental_many_divergent_tips(fixture: HistoryGitFixture) {
+    let fixture = black_box(fixture);
+    black_box(
+        ingest_git_history_fast_forward(
+            std::slice::from_ref(&fixture.source),
+            &fixture.previous_tips,
+            &fixture.cached,
+        )
+        .expect("ingest many-tip fixture")
+        .expect("added tips are incremental")
+        .0
+        .len(),
+    );
+    *HISTORY_FIXTURE_TEARDOWN
+        .lock()
+        .expect("history fixture teardown mutex") = Some(fixture);
 }
 
 #[library_benchmark(setup = fixture_chunks)]
@@ -234,6 +398,8 @@ library_benchmark_group!(
     benchmarks = [
         bench_chunk_document,
         bench_ingest_git_commit,
+        bench_ingest_many_mostly_shared_tips,
+        bench_incremental_many_divergent_tips,
         bench_lexical_build,
         bench_lexical_search,
         bench_corpus_inventory,

@@ -207,7 +207,9 @@ fn snapshot_failure(error: &SnapshotError) -> PrepareVescKnowledgeResponse {
         SnapshotError::Storage(_)
         | SnapshotError::Serialization(_)
         | SnapshotError::IdentityMismatch => "not_ready",
-        SnapshotError::EmptySelection | SnapshotError::DuplicateRepository => "invalid_selection",
+        SnapshotError::EmptySelection
+        | SnapshotError::DuplicateRepository
+        | SnapshotError::InvalidHistoryTips => "invalid_selection",
     };
     if matches!(error, SnapshotError::NotCached(_)) {
         failure_with_hint(code, &error.to_string(), NOT_CACHED_HINT)

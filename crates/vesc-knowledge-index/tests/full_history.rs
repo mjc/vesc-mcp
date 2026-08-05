@@ -80,6 +80,7 @@ fn source(path: PathBuf, repository: &str) -> GitCorpusSource {
         repository_path: path,
         repository_id: RepositoryId::try_from(repository).expect("repository"),
         revision: Revision::try_from("0".repeat(40)).expect("placeholder revision"),
+        history_tips: vec![Revision::try_from("0".repeat(40)).expect("placeholder history tip")],
         trust_tier: TrustTier::CuratedUpstream,
         license: LicenseStatus::ReferenceOnly,
         policy: GitCorpusPolicy::default(),
@@ -88,15 +89,18 @@ fn source(path: PathBuf, repository: &str) -> GitCorpusSource {
 
 fn at_head(mut source: GitCorpusSource, work: &Path) -> GitCorpusSource {
     source.revision = Revision::try_from(git(work, &["rev-parse", "HEAD"])).expect("revision");
+    source.history_tips = vec![source.revision.clone()];
     source
 }
 
 fn snapshot_tips(sources: &[GitCorpusSource]) -> Vec<GitHistoryTip> {
     let mut tips = sources
         .iter()
-        .map(|source| GitHistoryTip {
-            repository: source.repository_id.clone(),
-            revision: source.revision.clone(),
+        .flat_map(|source| {
+            source.history_tips.iter().map(|revision| GitHistoryTip {
+                repository: source.repository_id.clone(),
+                revision: revision.clone(),
+            })
         })
         .collect::<Vec<_>>();
     tips.sort_by(|left, right| left.repository.cmp(&right.repository));
@@ -257,6 +261,195 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
     assert_eq!(warm.ingested_commits, 0);
     assert_eq!(warm.ingested_blobs, 0);
     assert_eq!(warm.reused_commit_messages, 3);
+}
+
+#[test]
+fn full_history_walks_divergent_tips_once_and_keeps_conflicting_paths() {
+    let (_root, work) = fixture();
+    let main = git(&work, &["rev-parse", "main"]);
+    git(&work, &["switch", "-q", "-c", "release/7", "v1"]);
+    fs::write(
+        work.join("src/lib.rs"),
+        "pub fn release_seven_only() -> u8 { 7 }\n",
+    )
+    .expect("release source");
+    git(&work, &["commit", "-qam", "release seven divergent fix"]);
+    let release = git(&work, &["rev-parse", "HEAD"]);
+    let mut source = source(work, "fixture");
+    source.revision = Revision::try_from(main.clone()).expect("main revision");
+    source.history_tips = vec![
+        Revision::try_from(main).expect("main history tip"),
+        Revision::try_from(release).expect("release history tip"),
+    ];
+
+    let (chunks, observations) = cold_history(std::slice::from_ref(&source));
+
+    assert_eq!(observations.reachable_commits, 4);
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk.text.contains("pub fn second()"))
+    );
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk.text.contains("release_seven_only"))
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .filter(|chunk| chunk.text.contains("release seven divergent fix"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn multi_tip_refresh_ingests_only_added_history_and_rejects_removed_history() {
+    let (_root, work) = fixture();
+    let main = git(&work, &["rev-parse", "main"]);
+    let mut previous = source(work.clone(), "fixture");
+    previous.revision = Revision::try_from(main.clone()).expect("main revision");
+    previous.history_tips = vec![Revision::try_from(main).expect("main history tip")];
+    let (cached, _) = cold_history(std::slice::from_ref(&previous));
+    let previous_tips = snapshot_tips(std::slice::from_ref(&previous));
+
+    git(&work, &["switch", "-q", "-c", "release/7", "v1"]);
+    fs::write(work.join("release.md"), "release branch evidence\n").expect("release source");
+    git(&work, &["add", "release.md"]);
+    git(&work, &["commit", "-qm", "add divergent release evidence"]);
+    let release = git(&work, &["rev-parse", "HEAD"]);
+    let mut current = previous.clone();
+    current
+        .history_tips
+        .push(Revision::try_from(release).expect("release history tip"));
+
+    let (incremental, refresh) =
+        ingest_git_history_fast_forward(std::slice::from_ref(&current), &previous_tips, &cached)
+            .expect("multi-tip refresh")
+            .expect("added ref is incremental");
+    let (cold, _) = cold_history(std::slice::from_ref(&current));
+    assert_eq!(refresh.ingested_commit_messages, 1, "{refresh:#?}");
+    assert_eq!(refresh.ingested_blobs, 1, "{refresh:#?}");
+    assert_eq!(incremental, cold);
+    assert!(
+        incremental
+            .iter()
+            .any(|chunk| chunk.text.contains("release branch evidence"))
+    );
+
+    let current_tips = snapshot_tips(std::slice::from_ref(&current));
+    let removed = ingest_git_history_fast_forward(
+        std::slice::from_ref(&previous),
+        &current_tips,
+        &incremental,
+    )
+    .expect("removed ref refresh");
+    assert!(removed.is_none(), "removed history requires a cold rebuild");
+    let (rebuilt, _) = cold_history(&[previous]);
+    assert!(
+        rebuilt
+            .iter()
+            .all(|chunk| !chunk.text.contains("release branch evidence"))
+    );
+}
+
+#[test]
+fn multi_tip_refresh_reserves_the_new_divergent_tip_under_a_tight_budget() {
+    let (_root, work) = fixture();
+    let main = git(&work, &["rev-parse", "main"]);
+    let mut previous = source(work.clone(), "fixture");
+    previous.revision = Revision::try_from(main.clone()).expect("main revision");
+    previous.history_tips = vec![Revision::try_from(main).expect("main history tip")];
+    previous.policy.include_prefixes = vec!["limits".into()];
+    previous.policy.limits = GitCorpusLimits::new(64, 1, 64).expect("valid test limits");
+    let (cached, _) = cold_history(std::slice::from_ref(&previous));
+    let previous_tips = snapshot_tips(std::slice::from_ref(&previous));
+
+    git(&work, &["switch", "-q", "-c", "release/7", "v1"]);
+    fs::create_dir(work.join("limits")).expect("limit fixture directory");
+    fs::write(work.join("limits/release.rs"), "pub fn old_release() {}\n")
+        .expect("old release source");
+    git(&work, &["add", "limits/release.rs"]);
+    git(&work, &["commit", "-qm", "old release source"]);
+    fs::write(
+        work.join("limits/release.rs"),
+        "pub fn current_release() {}\n",
+    )
+    .expect("current release source");
+    git(&work, &["commit", "-qam", "current release source"]);
+    let release = git(&work, &["rev-parse", "HEAD"]);
+
+    let mut current = previous;
+    current
+        .history_tips
+        .push(Revision::try_from(release).expect("new divergent history tip"));
+    let (contents, observations) =
+        ingest_git_history_fast_forward(std::slice::from_ref(&current), &previous_tips, &cached)
+            .expect("multi-tip refresh")
+            .expect("added ref is incremental");
+    let blobs = contents
+        .iter()
+        .filter(|chunk| chunk.source_kind == SourceKind::GitBlob)
+        .collect::<Vec<_>>();
+
+    assert_eq!(blobs.len(), 1, "the one-file budget admits one tip blob");
+    assert!(blobs[0].text.contains("current_release"));
+    assert!(!blobs[0].text.contains("old_release"));
+    assert_eq!(observations.ingested_blobs, 1);
+    assert_eq!(observations.budget_rejections, 1);
+}
+
+#[test]
+fn divergent_tip_reservation_diffs_from_the_merge_base() {
+    let (_root, work) = fixture();
+    fs::create_dir(work.join("limits")).expect("limit fixture directory");
+    fs::write(work.join("limits/a-main.rs"), "pub fn main_only() {}\n").expect("main source");
+    fs::write(
+        work.join("limits/z-retained.rs"),
+        "pub fn retained_on_release() {}\n",
+    )
+    .expect("shared source");
+    git(&work, &["add", "limits"]);
+    git(&work, &["commit", "-qm", "shared branch point"]);
+    let branch_point = git(&work, &["rev-parse", "HEAD"]);
+
+    fs::remove_file(work.join("limits/z-retained.rs")).expect("remove source from main");
+    git(&work, &["commit", "-qam", "main removes release source"]);
+    let main = git(&work, &["rev-parse", "HEAD"]);
+    let mut previous = source(work.clone(), "fixture");
+    previous.revision = Revision::try_from(main.clone()).expect("main revision");
+    previous.history_tips = vec![Revision::try_from(main).expect("main history tip")];
+    previous.policy.include_prefixes = vec!["limits".into()];
+    previous.policy.limits = GitCorpusLimits::new(64, 1, 64).expect("valid test limits");
+    let (cached, _) = cold_history(std::slice::from_ref(&previous));
+    let previous_tips = snapshot_tips(std::slice::from_ref(&previous));
+
+    git(&work, &["switch", "-q", "-c", "release/7", &branch_point]);
+    fs::write(
+        work.join("limits/zz-new.rs"),
+        "pub fn genuinely_new_release_delta() {}\n",
+    )
+    .expect("new release source");
+    git(&work, &["add", "limits/zz-new.rs"]);
+    git(&work, &["commit", "-qm", "new release delta"]);
+    let release = git(&work, &["rev-parse", "HEAD"]);
+    let mut current = previous;
+    current
+        .history_tips
+        .push(Revision::try_from(release).expect("release history tip"));
+
+    let (contents, _) =
+        ingest_git_history_fast_forward(std::slice::from_ref(&current), &previous_tips, &cached)
+            .expect("multi-tip refresh")
+            .expect("added ref is incremental");
+
+    assert!(
+        contents
+            .iter()
+            .any(|chunk| chunk.text.contains("genuinely_new_release_delta")),
+        "the file budget must be reserved for the change since the branch point"
+    );
 }
 
 #[test]
@@ -789,6 +982,47 @@ fn incremental_history_bounds_only_the_new_delta_before_loading_blobs() {
     assert_eq!(observations.reused_commits, 3);
     assert_eq!(observations.ingested_commits, 1);
     assert_bounded_delta(&contents, &observations);
+}
+
+#[test]
+fn incremental_tip_reservation_does_not_charge_unchanged_rejected_files() {
+    let (_root, work) = fixture();
+    fs::create_dir(work.join("limits")).expect("limit fixture directory");
+    fs::write(work.join("limits/a.rs"), "pub fn admitted() {}\n").expect("admitted source");
+    fs::write(work.join("limits/b.rs"), "pub fn rejected() {}\n").expect("rejected source");
+    git(&work, &["add", "limits"]);
+    git(&work, &["commit", "-qm", "two bounded files"]);
+    let mut previous = at_head(source(work.clone(), "fixture"), &work);
+    previous.policy.include_prefixes = vec!["limits".into()];
+    previous.policy.limits = GitCorpusLimits::new(64, 1, 64).expect("valid test limits");
+    let (cached, _) = cold_history(std::slice::from_ref(&previous));
+    let previous_tips = snapshot_tips(std::slice::from_ref(&previous));
+    assert_eq!(
+        cached
+            .iter()
+            .filter(|chunk| chunk.source_kind == SourceKind::GitBlob)
+            .count(),
+        1,
+        "one of the two previous files must be budget-rejected"
+    );
+
+    fs::write(work.join("limits/c.rs"), "pub fn new_delta() {}\n").expect("delta source");
+    git(&work, &["add", "limits/c.rs"]);
+    git(&work, &["commit", "-qm", "new bounded delta"]);
+    let current = at_head(previous, &work);
+    let (contents, observations) =
+        ingest_git_history_fast_forward(std::slice::from_ref(&current), &previous_tips, &cached)
+            .expect("incremental history")
+            .expect("fast-forward history");
+
+    assert!(
+        contents
+            .iter()
+            .any(|chunk| chunk.source_kind == SourceKind::GitBlob
+                && chunk.text.contains("new_delta")),
+        "the new delta must receive the incremental budget"
+    );
+    assert_eq!(observations.ingested_blobs, 1);
 }
 
 #[test]
@@ -1479,8 +1713,10 @@ fn repository_filter_requires_revision_reachability_not_object_presence() {
     );
     let mut alpha = source(shared, "alpha");
     alpha.revision = Revision::try_from(alpha_tip).expect("alpha revision");
+    alpha.history_tips = vec![alpha.revision.clone()];
     let mut beta = source(beta_repository, "beta");
     beta.revision = Revision::try_from(beta_tip).expect("beta revision");
+    beta.history_tips = vec![beta.revision.clone()];
     let artifact_root = root.path().join("artifacts");
     let summary = build_git_history_artifacts_incrementally(
         &artifact_root,
@@ -1661,6 +1897,7 @@ fn selected_tree_reuses_every_vector_already_present_in_complete_history() {
         .join(&history.artifacts.generation);
     let selected_source = GitCorpusSource {
         revision: Revision::try_from(git(&work, &["rev-parse", "v1"])).expect("v1 revision"),
+        history_tips: Vec::new(),
         ..history_source
     };
     let selected_root = tempdir().expect("selected artifact root");
@@ -2347,6 +2584,7 @@ fn shared_commits_are_reused_only_after_their_selected_content_was_indexed() {
     let bounded = |repository: &str, revision: &str| {
         let mut source = source(work.clone(), repository);
         source.revision = Revision::try_from(revision).expect("revision");
+        source.history_tips = vec![source.revision.clone()];
         source.policy.include_prefixes = vec!["limits".into()];
         source.policy.limits = GitCorpusLimits::new(64, 1, 64).expect("valid test limits");
         source
@@ -2394,6 +2632,7 @@ fn shared_blobs_are_reused_only_when_the_stored_locator_is_reachable() {
     let bounded = |repository: &str, path: PathBuf, revision: &str| {
         let mut source = source(path, repository);
         source.revision = Revision::try_from(revision).expect("revision");
+        source.history_tips = vec![source.revision.clone()];
         source.policy.include_prefixes = vec!["limits".into()];
         source
     };
@@ -2476,6 +2715,7 @@ fn partially_reused_blob_is_not_proof_of_a_reachable_locator() {
     let bounded = |repository: &str, path: PathBuf, revision: &str| {
         let mut source = source(path, repository);
         source.revision = Revision::try_from(revision).expect("revision");
+        source.history_tips = vec![source.revision.clone()];
         source.policy.include_prefixes = vec!["limits".into()];
         source
     };

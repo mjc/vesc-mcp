@@ -267,18 +267,21 @@ repositories and prepares the default artifact in the background. The `ping`
 response exposes the bounded `knowledge` state and phase plus completed/total
 repository counts; the same state is atomically shared through
 `preparation-status.json`. The default artifact is one combined history
-containing every searchable blob reachable from each configured default branch.
+containing every searchable blob reachable from every unique commit tip named
+by a managed remote branch or tag, including each configured default branch.
 The managed bare repositories remain the sole commit, tree, ref, and blob
 store; snapshots do not duplicate that graph in a corpus-sized JSON file.
 Tantivy stores compact searchable locators and hydrates bounded top results
 from Git; `vectors.bin` stores embeddings.
 
-A later refresh resolves the current tips from Git. An unchanged immutable
-snapshot ID reuses its complete artifact without rebuilding. Changed tips are
-checked against the prior tips in Git. Fast-forwards seed normalized chunks from
-the prior Tantivy artifact, ingest only the newly reachable commit range, and
-copy unchanged rows from a compatible `vectors.bin`; only new chunk IDs are
-embedded. Rewrites and policy changes fall back to a cold corpus rebuild.
+A later refresh fetches and prunes the managed ref catalog, then resolves its
+current unique tip set from Git. An unchanged immutable snapshot ID reuses its
+complete artifact without rebuilding. Changed tips are checked against the
+prior tips in one union walk. Fast-forwards and added refs seed normalized
+chunks from the prior Tantivy artifact, ingest only the newly reachable commit
+range, and copy unchanged rows from a compatible `vectors.bin`; only new chunk
+IDs are embedded. Removed, rewritten, or unreachable tips and policy changes
+fall back to a cold corpus rebuild so deleted branch evidence cannot linger.
 Incompatible semantic contracts reuse the compatible lexical predecessor and
 regenerate its embeddings. The new derived artifact is validated before the
 mutable default alias advances. Explicit prewarm selections remain commit-tree
