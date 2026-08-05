@@ -13,6 +13,8 @@ use crate::managed_snapshots::{
 };
 
 const VERSION_HINT: &str = "call list_vesc_source_versions and select configured refs";
+const NOT_CACHED_HINT: &str =
+    "prepare this snapshot on the training host, then distribute its manifest and artifact";
 pub const PREPARE_KNOWLEDGE_CHILD_ARG: &str = "--prepare-knowledge";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -77,6 +79,28 @@ pub async fn prepare_vesc_knowledge_tool(
     params: &PrepareVescKnowledgeParams,
     config: &KnowledgeConfig,
 ) -> PrepareVescKnowledgeResponse {
+    prepare_vesc_knowledge(params, config, PreparationPolicy::BuildMissing).await
+}
+
+/// Resolve and reuse a complete cached snapshot without building missing data.
+pub async fn prepare_cached_vesc_knowledge_tool(
+    params: &PrepareVescKnowledgeParams,
+    config: &KnowledgeConfig,
+) -> PrepareVescKnowledgeResponse {
+    prepare_vesc_knowledge(params, config, PreparationPolicy::CachedOnly).await
+}
+
+#[derive(Clone, Copy)]
+enum PreparationPolicy {
+    BuildMissing,
+    CachedOnly,
+}
+
+async fn prepare_vesc_knowledge(
+    params: &PrepareVescKnowledgeParams,
+    config: &KnowledgeConfig,
+    policy: PreparationPolicy,
+) -> PrepareVescKnowledgeResponse {
     if !config.manages_repositories() {
         return failure("not_configured", "managed Git repositories are not enabled");
     }
@@ -103,15 +127,21 @@ pub async fn prepare_vesc_knowledge_tool(
     if timeout_secs > 600 {
         return failure("invalid_selection", "timeout exceeds 600 seconds");
     }
-    let prepared = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        store.prepare(&config.repositories, &selectors),
-    )
-    .await;
-    match prepared {
-        Err(_) => failure("timeout", "snapshot preparation timed out"),
-        Ok(Ok(prepared)) => success(&prepared),
-        Ok(Err(error)) => snapshot_failure(&error),
+    match policy {
+        PreparationPolicy::CachedOnly => match store.reuse(&config.repositories, &selectors) {
+            Ok(prepared) => success(&prepared),
+            Err(error) => snapshot_failure(&error),
+        },
+        PreparationPolicy::BuildMissing => match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            store.prepare(&config.repositories, &selectors),
+        )
+        .await
+        {
+            Err(_) => failure("timeout", "snapshot preparation timed out"),
+            Ok(Ok(prepared)) => success(&prepared),
+            Ok(Err(error)) => snapshot_failure(&error),
+        },
     }
 }
 
@@ -120,6 +150,15 @@ pub async fn prepare_vesc_knowledge_json(
     config: &KnowledgeConfig,
 ) -> String {
     serde_json::to_string(&prepare_vesc_knowledge_tool(params, config).await)
+        .unwrap_or_else(|_| r#"{"ok":false,"error":{"code":"serialization","message":"response serialization failed","hint":"retry the request"}}"#.to_owned())
+}
+
+#[doc(hidden)]
+pub async fn prepare_cached_vesc_knowledge_json(
+    params: &PrepareVescKnowledgeParams,
+    config: &KnowledgeConfig,
+) -> String {
+    serde_json::to_string(&prepare_cached_vesc_knowledge_tool(params, config).await)
         .unwrap_or_else(|_| r#"{"ok":false,"error":{"code":"serialization","message":"response serialization failed","hint":"retry the request"}}"#.to_owned())
 }
 
@@ -164,15 +203,28 @@ fn snapshot_failure(error: &SnapshotError) -> PrepareVescKnowledgeResponse {
         },
         SnapshotError::Build(_) => "build_failed",
         SnapshotError::Task(_) => "cancelled",
+        SnapshotError::NotCached(_) => "not_cached",
         SnapshotError::Storage(_)
         | SnapshotError::Serialization(_)
         | SnapshotError::IdentityMismatch => "not_ready",
         SnapshotError::EmptySelection | SnapshotError::DuplicateRepository => "invalid_selection",
     };
-    failure(code, &error.to_string())
+    if matches!(error, SnapshotError::NotCached(_)) {
+        failure_with_hint(code, &error.to_string(), NOT_CACHED_HINT)
+    } else {
+        failure(code, &error.to_string())
+    }
 }
 
 fn failure(code: &'static str, message: &str) -> PrepareVescKnowledgeResponse {
+    failure_with_hint(code, message, VERSION_HINT)
+}
+
+fn failure_with_hint(
+    code: &'static str,
+    message: &str,
+    hint: &'static str,
+) -> PrepareVescKnowledgeResponse {
     PrepareVescKnowledgeResponse {
         ok: false,
         snapshot_id: None,
@@ -181,7 +233,7 @@ fn failure(code: &'static str, message: &str) -> PrepareVescKnowledgeResponse {
         error: Some(PrepareVescKnowledgeError {
             code,
             message: message.to_owned(),
-            hint: VERSION_HINT,
+            hint,
         }),
     }
 }

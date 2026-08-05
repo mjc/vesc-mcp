@@ -41,7 +41,8 @@ use crate::tools::list_source_versions::{
 };
 use crate::tools::prepare_knowledge::{
     PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, PrepareVescKnowledgeParams,
-    prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
+    prepare_cached_vesc_knowledge_json, prepare_vesc_knowledge_failure_json,
+    prepare_vesc_knowledge_json,
 };
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
@@ -134,6 +135,7 @@ struct SharedMcpState {
 enum KnowledgePreparer {
     InProcess,
     Isolated(Result<PathBuf, Arc<str>>),
+    CachedOnly,
 }
 
 impl KnowledgePreparer {
@@ -148,6 +150,7 @@ impl KnowledgePreparer {
     ) -> String {
         match self {
             Self::InProcess => prepare_vesc_knowledge_json(params, config).await,
+            Self::CachedOnly => prepare_cached_vesc_knowledge_json(params, config).await,
             Self::Isolated(executable) => {
                 let result = match executable {
                     Ok(executable) => prepare_knowledge_in_child(executable, params, config).await,
@@ -262,13 +265,20 @@ fn preparation_process_timeout(params: &PrepareVescKnowledgeParams) -> std::time
 
 impl SharedMcpState {
     fn new() -> Self {
+        Self::new_with_knowledge_preparation(KnowledgePreparation::BuildMissing)
+    }
+
+    fn new_with_knowledge_preparation(policy: KnowledgePreparation) -> Self {
         let config = McpConfig::load();
         let mut state = Self::with_config(
             config.knowledge.clone(),
             config.feedback.path.as_deref().map(FeedbackStore::new),
             config.feedback.writes_enabled,
         );
-        state.knowledge_preparer = KnowledgePreparer::isolated();
+        state.knowledge_preparer = match policy {
+            KnowledgePreparation::BuildMissing => KnowledgePreparer::isolated(),
+            KnowledgePreparation::CachedOnly => KnowledgePreparer::CachedOnly,
+        };
         state
     }
 
@@ -313,6 +323,14 @@ const PACKAGE_TOOL_NAMES: [&str; 6] = [
     "run_package_checks",
 ];
 
+/// Whether explicit snapshot preparation may build missing artifacts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KnowledgePreparation {
+    #[default]
+    BuildMissing,
+    CachedOnly,
+}
+
 impl Default for VescMcpService {
     fn default() -> Self {
         Self::new()
@@ -342,6 +360,12 @@ impl VescMcpService {
     #[must_use]
     pub fn new() -> Self {
         Self::from_state(SharedMcpState::new())
+    }
+
+    /// Create a service with an explicit snapshot preparation policy.
+    #[must_use]
+    pub fn with_knowledge_preparation(policy: KnowledgePreparation) -> Self {
+        Self::from_state(SharedMcpState::new_with_knowledge_preparation(policy))
     }
 
     /// Create a service over an explicit knowledge configuration.
@@ -1327,7 +1351,18 @@ pub fn decide_ping_echo(message: Option<String>) -> String {
 ///
 /// Returns an error if the transport fails to initialize or the session ends unexpectedly.
 pub async fn run_stdio_server() -> anyhow::Result<()> {
-    let service = VescMcpService::new();
+    run_stdio_server_with_knowledge_preparation(KnowledgePreparation::BuildMissing).await
+}
+
+/// Run the MCP server on stdio with an explicit snapshot preparation policy.
+///
+/// # Errors
+///
+/// Returns an error if the transport fails to initialize or the session ends unexpectedly.
+pub async fn run_stdio_server_with_knowledge_preparation(
+    policy: KnowledgePreparation,
+) -> anyhow::Result<()> {
+    let service = VescMcpService::with_knowledge_preparation(policy);
     let running = service.serve(stdio()).await?;
     running.waiting().await?;
     Ok(())
@@ -1524,6 +1559,16 @@ max_total_bytes = 1
         assert!(matches!(
             SharedMcpState::new().knowledge_preparer,
             KnowledgePreparer::Isolated(_)
+        ));
+    }
+
+    #[test]
+    fn cached_only_service_never_starts_a_preparation_child() {
+        let service = VescMcpService::with_knowledge_preparation(KnowledgePreparation::CachedOnly);
+
+        assert!(matches!(
+            service.state.knowledge_preparer,
+            KnowledgePreparer::CachedOnly
         ));
     }
 

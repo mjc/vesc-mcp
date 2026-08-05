@@ -16,9 +16,11 @@ use vesc_mcp_core::preparation_status::{
     KnowledgePreparationStatus, PreparationPhase, PreparationState, ValidatedVectorArtifact,
     read_preparation_status, write_preparation_status,
 };
+use vesc_mcp_core::server::KnowledgePreparation;
 use vesc_mcp_core::tools::prepare_knowledge::{
     PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, knowledge_config_fingerprint,
-    prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
+    prepare_cached_vesc_knowledge_json, prepare_vesc_knowledge_failure_json,
+    prepare_vesc_knowledge_json,
 };
 
 const PROFILE_INITIAL_TRAINING_ARG: &str = "--profile-initial-training";
@@ -173,17 +175,11 @@ impl RuntimeProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MissingDataPolicy {
-    Prepare,
-    CachedOnly,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StartupPolicy {
     refresh: bool,
     eager_index: bool,
     allow_offline_restart: bool,
-    missing_data: MissingDataPolicy,
+    knowledge_preparation: KnowledgePreparation,
 }
 
 impl StartupPolicy {
@@ -200,10 +196,10 @@ impl StartupPolicy {
                 && !args.iter().any(|arg| arg == "--skip-repository-refresh"),
             eager_index: !cached_only && args.iter().any(|arg| arg == EAGER_INDEX_ARG),
             allow_offline_restart: !args.iter().any(|arg| arg == "--require-fresh-repositories"),
-            missing_data: if cached_only {
-                MissingDataPolicy::CachedOnly
+            knowledge_preparation: if cached_only {
+                KnowledgePreparation::CachedOnly
             } else {
-                MissingDataPolicy::Prepare
+                KnowledgePreparation::BuildMissing
             },
         }
     }
@@ -213,14 +209,19 @@ const fn policy_for_available_data(
     policy: StartupPolicy,
     current_snapshot_ready: bool,
 ) -> StartupPolicy {
-    if current_snapshot_ready || matches!(policy.missing_data, MissingDataPolicy::CachedOnly) {
+    if current_snapshot_ready
+        || matches!(
+            policy.knowledge_preparation,
+            KnowledgePreparation::CachedOnly
+        )
+    {
         policy
     } else {
         StartupPolicy {
             refresh: true,
             eager_index: true,
             allow_offline_restart: policy.allow_offline_restart,
-            missing_data: MissingDataPolicy::Prepare,
+            knowledge_preparation: KnowledgePreparation::BuildMissing,
         }
     }
 }
@@ -298,7 +299,7 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
                 refresh: false,
                 eager_index: true,
                 allow_offline_restart: true,
-                missing_data: MissingDataPolicy::Prepare,
+                knowledge_preparation: KnowledgePreparation::BuildMissing,
             })
             .await?;
             return Ok(());
@@ -319,10 +320,15 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
             );
             return Ok(());
         }
-        println!(
-            "{}",
-            prepare_vesc_knowledge_json(&request.params, &config.knowledge).await
-        );
+        let response = match startup_policy.knowledge_preparation {
+            KnowledgePreparation::BuildMissing => {
+                prepare_vesc_knowledge_json(&request.params, &config.knowledge).await
+            }
+            KnowledgePreparation::CachedOnly => {
+                prepare_cached_vesc_knowledge_json(&request.params, &config.knowledge).await
+            }
+        };
+        println!("{response}");
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--http") {
@@ -331,6 +337,7 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
             synchronize_managed_repositories_in_child(refresh_args),
+            startup_policy.knowledge_preparation,
         )
         .await?;
         return Ok(());
@@ -343,12 +350,16 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
             tracing::error!(%error, "managed repository preparation failed");
         }
     });
-    vesc_mcp_core::server::run_stdio_server().await
+    vesc_mcp_core::server::run_stdio_server_with_knowledge_preparation(
+        startup_policy.knowledge_preparation,
+    )
+    .await
 }
 
 async fn run_http<F>(
     config: vesc_mcp_server::http::HttpServerConfig,
     preparation: F,
+    knowledge_preparation: KnowledgePreparation,
 ) -> anyhow::Result<()>
 where
     F: Future<Output = anyhow::Result<()>> + Send + 'static,
@@ -359,7 +370,9 @@ where
             tracing::error!(%error, "managed repository preparation failed");
         }
     });
-    server.serve().await
+    server
+        .serve_with_knowledge_preparation(knowledge_preparation)
+        .await
 }
 
 fn repository_refresh_args(args: &[String]) -> Vec<String> {
@@ -786,14 +799,14 @@ mod tests {
     use vesc_mcp_core::managed_repositories::DataRoot;
     use vesc_mcp_core::managed_snapshots::{SnapshotBuildPhase, SnapshotDisposition};
     use vesc_mcp_core::preparation_status::PreparationPhase;
+    use vesc_mcp_core::server::KnowledgePreparation;
 
     use super::{
-        CACHED_ONLY_ARG, EAGER_INDEX_ARG, MissingDataPolicy, PROFILE_INITIAL_TRAINING_ARG,
-        PreparationReporter, REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG,
-        RuntimeProfile, StartupPolicy, migraphx_cache_path, policy_for_available_data,
-        preparation_phase_for_build, publish_child_preparation_failure,
-        repository_preparation_timeout, repository_refresh_args, run_http,
-        supervise_preparation_child, terminal_preparation_state,
+        CACHED_ONLY_ARG, EAGER_INDEX_ARG, PROFILE_INITIAL_TRAINING_ARG, PreparationReporter,
+        REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
+        migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
+        publish_child_preparation_failure, repository_preparation_timeout, repository_refresh_args,
+        run_http, supervise_preparation_child, terminal_preparation_state,
     };
 
     #[test]
@@ -818,7 +831,7 @@ mod tests {
                 refresh: false,
                 eager_index: false,
                 allow_offline_restart: true,
-                missing_data: MissingDataPolicy::Prepare,
+                knowledge_preparation: KnowledgePreparation::BuildMissing,
             }
         );
     }
@@ -837,7 +850,7 @@ mod tests {
                 refresh: true,
                 eager_index: true,
                 allow_offline_restart: false,
-                missing_data: MissingDataPolicy::Prepare,
+                knowledge_preparation: KnowledgePreparation::BuildMissing,
             }
         );
     }
@@ -850,7 +863,7 @@ mod tests {
                 refresh: true,
                 eager_index: true,
                 allow_offline_restart: true,
-                missing_data: MissingDataPolicy::Prepare,
+                knowledge_preparation: KnowledgePreparation::BuildMissing,
             }
         );
     }
@@ -879,7 +892,7 @@ mod tests {
                 refresh: false,
                 eager_index: false,
                 allow_offline_restart: true,
-                missing_data: MissingDataPolicy::CachedOnly,
+                knowledge_preparation: KnowledgePreparation::CachedOnly,
             }
         );
     }
@@ -1107,10 +1120,14 @@ mod tests {
             auth_token: None,
         };
 
-        let server = tokio::spawn(run_http(config, async move {
-            preparing.store(true, Ordering::Release);
-            std::future::pending::<anyhow::Result<()>>().await
-        }));
+        let server = tokio::spawn(run_http(
+            config,
+            async move {
+                preparing.store(true, Ordering::Release);
+                std::future::pending::<anyhow::Result<()>>().await
+            },
+            KnowledgePreparation::BuildMissing,
+        ));
         while !started.load(Ordering::Acquire) {
             tokio::task::yield_now().await;
         }

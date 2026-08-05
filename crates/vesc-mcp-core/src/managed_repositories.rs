@@ -120,6 +120,12 @@ impl KnowledgeSnapshotId {
     }
 }
 
+impl fmt::Display for KnowledgeSnapshotId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// Whether a configured source is ignored, best-effort, or mandatory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

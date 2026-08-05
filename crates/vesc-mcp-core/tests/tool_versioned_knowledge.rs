@@ -3,7 +3,7 @@ use std::fs;
 use serde_json::{Value, json};
 use vesc_mcp_core::test_support::{McpTestHarness, VersionedKnowledgeFixture};
 use vesc_mcp_core::tools::prepare_knowledge::{
-    PrepareVescKnowledgeParams, prepare_vesc_knowledge_tool,
+    PrepareVescKnowledgeParams, prepare_cached_vesc_knowledge_tool, prepare_vesc_knowledge_tool,
 };
 
 async fn assert_default_snapshot_compatibility(
@@ -229,4 +229,32 @@ async fn stale_managed_source_paths_have_stable_errors() {
                 .is_some_and(|hint| hint.contains("list_vesc_source_versions"))
         );
     }
+}
+
+#[tokio::test]
+async fn cached_only_preparation_does_not_build_a_missing_snapshot() {
+    let fixture = VersionedKnowledgeFixture::new().await;
+    let params =
+        serde_json::from_value(VersionedKnowledgeFixture::selection()).expect("snapshot selection");
+
+    let response = prepare_cached_vesc_knowledge_tool(&params, fixture.knowledge()).await;
+
+    assert_eq!(
+        response.error.as_ref().map(|error| error.code),
+        Some("not_cached")
+    );
+    assert!(!fixture.data_root().join("artifacts").exists());
+}
+
+#[tokio::test]
+async fn cached_only_preparation_reuses_a_complete_snapshot() {
+    let fixture = VersionedKnowledgeFixture::new().await;
+    let params =
+        serde_json::from_value(VersionedKnowledgeFixture::selection()).expect("snapshot selection");
+    let built = prepare_vesc_knowledge_tool(&params, fixture.knowledge()).await;
+
+    let reused = prepare_cached_vesc_knowledge_tool(&params, fixture.knowledge()).await;
+
+    assert_eq!(reused.snapshot_id, built.snapshot_id);
+    assert_eq!(reused.status, Some("reused"));
 }

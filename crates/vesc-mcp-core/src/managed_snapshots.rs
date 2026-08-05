@@ -318,6 +318,8 @@ pub enum SnapshotError {
     Task(#[from] tokio::task::JoinError),
     #[error("snapshot manifest does not match its identity")]
     IdentityMismatch,
+    #[error("snapshot is not cached on this host: {0}")]
+    NotCached(KnowledgeSnapshotId),
 }
 
 impl SnapshotError {
@@ -554,6 +556,32 @@ impl KnowledgeSnapshotStore {
         selectors: &BTreeMap<RepositoryId, String>,
         profile: SnapshotProfile,
     ) -> Result<PreparedSnapshot, SnapshotError> {
+        let manifest = self.resolve_manifest(repositories, selectors, profile)?;
+        self.prepare_resolved(repositories, manifest).await
+    }
+
+    /// Resolve a selected snapshot and reuse it without building missing data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection is invalid or its complete artifact is not cached.
+    pub fn reuse(
+        &self,
+        repositories: &RepositoryRegistry,
+        selectors: &BTreeMap<RepositoryId, String>,
+    ) -> Result<PreparedSnapshot, SnapshotError> {
+        let manifest =
+            self.resolve_manifest(repositories, selectors, SnapshotProfile::SelectedTrees)?;
+        load_reusable_snapshot(&self.layout, &manifest, SnapshotDisposition::Reused)?
+            .ok_or_else(|| SnapshotError::NotCached(manifest.id))
+    }
+
+    fn resolve_manifest(
+        &self,
+        repositories: &RepositoryRegistry,
+        selectors: &BTreeMap<RepositoryId, String>,
+        profile: SnapshotProfile,
+    ) -> Result<KnowledgeSnapshotManifest, SnapshotError> {
         for id in selectors.keys() {
             if !repositories.iter().any(|repository| repository.id() == id) {
                 return Err(SnapshotError::UnknownRepository(id.clone()));
@@ -581,15 +609,14 @@ impl KnowledgeSnapshotStore {
                 Err(error) => return Err(error.into()),
             }
         }
-        let manifest = KnowledgeSnapshotManifest::with_profile_and_configuration(
+        KnowledgeSnapshotManifest::with_profile_and_configuration(
             selected,
             configured_repositories,
             self.semantic
                 .as_ref()
                 .map(|semantic| semantic.model.clone()),
             profile,
-        )?;
-        self.prepare_resolved(repositories, manifest).await
+        )
     }
 
     /// Read the currently active default snapshot without filesystem paths.

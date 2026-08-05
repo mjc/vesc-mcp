@@ -17,7 +17,7 @@ use rmcp::transport::streamable_http_server::{
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use vesc_mcp_core::{HttpMcpService, VescMcpService};
+use vesc_mcp_core::{HttpMcpService, VescMcpService, server::KnowledgePreparation};
 
 const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
 const DEFAULT_PATH: &str = "/mcp";
@@ -44,8 +44,21 @@ impl BoundHttpServer {
     ///
     /// Returns an error when the HTTP transport stops with a serving error.
     pub async fn serve(self) -> anyhow::Result<()> {
+        self.serve_with_knowledge_preparation(KnowledgePreparation::BuildMissing)
+            .await
+    }
+
+    /// Serve MCP requests with an explicit snapshot preparation policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the HTTP transport stops with a serving error.
+    pub async fn serve_with_knowledge_preparation(
+        self,
+        policy: KnowledgePreparation,
+    ) -> anyhow::Result<()> {
         let cancellation_token = CancellationToken::new();
-        let service = VescMcpService::new()
+        let service = VescMcpService::with_knowledge_preparation(policy)
             .http_service_with_authenticated_writes(self.config.auth_token.is_some());
         let router = router(&self.config, service, &cancellation_token);
         tracing::info!(bind = %self.config.bind, path = %self.config.path, "serving Streamable HTTP MCP");
