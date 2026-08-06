@@ -1421,7 +1421,6 @@ impl LexicalIndex {
                 }
             }
         }
-        let exact = query_text.to_ascii_lowercase();
         let mut candidates = Vec::new();
         for (score, address) in docs {
             let document = searcher
@@ -1432,10 +1431,7 @@ impl LexicalIndex {
                 if !Self::locator_matches_filters(&locator, filters, repository_filter.as_ref()) {
                     continue;
                 }
-                let exact_identifier = locator
-                    .identifiers
-                    .iter()
-                    .any(|identifier| identifier.eq_ignore_ascii_case(&exact));
+                let exact_identifier = has_exact_identifier(&locator.identifiers, &raw_terms);
                 (
                     locator.retrieval_metadata(),
                     exact_identifier,
@@ -1455,10 +1451,7 @@ impl LexicalIndex {
                 if !matches_filters(chunk, filters) {
                     continue;
                 }
-                let exact_identifier = chunk
-                    .identifiers
-                    .iter()
-                    .any(|identifier| identifier.eq_ignore_ascii_case(&exact));
+                let exact_identifier = has_exact_identifier(&chunk.identifiers, &raw_terms);
                 (
                     chunk.retrieval_metadata(),
                     exact_identifier,
@@ -2779,6 +2772,18 @@ fn query_terms(query: &str) -> Vec<String> {
     terms
 }
 
+fn has_exact_identifier(identifiers: &[compact_str::CompactString], raw_terms: &[String]) -> bool {
+    identifiers.iter().any(|identifier| {
+        raw_terms
+            .iter()
+            .any(|term| is_symbol_term(term) && identifier.eq_ignore_ascii_case(term))
+    })
+}
+
+fn is_symbol_term(term: &str) -> bool {
+    term.len() >= 8 || term.contains('_') || term.bytes().any(|byte| byte.is_ascii_digit())
+}
+
 fn raw_query_terms(query: &str) -> Vec<String> {
     query
         .split(|character: char| !(character.is_alphanumeric() || matches!(character, '_' | '-')))
@@ -2953,6 +2958,31 @@ mod tests {
                 .map(compact_str::CompactString::as_str),
             Some("write_nvm")
         );
+        assert!(hits[0].exact_identifier);
+    }
+
+    #[test]
+    fn any_exact_identifier_in_a_symbol_query_is_promoted() {
+        let source = git_chunk(
+            "motor.rs",
+            "pub trait MotorControlBindings { fn update_pid_position_offset(&self, position: PidPosition); }",
+            "MotorControlBindings",
+        );
+        let prose = git_chunk(
+            "history",
+            "trait MotorControlBindings impl MotorControlBindings PidPosition trait MotorControlBindings impl MotorControlBindings PidPosition",
+            "history_note",
+        );
+        let index = LexicalIndex::build(&[prose, source]).expect("index");
+        let hits = index
+            .search(
+                "update_pid_position_offset|trait MotorControlBindings|impl.*MotorControlBindings|PidPosition",
+                &LexicalFilters::default(),
+                2,
+            )
+            .expect("search");
+
+        assert_eq!(hits[0].chunk.title, "motor.rs");
         assert!(hits[0].exact_identifier);
     }
 

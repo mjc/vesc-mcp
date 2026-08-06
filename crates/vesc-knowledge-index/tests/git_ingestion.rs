@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -618,6 +619,76 @@ fn git_artifact_is_additive_and_searches_symbols_paths_and_concepts() {
             .path,
         "imu/imu.c"
     );
+}
+
+#[test]
+fn symbol_question_returns_definitions_and_caller_from_bounded_context() {
+    let (root, work, bare, _) = bare_fixture();
+    fs::write(
+        work.join("motor.rs"),
+        "pub trait MotorControlBindings {\n    fn update_pid_position_offset(&self, position: PidPosition);\n}\n\nimpl MotorControlBindings for RealMotor {\n    fn update_pid_position_offset(&self, position: PidPosition) {\n        self.apply_position(position);\n    }\n}\n",
+    )
+    .expect("motor implementation");
+    fs::write(
+        work.join("motor_control.rs"),
+        "pub fn set_position(bindings: &impl MotorControlBindings, position: PidPosition) {\n    bindings.update_pid_position_offset(position);\n}\n",
+    )
+    .expect("motor caller");
+    git(&work, &["add", "motor.rs", "motor_control.rs"]);
+    git(
+        &work,
+        &["commit", "-qm", "add PID position binding and caller"],
+    );
+    let revision = git(&work, &["rev-parse", "HEAD"]);
+    git(
+        &work,
+        &[
+            "push",
+            "-q",
+            bare.to_str().expect("UTF-8 bare path"),
+            "HEAD:refs/heads/main",
+        ],
+    );
+
+    let artifacts = tempdir().expect("artifact root");
+    let managed = tempdir().expect("managed repository root");
+    let bare = manage_repository(managed.path(), "vesc", &bare);
+    let source = GitCorpusSource {
+        repository_path: bare,
+        repository_id: RepositoryId::try_from("vesc").expect("repository"),
+        revision: Revision::try_from(revision.as_str()).expect("revision"),
+        history_tips: Vec::new(),
+        trust_tier: TrustTier::CuratedUpstream,
+        license: LicenseStatus::ReferenceOnly,
+        policy: GitCorpusPolicy::default(),
+    };
+    let summary = build_git_artifacts(artifacts.path(), &[source]).expect("build Git corpus");
+    let lexical = LexicalIndex::open_git_search_artifact(
+        &artifacts
+            .path()
+            .join("generations")
+            .join(&summary.generation)
+            .join("lexical.json"),
+        &managed.path().join("repositories"),
+    )
+    .expect("open lexical artifact");
+    let hits = lexical
+        .search(
+            "update_pid_position_offset trait MotorControlBindings impl MotorControlBindings PidPosition",
+            &LexicalFilters::default(),
+            5,
+        )
+        .expect("symbol search");
+    let paths = hits
+        .iter()
+        .map(|hit| hit.chunk.path.as_str())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(hits[0].chunk.path, "motor.rs");
+    assert!(hits[0].exact_identifier);
+    assert!(paths.contains("motor_control.rs"));
+    assert!(paths.contains("motor.rs"));
+    drop(root);
 }
 
 #[test]
