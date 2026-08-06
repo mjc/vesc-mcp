@@ -246,10 +246,60 @@ struct ReconciledVectorStage {
 /// Persisted vector data eligible for content-addressed reconciliation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviousVectorArtifact {
-    pub lexical_path: PathBuf,
-    pub corpus_digest: ContentDigest,
-    pub checksum: ContentDigest,
-    pub path: PathBuf,
+    lexical_path: PathBuf,
+    corpus_digest: ContentDigest,
+    checksum: ContentDigest,
+    path: PathBuf,
+    model_id: String,
+    model_revision: String,
+    dimension: usize,
+}
+
+impl PreviousVectorArtifact {
+    /// Open and validate vector data that may seed a selected-tree build.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmbeddingError`] when the checksum, schema, corpus, or model
+    /// contract does not match.
+    pub fn open(
+        lexical_path: PathBuf,
+        corpus_digest: ContentDigest,
+        checksum: ContentDigest,
+        path: PathBuf,
+        model_id: &str,
+        model_revision: &str,
+        provider_dimension: Option<usize>,
+    ) -> Result<Self, EmbeddingError> {
+        let dimension = VectorArtifact::validate_reusable_artifact_dimension(
+            &path,
+            &checksum,
+            &corpus_digest,
+            model_id,
+            model_revision,
+            provider_dimension,
+        )?;
+        Ok(Self {
+            lexical_path,
+            corpus_digest,
+            checksum,
+            path,
+            model_id: model_id.to_owned(),
+            model_revision: model_revision.to_owned(),
+            dimension,
+        })
+    }
+
+    fn matches(
+        &self,
+        model_id: &str,
+        model_revision: &str,
+        provider_dimension: Option<usize>,
+    ) -> bool {
+        self.model_id == model_id
+            && self.model_revision == model_revision
+            && provider_dimension.is_none_or(|dimension| dimension == self.dimension)
+    }
 }
 
 /// Validated predecessor data used by a complete-history fast-forward build.
@@ -949,15 +999,9 @@ fn reusable_vector_stage(
     semantic: Option<&(&mut dyn EmbeddingProvider, &str, &str)>,
 ) -> Option<ReconciledVectorStage> {
     let (provider, model_id, model_revision) = semantic?;
-    VectorArtifact::validate_reusable_artifact(
-        &previous.path,
-        &previous.checksum,
-        &previous.corpus_digest,
-        model_id,
-        model_revision,
-        provider.embedding_dimension(),
-    )
-    .ok()?;
+    previous
+        .matches(model_id, model_revision, provider.embedding_dimension())
+        .then_some(())?;
     Some(ReconciledVectorStage {
         lexical_path: previous.lexical_path.clone(),
         path: previous.path.clone(),

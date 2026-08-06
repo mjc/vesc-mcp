@@ -41,6 +41,12 @@ pub enum SnapshotProfile {
     CompleteHistory,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotBuildPolicy {
+    AllowInference,
+    CachedVectorsOnly,
+}
+
 /// Optional semantic identity included when a snapshot contains vectors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotSemanticModel {
@@ -649,7 +655,41 @@ impl KnowledgeSnapshotStore {
         profile: SnapshotProfile,
     ) -> Result<PreparedSnapshot, SnapshotError> {
         let manifest = self.resolve_manifest(repositories, selectors, profile)?;
-        self.prepare_resolved(repositories, manifest).await
+        self.prepare_resolved(repositories, manifest, SnapshotBuildPolicy::AllowInference)
+            .await
+    }
+
+    /// Derive a selected snapshot without allowing semantic inference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SnapshotError::NotCached`] when the cached vector corpus does
+    /// not contain every selected chunk.
+    pub async fn derive_cached(
+        &self,
+        repositories: &RepositoryRegistry,
+        selectors: &BTreeMap<RepositoryId, String>,
+    ) -> Result<PreparedSnapshot, SnapshotError> {
+        let manifest =
+            self.resolve_manifest(repositories, selectors, SnapshotProfile::SelectedTrees)?;
+        let configured = repositories.iter().cloned().collect::<Vec<_>>();
+        if let Some(prepared) = load_reusable_snapshot(
+            &self.layout,
+            &configured,
+            &manifest,
+            SnapshotDisposition::Reused,
+        )? {
+            return Ok(prepared);
+        }
+        if self.semantic.is_none() {
+            return Err(SnapshotError::NotCached(manifest.id));
+        }
+        self.prepare_resolved(
+            repositories,
+            manifest,
+            SnapshotBuildPolicy::CachedVectorsOnly,
+        )
+        .await
     }
 
     /// Resolve a selected snapshot and reuse it without building missing data.
@@ -899,6 +939,7 @@ impl KnowledgeSnapshotStore {
         &self,
         repositories: &RepositoryRegistry,
         manifest: KnowledgeSnapshotManifest,
+        policy: SnapshotBuildPolicy,
     ) -> Result<PreparedSnapshot, SnapshotError> {
         let repositories = repositories.iter().cloned().collect::<Vec<_>>();
         if let Some(prepared) = load_reusable_snapshot(
@@ -945,6 +986,7 @@ impl KnowledgeSnapshotStore {
                 &repositories,
                 &manifest,
                 semantic.as_ref(),
+                policy,
                 progress.as_deref(),
             );
             if result.is_ok() {
@@ -983,6 +1025,7 @@ fn build_or_reuse(
     repositories: &[KnowledgeRepository],
     manifest: &KnowledgeSnapshotManifest,
     semantic: Option<&SnapshotSemanticConfig>,
+    policy: SnapshotBuildPolicy,
     progress: Option<&SnapshotProgressReporter>,
 ) -> Result<PreparedSnapshot, SnapshotError> {
     if let Some(prepared) =
@@ -1005,7 +1048,7 @@ fn build_or_reuse(
         .truncate(false)
         .read(true)
         .write(true)
-        .open(lock_path)?;
+        .open(&lock_path)?;
     lock.lock_exclusive()?;
 
     let snapshot_path = layout.snapshot(&manifest.id);
@@ -1023,22 +1066,35 @@ fn build_or_reuse(
     }
 
     let sources = snapshot_corpus_sources(layout, repositories, manifest)?;
-    pin_snapshot_commits(layout, manifest)?;
-    let build = build_snapshot_artifact(
+    let build = match build_snapshot_artifact(
         layout,
         repositories,
         manifest,
         &artifact_path,
         &sources,
-        semantic,
-        progress,
-    )?;
+        SnapshotArtifactBuildOptions {
+            semantic,
+            policy,
+            progress,
+        },
+    ) {
+        Ok(build) => build,
+        Err(error) => {
+            FileExt::unlock(&lock)?;
+            drop(lock);
+            if policy == SnapshotBuildPolicy::CachedVectorsOnly {
+                cleanup_failed_cached_build(&artifact_path, &lock_path);
+            }
+            return Err(error);
+        }
+    };
     if semantic.is_some() && !build.has_vectors {
         return Err(SnapshotError::Build(
             "semantic snapshot vector artifact is unavailable".into(),
         ));
     }
     validate_snapshot_artifact(&artifact_path, manifest)?;
+    pin_snapshot_commits(layout, manifest)?;
     write_json_atomic(&snapshot_path, manifest)?;
     cleanup_completed_lexical_stage(&artifact_path);
     if let Some(path) = build.vector_checkpoint_path {
@@ -1054,6 +1110,18 @@ fn build_or_reuse(
         artifact_path,
         disposition: SnapshotDisposition::Built,
     })
+}
+
+fn cleanup_failed_cached_build(artifact_path: &Path, lock_path: &Path) {
+    if let Err(error) = fs::remove_dir(artifact_path)
+        && error.kind() != std::io::ErrorKind::NotFound
+        && error.kind() != std::io::ErrorKind::DirectoryNotEmpty
+    {
+        tracing::warn!(%error, "failed to remove cached-only artifact staging directory");
+    }
+    if let Err(error) = remove_if_present(lock_path) {
+        tracing::warn!(%error, "failed to remove cached-only snapshot lock");
+    }
 }
 
 fn cleanup_completed_lexical_stage(artifact_path: &Path) {
@@ -1444,106 +1512,45 @@ fn report_progress(progress: Option<&SnapshotProgressReporter>, phase: SnapshotB
     }
 }
 
+#[derive(Clone, Copy)]
+struct SnapshotArtifactBuildOptions<'a> {
+    semantic: Option<&'a SnapshotSemanticConfig>,
+    policy: SnapshotBuildPolicy,
+    progress: Option<&'a SnapshotProgressReporter>,
+}
+
 fn build_snapshot_artifact(
     layout: &KnowledgeDataLayout,
     repositories: &[KnowledgeRepository],
     manifest: &KnowledgeSnapshotManifest,
     artifact_path: &Path,
     sources: &[GitCorpusSource],
-    semantic: Option<&SnapshotSemanticConfig>,
-    progress: Option<&SnapshotProgressReporter>,
+    options: SnapshotArtifactBuildOptions<'_>,
 ) -> Result<SnapshotArtifactBuild, SnapshotError> {
-    report_progress(progress, SnapshotBuildPhase::PlanningHistory);
-    let mut provider = semantic.map(semantic_provider).transpose()?;
-    let vector_checkpoint_path = semantic.map(|_| vector_checkpoint_path(layout, &manifest.id));
+    report_progress(options.progress, SnapshotBuildPhase::PlanningHistory);
+    let vector_checkpoint_path = options
+        .semantic
+        .filter(|_| options.policy == SnapshotBuildPolicy::AllowInference)
+        .map(|_| vector_checkpoint_path(layout, &manifest.id));
     let summary = match manifest.profile {
-        SnapshotProfile::SelectedTrees => {
-            let previous_vectors = semantic
-                .and_then(|_| load_previous_vector_artifact(layout, repositories, manifest));
-            let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
-                (
-                    provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
-                    semantic.model.model_id.as_str(),
-                    semantic.model.model_revision.as_str(),
-                )
-            });
-            report_progress(progress, SnapshotBuildPhase::BuildingLexicalIndex);
-            let summary = vesc_knowledge_index::build_git_artifacts_with_provider(
-                artifact_path,
-                sources,
-                semantic_build,
-                previous_vectors.as_ref(),
-                vector_checkpoint_path.as_deref(),
-            )
-            .map_err(|error| SnapshotError::Build(error.to_string()))?;
-            report_progress(progress, SnapshotBuildPhase::Publishing);
-            summary
-        }
-        SnapshotProfile::CompleteHistory => {
-            let previous = load_previous_snapshot(layout, repositories, manifest);
-            let semantic_build = provider.as_mut().zip(semantic).map(|(provider, semantic)| {
-                (
-                    provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
-                    semantic.model.model_id.as_str(),
-                    semantic.model.model_revision.as_str(),
-                )
-            });
-            let mut lifecycle_progress = |phase| {
-                let phase = match phase {
-                    vesc_knowledge_index::BuildPhase::Lexical => {
-                        Some(SnapshotBuildPhase::BuildingLexicalIndex)
-                    }
-                    vesc_knowledge_index::BuildPhase::Inference => {
-                        Some(SnapshotBuildPhase::BuildingSemanticIndex)
-                    }
-                    vesc_knowledge_index::BuildPhase::Activation => {
-                        Some(SnapshotBuildPhase::Publishing)
-                    }
-                    _ => None,
-                };
-                if let Some(phase) = phase {
-                    report_progress(progress, phase);
-                }
-            };
-            let summary = vesc_knowledge_index::build_git_history_artifacts_from_previous(
-                artifact_path,
-                sources,
-                previous.map(
-                    |previous| vesc_knowledge_index::PreviousGitHistoryArtifact {
-                        tips: previous.tips,
-                        lexical_path: previous.lexical_path,
-                        corpus_digest: previous.artifact.corpus_digest,
-                        vector_checksum: previous.vector_checksum,
-                        vector_path: previous.vector_path,
-                        lexical_format_compatible: previous.lexical_format_compatible,
-                    },
-                ),
-                semantic_build,
-                vector_checkpoint_path.as_deref(),
-                &mut lifecycle_progress,
-            )
-            .map_err(|error| SnapshotError::Build(error.to_string()))?;
-            tracing::info!(
-                reused_snapshot = summary.reused_snapshot,
-                reused_commits = summary.refresh.reused_commits,
-                ingested_commits = summary.refresh.ingested_commits,
-                reused_blobs = summary.refresh.reused_blobs,
-                reused_contents = summary.refresh.reused_contents,
-                candidate_chunks = summary.refresh.candidate_chunks,
-                materialized_chunks = summary.refresh.materialized_chunks,
-                candidate_identifier_count_histogram = ?summary.refresh.candidate_identifier_count_histogram,
-                materialized_identifier_count_histogram = ?summary.refresh.materialized_identifier_count_histogram,
-                "prepared managed Git history snapshot"
-            );
-            if let Some(vectors) = summary.artifacts.observations.vector_build {
-                tracing::info!(
-                    reused_vectors = vectors.reused_vectors,
-                    embedded_vectors = vectors.embedded_vectors,
-                    "prepared managed semantic snapshot"
-                );
-            }
-            summary.artifacts
-        }
+        SnapshotProfile::SelectedTrees => build_selected_tree_artifact(
+            layout,
+            repositories,
+            manifest,
+            artifact_path,
+            sources,
+            options,
+            vector_checkpoint_path.as_deref(),
+        )?,
+        SnapshotProfile::CompleteHistory => build_complete_history_artifact(
+            layout,
+            repositories,
+            manifest,
+            artifact_path,
+            sources,
+            options,
+            vector_checkpoint_path.as_deref(),
+        )?,
     };
     Ok(SnapshotArtifactBuild {
         vector_checkpoint_path,
@@ -1551,9 +1558,172 @@ fn build_snapshot_artifact(
     })
 }
 
+fn build_selected_tree_artifact(
+    layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
+    manifest: &KnowledgeSnapshotManifest,
+    artifact_path: &Path,
+    sources: &[GitCorpusSource],
+    options: SnapshotArtifactBuildOptions<'_>,
+    vector_checkpoint_path: Option<&Path>,
+) -> Result<vesc_knowledge_index::BuildSummary, SnapshotError> {
+    let previous_vectors = options
+        .semantic
+        .and_then(|_| load_previous_vector_artifact(layout, repositories, manifest));
+    if options.policy == SnapshotBuildPolicy::CachedVectorsOnly
+        && (options.semantic.is_none() || previous_vectors.is_none())
+    {
+        return Err(SnapshotError::NotCached(manifest.id.clone()));
+    }
+    let mut provider =
+        options
+            .semantic
+            .map(|semantic| match options.policy {
+                SnapshotBuildPolicy::AllowInference => semantic_provider(semantic),
+                SnapshotBuildPolicy::CachedVectorsOnly => Ok(Box::new(CachedVectorProvider)
+                    as Box<dyn vesc_knowledge_index::EmbeddingProvider>),
+            })
+            .transpose()?;
+    let semantic_build = provider
+        .as_mut()
+        .zip(options.semantic)
+        .map(|(provider, semantic)| {
+            (
+                provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
+                semantic.model.model_id.as_str(),
+                semantic.model.model_revision.as_str(),
+            )
+        });
+    report_progress(options.progress, SnapshotBuildPhase::BuildingLexicalIndex);
+    let summary = vesc_knowledge_index::build_git_artifacts_with_provider(
+        artifact_path,
+        sources,
+        semantic_build,
+        previous_vectors.as_ref(),
+        vector_checkpoint_path,
+    )
+    .map_err(|error| {
+        if options.policy == SnapshotBuildPolicy::CachedVectorsOnly
+            && matches!(
+                error,
+                vesc_knowledge_index::LifecycleError::Vector(
+                    vesc_knowledge_index::EmbeddingError::InferenceDisabled
+                )
+            )
+        {
+            SnapshotError::NotCached(manifest.id.clone())
+        } else {
+            SnapshotError::Build(error.to_string())
+        }
+    })?;
+    report_progress(options.progress, SnapshotBuildPhase::Publishing);
+    Ok(summary)
+}
+
+fn build_complete_history_artifact(
+    layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
+    manifest: &KnowledgeSnapshotManifest,
+    artifact_path: &Path,
+    sources: &[GitCorpusSource],
+    options: SnapshotArtifactBuildOptions<'_>,
+    vector_checkpoint_path: Option<&Path>,
+) -> Result<vesc_knowledge_index::BuildSummary, SnapshotError> {
+    if options.policy == SnapshotBuildPolicy::CachedVectorsOnly {
+        return Err(SnapshotError::NotCached(manifest.id.clone()));
+    }
+    let mut provider = options.semantic.map(semantic_provider).transpose()?;
+    let previous = load_previous_snapshot(layout, repositories, manifest);
+    let semantic_build = provider
+        .as_mut()
+        .zip(options.semantic)
+        .map(|(provider, semantic)| {
+            (
+                provider.as_mut() as &mut dyn vesc_knowledge_index::EmbeddingProvider,
+                semantic.model.model_id.as_str(),
+                semantic.model.model_revision.as_str(),
+            )
+        });
+    let mut lifecycle_progress = |phase| {
+        let phase = match phase {
+            vesc_knowledge_index::BuildPhase::Lexical => {
+                Some(SnapshotBuildPhase::BuildingLexicalIndex)
+            }
+            vesc_knowledge_index::BuildPhase::Inference => {
+                Some(SnapshotBuildPhase::BuildingSemanticIndex)
+            }
+            vesc_knowledge_index::BuildPhase::Activation => Some(SnapshotBuildPhase::Publishing),
+            _ => None,
+        };
+        if let Some(phase) = phase {
+            report_progress(options.progress, phase);
+        }
+    };
+    let summary = vesc_knowledge_index::build_git_history_artifacts_from_previous(
+        artifact_path,
+        sources,
+        previous.map(
+            |previous| vesc_knowledge_index::PreviousGitHistoryArtifact {
+                tips: previous.tips,
+                lexical_path: previous.lexical_path,
+                corpus_digest: previous.artifact.corpus_digest,
+                vector_checksum: previous.vector_checksum,
+                vector_path: previous.vector_path,
+                lexical_format_compatible: previous.lexical_format_compatible,
+            },
+        ),
+        semantic_build,
+        vector_checkpoint_path,
+        &mut lifecycle_progress,
+    )
+    .map_err(|error| SnapshotError::Build(error.to_string()))?;
+    tracing::info!(
+        reused_snapshot = summary.reused_snapshot,
+        reused_commits = summary.refresh.reused_commits,
+        ingested_commits = summary.refresh.ingested_commits,
+        reused_blobs = summary.refresh.reused_blobs,
+        reused_contents = summary.refresh.reused_contents,
+        candidate_chunks = summary.refresh.candidate_chunks,
+        materialized_chunks = summary.refresh.materialized_chunks,
+        candidate_identifier_count_histogram = ?summary.refresh.candidate_identifier_count_histogram,
+        materialized_identifier_count_histogram = ?summary.refresh.materialized_identifier_count_histogram,
+        "prepared managed Git history snapshot"
+    );
+    if let Some(vectors) = summary.artifacts.observations.vector_build {
+        tracing::info!(
+            reused_vectors = vectors.reused_vectors,
+            embedded_vectors = vectors.embedded_vectors,
+            "prepared managed semantic snapshot"
+        );
+    }
+    Ok(summary.artifacts)
+}
+
 struct SnapshotArtifactBuild {
     vector_checkpoint_path: Option<PathBuf>,
     has_vectors: bool,
+}
+
+struct CachedVectorProvider;
+
+impl vesc_knowledge_index::EmbeddingProvider for CachedVectorProvider {
+    fn document_inference_enabled(&self) -> bool {
+        false
+    }
+
+    fn embed_documents(
+        &mut self,
+        _texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, vesc_knowledge_index::EmbeddingError> {
+        Err(vesc_knowledge_index::EmbeddingError::InferenceDisabled)
+    }
+
+    fn embed_query(
+        &mut self,
+        _text: &str,
+    ) -> Result<Vec<f32>, vesc_knowledge_index::EmbeddingError> {
+        Err(vesc_knowledge_index::EmbeddingError::InferenceDisabled)
+    }
 }
 
 fn vector_checkpoint_path(layout: &KnowledgeDataLayout, id: &KnowledgeSnapshotId) -> PathBuf {
@@ -1638,7 +1808,7 @@ fn previous_vector_snapshot_is_compatible_with_legacy(
         )
         && previous.component_versions.get("lexical-format")
             == current.component_versions.get("lexical-format")
-        && previous.semantic == current.semantic
+        && semantic_serving_contract_matches(previous.semantic.as_ref(), current.semantic.as_ref())
         && current.repositories.iter().all(|selected| {
             previous.repositories.iter().any(|candidate| {
                 previous_repository_policy_is_compatible(
@@ -1687,21 +1857,16 @@ fn load_previous_vector_snapshot_candidate(
     let semantic = current.semantic.as_ref()?;
     let checksum = artifact.vector_checksum?;
     let path = lexical_path.with_file_name("vectors.bin");
-    vesc_knowledge_index::VectorArtifact::validate_reusable_artifact(
-        &path,
-        &checksum,
-        &artifact.corpus_digest,
+    vesc_knowledge_index::PreviousVectorArtifact::open(
+        lexical_path,
+        artifact.corpus_digest,
+        checksum,
+        path,
         &semantic.model_id,
         &semantic.model_revision,
         None,
     )
-    .ok()?;
-    Some(vesc_knowledge_index::PreviousVectorArtifact {
-        lexical_path,
-        corpus_digest: artifact.corpus_digest,
-        checksum,
-        path,
-    })
+    .ok()
 }
 
 fn load_previous_snapshot(
@@ -3141,6 +3306,154 @@ max_total_bytes = 10485760
             .load_default(SnapshotDisposition::Reused)
             .expect_err("serving requires configured vectors");
         assert!(matches!(error, SnapshotError::Build(_)));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One semantic fixture proves both cache-hit and cache-miss behavior.
+    async fn cached_only_derives_selected_tree_from_complete_history_vectors() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (work, remote, _first, _second) = fixture_remote(temp.path());
+        let data_root = temp.path().join("data");
+        let layout =
+            KnowledgeDataLayout::new(DataRoot::new(data_root.clone()).expect("absolute data root"));
+        let repositories = fixture_registry(&data_root, "refs/heads/main");
+        let repository = repositories.iter().next().expect("fixture repository");
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                repository.id(),
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository sync");
+
+        let serving_semantic = SnapshotSemanticModel {
+            model_id: "fake".into(),
+            model_revision: "test-revision".into(),
+            max_length: 512,
+            ingestion: None,
+        };
+        let mut accelerated_semantic = serving_semantic.clone();
+        accelerated_semantic.ingestion = Some(SnapshotSemanticIngestion {
+            model_sha256: "f".repeat(64),
+            provider: SemanticIngestionProvider::Migraphx,
+            device_id: 0,
+            max_length: 512,
+            batch_size: 8,
+            window_aggregation: vesc_knowledge_index::WindowAggregation::TokenWeightedMean,
+        });
+        let mut store = KnowledgeSnapshotStore::new(layout.clone());
+        store.semantic = Some(SnapshotSemanticConfig {
+            model_dir: temp.path().join("unused-model"),
+            model: accelerated_semantic,
+        });
+        let complete_history = store
+            .resolve_manifest(
+                &repositories,
+                &BTreeMap::new(),
+                SnapshotProfile::CompleteHistory,
+            )
+            .expect("complete-history manifest");
+        let sources =
+            snapshot_corpus_sources(&layout, std::slice::from_ref(repository), &complete_history)
+                .expect("complete-history sources");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        vesc_knowledge_index::build_git_history_artifacts_from_previous(
+            &layout.artifact(&complete_history.id),
+            &sources,
+            None,
+            Some((&mut provider, "fake", "test-revision")),
+            None,
+            &mut |_| {},
+        )
+        .expect("complete-history semantic artifact");
+        write_json_atomic(&layout.snapshot(&complete_history.id), &complete_history)
+            .expect("complete-history snapshot manifest");
+        store.semantic.as_mut().expect("semantic config").model = serving_semantic;
+
+        let prepared = store
+            .derive_cached(&repositories, &BTreeMap::new())
+            .await
+            .expect("derive selected tree without inference");
+
+        assert_eq!(prepared.disposition, SnapshotDisposition::Built);
+        assert!(artifact_matches(&prepared.artifact_path, "betaunique"));
+        assert!(!artifact_matches(&prepared.artifact_path, "alphaunique"));
+
+        run_git(&work, &["switch", "-c", "new-content"]);
+        fs::write(work.join("new.md"), "genuinelynewbranchcontent\n").expect("new branch file");
+        run_git(&work, &["add", "new.md"]);
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "new branch content",
+            ],
+        );
+        run_git(
+            &work,
+            &[
+                "push",
+                remote.to_str().expect("UTF-8 remote path"),
+                "new-content",
+            ],
+        );
+        ManagedGitStore::new(layout.clone())
+            .sync_source(
+                repository.id(),
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("managed repository refresh");
+        let new_branch = fixture_registry(&data_root, "refs/heads/new-content");
+        let missing = store
+            .resolve_manifest(
+                &new_branch,
+                &BTreeMap::new(),
+                SnapshotProfile::SelectedTrees,
+            )
+            .expect("new branch manifest");
+        let training_checkpoint = vector_checkpoint_path(&layout, &missing.id);
+        fs::create_dir_all(training_checkpoint.parent().expect("checkpoint parent"))
+            .expect("checkpoint directory");
+        fs::write(&training_checkpoint, b"resumable training state").expect("training checkpoint");
+
+        let error = store
+            .derive_cached(&new_branch, &BTreeMap::new())
+            .await
+            .expect_err("cached-only must not embed new branch content");
+
+        assert!(matches!(error, SnapshotError::NotCached(_)));
+        assert!(!layout.snapshot(&missing.id).is_file());
+        assert!(!layout.artifact(&missing.id).exists());
+        assert!(
+            !vesc_knowledge_index::active_manifest_path(&layout.artifact(&missing.id)).is_file()
+        );
+        assert_eq!(
+            fs::read(&training_checkpoint).expect("preserved training checkpoint"),
+            b"resumable training state"
+        );
+        assert!(
+            !layout
+                .root()
+                .as_path()
+                .join("snapshots")
+                .join(format!("{}.lock", missing.id.as_str()))
+                .exists()
+        );
+        assert!(
+            !layout
+                .repository(repository.id())
+                .join("refs/vesc-mcp/snapshots")
+                .join(missing.id.as_str())
+                .exists()
+        );
     }
 
     fn artifact_matches(root: &Path, query: &str) -> bool {

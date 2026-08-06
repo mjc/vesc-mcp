@@ -72,6 +72,8 @@ pub enum EmbeddingError {
     UnknownChunk(ChunkId),
     #[error("vector artifact model metadata does not match the requested model")]
     ModelMismatch,
+    #[error("embedding inference is disabled for cached-only preparation")]
+    InferenceDisabled,
     #[error("vector artifact schema {0} is unsupported; rebuild the semantic artifact")]
     UnsupportedSchema(u16),
     #[error("embedding provider failed: {0}")]
@@ -489,6 +491,12 @@ impl EmbeddingProfile {
 
 /// Synchronous provider boundary for batch document and query embeddings.
 pub trait EmbeddingProvider {
+    /// Reports whether missing document vectors may be embedded.
+    #[must_use]
+    fn document_inference_enabled(&self) -> bool {
+        true
+    }
+
     /// Returns the provider's fixed output dimension when known before inference.
     #[must_use]
     fn embedding_dimension(&self) -> Option<usize> {
@@ -2849,6 +2857,25 @@ impl VectorArtifact {
         model_revision: &str,
         provider_dimension: Option<usize>,
     ) -> Result<(), EmbeddingError> {
+        Self::validate_reusable_artifact_dimension(
+            path,
+            expected_checksum,
+            expected_corpus_digest,
+            model_id,
+            model_revision,
+            provider_dimension,
+        )
+        .map(|_| ())
+    }
+
+    pub(crate) fn validate_reusable_artifact_dimension(
+        path: &Path,
+        expected_checksum: &ContentDigest,
+        expected_corpus_digest: &ContentDigest,
+        model_id: &str,
+        model_revision: &str,
+        provider_dimension: Option<usize>,
+    ) -> Result<usize, EmbeddingError> {
         let header = verified_artifact_header(path, expected_checksum)?;
         if header.schema != 2
             || !header.normalized
@@ -2859,7 +2886,7 @@ impl VectorArtifact {
         {
             return Err(EmbeddingError::ModelMismatch);
         }
-        Ok(())
+        Ok(header.dimension)
     }
 
     pub(crate) fn validate_artifact(
@@ -3323,6 +3350,30 @@ impl VectorArtifact {
             model_revision,
             previous_corpus_digest,
         )?;
+        let mut row = Vec::with_capacity(header.dimension);
+        if !provider.document_inference_enabled() {
+            let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+            let mut reuse_index = 0;
+            while reuse_index < reuse_order.len() {
+                let desired = &previous_ids[reuse_order[reuse_index]];
+                while previous_id
+                    .as_ref()
+                    .is_some_and(|previous| previous < desired)
+                {
+                    previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
+                }
+                if previous_id.as_ref() != Some(desired) {
+                    return Err(EmbeddingError::InferenceDisabled);
+                }
+                reuse_index += 1;
+                while reuse_index < reuse_order.len()
+                    && previous_ids[reuse_order[reuse_index]] == *desired
+                {
+                    reuse_index += 1;
+                }
+            }
+            source = rewind_vector_reader(source)?.0;
+        }
         let temporary_checkpoint = if checkpoint_path.is_none() {
             Some(
                 tempfile::Builder::new()
@@ -3364,7 +3415,6 @@ impl VectorArtifact {
         let reuse_batch_size = (VECTOR_REUSE_BUFFER_BYTES / row_bytes).max(1);
         let mut checkpoint_rows = Vec::with_capacity(reuse_batch_size);
         let mut checkpoint_vectors = Vec::with_capacity(reuse_batch_size);
-        let mut row = Vec::with_capacity(header.dimension);
         let mut previous_id = read_vector_row_into(&mut source, header.dimension, &mut row)?;
         let mut reuse_index = 0;
         let mut copied_reused_rows = false;
@@ -3535,6 +3585,9 @@ impl VectorArtifact {
             .filter_map(|(index, &missing)| missing.then_some(index))
             .collect::<Vec<_>>();
         drop(is_missing);
+        if !missing.is_empty() && !provider.document_inference_enabled() {
+            return Err(EmbeddingError::InferenceDisabled);
+        }
 
         let mut observations = VectorBuildObservations::default();
         let temporary_checkpoint = if checkpoint_path.is_none() && !missing.is_empty() {

@@ -14,8 +14,9 @@ use crate::managed_snapshots::{
 
 const VERSION_HINT: &str = "call list_vesc_source_versions and select configured refs";
 const NOT_CACHED_HINT: &str =
-    "prepare this snapshot on the training host, then distribute its manifest and artifact";
+    "refresh complete-history knowledge on the training host, distribute its cache, then retry";
 pub const PREPARE_KNOWLEDGE_CHILD_ARG: &str = "--prepare-knowledge";
+pub const CACHED_ONLY_ARG: &str = "--cached-only";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PrepareVescKnowledgeParams {
@@ -82,7 +83,7 @@ pub async fn prepare_vesc_knowledge_tool(
     prepare_vesc_knowledge(params, config, PreparationPolicy::BuildMissing).await
 }
 
-/// Resolve and reuse a complete cached snapshot without building missing data.
+/// Resolve or derive a snapshot from cached data without embedding missing content.
 pub async fn prepare_cached_vesc_knowledge_tool(
     params: &PrepareVescKnowledgeParams,
     config: &KnowledgeConfig,
@@ -128,9 +129,15 @@ async fn prepare_vesc_knowledge(
         return failure("invalid_selection", "timeout exceeds 600 seconds");
     }
     match policy {
-        PreparationPolicy::CachedOnly => match store.reuse(&config.repositories, &selectors) {
-            Ok(prepared) => success(&prepared),
-            Err(error) => snapshot_failure(&error),
+        PreparationPolicy::CachedOnly => match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            store.derive_cached(&config.repositories, &selectors),
+        )
+        .await
+        {
+            Err(_) => failure("timeout", "snapshot preparation timed out"),
+            Ok(Ok(prepared)) => success(&prepared),
+            Ok(Err(error)) => snapshot_failure(&error),
         },
         PreparationPolicy::BuildMissing => match tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),

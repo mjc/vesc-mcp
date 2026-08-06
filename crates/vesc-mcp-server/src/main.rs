@@ -18,16 +18,15 @@ use vesc_mcp_core::preparation_status::{
 };
 use vesc_mcp_core::server::KnowledgePreparation;
 use vesc_mcp_core::tools::prepare_knowledge::{
-    PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, knowledge_config_fingerprint,
-    prepare_cached_vesc_knowledge_json, prepare_vesc_knowledge_failure_json,
-    prepare_vesc_knowledge_json,
+    CACHED_ONLY_ARG, PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest,
+    knowledge_config_fingerprint, prepare_cached_vesc_knowledge_json,
+    prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
 };
 
 const PROFILE_INITIAL_TRAINING_ARG: &str = "--profile-initial-training";
 const REPOSITORY_PREPARATION_TIMEOUT_ARG: &str = "--repository-preparation-timeout-secs";
 const REFRESH_ON_STARTUP_ARG: &str = "--refresh-on-startup";
 const EAGER_INDEX_ARG: &str = "--eager-index";
-const CACHED_ONLY_ARG: &str = "--cached-only";
 const DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS: u64 = 900;
 
 struct PreparationReporter {

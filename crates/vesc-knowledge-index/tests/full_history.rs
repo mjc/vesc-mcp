@@ -149,6 +149,23 @@ fn assert_bounded_delta(contents: &[Chunk], observations: &GitHistoryRefreshObse
 
 const fn ignore_build_phase(_: BuildPhase) {}
 
+fn previous_vector_artifact(
+    generation: &Path,
+    corpus_digest: ContentDigest,
+    checksum: ContentDigest,
+) -> PreviousVectorArtifact {
+    PreviousVectorArtifact::open(
+        generation.join("lexical.json"),
+        corpus_digest,
+        checksum,
+        generation.join("vectors.bin"),
+        "fake",
+        "test-revision",
+        None,
+    )
+    .expect("validated previous vector artifact")
+}
+
 struct FailingEmbeddingProvider;
 
 impl EmbeddingProvider for FailingEmbeddingProvider {
@@ -1906,16 +1923,15 @@ fn selected_tree_reuses_every_vector_already_present_in_complete_history() {
         selected_root.path(),
         std::slice::from_ref(&selected_source),
         Some((&mut FailingEmbeddingProvider, "fake", "test-revision")),
-        Some(&PreviousVectorArtifact {
-            lexical_path: history_generation.join("lexical.json"),
-            corpus_digest: history.artifacts.manifest.corpus.content_digest,
-            checksum: history
+        Some(&previous_vector_artifact(
+            &history_generation,
+            history.artifacts.manifest.corpus.content_digest,
+            history
                 .artifacts
                 .manifest
                 .vector_checksum
                 .expect("history vector checksum"),
-            path: history_generation.join("vectors.bin"),
-        }),
+        )),
         None,
     )
     .expect("selected tree reuses history vectors");
@@ -1999,16 +2015,15 @@ fn selected_tree_reuses_split_source_vectors_with_passage_local_identifiers() {
         selected_root.path(),
         std::slice::from_ref(&selected_source),
         Some((&mut FailingEmbeddingProvider, "fake", "test-revision")),
-        Some(&PreviousVectorArtifact {
-            lexical_path: history_generation.join("lexical.json"),
-            corpus_digest: history.artifacts.manifest.corpus.content_digest,
-            checksum: history
+        Some(&previous_vector_artifact(
+            &history_generation,
+            history.artifacts.manifest.corpus.content_digest,
+            history
                 .artifacts
                 .manifest
                 .vector_checksum
                 .expect("history vector checksum"),
-            path: history_generation.join("vectors.bin"),
-        }),
+        )),
         None,
     )
     .expect("selected split source reuses history vectors");
@@ -2053,16 +2068,15 @@ fn selected_tree_embeds_only_chunks_missing_from_complete_history() {
         selected_root.path(),
         std::slice::from_ref(&selected_source),
         Some((&mut selected_provider, "fake", "test-revision")),
-        Some(&PreviousVectorArtifact {
-            lexical_path: history_generation.join("lexical.json"),
-            corpus_digest: history.artifacts.manifest.corpus.content_digest,
-            checksum: history
+        Some(&previous_vector_artifact(
+            &history_generation,
+            history.artifacts.manifest.corpus.content_digest,
+            history
                 .artifacts
                 .manifest
                 .vector_checksum
                 .expect("history vector checksum"),
-            path: history_generation.join("vectors.bin"),
-        }),
+        )),
         None,
     )
     .expect("selected tree reconciles history vectors");

@@ -40,9 +40,8 @@ use crate::tools::list_source_versions::{
     ListVescSourceVersionsParams, list_vesc_source_versions_json,
 };
 use crate::tools::prepare_knowledge::{
-    PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest, PrepareVescKnowledgeParams,
-    prepare_cached_vesc_knowledge_json, prepare_vesc_knowledge_failure_json,
-    prepare_vesc_knowledge_json,
+    CACHED_ONLY_ARG, PREPARE_KNOWLEDGE_CHILD_ARG, PrepareKnowledgeChildRequest,
+    PrepareVescKnowledgeParams, prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
 };
 use crate::tools::search_knowledge::{
     SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
@@ -134,13 +133,18 @@ struct SharedMcpState {
 #[derive(Clone, Debug)]
 enum KnowledgePreparer {
     InProcess,
-    Isolated(Result<PathBuf, Arc<str>>),
-    CachedOnly,
+    Isolated {
+        executable: Result<PathBuf, Arc<str>>,
+        policy: KnowledgePreparation,
+    },
 }
 
 impl KnowledgePreparer {
-    fn isolated() -> Self {
-        Self::Isolated(std::env::current_exe().map_err(|error| Arc::from(error.to_string())))
+    fn isolated(policy: KnowledgePreparation) -> Self {
+        Self::Isolated {
+            executable: std::env::current_exe().map_err(|error| Arc::from(error.to_string())),
+            policy,
+        }
     }
 
     async fn prepare(
@@ -150,10 +154,11 @@ impl KnowledgePreparer {
     ) -> String {
         match self {
             Self::InProcess => prepare_vesc_knowledge_json(params, config).await,
-            Self::CachedOnly => prepare_cached_vesc_knowledge_json(params, config).await,
-            Self::Isolated(executable) => {
+            Self::Isolated { executable, policy } => {
                 let result = match executable {
-                    Ok(executable) => prepare_knowledge_in_child(executable, params, config).await,
+                    Ok(executable) => {
+                        prepare_knowledge_in_child(executable, params, config, *policy).await
+                    }
                     Err(error) => Err(anyhow!(
                         "knowledge preparation process is unavailable: {error}"
                     )),
@@ -166,16 +171,25 @@ impl KnowledgePreparer {
     }
 }
 
+const fn preparation_child_args(policy: KnowledgePreparation) -> &'static [&'static str] {
+    match policy {
+        KnowledgePreparation::BuildMissing => &[PREPARE_KNOWLEDGE_CHILD_ARG],
+        KnowledgePreparation::CachedOnly => &[PREPARE_KNOWLEDGE_CHILD_ARG, CACHED_ONLY_ARG],
+    }
+}
+
 async fn prepare_knowledge_in_child(
     executable: &std::path::Path,
     params: &PrepareVescKnowledgeParams,
     config: &KnowledgeConfig,
+    policy: KnowledgePreparation,
 ) -> anyhow::Result<String> {
     let deadline = tokio::time::Instant::now() + preparation_process_timeout(params);
     let request = serde_json::to_vec(&PrepareKnowledgeChildRequest::new(params.clone(), config))
         .context("could not serialize knowledge preparation request")?;
-    let mut child = tokio::process::Command::new(executable)
-        .arg(PREPARE_KNOWLEDGE_CHILD_ARG)
+    let mut command = tokio::process::Command::new(executable);
+    command.args(preparation_child_args(policy));
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -275,10 +289,7 @@ impl SharedMcpState {
             config.feedback.path.as_deref().map(FeedbackStore::new),
             config.feedback.writes_enabled,
         );
-        state.knowledge_preparer = match policy {
-            KnowledgePreparation::BuildMissing => KnowledgePreparer::isolated(),
-            KnowledgePreparation::CachedOnly => KnowledgePreparer::CachedOnly,
-        };
+        state.knowledge_preparer = KnowledgePreparer::isolated(policy);
         state
     }
 
@@ -1558,18 +1569,28 @@ max_total_bytes = 1
     fn default_service_isolates_knowledge_preparation() {
         assert!(matches!(
             SharedMcpState::new().knowledge_preparer,
-            KnowledgePreparer::Isolated(_)
+            KnowledgePreparer::Isolated {
+                policy: KnowledgePreparation::BuildMissing,
+                ..
+            }
         ));
     }
 
     #[test]
-    fn cached_only_service_never_starts_a_preparation_child() {
+    fn cached_only_service_uses_a_killable_preparation_child() {
         let service = VescMcpService::with_knowledge_preparation(KnowledgePreparation::CachedOnly);
 
         assert!(matches!(
             service.state.knowledge_preparer,
-            KnowledgePreparer::CachedOnly
+            KnowledgePreparer::Isolated {
+                policy: KnowledgePreparation::CachedOnly,
+                ..
+            }
         ));
+        assert_eq!(
+            preparation_child_args(KnowledgePreparation::CachedOnly),
+            &[PREPARE_KNOWLEDGE_CHILD_ARG, CACHED_ONLY_ARG]
+        );
     }
 
     #[test]
