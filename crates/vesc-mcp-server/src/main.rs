@@ -24,6 +24,7 @@ use vesc_mcp_core::tools::prepare_knowledge::{
 };
 
 const PROFILE_INITIAL_TRAINING_ARG: &str = "--profile-initial-training";
+const INSTALL_DISTRIBUTED_CACHE_ARG: &str = "--install-distributed-cache";
 const REPOSITORY_PREPARATION_TIMEOUT_ARG: &str = "--repository-preparation-timeout-secs";
 const REFRESH_ON_STARTUP_ARG: &str = "--refresh-on-startup";
 const EAGER_INDEX_ARG: &str = "--eager-index";
@@ -150,7 +151,9 @@ impl RuntimeProfile {
         if args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
-                "--refresh-repositories" | PREPARE_KNOWLEDGE_CHILD_ARG
+                "--refresh-repositories"
+                    | PREPARE_KNOWLEDGE_CHILD_ARG
+                    | INSTALL_DISTRIBUTED_CACHE_ARG
             )
         }) || args.iter().any(|arg| arg == PROFILE_INITIAL_TRAINING_ARG)
         {
@@ -285,6 +288,26 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
+
+    if args.iter().any(|arg| arg == INSTALL_DISTRIBUTED_CACHE_ARG) {
+        let staged_root = argument_value(&args, INSTALL_DISTRIBUTED_CACHE_ARG)
+            .ok_or_else(|| anyhow::anyhow!("{INSTALL_DISTRIBUTED_CACHE_ARG} requires a path"))?;
+        let config = McpConfig::load();
+        let live_root = config.knowledge.data_root.clone().ok_or_else(|| {
+            anyhow::anyhow!("distributed cache installation requires a data root")
+        })?;
+        let installed = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(live_root))
+            .with_semantic_config(&config.knowledge)?
+            .install_distributed_default(
+                DataRoot::new(PathBuf::from(staged_root))?,
+                &config.knowledge.repositories,
+            )?;
+        println!(
+            "installed distributed knowledge snapshot {}",
+            installed.manifest.id
+        );
+        return Ok(());
+    }
 
     let startup_policy = StartupPolicy::from_args(&args);
     if args.iter().any(|arg| arg == "--refresh-repositories") {
@@ -801,11 +824,12 @@ mod tests {
     use vesc_mcp_core::server::KnowledgePreparation;
 
     use super::{
-        CACHED_ONLY_ARG, EAGER_INDEX_ARG, PROFILE_INITIAL_TRAINING_ARG, PreparationReporter,
-        REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
-        migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
-        publish_child_preparation_failure, repository_preparation_timeout, repository_refresh_args,
-        run_http, supervise_preparation_child, terminal_preparation_state,
+        CACHED_ONLY_ARG, EAGER_INDEX_ARG, INSTALL_DISTRIBUTED_CACHE_ARG,
+        PROFILE_INITIAL_TRAINING_ARG, PreparationReporter, REFRESH_ON_STARTUP_ARG,
+        REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy, migraphx_cache_path,
+        policy_for_available_data, preparation_phase_for_build, publish_child_preparation_failure,
+        repository_preparation_timeout, repository_refresh_args, run_http,
+        supervise_preparation_child, terminal_preparation_state,
     };
 
     #[test]
@@ -932,6 +956,10 @@ mod tests {
         );
         assert_eq!(
             RuntimeProfile::from_args(&[PROFILE_INITIAL_TRAINING_ARG.into()]),
+            RuntimeProfile::Preparation
+        );
+        assert_eq!(
+            RuntimeProfile::from_args(&[INSTALL_DISTRIBUTED_CACHE_ARG.into(), "/stage".into()]),
             RuntimeProfile::Preparation
         );
         assert_eq!(

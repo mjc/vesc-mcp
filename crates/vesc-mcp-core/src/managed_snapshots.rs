@@ -21,6 +21,11 @@ use crate::managed_repositories::{
     TrustTier,
 };
 
+mod publication;
+
+#[cfg(test)]
+use publication::DistributedPublicationBoundary;
+
 const LEGACY_SNAPSHOT_SCHEMA: u16 = 2;
 const SNAPSHOT_SCHEMA: u16 = 3;
 
@@ -5046,5 +5051,226 @@ max_total_bytes = 10485760
             repository_policy_digest(right.iter().next().expect("right repository"))
                 .expect("right digest")
         );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // One monotonic retry sequence covers every commit boundary.
+    async fn distributed_publication_exposes_only_an_old_or_new_complete_snapshot() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (work, remote, _first, _second) = fixture_remote(temp.path());
+        let live_root = temp.path().join("live");
+        let staged_root = temp.path().join("staged");
+        let live_layout = KnowledgeDataLayout::new(
+            DataRoot::new(live_root.clone()).expect("absolute live data root"),
+        );
+        let staged_layout = KnowledgeDataLayout::new(
+            DataRoot::new(staged_root.clone()).expect("absolute staged data root"),
+        );
+        let live_repositories = fixture_registry(&live_root, "refs/heads/main");
+        let staged_repositories = fixture_registry(&staged_root, "refs/heads/main");
+        let repository_id = RepositoryId::new("fixture").expect("repository id");
+
+        ManagedGitStore::new(live_layout.clone())
+            .sync_source(
+                &repository_id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("sync old live repository");
+        let live_store = KnowledgeSnapshotStore::new(live_layout.clone());
+        let old = live_store
+            .prepare_default(&live_repositories)
+            .await
+            .expect("prepare old live snapshot");
+
+        fs::write(work.join("README.md"), "gammaunique third revision\n").expect("third file");
+        run_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-am",
+                "third",
+            ],
+        );
+        run_git(
+            &work,
+            &["push", remote.to_str().expect("UTF-8 remote path"), "main"],
+        );
+        ManagedGitStore::new(staged_layout.clone())
+            .sync_source(
+                &repository_id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("sync staged repository");
+        let staged = KnowledgeSnapshotStore::new(staged_layout)
+            .prepare_default(&staged_repositories)
+            .await
+            .expect("prepare staged snapshot");
+        assert_ne!(old.manifest.id, staged.manifest.id);
+
+        let boundaries = [
+            DistributedPublicationBoundary::ArtifactGeneration,
+            DistributedPublicationBoundary::ArtifactActivation,
+            DistributedPublicationBoundary::RepositoryObjects,
+            DistributedPublicationBoundary::RepositoryReferences,
+            DistributedPublicationBoundary::RepositoryCatalog,
+            DistributedPublicationBoundary::RepositoryPins,
+            DistributedPublicationBoundary::SnapshotManifest,
+            DistributedPublicationBoundary::DefaultAlias,
+        ];
+        for boundary in boundaries {
+            let error = live_store
+                .install_distributed_default_with_hook(
+                    DataRoot::new(staged_root.clone()).expect("staged data root"),
+                    &live_repositories,
+                    |reached| {
+                        if reached == boundary {
+                            return Err(SnapshotError::Build(format!(
+                                "interrupted after {reached:?}"
+                            )));
+                        }
+                        Ok(())
+                    },
+                )
+                .expect_err("injected publication interruption");
+            assert!(error.to_string().contains("interrupted after"));
+
+            let expected = if boundary == DistributedPublicationBoundary::DefaultAlias {
+                &staged.manifest.id
+            } else {
+                &old.manifest.id
+            };
+            let visible = live_store
+                .load_default(SnapshotDisposition::Reused)
+                .expect("visible default remains complete");
+            assert_eq!(&visible.manifest.id, expected);
+
+            let current = if boundary < DistributedPublicationBoundary::RepositoryCatalog {
+                &old.manifest.id
+            } else {
+                &staged.manifest.id
+            };
+            prune_obsolete_incomplete_snapshots(&live_layout, current)
+                .expect("restart pruning remains safe");
+            let visible = live_store
+                .load_default(SnapshotDisposition::Reused)
+                .expect("visible default survives restart pruning");
+            assert_eq!(&visible.manifest.id, expected);
+        }
+
+        let installed = live_store
+            .install_distributed_default(
+                DataRoot::new(staged_root).expect("staged data root"),
+                &live_repositories,
+            )
+            .expect("retry completes publication");
+        assert_eq!(installed.manifest.id, staged.manifest.id);
+        assert_eq!(
+            live_store
+                .load_default(SnapshotDisposition::Reused)
+                .expect("new default is complete")
+                .manifest
+                .id,
+            staged.manifest.id
+        );
+    }
+
+    #[tokio::test]
+    async fn distributed_publication_rejects_corrupt_staging_before_live_writes() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let (_work, remote, _first, _second) = fixture_remote(temp.path());
+        let staged_root = temp.path().join("staged");
+        let live_root = temp.path().join("live");
+        let staged_layout = KnowledgeDataLayout::new(
+            DataRoot::new(staged_root.clone()).expect("absolute staged data root"),
+        );
+        let staged_repositories = fixture_registry(&staged_root, "refs/heads/main");
+        let live_repositories = fixture_registry(&live_root, "refs/heads/main");
+        let repository_id = RepositoryId::new("fixture").expect("repository id");
+        ManagedGitStore::new(staged_layout.clone())
+            .sync_source(
+                &repository_id,
+                remote.to_str().expect("UTF-8 remote path"),
+                "refs/heads/main",
+            )
+            .await
+            .expect("sync staged repository");
+        let staged = KnowledgeSnapshotStore::new(staged_layout.clone())
+            .prepare_default(&staged_repositories)
+            .await
+            .expect("prepare staged snapshot");
+        let semantic = SnapshotSemanticModel {
+            model_id: "fake".into(),
+            model_revision: "test-revision".into(),
+            max_length: 512,
+            ingestion: None,
+        };
+        let semantic_manifest = KnowledgeSnapshotManifest::with_profile_and_configuration(
+            staged.manifest.repositories.clone(),
+            staged.manifest.configured_repositories,
+            Some(semantic.clone()),
+            SnapshotProfile::CompleteHistory,
+        )
+        .expect("semantic staged manifest");
+        let configured = staged_repositories.iter().cloned().collect::<Vec<_>>();
+        let sources = snapshot_corpus_sources(&staged_layout, &configured, &semantic_manifest)
+            .expect("semantic staged sources");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        vesc_knowledge_index::build_git_history_artifacts_from_previous(
+            &staged_layout.artifact(&semantic_manifest.id),
+            &sources,
+            None,
+            Some((&mut provider, "fake", "test-revision")),
+            None,
+            &mut |_| {},
+        )
+        .expect("semantic staged artifact");
+        write_json_atomic(
+            &staged_layout.snapshot(&semantic_manifest.id),
+            &semantic_manifest,
+        )
+        .expect("semantic snapshot manifest");
+        write_json_atomic(
+            &crate::default_snapshot_path(staged_layout.root().as_path()),
+            &semantic_manifest,
+        )
+        .expect("semantic default alias");
+        let semantic_artifact = staged_layout.artifact(&semantic_manifest.id);
+        let generation = vesc_knowledge_index::active_generation_path(&semantic_artifact)
+            .expect("active staged generation");
+        let vectors_path = generation.join("vectors.bin");
+        let mut vectors = fs::read(&vectors_path).expect("read staged vector artifact");
+        vectors[0] ^= 0xff;
+        fs::write(vectors_path, vectors).expect("corrupt staged vector artifact");
+
+        let live_layout = KnowledgeDataLayout::new(
+            DataRoot::new(live_root.clone()).expect("absolute live data root"),
+        );
+        let mut live_store = KnowledgeSnapshotStore::new(live_layout);
+        live_store.semantic = Some(SnapshotSemanticConfig {
+            model_dir: temp.path().join("unused-model"),
+            model: semantic,
+        });
+        let error = live_store
+            .install_distributed_default(
+                DataRoot::new(staged_root).expect("staged data root"),
+                &live_repositories,
+            )
+            .expect_err("corrupt stage must be rejected");
+
+        assert!(
+            error.to_string().contains("checksum mismatch"),
+            "unexpected validation error: {error}"
+        );
+        assert!(!live_root.join("artifacts").exists());
+        assert!(!live_root.join("repositories").exists());
+        assert!(!crate::default_snapshot_path(&live_root).exists());
     }
 }

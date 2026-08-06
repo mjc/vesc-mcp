@@ -481,6 +481,223 @@ impl ManagedGitStore {
         tips.dedup();
         Ok(tips)
     }
+
+    pub(crate) fn lock_for_cache_publication(
+        &self,
+        id: &RepositoryId,
+    ) -> Result<File, ManagedGitError> {
+        let repositories = self.layout.root().as_path().join("repositories");
+        fs::create_dir_all(&repositories)?;
+        lock_repository(&repositories.join(format!("{}.lock", id.as_str())))
+    }
+
+    pub(crate) fn validate_cached_repository(
+        &self,
+        repository: &KnowledgeRepository,
+    ) -> Result<(), ManagedGitError> {
+        let path = self.repository_path(repository.id());
+        let cached = gix::open(&path).map_err(git_error)?;
+        validate_cached_origin(&cached, repository.remote_url())?;
+        let catalog = read_catalog(&self.layout, repository.id())?;
+        validate_catalog(&path, repository, &catalog)
+    }
+
+    pub(crate) fn publish_cached_objects_from(
+        &self,
+        source: &Self,
+        repository: &KnowledgeRepository,
+    ) -> Result<(), ManagedGitError> {
+        source.validate_cached_repository(repository)?;
+        let source_path = source.repository_path(repository.id());
+        let target_path = self.repository_path(repository.id());
+        if target_path.exists() {
+            let target = gix::open(&target_path).map_err(git_error)?;
+            validate_cached_origin(&target, repository.remote_url())?;
+        } else {
+            fs::create_dir_all(
+                target_path
+                    .parent()
+                    .expect("managed repository path has parent"),
+            )?;
+            drop(gix::init_bare(&target_path).map_err(git_error)?);
+            copy_file_atomic(&source_path.join("config"), &target_path.join("config"))?;
+        }
+        copy_object_database(&source_path, &target_path)
+    }
+
+    pub(crate) fn publish_cached_references_from(
+        &self,
+        source: &Self,
+        repository: &KnowledgeRepository,
+    ) -> Result<(), ManagedGitError> {
+        let source = gix::open(source.repository_path(repository.id())).map_err(git_error)?;
+        let target = gix::open(self.repository_path(repository.id())).map_err(git_error)?;
+        let mut retained = BTreeSet::new();
+        for reference in source
+            .references()
+            .map_err(git_error)?
+            .all()
+            .map_err(git_error)?
+        {
+            let reference = reference.map_err(git_error)?;
+            let name = reference.name().as_bstr().to_string();
+            if !is_managed_remote_ref(&name) || name == "refs/remotes/origin/HEAD" {
+                continue;
+            }
+            let object = reference
+                .target()
+                .try_id()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| {
+                    ManagedGitError::Git(format!("distributed repository ref {name} is symbolic"))
+                })?;
+            target.find_object(object).map_err(git_error)?;
+            target
+                .reference(
+                    name.as_str(),
+                    object,
+                    gix::refs::transaction::PreviousValue::Any,
+                    "vesc-mcp distributed cache publication",
+                )
+                .map_err(git_error)?;
+            retained.insert(name);
+        }
+        prune_deleted_remote_refs(&target, &retained)
+    }
+
+    pub(crate) fn publish_cached_catalog_from(
+        &self,
+        source: &Self,
+        repository: &KnowledgeRepository,
+    ) -> Result<(), ManagedGitError> {
+        let catalog = read_catalog(&source.layout, repository.id())?;
+        validate_catalog(&self.repository_path(repository.id()), repository, &catalog)?;
+        write_catalog(&self.layout, &catalog)
+    }
+}
+
+fn validate_catalog(
+    repository_path: &Path,
+    repository: &KnowledgeRepository,
+    expected: &RefCatalog,
+) -> Result<(), ManagedGitError> {
+    if expected.repository != *repository.id() {
+        return Err(ManagedGitError::Git(
+            "managed ref catalog repository does not match configuration".to_owned(),
+        ));
+    }
+    let actual = build_catalog(repository_path, repository.id(), repository.default_ref())?;
+    let matches = actual.refs.len() == expected.refs.len()
+        && actual
+            .refs
+            .iter()
+            .zip(&expected.refs)
+            .all(|(actual, expected)| {
+                actual.full_name == expected.full_name
+                    && actual.display_version == expected.display_version
+                    && actual.kind == expected.kind
+                    && actual.commit == expected.commit
+                    && actual.is_default == expected.is_default
+            });
+    if !matches {
+        return Err(ManagedGitError::Git(
+            "managed ref catalog does not match repository references".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn copy_object_database(source: &Path, target: &Path) -> Result<(), ManagedGitError> {
+    let source_objects = source.join("objects");
+    if source_objects.join("info/alternates").exists() {
+        return Err(ManagedGitError::Git(
+            "distributed repository object database must be self-contained".to_owned(),
+        ));
+    }
+    let target_objects = target.join("objects");
+    for directory in fs::read_dir(&source_objects)? {
+        let directory = directory?;
+        let name = directory.file_name();
+        let name = name.to_string_lossy();
+        if directory.file_type()?.is_dir()
+            && name.len() == 2
+            && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            copy_object_directory(&directory.path(), &target_objects.join(name.as_ref()))?;
+        }
+    }
+    let source_pack = source_objects.join("pack");
+    let mut packs = match fs::read_dir(&source_pack) {
+        Ok(entries) => entries.collect::<Result<Vec<_>, _>>()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    packs.retain(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()));
+    packs.sort_by_key(|entry| {
+        let rank = match entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+        {
+            Some("pack") => 0,
+            Some("idx") => 1,
+            _ => 2,
+        };
+        (rank, entry.file_name())
+    });
+    for pack in packs {
+        copy_file_if_missing(
+            &pack.path(),
+            &target_objects.join("pack").join(pack.file_name()),
+        )?;
+    }
+    Ok(())
+}
+
+fn copy_object_directory(source: &Path, target: &Path) -> Result<(), ManagedGitError> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            return Err(ManagedGitError::Git(
+                "distributed repository contains a non-file loose object".to_owned(),
+            ));
+        }
+        copy_file_if_missing(&entry.path(), &target.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+fn copy_file_if_missing(source: &Path, target: &Path) -> Result<(), ManagedGitError> {
+    if target.exists() {
+        return Ok(());
+    }
+    let parent = target.parent().expect("Git object path has parent");
+    fs::create_dir_all(parent)?;
+    if fs::hard_link(source, target).is_ok() {
+        return Ok(());
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut input = File::open(source)?;
+    std::io::copy(&mut input, temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(target) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.error.into()),
+    }
+}
+
+fn copy_file_atomic(source: &Path, target: &Path) -> Result<(), ManagedGitError> {
+    let parent = target
+        .parent()
+        .expect("managed repository file path has parent");
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut input = File::open(source)?;
+    std::io::copy(&mut input, temporary.as_file_mut())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(target).map_err(|error| error.error)?;
+    Ok(())
 }
 
 fn synchronize(

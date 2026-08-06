@@ -157,10 +157,32 @@ fall back. A cached outage restart and an intentionally skipped refresh publish
 `ping.knowledge.state = "stale"`; strict preparation, terminal failure, or an
 invalid managed artifact makes search explicitly unavailable. Set
 `refresh = false` for an intentionally offline cached restart. Set
-`cachedOnly = true` on serving-only hosts to prohibit repository refresh and
-snapshot preparation even when compatible persisted knowledge is missing; the
-service remains available, but search reports unavailable until an artifact is
-installed. `eagerIndex = false` avoids updating an already compatible snapshot.
+`cachedOnly = true` on serving-only hosts to prohibit repository fetches and
+document inference. It may still derive a selected lexical/vector artifact from
+a compatible distributed complete-history cache; if that cache does not contain
+the selected content, search reports unavailable instead of fetching or running
+the embedding model. `eagerIndex = false` avoids updating an already compatible
+snapshot.
+
+Distribute knowledge through a staging data root outside the live data tree.
+Stop the target service, transfer the complete data-root tuple into that staging
+directory, install it, and only then restart the service:
+
+```bash
+systemctl --user stop vesc-mcp.service
+vesc-mcp-server --install-distributed-cache /path/to/vesc-mcp-data.incoming
+systemctl --user start vesc-mcp.service
+```
+
+The installer validates the snapshot identity, active generation, lexical and
+vector checksums, Git history tips, cached origins, and the configured serving
+contract before writing live state. It publishes immutable artifact data and
+additive Git objects first, then repository refs/catalogs and snapshot pins. The
+canonical snapshot manifest is the final commit marker; the default alias moves
+afterward. It shares the preparation and repository locks, so a failed or
+interrupted install leaves either the prior complete default or the new complete
+default. Do not transfer files directly into the live `artifacts`, `repositories`,
+or `snapshots` directories; orphan pruning intentionally removes partial tuples.
 
 Only credential-free HTTPS repository URLs are accepted in evaluated Nix
 configuration. Put bearer tokens or Git credential environment settings in a
