@@ -1226,6 +1226,7 @@ impl LexicalIndex {
             return Err(LexicalError::EmptyQuery);
         }
         let raw_terms = raw_query_terms(query);
+        let symbol_terms = symbol_query_terms(query);
         let raw_term_count = raw_terms.len();
         let term_occur = if raw_term_count > 2 {
             Occur::Should
@@ -1431,7 +1432,7 @@ impl LexicalIndex {
                 if !Self::locator_matches_filters(&locator, filters, repository_filter.as_ref()) {
                     continue;
                 }
-                let exact_identifier = has_exact_identifier(&locator.identifiers, &raw_terms);
+                let exact_identifier = has_exact_identifier(&locator.identifiers, &symbol_terms);
                 (
                     locator.retrieval_metadata(),
                     exact_identifier,
@@ -1451,7 +1452,7 @@ impl LexicalIndex {
                 if !matches_filters(chunk, filters) {
                     continue;
                 }
-                let exact_identifier = has_exact_identifier(&chunk.identifiers, &raw_terms);
+                let exact_identifier = has_exact_identifier(&chunk.identifiers, &symbol_terms);
                 (
                     chunk.retrieval_metadata(),
                     exact_identifier,
@@ -2776,18 +2777,27 @@ fn has_exact_identifier(identifiers: &[compact_str::CompactString], raw_terms: &
     identifiers.iter().any(|identifier| {
         raw_terms
             .iter()
-            .any(|term| is_symbol_term(term) && identifier.eq_ignore_ascii_case(term))
+            .any(|term| identifier.eq_ignore_ascii_case(term))
     })
-}
-
-fn is_symbol_term(term: &str) -> bool {
-    term.len() >= 8 || term.contains('_') || term.bytes().any(|byte| byte.is_ascii_digit())
 }
 
 fn raw_query_terms(query: &str) -> Vec<String> {
     query
         .split(|character: char| !(character.is_alphanumeric() || matches!(character, '_' | '-')))
         .filter(|term| !term.is_empty() && term.chars().any(char::is_alphanumeric))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn symbol_query_terms(query: &str) -> Vec<String> {
+    query
+        .split(|character: char| !(character.is_alphanumeric() || matches!(character, '_' | '-')))
+        .filter(|term| {
+            term.chars().any(char::is_alphanumeric)
+                && (term.contains('_')
+                    || term.bytes().any(|byte| byte.is_ascii_digit())
+                    || term.chars().any(char::is_uppercase))
+        })
         .map(str::to_ascii_lowercase)
         .collect()
 }
@@ -2984,6 +2994,25 @@ mod tests {
 
         assert_eq!(hits[0].chunk.title, "motor.rs");
         assert!(hits[0].exact_identifier);
+    }
+
+    #[test]
+    fn prose_terms_do_not_become_exact_symbol_matches() {
+        let index = LexicalIndex::build(&[chunk(
+            "history",
+            "persistent package lifecycle",
+            "persistent",
+        )])
+        .expect("index");
+        let hits = index
+            .search(
+                "persistent package lifecycle",
+                &LexicalFilters::default(),
+                1,
+            )
+            .expect("search");
+
+        assert!(!hits[0].exact_identifier);
     }
 
     #[test]
