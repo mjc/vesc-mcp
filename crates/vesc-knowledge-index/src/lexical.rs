@@ -931,6 +931,26 @@ impl LexicalIndex {
         Ok(index)
     }
 
+    /// Validate that a persisted Git sidecar was built for the expected source contracts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LexicalError`] when the descriptor is incompatible.
+    pub fn validate_git_source_contracts(
+        path: &Path,
+        sources: &[GitCorpusSource],
+    ) -> Result<(), LexicalError> {
+        let descriptor = Self::read_descriptor(path)?;
+        if descriptor.schema != LEXICAL_DESCRIPTOR_SCHEMA
+            || descriptor.git_sources != git_source_descriptors(sources)
+        {
+            return Err(LexicalError::Artifact(
+                "persisted Git source contracts do not match configured sources".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn open_git_search_artifact_with_sources(
         path: &Path,
         sources: &[GitCorpusSource],

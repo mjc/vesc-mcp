@@ -664,8 +664,14 @@ impl KnowledgeSnapshotStore {
     ) -> Result<PreparedSnapshot, SnapshotError> {
         let manifest =
             self.resolve_manifest(repositories, selectors, SnapshotProfile::SelectedTrees)?;
-        load_reusable_snapshot(&self.layout, &manifest, SnapshotDisposition::Reused)?
-            .ok_or_else(|| SnapshotError::NotCached(manifest.id))
+        let repositories = repositories.iter().cloned().collect::<Vec<_>>();
+        load_reusable_snapshot(
+            &self.layout,
+            &repositories,
+            &manifest,
+            SnapshotDisposition::Reused,
+        )?
+        .ok_or_else(|| SnapshotError::NotCached(manifest.id))
     }
 
     fn resolve_manifest(
@@ -894,9 +900,13 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
         manifest: KnowledgeSnapshotManifest,
     ) -> Result<PreparedSnapshot, SnapshotError> {
-        if let Some(prepared) =
-            load_reusable_snapshot(&self.layout, &manifest, SnapshotDisposition::Reused)?
-        {
+        let repositories = repositories.iter().cloned().collect::<Vec<_>>();
+        if let Some(prepared) = load_reusable_snapshot(
+            &self.layout,
+            &repositories,
+            &manifest,
+            SnapshotDisposition::Reused,
+        )? {
             return Ok(prepared);
         }
         let build_permit = snapshot_build_gate()
@@ -912,7 +922,6 @@ impl KnowledgeSnapshotStore {
             .lock()
             .expect("snapshot generation mutex poisoned");
         let layout = self.layout.clone();
-        let repositories = repositories.iter().cloned().collect::<Vec<_>>();
         let semantic = self.semantic.clone();
         let progress = self.progress.clone();
         tokio::task::spawn_blocking(move || {
@@ -951,6 +960,24 @@ impl KnowledgeSnapshotStore {
     }
 }
 
+fn snapshot_corpus_sources(
+    layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
+    manifest: &KnowledgeSnapshotManifest,
+) -> Result<Vec<GitCorpusSource>, SnapshotError> {
+    manifest
+        .repositories
+        .iter()
+        .map(|selected| {
+            let repository = repositories
+                .iter()
+                .find(|repository| repository.id() == &selected.repository)
+                .ok_or_else(|| SnapshotError::UnknownRepository(selected.repository.clone()))?;
+            corpus_source(layout, repository, &selected.commit, &selected.history_tips)
+        })
+        .collect()
+}
+
 fn build_or_reuse(
     layout: &KnowledgeDataLayout,
     repositories: &[KnowledgeRepository],
@@ -958,7 +985,9 @@ fn build_or_reuse(
     semantic: Option<&SnapshotSemanticConfig>,
     progress: Option<&SnapshotProgressReporter>,
 ) -> Result<PreparedSnapshot, SnapshotError> {
-    if let Some(prepared) = load_reusable_snapshot(layout, manifest, SnapshotDisposition::Reused)? {
+    if let Some(prepared) =
+        load_reusable_snapshot(layout, repositories, manifest, SnapshotDisposition::Reused)?
+    {
         cleanup_completed_lexical_stage(&prepared.artifact_path);
         cleanup_completed_vector_checkpoint(layout, &prepared.manifest.id);
         cleanup_abandoned_artifact_staging_if_idle(layout);
@@ -981,26 +1010,19 @@ fn build_or_reuse(
 
     let snapshot_path = layout.snapshot(&manifest.id);
     let artifact_path = layout.artifact(&manifest.id);
-    if let Some(prepared) =
-        load_reusable_snapshot(layout, manifest, SnapshotDisposition::Deduplicated)?
-    {
+    if let Some(prepared) = load_reusable_snapshot(
+        layout,
+        repositories,
+        manifest,
+        SnapshotDisposition::Deduplicated,
+    )? {
         cleanup_completed_lexical_stage(&prepared.artifact_path);
         cleanup_completed_vector_checkpoint(layout, &prepared.manifest.id);
         FileExt::unlock(&lock)?;
         return Ok(prepared);
     }
 
-    let sources = manifest
-        .repositories
-        .iter()
-        .map(|selected| {
-            let repository = repositories
-                .iter()
-                .find(|repository| repository.id() == &selected.repository)
-                .ok_or_else(|| SnapshotError::UnknownRepository(selected.repository.clone()))?;
-            corpus_source(layout, repository, &selected.commit, &selected.history_tips)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let sources = snapshot_corpus_sources(layout, repositories, manifest)?;
     pin_snapshot_commits(layout, manifest)?;
     let build = build_snapshot_artifact(
         layout,
@@ -1048,29 +1070,108 @@ fn cleanup_completed_vector_checkpoint(layout: &KnowledgeDataLayout, id: &Knowle
 
 fn load_reusable_snapshot(
     layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
     manifest: &KnowledgeSnapshotManifest,
     disposition: SnapshotDisposition,
 ) -> Result<Option<PreparedSnapshot>, SnapshotError> {
     let snapshot_path = layout.snapshot(&manifest.id);
-    if !snapshot_path.is_file() {
+    if snapshot_path.is_file() {
+        let cached = read_and_validate_manifest(&snapshot_path)?;
+        if cached != *manifest {
+            return Err(SnapshotError::IdentityMismatch);
+        }
+        if let Some(prepared) = load_validated_snapshot(layout, repositories, cached, disposition)?
+        {
+            return Ok(Some(prepared));
+        }
+    }
+
+    load_serving_compatible_snapshot(layout, repositories, manifest, disposition)
+}
+
+fn load_serving_compatible_snapshot(
+    layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
+    requested: &KnowledgeSnapshotManifest,
+    disposition: SnapshotDisposition,
+) -> Result<Option<PreparedSnapshot>, SnapshotError> {
+    if requested.profile != SnapshotProfile::SelectedTrees
+        || requested
+            .semantic
+            .as_ref()
+            .is_none_or(|semantic| semantic.ingestion.is_some())
+    {
         return Ok(None);
     }
-    let cached = read_and_validate_manifest(&snapshot_path)?;
-    if cached != *manifest {
-        return Err(SnapshotError::IdentityMismatch);
+    let snapshots = layout.root().as_path().join("snapshots");
+    let mut paths = match fs::read_dir(snapshots) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect::<Vec<_>>(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    paths.sort_unstable();
+    for path in paths {
+        let Ok(candidate) = read_and_validate_manifest(&path) else {
+            continue;
+        };
+        if candidate.id == requested.id
+            || candidate.schema != requested.schema
+            || candidate.profile != requested.profile
+            || candidate.repositories != requested.repositories
+            || candidate.configured_repositories != requested.configured_repositories
+            || candidate.component_versions != requested.component_versions
+            || !semantic_serving_contract_matches(
+                candidate.semantic.as_ref(),
+                requested.semantic.as_ref(),
+            )
+        {
+            continue;
+        }
+        let artifact_path = layout.artifact(&candidate.id);
+        if validate_serving_compatible_artifact(layout, repositories, &artifact_path, &candidate)
+            .is_ok()
+        {
+            pin_snapshot_commits(layout, &candidate)?;
+            return Ok(Some(PreparedSnapshot {
+                manifest: candidate,
+                artifact_path,
+                disposition,
+            }));
+        }
     }
+    Ok(None)
+}
+
+fn load_validated_snapshot(
+    layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
+    manifest: KnowledgeSnapshotManifest,
+    disposition: SnapshotDisposition,
+) -> Result<Option<PreparedSnapshot>, SnapshotError> {
     let artifact_path = layout.artifact(&manifest.id);
-    match validate_snapshot_artifact(&artifact_path, &cached) {
+    let validation = if manifest.profile == SnapshotProfile::SelectedTrees {
+        validate_serving_compatible_artifact(layout, repositories, &artifact_path, &manifest)
+    } else {
+        validate_snapshot_artifact(&artifact_path, &manifest)
+    };
+    match validation {
         Ok(()) => {
-            pin_snapshot_commits(layout, &cached)?;
+            pin_snapshot_commits(layout, &manifest)?;
             Ok(Some(PreparedSnapshot {
-                manifest: cached,
+                manifest,
                 artifact_path,
                 disposition,
             }))
         }
         Err(error) => {
-            tracing::warn!(%error, "repairing incomplete managed snapshot artifact");
+            tracing::warn!(%error, "ignoring incomplete managed snapshot artifact");
             Ok(None)
         }
     }
@@ -2019,6 +2120,13 @@ fn validate_snapshot_artifact(
     path: &Path,
     snapshot: &KnowledgeSnapshotManifest,
 ) -> Result<(), SnapshotError> {
+    validated_snapshot_artifact(path, snapshot).map(|_| ())
+}
+
+fn validated_snapshot_artifact(
+    path: &Path,
+    snapshot: &KnowledgeSnapshotManifest,
+) -> Result<vesc_knowledge_index::PreviousArtifactSummary, SnapshotError> {
     let vector_before = crate::preparation_status::ValidatedVectorArtifact::current_identity(path);
     let artifact = vesc_knowledge_index::validate_active_generation(path)
         .map_err(|error| SnapshotError::Build(error.to_string()))?;
@@ -2035,6 +2143,43 @@ fn validate_snapshot_artifact(
     }
     if let Some(identity) = vector_after {
         crate::preparation_status::record_validated_vector(path, identity);
+    }
+    Ok(artifact)
+}
+
+fn validate_serving_compatible_artifact(
+    layout: &KnowledgeDataLayout,
+    repositories: &[KnowledgeRepository],
+    path: &Path,
+    snapshot: &KnowledgeSnapshotManifest,
+) -> Result<(), SnapshotError> {
+    let artifact = validated_snapshot_artifact(path, snapshot)?;
+    if artifact.component_versions != snapshot.component_versions {
+        return Err(SnapshotError::Build(
+            "snapshot artifact component versions do not match its manifest".into(),
+        ));
+    }
+    let generation = path
+        .join("generations")
+        .join(artifact.generation.to_string());
+    let sources = snapshot_corpus_sources(layout, repositories, snapshot)?;
+    vesc_knowledge_index::LexicalIndex::validate_git_source_contracts(
+        &generation.join("lexical.json"),
+        &sources,
+    )
+    .map_err(|error| SnapshotError::Build(error.to_string()))?;
+    if let Some(semantic) = &snapshot.semantic {
+        let vectors = vesc_knowledge_index::FileBackedVectorArtifact::open_search_artifact(
+            &generation.join("vectors.bin"),
+        )
+        .map_err(|error| SnapshotError::Build(error.to_string()))?;
+        if vectors.model_id != semantic.model_id
+            || vectors.model_revision != semantic.model_revision
+        {
+            return Err(SnapshotError::Build(
+                "snapshot vector model does not match its manifest".into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -2836,7 +2981,8 @@ max_total_bytes = 10485760
     }
 
     #[tokio::test]
-    async fn cpu_runtime_reuses_snapshot_built_with_accelerated_ingestion() {
+    #[allow(clippy::too_many_lines)] // One fixture proves default reuse, rejection, and selected reuse.
+    async fn cpu_runtime_reuses_snapshots_built_with_accelerated_ingestion() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let (_work, remote, first, second) = fixture_remote(temp.path());
         let data_root = temp.path().join("data");
@@ -2873,7 +3019,7 @@ max_total_bytes = 10485760
             vec![SnapshotRepository {
                 repository: repository_id,
                 history_tips: vec![first, second.clone()],
-                commit: second,
+                commit: second.clone(),
                 policy_digest: repository_policy_digest(repository).expect("policy digest"),
             }],
             Some(accelerated_model),
@@ -2907,6 +3053,84 @@ max_total_bytes = 10485760
         assert_eq!(prepared.manifest.id, accelerated.id);
         assert_eq!(prepared.disposition, SnapshotDisposition::Reused);
         assert!(layout.artifact(&accelerated.id).is_dir());
+
+        let cpu_selected = cpu_store
+            .resolve_manifest(
+                &repositories,
+                &BTreeMap::new(),
+                SnapshotProfile::SelectedTrees,
+            )
+            .expect("CPU selected snapshot manifest");
+        write_json_atomic(&layout.snapshot(&cpu_selected.id), &cpu_selected)
+            .expect("persist CPU selected snapshot manifest");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            &layout.artifact(&cpu_selected.id),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("mismatched exact-ID artifact");
+        let error = cpu_store
+            .reuse(&repositories, &BTreeMap::new())
+            .expect_err("mismatched exact-ID artifact is not reusable");
+        assert!(matches!(error, SnapshotError::NotCached(_)));
+        fs::remove_file(layout.snapshot(&cpu_selected.id)).expect("remove exact-ID manifest");
+        fs::remove_dir_all(layout.artifact(&cpu_selected.id))
+            .expect("remove mismatched exact-ID artifact");
+
+        let accelerated_selected = KnowledgeSnapshotManifest::with_profile(
+            vec![SnapshotRepository {
+                repository: repository.id().clone(),
+                history_tips: vec![second.clone()],
+                commit: second,
+                policy_digest: repository_policy_digest(repository).expect("policy digest"),
+            }],
+            accelerated.semantic.clone(),
+            SnapshotProfile::SelectedTrees,
+        )
+        .expect("accelerated selected snapshot manifest");
+        write_json_atomic(
+            &layout.snapshot(&accelerated_selected.id),
+            &accelerated_selected,
+        )
+        .expect("persist selected snapshot manifest");
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            &layout.artifact(&accelerated_selected.id),
+            &mut provider,
+            "fake",
+            "test-revision",
+        )
+        .expect("mismatched embedded artifact");
+        let error = cpu_store
+            .reuse(&repositories, &BTreeMap::new())
+            .expect_err("mismatched selected artifact is not reusable");
+        assert!(matches!(error, SnapshotError::NotCached(_)));
+        fs::remove_dir_all(layout.artifact(&accelerated_selected.id))
+            .expect("remove mismatched artifact");
+
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(4);
+        let sources = snapshot_corpus_sources(
+            &layout,
+            std::slice::from_ref(repository),
+            &accelerated_selected,
+        )
+        .expect("selected Git sources");
+        vesc_knowledge_index::build_git_artifacts_with_provider(
+            &layout.artifact(&accelerated_selected.id),
+            &sources,
+            Some((&mut provider, "fake", "test-revision")),
+            None,
+            None,
+        )
+        .expect("portable selected semantic artifact");
+
+        let selected = cpu_store
+            .reuse(&repositories, &BTreeMap::new())
+            .expect("CPU runtime reuses portable selected artifact");
+        assert_eq!(selected.manifest.id, accelerated_selected.id);
+        assert_eq!(selected.disposition, SnapshotDisposition::Reused);
 
         let vector_path =
             vesc_knowledge_index::active_generation_path(&layout.artifact(&accelerated.id))
