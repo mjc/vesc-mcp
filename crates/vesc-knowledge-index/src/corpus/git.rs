@@ -818,26 +818,41 @@ pub(super) fn identifier_refs<'input, 'buffer>(
         buffer[length] = stem;
         length += 1;
     }
-    for token in
-        content.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
-    {
-        if token.len() >= 3
-            && token.len() <= 128
-            && token
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphabetic)
-            && !buffer[..length].contains(&token)
+    for symbol_only in [true, false] {
+        for token in content
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .filter(|token| valid_identifier(token))
+            .filter(|token| !symbol_only || symbol_identifier(token))
         {
-            buffer[length] = token;
-            length += 1;
-            if length == MAX_IDENTIFIERS {
-                break;
+            if !buffer[..length].contains(&token) {
+                buffer[length] = token;
+                length += 1;
+                if length == MAX_IDENTIFIERS {
+                    break;
+                }
             }
+        }
+        if length == MAX_IDENTIFIERS {
+            break;
         }
     }
     buffer[..length].sort_unstable();
     &buffer[..length]
+}
+
+fn valid_identifier(token: &str) -> bool {
+    token.len() >= 3
+        && token.len() <= 128
+        && token
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+}
+
+fn symbol_identifier(token: &str) -> bool {
+    token.contains('_')
+        || token.bytes().any(|byte| byte.is_ascii_digit())
+        || token.chars().any(char::is_uppercase)
 }
 
 fn source_rejection(path: &str, code: &str, message: &str) -> SourceRejection {
@@ -996,6 +1011,32 @@ mod tests {
                 .any(|value| value == "src/motor_control.c")
         );
         assert!(identifiers.iter().any(|value| value == "motor_control"));
+    }
+
+    #[test]
+    fn git_chunk_identifiers_keep_late_symbol_names_within_the_bound() {
+        let content = format!(
+            "{} update_pid_position_offset",
+            (0..64)
+                .map(|index| {
+                    format!(
+                        "word{}{}",
+                        char::from(b'a' + u8::try_from(index / 26).expect("letter range")),
+                        char::from(b'a' + u8::try_from(index % 26).expect("letter range"))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+
+        let identifiers = identifier_values("src/motor.rs", &content);
+
+        assert!(identifiers.len() <= 32);
+        assert!(
+            identifiers
+                .iter()
+                .any(|value| value == "update_pid_position_offset")
+        );
     }
 
     #[test]

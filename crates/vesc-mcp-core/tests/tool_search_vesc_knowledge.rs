@@ -28,7 +28,7 @@ fn compact_search_default_uses_bounded_field_rows() {
     let row = &body["results"][0];
     assert_eq!(row.as_array().map(Vec::len), Some(7));
     assert_eq!(row[0], "lbm_add_extension");
-    assert!(row[2].as_str().is_some_and(|excerpt| excerpt.len() <= 96));
+    assert!(row[2].as_str().is_some_and(|excerpt| excerpt.len() <= 384));
     let source_index = row[3].as_u64().expect("compact result has a source index");
     let source_index = usize::try_from(source_index).expect("source index fits usize");
     assert!(

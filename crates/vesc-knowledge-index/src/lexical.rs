@@ -27,7 +27,7 @@ use crate::corpus::{
 };
 use crate::{Category, RepositoryId, Revision};
 
-pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-object-locators-v13";
+pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-object-locators-v14";
 const LEXICAL_DESCRIPTOR_SCHEMA: u16 = 7;
 const INDEX_WRITER_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;

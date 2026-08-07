@@ -108,7 +108,7 @@ const fn default_search_limit() -> usize {
     10
 }
 
-const COMPACT_EXCERPT_BYTES: usize = 96;
+const COMPACT_EXCERPT_BYTES: usize = 384;
 const COMPACT_FIELDS: [&str; 7] = [
     "name",
     "category",
@@ -349,8 +349,7 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
                 sources.push(source);
                 sources.len() - 1
             });
-        let mut excerpt = result.summary.clone();
-        truncate_utf8(&mut excerpt, COMPACT_EXCERPT_BYTES);
+        let excerpt = compact_excerpt(result);
         results.push((
             result.name.clone(),
             result.category.clone(),
@@ -380,6 +379,70 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
         error: response.error.clone(),
         warnings: response.warnings.clone(),
     }
+}
+
+fn compact_excerpt(result: &SearchVescKnowledgeResult) -> String {
+    let exact_identifier = result
+        .explanation
+        .as_ref()
+        .is_some_and(|explanation| explanation.exact_identifier);
+    if !exact_identifier {
+        let mut excerpt = result.summary.clone();
+        truncate_utf8(&mut excerpt, COMPACT_EXCERPT_BYTES);
+        return excerpt;
+    }
+
+    let Some((anchor, _)) = symbol_anchor(&result.summary) else {
+        let mut excerpt = result.summary.clone();
+        truncate_utf8(&mut excerpt, COMPACT_EXCERPT_BYTES);
+        return excerpt;
+    };
+    let mut start = anchor.saturating_sub(COMPACT_EXCERPT_BYTES / 2);
+    while start > 0 && !result.summary.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = start
+        .saturating_add(COMPACT_EXCERPT_BYTES)
+        .min(result.summary.len());
+    while end < result.summary.len() && !result.summary.is_char_boundary(end) {
+        end += 1;
+    }
+    let mut excerpt = String::with_capacity(end - start + 2);
+    if start > 0 {
+        excerpt.push('…');
+    }
+    excerpt.push_str(&result.summary[start..end]);
+    if end < result.summary.len() {
+        excerpt.push('…');
+    }
+    truncate_utf8(&mut excerpt, COMPACT_EXCERPT_BYTES);
+    excerpt
+}
+
+fn symbol_anchor(text: &str) -> Option<(usize, usize)> {
+    let mut token_start = None;
+    for (index, character) in text
+        .char_indices()
+        .chain(std::iter::once((text.len(), '\0')))
+    {
+        let is_identifier = character.is_ascii_alphanumeric() || character == '_';
+        match (token_start, is_identifier) {
+            (None, true) => token_start = Some(index),
+            (Some(start), false) => {
+                let token = &text[start..index];
+                if token.contains('_')
+                    && token
+                        .chars()
+                        .any(|character| character.is_ascii_alphabetic())
+                {
+                    return Some((start, index));
+                }
+                token_start = None;
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_category(raw: Option<&str>) -> Option<Category> {
@@ -2476,6 +2539,65 @@ max_total_bytes = 1073741824
             compact.repositories.get("fixture").map(String::as_str),
             Some("1111111111111111111111111111111111111111")
         );
+    }
+
+    #[test]
+    fn compact_symbol_rows_center_exact_identifier_in_code() {
+        let response = SearchVescKnowledgeResponse {
+            ok: true,
+            mode: SearchMode::Lexical,
+            capabilities: Vec::new(),
+            corrections: Vec::new(),
+            results: vec![SearchVescKnowledgeResult {
+                id: "chunk".into(),
+                name: "motor.rs".into(),
+                category: "firmware_api".into(),
+                summary: format!(
+                    "{}\nfn update_pid_position_offset(&self, position: PidPosition) {{}}\n{}",
+                    "context ".repeat(64),
+                    "tail ".repeat(64)
+                ),
+                source: SearchVescKnowledgeSource {
+                    repo: "vesc".into(),
+                    path: "motor.rs".into(),
+                    line: 1,
+                    end_line: None,
+                    start_byte: None,
+                    end_byte: None,
+                    revision: None,
+                },
+                score: 1,
+                chunk_id: None,
+                document_id: None,
+                passage: None,
+                heading_path: None,
+                resource_uri: None,
+                document_uri: None,
+                retrieval_score: None,
+                origin: None,
+                correction_ids: Vec::new(),
+                provenance: None,
+                explanation: Some(SearchVescKnowledgeExplanation {
+                    lexical_rank: Some(1),
+                    lexical_score: Some(1.0),
+                    semantic_rank: None,
+                    semantic_similarity: None,
+                    fusion_score: None,
+                    exact_identifier: true,
+                    filter_effects: Vec::new(),
+                    expansion_reason: None,
+                }),
+            }],
+            error: None,
+            warnings: Vec::new(),
+            index: None,
+            timing: None,
+        };
+
+        let compact = compact_response(&response);
+        let excerpt = &compact.results[0].2;
+        assert!(excerpt.contains("update_pid_position_offset"), "{excerpt}");
+        assert!(excerpt.len() <= COMPACT_EXCERPT_BYTES);
     }
 
     #[test]
