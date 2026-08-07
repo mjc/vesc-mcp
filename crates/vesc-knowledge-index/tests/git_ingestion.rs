@@ -686,8 +686,28 @@ fn symbol_question_returns_definitions_and_caller_from_bounded_context() {
 
     assert_eq!(hits[0].chunk.path, "motor.rs");
     assert!(hits[0].exact_identifier);
+    assert_eq!(hits[0].chunk.revision.as_str(), revision);
+    assert_eq!(
+        hits[0]
+            .chunk
+            .source_span
+            .map(|span| (span.start_line, span.end_line)),
+        Some((1, 9))
+    );
     assert!(paths.contains("motor_control.rs"));
     assert!(paths.contains("motor.rs"));
+    let caller = hits
+        .iter()
+        .find(|hit| hit.chunk.path == "motor_control.rs")
+        .expect("bounded context includes caller");
+    assert_eq!(caller.chunk.revision.as_str(), revision);
+    assert_eq!(
+        caller
+            .chunk
+            .source_span
+            .map(|span| (span.start_line, span.end_line)),
+        Some((1, 3))
+    );
     drop(root);
 }
 
