@@ -20,7 +20,10 @@ use crate::corpus::{Chunk, ChunkId, ContentDigest};
 const MAGIC: &[u8] = b"VESCRAG1";
 const VECTOR_CHECKPOINT_MAGIC: &[u8] = b"VESCVC02";
 const CHECKSUM_LEN: usize = 32;
-const MAX_ARTIFACT_BYTES: usize = 1024 * 1024 * 1024;
+// The complete VESC history currently needs just over 1 GiB at the pinned
+// Jina 768-dimensional f32 representation. Keep the limit bounded while
+// allowing that single streamed artifact to be written and mmap-opened.
+const MAX_ARTIFACT_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_VECTOR_DIMENSION: usize = STREAM_BUFFER_BYTES / std::mem::size_of::<f32>();
 const VECTOR_CHECKPOINT_SYNC_ROWS: usize = 256;
@@ -6062,6 +6065,20 @@ mod tests {
 
         assert!(matches!(error, EmbeddingError::TooLarge));
         assert_eq!(provider.embedded, 0);
+    }
+
+    #[test]
+    fn complete_history_jina_vector_fits_the_bounded_artifact_limit() {
+        let bytes = encoded_artifact_len_from_count(
+            356_666,
+            768,
+            "jinaai/jina-embeddings-v2-base-code",
+            "516f4baf13dec4ddddda8631e019b5737c8bc250",
+        )
+        .expect("current complete-history vector fits the bounded artifact limit");
+
+        assert!(bytes > 1024 * 1024 * 1024);
+        assert!(bytes <= MAX_ARTIFACT_BYTES);
     }
 
     #[test]
