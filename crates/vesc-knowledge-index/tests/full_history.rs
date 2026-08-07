@@ -322,7 +322,7 @@ fn full_history_walks_divergent_tips_once_and_keeps_conflicting_paths() {
 }
 
 #[test]
-fn multi_tip_refresh_ingests_only_added_history_and_rejects_removed_history() {
+fn multi_tip_refresh_ingests_added_history_and_removes_deleted_history() {
     let (_root, work) = fixture();
     let main = git(&work, &["rev-parse", "main"]);
     let mut previous = source(work.clone(), "fixture");
@@ -356,16 +356,26 @@ fn multi_tip_refresh_ingests_only_added_history_and_rejects_removed_history() {
     );
 
     let current_tips = snapshot_tips(std::slice::from_ref(&current));
-    let removed = ingest_git_history_fast_forward(
+    let (removed, removed_refresh) = ingest_git_history_fast_forward(
         std::slice::from_ref(&previous),
         &current_tips,
         &incremental,
     )
-    .expect("removed ref refresh");
-    assert!(removed.is_none(), "removed history requires a cold rebuild");
+    .expect("removed ref refresh")
+    .expect("removed history is reconciled incrementally");
     let (rebuilt, _) = cold_history(&[previous]);
+    assert_eq!(removed, rebuilt);
+    assert!(removed_refresh.reused_commits > 0, "{removed_refresh:#?}");
     assert!(
-        rebuilt
+        removed_refresh.removed_documents > 0,
+        "{removed_refresh:#?}"
+    );
+    assert!(
+        removed_refresh.removed_commit_messages > 0,
+        "{removed_refresh:#?}"
+    );
+    assert!(
+        removed
             .iter()
             .all(|chunk| !chunk.text.contains("release branch evidence"))
     );
@@ -628,12 +638,12 @@ fn fast_forward_commit_message_budget_matches_a_cold_build() {
 
     let (incremental, _) = ingest_git_history_fast_forward(
         std::slice::from_ref(&current),
-        &snapshot_tips(&[previous]),
+        &snapshot_tips(std::slice::from_ref(&previous)),
         &cached,
     )
     .expect("incremental history")
     .expect("fast-forward history");
-    let (cold, _) = cold_history(&[current]);
+    let (cold, _) = cold_history(std::slice::from_ref(&current));
 
     assert_eq!(incremental, cold);
     assert_eq!(
@@ -725,6 +735,163 @@ fn persisted_fast_forward_commit_message_budget_matches_cold_vectors() {
         VectorArtifact::open_artifact(&cold_generation.join("vectors.bin")).expect("cold vectors");
     assert_eq!(incremental_vectors.ids, cold_vectors.ids);
     assert_eq!(incremental_vectors.values, cold_vectors.values);
+}
+
+#[test]
+fn persisted_rewrite_deletes_lost_history_and_reuses_unchanged_vectors() {
+    let (_root, work) = fixture();
+    let previous = at_head(source(work.clone(), "fixture"), &work);
+    let previous_root = tempdir().expect("previous artifacts");
+    let mut previous_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&previous),
+        None,
+        None,
+        Some((&mut previous_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("previous history");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+
+    git(&work, &["checkout", "-q", "--orphan", "rewritten"]);
+    git(&work, &["rm", "-q", "-r", "-f", "."]);
+    fs::create_dir_all(work.join("src")).expect("rewritten source directory");
+    fs::write(work.join("src/lib.rs"), "pub fn second() -> u8 { 2 }\n").expect("same blob");
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "rewritten root"]);
+    let rewritten = at_head(previous.clone(), &work);
+
+    let incremental_root = tempdir().expect("incremental artifacts");
+    let mut incremental_provider = FakeEmbeddingProvider::new(8);
+    let incremental = build_git_history_artifacts_from_previous(
+        incremental_root.path(),
+        std::slice::from_ref(&rewritten),
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(&[previous]),
+            lexical_path: previous_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: first.artifacts.manifest.vector_checksum,
+            vector_path: Some(previous_generation.join("vectors.bin")),
+            lexical_format_compatible: true,
+        }),
+        Some((&mut incremental_provider, "fake", "test-revision")),
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("incremental rewritten history");
+    let cold_root = tempdir().expect("cold artifacts");
+    let mut cold_provider = FakeEmbeddingProvider::new(8);
+    let cold = build_git_history_artifacts_incrementally(
+        cold_root.path(),
+        &[rewritten],
+        None,
+        None,
+        Some((&mut cold_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("cold rewritten history");
+    let incremental_generation = incremental_root
+        .path()
+        .join("generations")
+        .join(&incremental.artifacts.generation);
+    let cold_generation = cold_root
+        .path()
+        .join("generations")
+        .join(&cold.artifacts.generation);
+
+    assert!(incremental.reused_snapshot);
+    assert_cold_equivalent_lexical(
+        &incremental_generation.join("lexical.json"),
+        &cold_generation.join("lexical.json"),
+    );
+    let vectors = incremental
+        .artifacts
+        .observations
+        .vector_build
+        .expect("rewrite vector observations");
+    assert!(vectors.reused_vectors > 0, "{vectors:#?}");
+    assert!(vectors.embedded_vectors > 0, "{vectors:#?}");
+    let incremental_vectors =
+        VectorArtifact::open_artifact(&incremental_generation.join("vectors.bin"))
+            .expect("incremental vectors");
+    let cold_vectors =
+        VectorArtifact::open_artifact(&cold_generation.join("vectors.bin")).expect("cold vectors");
+    assert_eq!(incremental_vectors.ids, cold_vectors.ids);
+    assert_eq!(incremental_vectors.values, cold_vectors.values);
+}
+
+#[test]
+fn persisted_rewrite_resumes_its_immutable_lexical_stage_after_vector_failure() {
+    let (_root, work) = fixture();
+    let previous = at_head(source(work.clone(), "fixture"), &work);
+    let previous_root = tempdir().expect("previous artifacts");
+    let mut previous_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&previous),
+        None,
+        None,
+        Some((&mut previous_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("previous history");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let previous_artifact = || PreviousGitHistoryArtifact {
+        tips: snapshot_tips(std::slice::from_ref(&previous)),
+        lexical_path: previous_generation.join("lexical.json"),
+        corpus_digest: first.artifacts.manifest.corpus.content_digest.clone(),
+        vector_checksum: first.artifacts.manifest.vector_checksum.clone(),
+        vector_path: Some(previous_generation.join("vectors.bin")),
+        lexical_format_compatible: true,
+    };
+
+    git(&work, &["checkout", "-q", "--orphan", "rewritten"]);
+    git(&work, &["rm", "-q", "-r", "-f", "."]);
+    fs::create_dir_all(work.join("src")).expect("rewritten source directory");
+    fs::write(work.join("src/lib.rs"), "pub fn second() -> u8 { 2 }\n").expect("same blob");
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "rewritten root"]);
+    let rewritten = at_head(previous.clone(), &work);
+    let artifacts = tempdir().expect("rewrite artifacts");
+
+    build_git_history_artifacts_from_previous(
+        artifacts.path(),
+        std::slice::from_ref(&rewritten),
+        Some(previous_artifact()),
+        Some((&mut FailingEmbeddingProvider, "fake", "test-revision")),
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect_err("vector failure after rewrite lexical stage");
+
+    let mut retry_provider = FakeEmbeddingProvider::new(8);
+    let mut phases = Vec::new();
+    let retry = build_git_history_artifacts_from_previous(
+        artifacts.path(),
+        &[rewritten],
+        Some(previous_artifact()),
+        Some((&mut retry_provider, "fake", "test-revision")),
+        None,
+        &mut |phase| phases.push(phase),
+    )
+    .expect("resume rewritten snapshot");
+
+    assert!(retry.artifacts.observations.reused_lexical_stage);
+    assert_eq!(phases, [BuildPhase::Inference, BuildPhase::Activation]);
+    assert!(retry.reused_snapshot);
 }
 
 #[test]
@@ -2885,7 +3052,7 @@ fn identical_blob_in_unrelated_repository_does_not_require_the_foreign_commit() 
 }
 
 #[test]
-fn rewritten_history_rejects_the_cache_and_rebuilds_from_git() {
+fn rewritten_history_reconciles_the_cache_from_git() {
     let (_root, work) = fixture();
     let source = at_head(source(work.clone(), "fixture"), &work);
     let (before, _) = cold_history(std::slice::from_ref(&source));
@@ -2898,16 +3065,151 @@ fn rewritten_history_rejects_the_cache_and_rebuilds_from_git() {
     git(&work, &["commit", "-qm", "rewritten root"]);
     let rewritten = at_head(source.clone(), &work);
 
-    let incremental = ingest_git_history_fast_forward(
+    let (incremental, incremental_refresh) = ingest_git_history_fast_forward(
         std::slice::from_ref(&rewritten),
         &snapshot_tips(&[source]),
         &before,
     )
-    .expect("rewritten history check");
+    .expect("rewritten history check")
+    .expect("rewritten history is reconciled incrementally");
     let (cold, refresh) = cold_history(&[rewritten]);
 
-    assert!(incremental.is_none());
+    assert_eq!(incremental, cold);
+    assert_eq!(incremental_refresh.reachable_commits, 1);
+    assert_eq!(incremental_refresh.ingested_commits, 1);
     assert_eq!(refresh.reachable_commits, 1);
     assert_eq!(refresh.ingested_commits, 1);
     assert_eq!(cold.len(), 2);
+}
+
+#[test]
+fn rewritten_representative_is_recreated_when_identical_content_remains_reachable() {
+    let (_root, work) = fixture();
+    git(&work, &["switch", "-q", "-c", "removed", "v1"]);
+    fs::write(work.join("shared.c"), "static int retained_signal;\n").expect("removed copy");
+    git(&work, &["add", "shared.c"]);
+    git(&work, &["commit", "-qm", "removed representative"]);
+    let previous = at_head(source(work.clone(), "fixture"), &work);
+    let (cached, _) = cold_history(std::slice::from_ref(&previous));
+    let previous_root = tempdir().expect("previous artifacts");
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&previous),
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("previous persisted history");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+
+    git(&work, &["switch", "-q", "-c", "retained", "v1"]);
+    fs::write(work.join("shared.c"), "static int retained_signal;\n").expect("retained copy");
+    git(&work, &["add", "shared.c"]);
+    git(&work, &["commit", "-qm", "retained representative"]);
+    let current = at_head(previous.clone(), &work);
+
+    let (incremental, refresh) = ingest_git_history_fast_forward(
+        std::slice::from_ref(&current),
+        &snapshot_tips(std::slice::from_ref(&previous)),
+        &cached,
+    )
+    .expect("representative rewrite")
+    .expect("representative rewrite is incremental");
+    let (cold, _) = cold_history(std::slice::from_ref(&current));
+
+    assert_eq!(incremental, cold);
+    assert!(refresh.removed_documents > 0, "{refresh:#?}");
+    assert!(
+        incremental
+            .iter()
+            .any(|chunk| chunk.text.contains("retained_signal"))
+    );
+
+    let incremental_root = tempdir().expect("incremental artifacts");
+    let persisted = build_git_history_artifacts_from_previous(
+        incremental_root.path(),
+        std::slice::from_ref(&current),
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(std::slice::from_ref(&previous)),
+            lexical_path: previous_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: None,
+            vector_path: None,
+            lexical_format_compatible: true,
+        }),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("persisted representative rewrite");
+    let cold_root = tempdir().expect("cold artifacts");
+    let cold = build_git_history_artifacts_incrementally(
+        cold_root.path(),
+        &[current],
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("cold retained history");
+    assert!(persisted.reused_snapshot);
+    assert_cold_equivalent_lexical(
+        &incremental_root
+            .path()
+            .join("generations")
+            .join(persisted.artifacts.generation)
+            .join("lexical.json"),
+        &cold_root
+            .path()
+            .join("generations")
+            .join(cold.artifacts.generation)
+            .join("lexical.json"),
+    );
+}
+
+#[test]
+fn rewritten_history_drops_cached_commits_missing_from_the_object_database() {
+    let (_root, work) = fixture();
+    let previous = at_head(source(work.clone(), "fixture"), &work);
+    let previous_id =
+        gix::ObjectId::from_hex(previous.revision.as_str().as_bytes()).expect("previous object id");
+    let (before, _) = cold_history(std::slice::from_ref(&previous));
+
+    git(&work, &["checkout", "-q", "--orphan", "rewritten"]);
+    git(&work, &["rm", "-q", "-r", "-f", "."]);
+    fs::create_dir_all(work.join("src")).expect("rewritten source directory");
+    fs::write(work.join("src/lib.rs"), "pub fn replacement() {}\n").expect("replacement");
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-qm", "replacement root"]);
+    git(&work, &["branch", "-D", "main"]);
+    git(&work, &["reflog", "expire", "--expire=now", "--all"]);
+    git(&work, &["gc", "--prune=now"]);
+    assert!(
+        !gix::open(&work)
+            .expect("rewritten repository")
+            .has_object(previous_id),
+        "the replaced commit must actually be absent"
+    );
+    let rewritten = at_head(previous.clone(), &work);
+
+    let (incremental, refresh) = ingest_git_history_fast_forward(
+        std::slice::from_ref(&rewritten),
+        &snapshot_tips(&[previous]),
+        &before,
+    )
+    .expect("missing predecessor reconciliation")
+    .expect("missing predecessor does not require a cold rebuild");
+    let (cold, _) = cold_history(&[rewritten]);
+
+    assert_eq!(incremental, cold);
+    assert!(refresh.removed_documents > 0, "{refresh:#?}");
+    assert!(refresh.removed_commit_messages > 0, "{refresh:#?}");
 }

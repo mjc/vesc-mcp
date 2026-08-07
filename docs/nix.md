@@ -137,10 +137,12 @@ The first start binds HTTP before fetching three bare Git stores and building
 the combined default history in the background, so clients can observe
 `ping.knowledge` progress throughout the expensive first preparation. Later
 starts fetch incrementally with gix, reuse content-addressed passages, and
-reuse unchanged semantic rows from the prior binary vector artifact. Only the
-new fast-forward commit range is chunked and embedded. The default alias advances
-only after the new snapshot validates; changing one ref does not delete older
-immutable snapshots.
+reuse unchanged semantic rows from the prior binary vector artifact. New commits
+are chunked and embedded; rebased, force-moved, or deleted refs remove only
+evidence that is no longer reachable from any configured ref. Unchanged content
+and vectors remain reusable across changed commit IDs. The default alias advances
+only after the reconciled snapshot validates; changing one ref does not mutate
+older immutable snapshots.
 
 Configuring at least one enabled repository enables managed Git in the generated
 runtime configuration. An empty or fully disabled `repositories` set leaves

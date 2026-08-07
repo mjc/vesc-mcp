@@ -31,6 +31,8 @@ pub struct GitHistoryRefreshObservations {
     pub reused_blobs: usize,
     pub ingested_commit_messages: usize,
     pub reused_commit_messages: usize,
+    pub removed_documents: usize,
+    pub removed_commit_messages: usize,
     pub rejected_commit_messages: usize,
     pub budget_rejections: usize,
     pub reused_contents: usize,
@@ -51,6 +53,8 @@ impl Default for GitHistoryRefreshObservations {
             reused_blobs: 0,
             ingested_commit_messages: 0,
             reused_commit_messages: 0,
+            removed_documents: 0,
+            removed_commit_messages: 0,
             rejected_commit_messages: 0,
             budget_rejections: 0,
             reused_contents: 0,
@@ -81,6 +85,59 @@ struct ReachableCommit {
     id: gix::ObjectId,
     first_parent: Option<gix::ObjectId>,
     message_admitted: bool,
+}
+
+struct CommitAdmissions {
+    revisions: HashMap<gix::ObjectId, CommitAdmission>,
+}
+
+struct CommitAdmission {
+    message_admitted: bool,
+    retained: bool,
+}
+
+impl CommitAdmissions {
+    fn is_reachable(&self, revision: &gix::ObjectId) -> bool {
+        self.revisions.contains_key(revision)
+    }
+
+    fn message_is_admitted(&self, revision: &gix::ObjectId) -> bool {
+        self.revisions
+            .get(revision)
+            .is_some_and(|admission| admission.message_admitted)
+    }
+
+    fn len(&self) -> usize {
+        self.revisions.len()
+    }
+
+    fn retained_count(&self) -> usize {
+        self.revisions
+            .values()
+            .filter(|admission| admission.retained)
+            .count()
+    }
+
+    fn mark_retained(
+        &mut self,
+        repo: &gix::Repository,
+        tips: &[gix::ObjectId],
+    ) -> Result<(), GitHistoryError> {
+        if tips.is_empty() {
+            return Ok(());
+        }
+        let walk = repo
+            .rev_walk(tips.iter().copied())
+            .all()
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        for info in walk {
+            let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+            if let Some(admission) = self.revisions.get_mut(&info.id) {
+                admission.retained = true;
+            }
+        }
+        Ok(())
+    }
 }
 
 struct ProcessedHistory<'a> {
@@ -124,7 +181,6 @@ pub(crate) struct CachedGitHistory {
 }
 
 struct CachedGitHistoryDocument {
-    document_id: Box<str>,
     revision: Box<str>,
     path: Box<str>,
     blob: Option<gix::ObjectId>,
@@ -136,6 +192,14 @@ struct CachedGitHistoryDocument {
     consistent: bool,
 }
 
+#[derive(Default)]
+struct HistoryReconciliation {
+    removed_documents: usize,
+    removed_blob_documents: usize,
+    removed_commit_messages: usize,
+    reused_commit_messages: usize,
+}
+
 impl CachedGitHistory {
     pub(crate) fn observe(&mut self, chunk: CachedGitHistoryChunk<'_>) {
         let documents = self
@@ -145,7 +209,6 @@ impl CachedGitHistory {
         let document = documents
             .entry(chunk.document_id.to_owned())
             .or_insert_with(|| CachedGitHistoryDocument {
-                document_id: chunk.document_id.into(),
                 revision: chunk.revision.into(),
                 path: chunk.path.into(),
                 blob: chunk.blob,
@@ -229,27 +292,46 @@ impl CachedGitHistory {
         Ok(blobs)
     }
 
-    fn unadmitted_commit_document_ids(
-        &self,
+    fn reconcile_documents(
+        &mut self,
         source: &GitCorpusSource,
-        admitted: &HashSet<gix::ObjectId>,
-    ) -> Result<Vec<String>, GitHistoryError> {
-        let Some(documents) = self.repositories.get(source.repository_id.as_str()) else {
-            return Ok(Vec::new());
+        commits: &CommitAdmissions,
+    ) -> Result<(BTreeSet<String>, HistoryReconciliation), GitHistoryError> {
+        let Some(documents) = self.repositories.get_mut(source.repository_id.as_str()) else {
+            return Ok((BTreeSet::new(), HistoryReconciliation::default()));
         };
-        documents
-            .values()
-            .filter(|document| document.source_kind == SourceKind::GitCommit)
-            .filter_map(|document| {
+        let mut reconciliation = HistoryReconciliation::default();
+        let mut invalid_revision = None;
+        let removed = documents
+            .extract_if(|_, document| {
                 let revision = gix::ObjectId::from_hex(document.revision.as_bytes())
                     .map_err(|error| GitHistoryError::Invalid(error.to_string()));
-                match revision {
-                    Ok(revision) if admitted.contains(&revision) => None,
-                    Ok(_) => Some(Ok(document.document_id.to_string())),
-                    Err(error) => Some(Err(error)),
+                let Ok(revision) = revision else {
+                    invalid_revision = revision.err();
+                    return false;
+                };
+                let reachable = commits.is_reachable(&revision);
+                let admitted = document.source_kind != SourceKind::GitCommit
+                    || commits.message_is_admitted(&revision);
+                if reachable && admitted {
+                    reconciliation.reused_commit_messages +=
+                        usize::from(document.source_kind == SourceKind::GitCommit);
+                    false
+                } else {
+                    reconciliation.removed_commit_messages +=
+                        usize::from(document.source_kind == SourceKind::GitCommit);
+                    reconciliation.removed_blob_documents +=
+                        usize::from(document.source_kind == SourceKind::GitBlob);
+                    true
                 }
             })
-            .collect()
+            .map(|(document_id, _)| document_id)
+            .collect::<BTreeSet<_>>();
+        if let Some(error) = invalid_revision {
+            return Err(error);
+        }
+        reconciliation.removed_documents = removed.len();
+        Ok((removed, reconciliation))
     }
 }
 
@@ -402,12 +484,6 @@ impl Default for CommitCoverage {
     }
 }
 
-impl CommitCoverage {
-    const fn reused_from_prior(self) -> bool {
-        self.selected && self.reused_from_prior
-    }
-}
-
 #[derive(Debug)]
 struct GitHistoryDocument {
     source_index: usize,
@@ -451,20 +527,52 @@ impl GitHistoryBuildPlan {
         self.removed_document_ids.iter().map(String::as_str)
     }
 
-    fn retain_commit_messages(&mut self, source_index: usize, admitted: &HashSet<gix::ObjectId>) {
+    fn reconcile_documents(
+        &mut self,
+        source_index: usize,
+        commits: &CommitAdmissions,
+    ) -> Result<HistoryReconciliation, GitHistoryError> {
         let removed = self
             .documents
             .iter()
             .enumerate()
-            .filter(|(_, document)| {
-                document.source_index == source_index
-                    && document.source_kind == SourceKind::GitCommit
-                    && !admitted.contains(&document.revision)
+            .filter_map(|(index, document)| {
+                if document.source_index != source_index {
+                    return None;
+                }
+                let keep = commits.is_reachable(&document.revision)
+                    && (document.source_kind != SourceKind::GitCommit
+                        || commits.message_is_admitted(&document.revision));
+                (!keep).then(|| Ok(u32::try_from(index).expect("document index fits in u32")))
             })
-            .map(|(index, _)| u32::try_from(index).expect("document index fits in u32"))
-            .collect::<HashSet<_>>();
+            .collect::<Result<HashSet<_>, GitHistoryError>>()?;
         self.chunks
             .retain(|_, chunk| !removed.contains(&chunk.document));
+        let reused_commit_messages = self
+            .documents
+            .iter()
+            .enumerate()
+            .filter(|(index, document)| {
+                document.source_index == source_index
+                    && document.source_kind == SourceKind::GitCommit
+                    && !removed
+                        .contains(&u32::try_from(*index).expect("document index fits in u32"))
+            })
+            .count();
+        let removed_commit_messages = removed
+            .iter()
+            .filter(|index| self.documents[**index as usize].source_kind == SourceKind::GitCommit)
+            .count();
+        let removed_blob_documents = removed
+            .iter()
+            .filter(|index| self.documents[**index as usize].source_kind == SourceKind::GitBlob)
+            .count();
+        Ok(HistoryReconciliation {
+            removed_documents: removed.len(),
+            removed_blob_documents,
+            removed_commit_messages,
+            reused_commit_messages,
+        })
     }
 
     fn push_document(
@@ -551,6 +659,9 @@ impl GitHistoryBuildPlan {
                     let repository = repositories
                         .get(&source_index)
                         .expect("repository inserted above");
+                    if !repository.has_object(revision) {
+                        continue;
+                    }
                     let commit = repository
                         .find_commit(revision)
                         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
@@ -776,50 +887,31 @@ impl GitHistoryBuildPlan {
     }
 }
 
+type PreviousContentLookup<'a> = dyn FnMut(&RepositoryId, &str, &ContentDigest, &BTreeSet<String>) -> Result<bool, GitHistoryError>
+    + 'a;
+
 enum HistoryContents<'a> {
     All(GitHistoryBuildPlan),
     Delta {
-        previous_contains:
-            &'a mut dyn FnMut(&RepositoryId, &str, &ContentDigest) -> Result<bool, GitHistoryError>,
+        previous_contains: &'a mut PreviousContentLookup<'a>,
         plan: GitHistoryBuildPlan,
     },
 }
 
 impl HistoryContents<'_> {
-    fn retain_commit_messages(
+    fn reconcile_documents(
         &mut self,
-        cached_history: &CachedGitHistory,
+        cached_history: &mut CachedGitHistory,
         source_index: usize,
         source: &GitCorpusSource,
-        admitted: &HashSet<gix::ObjectId>,
-    ) -> Result<usize, GitHistoryError> {
+        commits: &CommitAdmissions,
+    ) -> Result<HistoryReconciliation, GitHistoryError> {
+        let (removed, cached) = cached_history.reconcile_documents(source, commits)?;
         match self {
-            Self::All(plan) => {
-                plan.retain_commit_messages(source_index, admitted);
-                Ok(plan
-                    .documents
-                    .iter()
-                    .filter(|document| {
-                        document.source_index == source_index
-                            && document.source_kind == SourceKind::GitCommit
-                            && admitted.contains(&document.revision)
-                    })
-                    .count())
-            }
+            Self::All(plan) => plan.reconcile_documents(source_index, commits),
             Self::Delta { plan, .. } => {
-                let removed = cached_history.unadmitted_commit_document_ids(source, admitted)?;
                 plan.removed_document_ids.extend(removed);
-                Ok(cached_history
-                    .repositories
-                    .get(source.repository_id.as_str())
-                    .into_iter()
-                    .flat_map(HashMap::values)
-                    .filter(|document| {
-                        document.source_kind == SourceKind::GitCommit
-                            && gix::ObjectId::from_hex(document.revision.as_bytes())
-                                .is_ok_and(|revision| admitted.contains(&revision))
-                    })
-                    .count())
+                Ok(cached)
             }
         }
     }
@@ -849,7 +941,12 @@ impl HistoryContents<'_> {
                 plan,
             } => {
                 if plan.chunks.contains_key(&key)
-                    || previous_contains(locator.repository, locator.path, &key)?
+                    || previous_contains(
+                        locator.repository,
+                        locator.path,
+                        &key,
+                        &plan.removed_document_ids,
+                    )?
                 {
                     observations.reused_contents = observations.reused_contents.saturating_add(1);
                     false
@@ -891,15 +988,16 @@ fn selected_document(
     Ok(document)
 }
 
-/// Reuse cached Git chunks when every configured tip is a fast-forward.
+/// Reconcile cached Git chunks against the currently reachable history.
 ///
 /// Repository file-count and total-byte limits bound only blobs considered by
 /// this refresh: the whole reachable history for a cold build, or the new
-/// fast-forward delta for an incremental build. The per-file limit is also
-/// checked whenever an already-selected blob is hydrated from Git.
+/// reachable delta for an incremental build. Cached documents that are no
+/// longer reachable are discarded. The per-file limit is also checked whenever
+/// an already-selected blob is hydrated from Git.
 ///
-/// Returns `Ok(None)` when the cached tips cannot safely seed the current
-/// history, allowing the caller to fall back to a cold rebuild.
+/// Returns `Ok(None)` only when the cached source set cannot seed the current
+/// source contracts, allowing the caller to fall back to a cold rebuild.
 ///
 /// # Errors
 ///
@@ -959,11 +1057,7 @@ pub(crate) fn plan_git_history_fast_forward_delta(
     sources: &[GitCorpusSource],
     previous_tips: &[GitHistoryTip],
     cached_history: CachedGitHistory,
-    previous_contains: &mut dyn FnMut(
-        &RepositoryId,
-        &str,
-        &ContentDigest,
-    ) -> Result<bool, GitHistoryError>,
+    previous_contains: &mut PreviousContentLookup<'_>,
 ) -> Result<Option<(GitHistoryBuildPlan, GitHistoryRefreshObservations)>, GitHistoryError> {
     ingest_git_history_fast_forward_with_contents(
         sources,
@@ -1016,74 +1110,46 @@ fn ingest_git_history_fast_forward_with_contents(
             continue;
         }
         let reusable_blobs = known_history.map(|index| &processed[index].reusable_blobs);
-        let (admitted_messages, source_reachable, previous_reachable) =
-            select_commit_messages(&repo, &current_ids, &previous_ids, source.policy.limits)?;
-        if !previous_reachable {
-            return Ok(None);
-        }
-        observations.reused_commit_messages =
-            observations
-                .reused_commit_messages
-                .saturating_add(contents.retain_commit_messages(
-                    &cached_history,
-                    source_index,
-                    source,
-                    &admitted_messages,
-                )?);
-        observations.reachable_commits = observations
-            .reachable_commits
-            .saturating_add(source_reachable);
-        let walk = if previous_ids.is_empty() {
+        let mut commits = select_commit_messages(&repo, &current_ids, source.policy.limits)?;
+        let source_reachable = commits.len();
+        observations.reachable_commits =
+            observations.reachable_commits.saturating_add(commits.len());
+        let mut resource_cache = None;
+        let reconciliation =
+            contents.reconcile_documents(&mut cached_history, source_index, source, &commits)?;
+        observations.reused_commit_messages = observations
+            .reused_commit_messages
+            .saturating_add(reconciliation.reused_commit_messages);
+        observations.removed_documents = observations
+            .removed_documents
+            .saturating_add(reconciliation.removed_documents);
+        observations.removed_commit_messages = observations
+            .removed_commit_messages
+            .saturating_add(reconciliation.removed_commit_messages);
+        let reachable_previous_ids = previous_ids
+            .iter()
+            .copied()
+            .filter(|revision| commits.is_reachable(revision))
+            .collect::<Vec<_>>();
+        commits.mark_retained(&repo, &reachable_previous_ids)?;
+        let retained_commits = commits.retained_count();
+        observations.reused_commits = observations.reused_commits.saturating_add(retained_commits);
+        observations.ingested_commits = observations
+            .ingested_commits
+            .saturating_add(source_reachable.saturating_sub(retained_commits));
+        let walk = if reachable_previous_ids.is_empty() || reconciliation.removed_blob_documents > 0
+        {
             repo.rev_walk(current_ids.iter().copied())
         } else {
             repo.rev_walk(current_ids.iter().copied())
-                .with_hidden(previous_ids.iter().copied())
+                .with_hidden(reachable_previous_ids.iter().copied())
         };
         let walk = walk
             .all()
             .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        let mut resource_cache = None;
         let mut seen_blobs = cached_history.take_reusable_blobs(source, &repo)?;
-        let commit_graph = reusable_blobs
-            .map(|_| repo.commit_graph_if_enabled())
-            .transpose()
-            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        let mut reuse_graph = commit_graph
-            .as_ref()
-            .map(|cache| repo.revision_graph(cache.as_ref()));
-        let mut reuse_reachability = HashMap::new();
-        let mut revision_is_reachable = |revision| {
-            if let Some(reachable) = reuse_reachability.get(&revision).copied() {
-                return Ok(reachable);
-            }
-            let reachable = if current_ids.contains(&revision) {
-                true
-            } else if !repo.has_object(revision) {
-                false
-            } else {
-                let graph = reuse_graph
-                    .as_mut()
-                    .expect("reusable blobs initialize a revision graph");
-                current_ids
-                    .iter()
-                    .try_fold(false, |reachable, current_id| {
-                        if reachable {
-                            return Ok(true);
-                        }
-                        match repo.merge_base_with_graph(*current_id, revision, graph) {
-                            Ok(base) => Ok(base.detach() == revision),
-                            Err(gix::repository::merge_base_with_graph::Error::NotFound {
-                                ..
-                            }) => Ok(false),
-                            Err(error) => Err(GitHistoryError::Git(error.to_string())),
-                        }
-                    })?
-            };
-            reuse_reachability.insert(revision, reachable);
-            Ok(reachable)
-        };
+        let mut revision_is_reachable = |revision| Ok(commits.is_reachable(&revision));
         let mut budget = GitCorpusBudget::new(source.policy.limits);
-        let mut ingested_commits = 0_usize;
         let reservation_ids = if previous_ids.is_empty() {
             current_ids.clone()
         } else {
@@ -1100,14 +1166,14 @@ fn ingest_git_history_fast_forward_with_contents(
                 &repo,
                 source,
                 &reservation_ids,
-                &previous_ids,
+                &reachable_previous_ids,
                 &seen_blobs,
                 reusable_blobs,
                 &mut revision_is_reachable,
                 &mut budget,
             )?)
         };
-        let mut commits = Vec::new();
+        let mut commits_to_ingest = Vec::new();
         for info in walk {
             let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
             #[cfg(feature = "coz-profile")]
@@ -1118,22 +1184,19 @@ fn ingest_git_history_fast_forward_with_contents(
             let commit = ReachableCommit {
                 id: info.id,
                 first_parent: commit.parent_ids().next().map(gix::Id::detach),
-                message_admitted: admitted_messages.contains(&info.id),
+                message_admitted: commits.message_is_admitted(&info.id),
             };
-            commits.push(commit);
+            commits_to_ingest.push(commit);
         }
-        observations.reused_commits = observations
-            .reused_commits
-            .saturating_add(source_reachable.saturating_sub(commits.len()));
-        commits.reverse();
-        for commit in &commits {
+        commits_to_ingest.reverse();
+        for commit in &commits_to_ingest {
             if resource_cache.is_none() {
                 resource_cache = Some(
                     repo.diff_resource_cache_for_tree_diff()
                         .map_err(|error| GitHistoryError::Git(error.to_string()))?,
                 );
             }
-            let coverage = ingest_commit_changes(
+            ingest_commit_changes(
                 &repo,
                 source_index,
                 source,
@@ -1149,17 +1212,9 @@ fn ingest_git_history_fast_forward_with_contents(
                 &mut contents,
                 &mut observations,
             )?;
-            if coverage.reused_from_prior() {
-                observations.reused_commits = observations.reused_commits.saturating_add(1);
-            } else {
-                ingested_commits = ingested_commits.saturating_add(1);
-            }
             #[cfg(feature = "coz-profile")]
             coz::progress!("git_history_ingested_commit");
         }
-        observations.ingested_commits = observations
-            .ingested_commits
-            .saturating_add(ingested_commits);
         if let Some(index) = known_history {
             let known = &mut processed[index];
             known.represented_tips.insert(current_ids, source_reachable);
@@ -1256,33 +1311,32 @@ fn same_corpus_contract(left: &GitCorpusSource, right: &GitCorpusSource) -> bool
 fn select_commit_messages(
     repo: &gix::Repository,
     tips: &[gix::ObjectId],
-    previous_tips: &[gix::ObjectId],
     limits: super::git::GitCorpusLimits,
-) -> Result<(HashSet<gix::ObjectId>, usize, bool), GitHistoryError> {
+) -> Result<CommitAdmissions, GitHistoryError> {
     let mut walk = repo
         .rev_walk(tips.iter().copied())
         .all()
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let mut budget = GitCorpusBudget::new(limits);
-    let mut admitted = HashSet::new();
-    let mut missing_previous = previous_tips.iter().copied().collect::<HashSet<_>>();
-    let mut reachable = 0_usize;
+    let mut revisions = HashMap::new();
     for info in &mut walk {
         let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        missing_previous.remove(&info.id);
-        reachable = reachable.saturating_add(1);
         #[cfg(feature = "coz-profile")]
         coz::progress!("git_history_walk_commit");
         let commit = info
             .object()
             .map_err(|error| GitHistoryError::Git(error.to_string()))?;
-        if commit_message_size(&commit, limits.max_file_bytes())
-            .is_some_and(|size| budget.reserve(size).is_ok())
-        {
-            admitted.insert(info.id);
-        }
+        let admitted = commit_message_size(&commit, limits.max_file_bytes())
+            .is_some_and(|size| budget.reserve(size).is_ok());
+        revisions.insert(
+            info.id,
+            CommitAdmission {
+                message_admitted: admitted,
+                retained: false,
+            },
+        );
     }
-    Ok((admitted, reachable, missing_previous.is_empty()))
+    Ok(CommitAdmissions { revisions })
 }
 
 #[allow(clippy::too_many_arguments)]

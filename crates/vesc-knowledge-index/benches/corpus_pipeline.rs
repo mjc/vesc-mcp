@@ -15,9 +15,10 @@ use vesc_knowledge_index::corpus::git::{
 };
 use vesc_knowledge_index::{
     Chunk, ChunkId, ChunkingConfig, ContentDigest, FakeEmbeddingProvider, GitHistoryTip,
-    LexicalFilters, LexicalHit, LexicalIndex, LicenseStatus, NormalizedDocument, RepositoryId,
-    Revision, SourceKind, TrustTier, VectorArtifact, chunk_document,
-    ingest_git_history_fast_forward,
+    LexicalFilters, LexicalHit, LexicalIndex, LicenseStatus, NormalizedDocument,
+    PreviousGitHistoryArtifact, RepositoryId, Revision, SourceKind, TrustTier, VectorArtifact,
+    build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
+    chunk_document, ingest_git_history_fast_forward,
 };
 
 const CHUNK_COUNT: usize = 256;
@@ -109,7 +110,16 @@ struct HistoryGitFixture {
     cached: Vec<Chunk>,
 }
 
+struct PersistedRewriteFixture {
+    _history: HistoryGitFixture,
+    _previous_root: TempDir,
+    output_root: TempDir,
+    source: GitCorpusSource,
+    previous: Option<PreviousGitHistoryArtifact>,
+}
+
 static HISTORY_FIXTURE_TEARDOWN: Mutex<Option<HistoryGitFixture>> = Mutex::new(None);
+static PERSISTED_FIXTURE_TEARDOWN: Mutex<Option<PersistedRewriteFixture>> = Mutex::new(None);
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -257,6 +267,50 @@ fn fixture_git_many_tips() -> HistoryGitFixture {
     }
 }
 
+fn fixture_persisted_rewrite() -> PersistedRewriteFixture {
+    let mut history = fixture_git_many_tips();
+    let previous_source = history.source.clone();
+    let previous_root = tempdir().expect("previous artifact root");
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&previous_source),
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut |_| {},
+    )
+    .expect("build persisted predecessor");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    history.source.history_tips.truncate(1);
+    history.source.revision = history.source.history_tips[0].clone();
+    PersistedRewriteFixture {
+        source: history.source.clone(),
+        _history: history,
+        _previous_root: previous_root,
+        output_root: tempdir().expect("output artifact root"),
+        previous: Some(PreviousGitHistoryArtifact {
+            tips: previous_source
+                .history_tips
+                .into_iter()
+                .map(|revision| GitHistoryTip {
+                    repository: previous_source.repository_id.clone(),
+                    revision,
+                })
+                .collect(),
+            lexical_path: previous_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: None,
+            vector_path: None,
+            lexical_format_compatible: true,
+        }),
+    }
+}
+
 #[library_benchmark(setup = fixture_document)]
 fn bench_chunk_document(document: NormalizedDocument) -> Vec<Chunk> {
     let document = black_box(document);
@@ -303,6 +357,15 @@ fn teardown_history_fixture(_: ()) {
     );
 }
 
+fn teardown_persisted_fixture(_: ()) {
+    drop(
+        PERSISTED_FIXTURE_TEARDOWN
+            .lock()
+            .expect("persisted fixture teardown mutex")
+            .take(),
+    );
+}
+
 #[library_benchmark(
     config = history_memory_benchmark_config(),
     setup = fixture_git_many_tips,
@@ -343,6 +406,59 @@ fn bench_incremental_many_divergent_tips(fixture: HistoryGitFixture) {
     *HISTORY_FIXTURE_TEARDOWN
         .lock()
         .expect("history fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_persisted_rewrite,
+    teardown = teardown_persisted_fixture
+)]
+fn bench_persisted_reconcile_removed_tips(fixture: PersistedRewriteFixture) {
+    let mut fixture = black_box(fixture);
+    let previous = fixture.previous.take().expect("persisted predecessor");
+    black_box(
+        build_git_history_artifacts_from_previous(
+            fixture.output_root.path(),
+            std::slice::from_ref(&fixture.source),
+            Some(previous),
+            None,
+            None,
+            &mut |_| {},
+        )
+        .expect("persisted rewrite reconciliation")
+        .artifacts
+        .chunk_count,
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_persisted_rewrite,
+    teardown = teardown_persisted_fixture
+)]
+fn bench_persisted_cold_after_removed_tips(fixture: PersistedRewriteFixture) {
+    let fixture = black_box(fixture);
+    black_box(
+        build_git_history_artifacts_incrementally(
+            fixture.output_root.path(),
+            std::slice::from_ref(&fixture.source),
+            None,
+            None,
+            None,
+            None,
+            None,
+            &mut |_| {},
+        )
+        .expect("persisted cold rebuild")
+        .artifacts
+        .chunk_count,
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
 }
 
 #[library_benchmark(setup = fixture_chunks)]
@@ -400,6 +516,8 @@ library_benchmark_group!(
         bench_ingest_git_commit,
         bench_ingest_many_mostly_shared_tips,
         bench_incremental_many_divergent_tips,
+        bench_persisted_reconcile_removed_tips,
+        bench_persisted_cold_after_removed_tips,
         bench_lexical_build,
         bench_lexical_search,
         bench_corpus_inventory,

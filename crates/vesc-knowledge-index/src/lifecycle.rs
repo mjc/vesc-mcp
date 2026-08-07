@@ -401,6 +401,10 @@ struct GitHistoryLexicalStageRefresh {
     #[serde(default)]
     reused_commit_messages: usize,
     #[serde(default)]
+    removed_documents: usize,
+    #[serde(default)]
+    removed_commit_messages: usize,
+    #[serde(default)]
     rejected_commit_messages: usize,
     #[serde(default)]
     budget_rejections: usize,
@@ -422,6 +426,8 @@ impl GitHistoryLexicalStageRefresh {
             reused_blobs: refresh.reused_blobs,
             ingested_commit_messages: refresh.ingested_commit_messages,
             reused_commit_messages: refresh.reused_commit_messages,
+            removed_documents: refresh.removed_documents,
+            removed_commit_messages: refresh.removed_commit_messages,
             rejected_commit_messages: refresh.rejected_commit_messages,
             budget_rejections: refresh.budget_rejections,
             reused_contents: refresh.reused_contents,
@@ -459,6 +465,8 @@ impl GitHistoryLexicalStageRefresh {
             reused_blobs: self.reused_blobs,
             ingested_commit_messages: self.ingested_commit_messages,
             reused_commit_messages: self.reused_commit_messages,
+            removed_documents: self.removed_documents,
+            removed_commit_messages: self.removed_commit_messages,
             rejected_commit_messages: self.rejected_commit_messages,
             budget_rejections: self.budget_rejections,
             reused_contents: self.reused_contents,
@@ -781,7 +789,7 @@ pub fn build_git_artifacts(
     build_git_artifacts_with_provider(root, sources, None, None, None)
 }
 
-/// Build complete Git history, reusing cached chunks for a verified fast-forward.
+/// Build complete Git history, reconciling reachable evidence with cached chunks.
 ///
 /// # Errors
 ///
@@ -853,7 +861,7 @@ pub fn build_git_history_artifacts_incrementally(
     })
 }
 
-/// Build a complete-history snapshot by querying and extending a persisted predecessor.
+/// Build a complete-history snapshot by reconciling a persisted predecessor.
 ///
 /// # Errors
 ///
@@ -900,7 +908,7 @@ pub fn build_git_history_artifacts_from_previous(
         );
     }
 
-    let Ok(mut lookup) = LexicalIndex::open_history_content_lookup(&previous.lexical_path) else {
+    let Ok(lookup) = LexicalIndex::open_history_content_lookup(&previous.lexical_path) else {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     };
     if !matches!(
@@ -919,12 +927,18 @@ pub fn build_git_history_artifacts_from_previous(
     let ingestion_started = Instant::now();
     let (incremental, lookup_failed) = {
         let mut lookup_failed = false;
-        let mut previous_contains = |repository: &RepositoryId, path: &str, key: &ContentDigest| {
-            lookup.contains(repository, path, key).map_err(|error| {
-                lookup_failed = true;
-                GitHistoryError::Invalid(error.to_string())
-            })
-        };
+        let mut previous_contains =
+            |repository: &RepositoryId,
+             path: &str,
+             key: &ContentDigest,
+             removed_document_ids: &BTreeSet<String>| {
+                lookup
+                    .contains_retained(repository, path, key, removed_document_ids)
+                    .map_err(|error| {
+                        lookup_failed = true;
+                        GitHistoryError::Invalid(error.to_string())
+                    })
+            };
         let incremental = plan_git_history_fast_forward_delta(
             sources,
             &previous.tips,

@@ -132,9 +132,10 @@ server never downloads a missing model at startup.
 For managed repositories, restart or run `prepare_vesc_knowledge` after
 configuring the semantic model. The semantic contract produces a new immutable
 snapshot ID, and preparation builds `vectors.bin` before activating it.
-Preparation rejects an artifact that would exceed the 1 GiB binary safety limit
-before model inference begins. Later fast-forward snapshots report reused and
-embedded vector counts and embed only new stable chunk IDs.
+Preparation rejects an artifact that would exceed the 2 GiB binary safety limit
+before model inference begins. Later incremental snapshots report removed and
+reused evidence plus reused and embedded vector counts. Rebases and force-moved
+refs delete unreachable evidence while reusing unchanged semantic content.
 
 ## A search result looks like an instruction
 

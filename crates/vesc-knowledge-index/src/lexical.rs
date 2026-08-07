@@ -576,20 +576,43 @@ impl HistoryContentLookup {
     ///
     /// Returns [`LexicalError::Search`] when Tantivy cannot execute the exact lookup.
     pub fn contains(
-        &mut self,
+        &self,
+        repository: &RepositoryId,
+        path: &str,
+        key: &ContentDigest,
+    ) -> Result<bool, LexicalError> {
+        self.contains_retained(repository, path, key, &BTreeSet::new())
+    }
+
+    pub(crate) fn contains_retained(
+        &self,
         _repository: &RepositoryId,
         _path: &str,
         key: &ContentDigest,
+        removed_document_ids: &BTreeSet<String>,
     ) -> Result<bool, LexicalError> {
         let query = TermQuery::new(
             Term::from_field_text(self.fields.history_content_key, &key.to_string()),
             IndexRecordOption::Basic,
         );
-        self.reader
-            .searcher()
-            .search(&query, &Count)
-            .map(|count| count != 0)
-            .map_err(LexicalError::Search)
+        let searcher = self.reader.searcher();
+        let matches = searcher
+            .search(
+                &query,
+                // History content keys are unique in every committed artifact.
+                &TopDocs::with_limit(1).order_by_score(),
+            )
+            .map_err(LexicalError::Search)?;
+        for (_, address) in matches {
+            let document = searcher
+                .doc::<TantivyDocument>(address)
+                .map_err(LexicalError::Search)?;
+            let document_id = required_text(&document, self.fields.document_id, "document_id")?;
+            if !removed_document_ids.contains(document_id) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -3322,8 +3345,7 @@ mod tests {
 
         LexicalIndex::write_search_artifact_with_digest([&previous_chunk], &previous)
             .expect("write previous");
-        let mut lookup =
-            LexicalIndex::open_history_content_lookup(&previous).expect("history lookup");
+        let lookup = LexicalIndex::open_history_content_lookup(&previous).expect("history lookup");
         assert!(
             lookup
                 .contains(
@@ -3351,7 +3373,7 @@ mod tests {
             &next,
         )
         .expect("write incremental");
-        let mut lookup =
+        let lookup =
             LexicalIndex::open_history_content_lookup(&next).expect("incremental history lookup");
         for chunk in [&previous_chunk, &delta_chunk] {
             assert!(
@@ -3372,10 +3394,7 @@ mod tests {
                 previous_chunk.document_id.clone(),
                 delta_chunk.document_id.clone(),
             ],
-            vec![
-                previous_chunk.chunk_id.clone(),
-                delta_chunk.chunk_id.clone(),
-            ],
+            vec![previous_chunk.chunk_id, delta_chunk.chunk_id],
         );
         assert_eq!(documents, expected.document_count());
         assert_eq!(chunks, expected.chunk_count());
@@ -3390,8 +3409,7 @@ mod tests {
         let artifact = temp.path().join("lexical.json");
         LexicalIndex::write_search_artifact_with_digest([&underscored, &hyphenated], &artifact)
             .expect("write artifact");
-        let mut lookup =
-            LexicalIndex::open_history_content_lookup(&artifact).expect("history lookup");
+        let lookup = LexicalIndex::open_history_content_lookup(&artifact).expect("history lookup");
 
         for chunk in [&underscored, &hyphenated] {
             let key =
@@ -3443,7 +3461,7 @@ mod tests {
             .is_err()
         );
 
-        let mut lookup = LexicalIndex::open_history_content_lookup(&previous)
+        let lookup = LexicalIndex::open_history_content_lookup(&previous)
             .expect("predecessor remains valid");
         let old_key =
             crate::corpus::history_content_key_for_chunk(&previous_chunk).expect("old history key");
@@ -3493,7 +3511,7 @@ mod tests {
                 .len()
                 <= MAX_INCREMENTAL_SEGMENTS
         );
-        let mut lookup =
+        let lookup =
             LexicalIndex::open_history_content_lookup(&first).expect("original remains readable");
         assert!(
             lookup
