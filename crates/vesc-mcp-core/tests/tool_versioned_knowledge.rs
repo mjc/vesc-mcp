@@ -57,6 +57,100 @@ async fn assert_default_snapshot_compatibility(
 }
 
 #[tokio::test]
+async fn bounded_mcp_symbol_search_returns_decisive_git_evidence_and_follow_up_resources() {
+    let fixture = VersionedKnowledgeFixture::new().await;
+    let harness = McpTestHarness::with_knowledge_config(fixture.knowledge().clone());
+    let prepared: Value = serde_json::from_str(
+        &harness
+            .call_tool_async(
+                "prepare_vesc_knowledge",
+                VersionedKnowledgeFixture::selection(),
+            )
+            .await,
+    )
+    .expect("prepare response");
+    let snapshot = prepared["snapshot_id"].as_str().expect("snapshot ID");
+    let response = harness.call_tool(
+        "search_vesc_knowledge",
+        json!({
+            "query": "update_pid_position_offset|trait MotorControlBindings|impl.*MotorControlBindings|PidPosition",
+            "snapshot_id": snapshot,
+            "mode": "lexical",
+            "limit": 5,
+            "max_context_bytes": 8192,
+            "max_response_bytes": 16384,
+            "filters": { "repository": "bldc" }
+        }),
+    );
+    assert!(
+        response.len() <= 16_384,
+        "bounded response was {} bytes",
+        response.len()
+    );
+    let body: Value = serde_json::from_str(&response).expect("search response");
+    assert_eq!(body["ok"], true, "response: {body}");
+    assert_eq!(body["snapshot_id"], snapshot);
+    let results = body["results"].as_array().expect("compact results");
+    assert!(!results.is_empty(), "response: {body}");
+    assert!(results.len() <= 5);
+
+    let mut found_declaration = false;
+    let mut found_implementation_or_caller = false;
+    let mut found_filtered_repository = false;
+    for row in results {
+        let excerpt = row[2].as_str().expect("compact excerpt");
+        found_declaration |= excerpt.contains("trait MotorControlBindings")
+            || excerpt.contains("fn update_pid_position_offset");
+        found_implementation_or_caller |= excerpt.contains("impl MotorControlBindings")
+            || excerpt.contains("bindings.update_pid_position_offset");
+        assert!(excerpt.contains("PidPosition"), "excerpt: {excerpt}");
+        let source_index = usize::try_from(row[3].as_u64().expect("source index"))
+            .expect("source index fits usize");
+        let source = body["sources"][source_index]
+            .as_str()
+            .expect("source provenance");
+        assert!(source.ends_with(":motor.rs:1"), "response: {body}");
+        let chunk_id = row[4].as_str().expect("chunk ID");
+        let chunk_uri = format!("vesc://knowledge/snapshot/{snapshot}/chunk/{chunk_id}");
+        let chunk: Value = serde_json::from_str(&harness.read_resource(&chunk_uri))
+            .expect("chunk follow-up resource");
+        assert_eq!(chunk["chunk_id"], chunk_id);
+        assert_eq!(chunk["repository"], "bldc", "chunk: {chunk}");
+        found_filtered_repository |= chunk["repository"] == "bldc";
+        assert_eq!(chunk["path"], "motor.rs");
+        assert_eq!(chunk["revision"], fixture.old_commit());
+        assert_eq!(
+            chunk["source_span"],
+            json!({
+                "start_line": 1,
+                "end_line": 13,
+                "start_byte": 0,
+                "end_byte": 432
+            })
+        );
+        let document_id = chunk["document_id"].as_str().expect("document ID");
+        let document_uri = format!("vesc://knowledge/snapshot/{snapshot}/document/{document_id}");
+        let document: Value = serde_json::from_str(&harness.read_resource(&document_uri))
+            .expect("document follow-up resource");
+        assert_eq!(document["document_id"], document_id);
+        assert!(
+            document["text"]
+                .as_str()
+                .is_some_and(|content| content.contains("trait MotorControlBindings"))
+        );
+    }
+    assert!(found_declaration, "declaration missing: {body}");
+    assert!(
+        found_implementation_or_caller,
+        "implementation/caller missing: {body}"
+    );
+    assert!(
+        found_filtered_repository,
+        "filtered repository missing: {body}"
+    );
+}
+
+#[tokio::test]
 async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
     let fixture = VersionedKnowledgeFixture::new().await;
     let harness = McpTestHarness::with_knowledge_config(fixture.knowledge().clone());

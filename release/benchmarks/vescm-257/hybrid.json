@@ -1,0 +1,41 @@
+{
+  "schema": 2,
+  "mode": "hybrid",
+  "warmup_iterations": 1,
+  "repetitions": 5,
+  "query_count": 1,
+  "snapshot_ids": [
+    "f9e06df304445fd4db089bb79a7adcc2a053a4ff21ffb1864c81ee86d4533008"
+  ],
+  "result_counts": [
+    10
+  ],
+  "response_digests": [
+    "sha256:9d1acc0e54b3f54b3dfbc1bc72ec3ab4d4b4e3d719448a61783d68193cf75620"
+  ],
+  "handler_and_serialization": {
+    "samples": 5,
+    "min_us": 209016,
+    "p50_us": 209349,
+    "p95_us": 215866,
+    "max_us": 215866
+  },
+  "response_bytes": {
+    "samples": 5,
+    "min_bytes": 6229,
+    "p50_bytes": 6229,
+    "p95_bytes": 6229,
+    "max_bytes": 6229
+  },
+  "rss_before_queries_bytes": 1422204928,
+  "rss_after_queries_bytes": 1246633984,
+  "rss_retained_delta_bytes": -175570944,
+  "machine": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_target": "x86_64-unknown-linux-gnu"
+  },
+  "warnings": [
+    "measures the in-process MCP handler, not stdio transport"
+  ]
+}

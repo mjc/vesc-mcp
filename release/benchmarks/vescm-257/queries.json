@@ -1,0 +1,99 @@
+{
+  "schema": 1,
+  "session": "019fc3f6-aa8e-7290-9c87-4419d9c90981",
+  "query": "update_pid_position_offset|trait MotorControlBindings|impl.*MotorControlBindings|PidPosition",
+  "selection": {
+    "current_repository": "vesc-rust-poc",
+    "filters": null
+  },
+  "request": {
+    "detail": "compact",
+    "limit": 5,
+    "max_context_bytes": 8192,
+    "max_response_bytes": 16384
+  },
+  "before": {
+    "snapshot_omitted_repository": true,
+    "manual_file_reads_observed": 6,
+    "lexical": {
+      "result_count": 5,
+      "decisive_result_count": 0,
+      "http_bytes": 3027,
+      "http_latency_us": 300669,
+      "ordered_results": [
+        { "chunk_id": "chunk-21b6c88b2ae8427e18c037459232aad3845bf98114271451b51300053b8425a9", "repository": "bldc", "path": "commits/413ccdbff1b60fc03683c2e79d01ce28f4dac7ae", "revision": "413ccdbff1b60fc03683c2e79d01ce28f4dac7ae", "source_span": { "start_line": 1, "end_line": 2, "start_byte": 0, "end_byte": 63 }, "summary": "First impl of bissc; motor signature for VescTools" },
+        { "chunk_id": "chunk-34c2c5cad5f960abefcd80deb39bff3e87011b060b71dd21c066f91fb5ba801f", "repository": "refloat", "path": "src/pid.c", "revision": "c285dd33030e554a7848130fec00f291fd97b543", "source_span": { "start_line": 41, "end_line": 79, "start_byte": 1196, "end_byte": 2370 }, "summary": "Refloat PID configure and update" },
+        { "chunk_id": "chunk-d95d14c962ef8447e0b6fbc0179b29376f1ea58e82c83e14253f0dea6ddbf27f", "repository": "refloat", "path": "src/pid.c", "revision": "8f097c5a654435d571136065e1e95d7a372b34bc", "source_span": { "start_line": 81, "end_line": 90, "start_byte": 2383, "end_byte": 2727 }, "summary": "Refloat PID brake scaling" },
+        { "chunk_id": "chunk-868d266e26cc5daa5a8f01baa73001f82ec04832d43ecf002952b6afa9764849", "repository": "refloat", "path": "src/pid.c", "revision": "f6930fcf483c324d8eaccd33a762583e1e1b36cb", "source_span": { "start_line": 77, "end_line": 91, "start_byte": 2393, "end_byte": 2842 }, "summary": "Refloat PID brake scaling" },
+        { "chunk_id": "chunk-e87f224c3687a51b7db36ed12e423d0de17a9d65c498d6bd8c8c1c1028e56f4f", "repository": "refloat", "path": "src/pid.c", "revision": "8f097c5a654435d571136065e1e95d7a372b34bc", "source_span": { "start_line": 41, "end_line": 81, "start_byte": 1196, "end_byte": 2383 }, "summary": "Refloat PID configure and update" }
+      ]
+    },
+    "hybrid": {
+      "result_count": 5,
+      "decisive_result_count": 0,
+      "http_bytes": 3435,
+      "http_latency_us": 5261563,
+      "ordered_results": [
+        { "chunk_id": "chunk-5ce8eadebca205cffc1a5bc8e696c905efdda3a84dbba34c8a3c3d78160bcc96", "repository": "bldc", "path": "motor/mc_interface.c", "revision": "76aedf16acd42ccbd852d402b798e518824d5617", "source_span": { "start_line": 1444, "end_line": 1500, "start_byte": 33306, "end_byte": 34505 }, "summary": "mc_interface PID position getter" },
+        { "chunk_id": "chunk-4e500b18ed198421b52932229a815073f019e76ba98d1a21a954d6593e68f74f", "repository": "bldc", "path": "mc_interface.c", "revision": "1f8a2cebfb9cf1dfc8acdb52a220e642e5271b6f", "source_span": { "start_line": 1388, "end_line": 1444, "start_byte": 33312, "end_byte": 34506 }, "summary": "mc_interface PID position getter" },
+        { "chunk_id": "chunk-bdeb15c83efc1505fb5a7d9c0e0f393485236e09ccff2905b9eb7177a9dbc2a5", "repository": "bldc", "path": "mc_interface.c", "revision": "8f8d9134190fb45fc7fb44d0ac7ebb78a6976cd5", "source_span": { "start_line": 1353, "end_line": 1404, "start_byte": 32114, "end_byte": 33314 }, "summary": "mc_interface PID position getter" },
+        { "chunk_id": "chunk-148b15d913f67a543449c41bcc36bbab0da63c4a6afee64c2c0975fa36ee9e76", "repository": "bldc", "path": "motor/mc_interface.c", "revision": "510e33fb4103f7b54454a7714a06045a7e9ce076", "source_span": { "start_line": 590, "end_line": 666, "start_byte": 17842, "end_byte": 19035 }, "summary": "mc_interface PID speed setter" },
+        { "chunk_id": "chunk-21b6c88b2ae8427e18c037459232aad3845bf98114271451b51300053b8425a9", "repository": "bldc", "path": "commits/413ccdbff1b60fc03683c2e79d01ce28f4dac7ae", "revision": "413ccdbff1b60fc03683c2e79d01ce28f4dac7ae", "source_span": { "start_line": 1, "end_line": 2, "start_byte": 0, "end_byte": 63 }, "summary": "First impl of bissc; motor signature for VescTools" }
+      ]
+    },
+    "ordered_manual_file_reads": ["build.rs", "raw.rs", "motor.rs", "motor_control.rs", "motor.rs", "motor.rs"]
+  },
+  "after": {
+    "snapshot_id": "f9e06df304445fd4db089bb79a7adcc2a053a4ff21ffb1864c81ee86d4533008",
+    "repository_tip": "00aa861ea5ab825c05ae423848681bc4164d8c73",
+    "lexical": { "result_count": 5, "decisive_result_count": 5, "http_bytes": 3681, "http_latency_us": 157365 },
+    "hybrid": { "result_count": 5, "decisive_result_count": 5, "http_bytes": 3680, "http_latency_us": 747383 },
+    "manual_file_reads_required_by_evaluation": 0,
+    "ordered_results": [
+      {
+        "chunk_id": "chunk-df9aa4bc927ee186d4b3e9c81db0ef9e950915852acb7b580d113d3877ad3973",
+        "document_id": "doc-278e59dd3db7963e90eadc04a88a7abd79ed6ad7a3381f62d7d23c040268b4e2",
+        "path": "crates/vescpkg-rs/src/motor.rs",
+        "revision": "1ae0406bad18a2891c0cf08900493f77927364f6",
+        "source_span": { "start_line": 1775, "end_line": 1812, "start_byte": 61900, "end_byte": 63083 },
+        "decisive_text": "pub fn update_pid_position_offset; position: PidPosition; persistence.stores()"
+      },
+      {
+        "chunk_id": "chunk-89a3194d3fba2b61babf90a615b24de205e2698f887f49958d80ea16b628f80d",
+        "document_id": "doc-a3a3be87a0f75abfbbbbc502017249d94f4d19176ddb7abe9e0d5019e2cae667",
+        "path": "crates/vescpkg-rs/src/motor.rs",
+        "revision": "d29ca6b5f2ced0c310fcb211981d4fd9065d0f47",
+        "source_span": { "start_line": 1708, "end_line": 1746, "start_byte": 59478, "end_byte": 60666 },
+        "decisive_text": "pub fn update_pid_position_offset; self.bindings.update_pid_position_offset"
+      },
+      {
+        "chunk_id": "chunk-cd285d42a66262cf6789fbc4f1973f93c02a7ed4927004c4ac3fbc283f2e162d",
+        "document_id": "doc-9729705258cdf5fb912a8e3048800e179d3a74742319193d650a46278e5f747c",
+        "path": "crates/vescpkg-rs/src/motor.rs",
+        "revision": "655f4a44b0a0a3ef77ac0d7c2ee1d4ee1163d381",
+        "source_span": { "start_line": 1741, "end_line": 1779, "start_byte": 60773, "end_byte": 61963 },
+        "decisive_text": "pub fn update_pid_position_offset; position: PidPosition"
+      },
+      {
+        "chunk_id": "chunk-b57956a9ce688b8ed61094d72cfae5d8f6d80adab7c7675e16d064fb71ee89ab",
+        "document_id": "doc-86831b8597a92f7323d0d4781b8c8cd1f951bd611709a2dc4c1c5f978ccad565",
+        "path": "crates/vescpkg-rs/src/motor.rs",
+        "revision": "fe00aae403a2e90eb985760b19e37fb3fc664a7a",
+        "source_span": { "start_line": 429, "end_line": 464, "start_byte": 16726, "end_byte": 17893 },
+        "decisive_text": "fn update_pid_position_offset; impl MotorControlBindings for &B"
+      },
+      {
+        "chunk_id": "chunk-945e90ced65ef790f7195b9491b55197243a6db32eaa8e09aafa5700bbab979c",
+        "document_id": "doc-04d4ca1de9cd28b35fc2e5b396e9a64107f87a0c1aae83acc00ca70b7a356889",
+        "path": "crates/vescpkg-rs/src/motor.rs",
+        "revision": "129b25205bad57cf3c6554b991826d59811d4408",
+        "source_span": { "start_line": 1750, "end_line": 1788, "start_byte": 60753, "end_byte": 61952 },
+        "decisive_text": "pub fn update_pid_position_offset; persistence.stores()"
+      }
+    ],
+    "follow_up_uris": {
+      "chunk": "vesc://knowledge/chunk/{chunk_id}",
+      "document": "vesc://knowledge/document/{document_id}"
+    }
+  }
+}

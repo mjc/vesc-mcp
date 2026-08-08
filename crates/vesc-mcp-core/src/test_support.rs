@@ -170,6 +170,8 @@ fn versioned_git(cwd: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
         .output()
         .expect("run git");
     assert!(
@@ -190,7 +192,12 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
     std::fs::create_dir(&work).expect("work tree");
     versioned_git(&work, &["init", "-b", "main"]);
     std::fs::write(work.join("README.md"), "alphaunique old release\n").expect("old source");
-    versioned_git(&work, &["add", "README.md"]);
+    std::fs::write(
+        work.join("motor.rs"),
+        "pub trait MotorControlBindings {\n    fn update_pid_position_offset(&self, position: PidPosition, store: bool);\n}\n\nimpl MotorControlBindings for RealMotor {\n    fn update_pid_position_offset(&self, position: PidPosition, store: bool) {\n        self.apply_position(position, store);\n    }\n}\n\npub fn set_position(bindings: &impl MotorControlBindings, position: PidPosition) {\n    bindings.update_pid_position_offset(position, true);\n}\n",
+    )
+    .expect("motor source");
+    versioned_git(&work, &["add", "README.md", "motor.rs"]);
     versioned_git(
         &work,
         &[
@@ -233,6 +240,11 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
 }
 
 fn versioned_repository_toml(id: &str, remote: &Path) -> String {
+    let include = if id == "bldc" {
+        r#"["**/*.md", "**/*.rs"]"#
+    } else {
+        r#"["**/*.md"]"#
+    };
     format!(
         r#"
 [[knowledge.repositories]]
@@ -240,7 +252,7 @@ id = "{id}"
 remote_url = "{}"
 default_ref = "refs/heads/main"
 policy = "required"
-include = ["**/*.md"]
+include = {include}
 exclude = []
 trust_tier = "official"
 license = "MIT"

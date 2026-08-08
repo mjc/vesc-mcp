@@ -334,7 +334,7 @@ struct CompactSearchResponse {
 }
 
 #[must_use]
-fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResponse {
+fn compact_response(response: &SearchVescKnowledgeResponse, query: &str) -> CompactSearchResponse {
     let mut sources = Vec::new();
     let mut results = Vec::with_capacity(response.results.len());
     for result in &response.results {
@@ -349,7 +349,7 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
                 sources.push(source);
                 sources.len() - 1
             });
-        let excerpt = compact_excerpt(result);
+        let excerpt = compact_excerpt(result, query);
         results.push((
             result.name.clone(),
             result.category.clone(),
@@ -381,7 +381,7 @@ fn compact_response(response: &SearchVescKnowledgeResponse) -> CompactSearchResp
     }
 }
 
-fn compact_excerpt(result: &SearchVescKnowledgeResult) -> String {
+fn compact_excerpt(result: &SearchVescKnowledgeResult, query: &str) -> String {
     let exact_identifier = result
         .explanation
         .as_ref()
@@ -392,7 +392,7 @@ fn compact_excerpt(result: &SearchVescKnowledgeResult) -> String {
         return excerpt;
     }
 
-    let Some((anchor, _)) = symbol_anchor(&result.summary) else {
+    let Some((anchor, _)) = symbol_anchor(&result.summary, query) else {
         let mut excerpt = result.summary.clone();
         truncate_utf8(&mut excerpt, COMPACT_EXCERPT_BYTES);
         return excerpt;
@@ -419,7 +419,33 @@ fn compact_excerpt(result: &SearchVescKnowledgeResult) -> String {
     excerpt
 }
 
-fn symbol_anchor(text: &str) -> Option<(usize, usize)> {
+fn symbol_anchor(text: &str, query: &str) -> Option<(usize, usize)> {
+    query
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|token| {
+            token.contains('_')
+                || token
+                    .chars()
+                    .skip(1)
+                    .any(|character| character.is_ascii_uppercase())
+        })
+        .find_map(|token| identifier_position(text, token))
+        .or_else(|| first_snake_case_identifier(text))
+}
+
+fn identifier_position(text: &str, identifier: &str) -> Option<(usize, usize)> {
+    text.match_indices(identifier).find_map(|(start, matched)| {
+        let end = start + matched.len();
+        let boundary = |character: Option<char>| {
+            character
+                .is_none_or(|character| !(character.is_ascii_alphanumeric() || character == '_'))
+        };
+        (boundary(text[..start].chars().next_back()) && boundary(text[end..].chars().next()))
+            .then_some((start, end))
+    })
+}
+
+fn first_snake_case_identifier(text: &str) -> Option<(usize, usize)> {
     let mut token_start = None;
     for (index, character) in text
         .char_indices()
@@ -683,34 +709,41 @@ impl SearchVescKnowledgeResponse {
             .max_response_bytes
             .unwrap_or(config.max_response_bytes)
             .min(config.max_response_bytes);
-        if detail == SearchResponseDetail::Compact || response_exceeds_budget(&self, budget, detail)
+        if detail == SearchResponseDetail::Compact
+            || response_exceeds_budget(&self, budget, detail, &params.query)
         {
             for correction in &mut self.corrections {
                 compact_correction(correction);
             }
         }
-        while response_exceeds_budget(&self, budget, detail) && self.results.len() > 1 {
+        while response_exceeds_budget(&self, budget, detail, &params.query)
+            && self.results.len() > 1
+        {
             self.results.pop();
         }
-        if response_exceeds_budget(&self, budget, detail) {
+        if response_exceeds_budget(&self, budget, detail, &params.query) {
             for result in &mut self.results {
                 compact_result(result);
             }
         }
-        while response_exceeds_budget(&self, budget, detail) && self.results.len() > 1 {
+        while response_exceeds_budget(&self, budget, detail, &params.query)
+            && self.results.len() > 1
+        {
             self.results.pop();
         }
-        if response_exceeds_budget(&self, budget, detail) {
+        if response_exceeds_budget(&self, budget, detail, &params.query) {
             self.results.clear();
             self.index = None;
         }
-        while response_exceeds_budget(&self, budget, detail) && self.corrections.len() > 1 {
+        while response_exceeds_budget(&self, budget, detail, &params.query)
+            && self.corrections.len() > 1
+        {
             self.corrections.pop();
         }
-        if response_exceeds_budget(&self, budget, detail) {
+        if response_exceeds_budget(&self, budget, detail, &params.query) {
             self.corrections.clear();
         }
-        if response_exceeds_budget(&self, budget, detail) {
+        if response_exceeds_budget(&self, budget, detail, &params.query) {
             self.warnings
                 .push("response budget is smaller than the fixed response envelope".into());
         }
@@ -725,9 +758,10 @@ fn response_exceeds_budget(
     response: &SearchVescKnowledgeResponse,
     budget: usize,
     detail: SearchResponseDetail,
+    query: &str,
 ) -> bool {
     match detail {
-        SearchResponseDetail::Compact => serde_json::to_vec(&compact_response(response))
+        SearchResponseDetail::Compact => serde_json::to_vec(&compact_response(response, query))
             .map_or(true, |bytes| bytes.len() > budget),
         SearchResponseDetail::Full => {
             serde_json::to_vec(response).map_or(true, |bytes| bytes.len() > budget)
@@ -1736,7 +1770,7 @@ const fn category_label(category: Category) -> &'static str {
 #[must_use]
 pub fn search_vesc_knowledge_json(params: &SearchVescKnowledgeParams) -> String {
     let response = search_vesc_knowledge_tool(params);
-    serialize_search_response(&response, params.detail)
+    serialize_search_response(&response, params.detail, &params.query)
 }
 
 /// Serialize a search response using the resolved server configuration.
@@ -1746,7 +1780,7 @@ pub fn search_vesc_knowledge_json_with_config(
     config: &KnowledgeConfig,
 ) -> String {
     let response = search_vesc_knowledge_tool_with_config(params, config);
-    serialize_search_response(&response, params.detail)
+    serialize_search_response(&response, params.detail, &params.query)
 }
 
 /// Serialize a search response augmented with durable learned notes and corrections.
@@ -1791,7 +1825,7 @@ pub fn search_vesc_knowledge_json_with_feedback(
         }
         response = response.bounded(params, config, params.detail);
     }
-    serialize_search_response(&response, params.detail)
+    serialize_search_response(&response, params.detail, &params.query)
 }
 
 fn replay_search_params(
@@ -2007,9 +2041,10 @@ fn correction_affects_result(
 fn serialize_search_response(
     response: &SearchVescKnowledgeResponse,
     detail: SearchResponseDetail,
+    query: &str,
 ) -> String {
     match detail {
-        SearchResponseDetail::Compact => serde_json::to_string(&compact_response(response)),
+        SearchResponseDetail::Compact => serde_json::to_string(&compact_response(response, query)),
         SearchResponseDetail::Full => serde_json::to_string(response),
     }
     .unwrap_or_else(|_| r#"{"ok":false,"error":"serialization failed"}"#.into())
@@ -2533,7 +2568,7 @@ max_total_bytes = 1073741824
                     "vesc://knowledge/snapshot/{snapshot_id}/document/"
                 )))
         );
-        let compact = compact_response(&response);
+        let compact = compact_response(&response, "query");
         assert_eq!(compact.snapshot_id.as_deref(), Some(snapshot_id));
         assert_eq!(
             compact.repositories.get("fixture").map(String::as_str),
@@ -2554,7 +2589,7 @@ max_total_bytes = 1073741824
                 category: "firmware_api".into(),
                 summary: format!(
                     "{}\nfn update_pid_position_offset(&self, position: PidPosition) {{}}\n{}",
-                    "context ".repeat(64),
+                    "unrelated_symbol(); ".repeat(32),
                     "tail ".repeat(64)
                 ),
                 source: SearchVescKnowledgeSource {
@@ -2594,7 +2629,7 @@ max_total_bytes = 1073741824
             timing: None,
         };
 
-        let compact = compact_response(&response);
+        let compact = compact_response(&response, "update_pid_position_offset");
         let excerpt = &compact.results[0].2;
         assert!(excerpt.contains("update_pid_position_offset"), "{excerpt}");
         assert!(excerpt.len() <= COMPACT_EXCERPT_BYTES);
