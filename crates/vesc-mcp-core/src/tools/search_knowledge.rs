@@ -1,6 +1,9 @@
 //! `search_vesc_knowledge` — search the embedded firmware and package knowledge index.
 
-use crate::config::{KnowledgeConfig, RetrievalMode};
+use crate::config::{
+    DEFAULT_KNOWLEDGE_MAX_PASSAGE_BYTES, DEFAULT_KNOWLEDGE_MAX_RESPONSE_BYTES, KnowledgeConfig,
+    RetrievalMode,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -126,11 +129,11 @@ const fn default_search_limit() -> usize {
 }
 
 fn default_max_response_bytes() -> usize {
-    KnowledgeConfig::default().max_response_bytes
+    DEFAULT_KNOWLEDGE_MAX_RESPONSE_BYTES
 }
 
 fn default_max_context_bytes() -> usize {
-    KnowledgeConfig::default().max_passage_bytes
+    DEFAULT_KNOWLEDGE_MAX_PASSAGE_BYTES
 }
 
 const COMPACT_EXCERPT_BYTES: usize = 384;
@@ -2720,17 +2723,26 @@ mod tests {
         assert_eq!(schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(schema["properties"]["max_response_bytes"]["minimum"], 1);
         assert_eq!(schema["properties"]["max_context_bytes"]["minimum"], 1);
-        assert_eq!(schema["properties"]["max_response_bytes"]["default"], 65_536);
+        assert_eq!(
+            schema["properties"]["max_response_bytes"]["default"],
+            65_536
+        );
         assert_eq!(schema["properties"]["max_context_bytes"]["default"], 8_192);
-        assert!(schema["properties"]["query"]["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("max_query_bytes")));
-        assert!(schema["properties"]["filters"]["properties"]["repository"]["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("Exact repository identifier")));
-        assert!(schema["properties"]["filters"]["properties"]["tags"]["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("every supplied tag")));
+        assert!(
+            schema["properties"]["query"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("max_query_bytes"))
+        );
+        assert!(
+            schema["properties"]["filters"]["properties"]["repository"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("Exact repository identifier"))
+        );
+        assert!(
+            schema["properties"]["filters"]["properties"]["tags"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("every supplied tag"))
+        );
         assert_eq!(
             detail_definition["oneOf"]
                 .as_array()

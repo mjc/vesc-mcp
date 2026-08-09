@@ -48,6 +48,10 @@ pub const VESC_RAG_SEMANTIC_INGEST_MODEL_DIR_ENV: &str = "VESC_RAG_SEMANTIC_INGE
 pub const VESC_RAG_SEMANTIC_INGEST_PROVIDER_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_PROVIDER";
 /// Environment variable selecting the bulk-ingestion provider device.
 pub const VESC_RAG_SEMANTIC_INGEST_DEVICE_ID_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_DEVICE_ID";
+
+pub(crate) const DEFAULT_KNOWLEDGE_MAX_QUERY_BYTES: usize = 4 * 1024;
+pub(crate) const DEFAULT_KNOWLEDGE_MAX_RESPONSE_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_KNOWLEDGE_MAX_PASSAGE_BYTES: usize = 8 * 1024;
 /// Environment variable limiting bulk-ingestion model windows.
 pub const VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH_ENV: &str = "VESC_RAG_SEMANTIC_INGEST_MAX_LENGTH";
 /// Environment variable selecting the bulk-ingestion provider batch size.
@@ -174,9 +178,9 @@ impl Default for KnowledgeConfig {
             semantic_idle_timeout_secs: 5 * 60,
             semantic_ingestion: None,
             max_limit: 50,
-            max_query_bytes: 4 * 1024,
-            max_response_bytes: 64 * 1024,
-            max_passage_bytes: 8 * 1024,
+            max_query_bytes: DEFAULT_KNOWLEDGE_MAX_QUERY_BYTES,
+            max_response_bytes: DEFAULT_KNOWLEDGE_MAX_RESPONSE_BYTES,
+            max_passage_bytes: DEFAULT_KNOWLEDGE_MAX_PASSAGE_BYTES,
         }
     }
 }
