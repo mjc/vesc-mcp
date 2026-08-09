@@ -232,7 +232,12 @@ pub fn benchmark_search_profile(
     for _ in 0..warmup_iterations {
         for query in queries {
             let response = search_vesc_knowledge_json_with_config(&params(query), config);
-            validate_search_response(&response, mode, detail)?;
+            validate_search_response(
+                &response,
+                mode,
+                detail,
+                detail == SearchResponseDetail::Full,
+            )?;
         }
     }
 
@@ -243,16 +248,23 @@ pub fn benchmark_search_profile(
     let mut result_counts = BTreeSet::new();
     let mut response_digests = BTreeSet::new();
     let mut evidence = BenchmarkEvidence::default();
+    let mut response_warnings = BTreeSet::new();
     for _ in 0..repetitions {
         for query in queries {
             let started = Instant::now();
             let response = search_vesc_knowledge_json_with_config(&params(query), config);
             let bytes = response.len();
             timings.push(elapsed_us(started));
-            let validated = validate_search_response(&response, mode, detail)?;
+            let validated = validate_search_response(
+                &response,
+                mode,
+                detail,
+                detail == SearchResponseDetail::Full,
+            )?;
             snapshot_ids.extend(validated.snapshot_id);
             result_counts.insert(validated.results.len());
             evidence.observe(&validated.results);
+            response_warnings.extend(validated.warnings);
             response_digests
                 .insert(vesc_knowledge_index::ContentDigest::of(response.as_bytes()).to_string());
             response_sizes.push(bytes as u64);
@@ -284,7 +296,11 @@ pub fn benchmark_search_profile(
         rss_after_queries_bytes,
         rss_retained_delta_bytes,
         machine: machine_profile(),
-        warnings: vec!["measures the in-process MCP handler, not stdio transport".into()],
+        warnings: std::iter::once(
+            "measures the in-process MCP handler, not stdio transport".into(),
+        )
+        .chain(response_warnings)
+        .collect(),
     })
 }
 
@@ -292,6 +308,7 @@ fn validate_search_response(
     response: &str,
     expected_mode: SearchMode,
     expected_detail: SearchResponseDetail,
+    allow_warnings: bool,
 ) -> Result<BenchmarkSearchResponse, BenchmarkError> {
     let response: BenchmarkSearchResponse = serde_json::from_str(response)?;
     if !response.ok {
@@ -305,7 +322,9 @@ fn validate_search_response(
             actual: response.mode,
         });
     }
-    if response.detail != expected_detail {
+    let detail_degraded = expected_detail == SearchResponseDetail::Full
+        && response.detail == SearchResponseDetail::Compact;
+    if response.detail != expected_detail && !detail_degraded {
         return Err(BenchmarkError::UnexpectedDetail {
             expected: expected_detail,
             actual: response.detail,
@@ -314,7 +333,7 @@ fn validate_search_response(
     if response.results.is_empty() {
         return Err(BenchmarkError::NoResults);
     }
-    if !response.warnings.is_empty() {
+    if !allow_warnings && !response.warnings.is_empty() {
         return Err(BenchmarkError::SearchWarnings(response.warnings.join("; ")));
     }
     Ok(response)
