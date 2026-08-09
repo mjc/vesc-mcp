@@ -1286,8 +1286,8 @@ fn semantic_build_hydrates_each_git_blob_once() {
 
     assert_eq!(
         summary.artifacts.observations.embedding_git_blob_loads,
-        observations.ingested_blobs + 2,
-        "semantic hydration includes the two unchanged revision occurrences"
+        observations.ingested_blobs + 3,
+        "semantic hydration includes the three unchanged revision occurrences"
     );
 }
 
