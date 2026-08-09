@@ -28,6 +28,7 @@ use crate::{
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq,
 )]
+#[schemars(inline)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     /// Use Tantivy over normalized chunks.
@@ -43,6 +44,7 @@ pub enum SearchMode {
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq,
 )]
+#[schemars(inline)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchResponseDetail {
     /// Return provenance, bounded passages, and diagnostics in the first response.
@@ -82,6 +84,7 @@ pub struct SearchVescKnowledgeParams {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(inline)]
 #[serde(deny_unknown_fields)]
 pub struct SearchVescKnowledgeFilters {
     /// Category filter. Unrecognized values are ignored.
@@ -224,6 +227,18 @@ pub struct SearchVescKnowledgeIndex {
     pub diagnostic_count: usize,
     pub component_versions: BTreeMap<String, String>,
     pub lexical_checksum: Option<String>,
+    /// Effective request limits and defaults for this server instance.
+    pub limits: SearchVescKnowledgeLimits,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct SearchVescKnowledgeLimits {
+    pub default_limit: usize,
+    pub max_limit: usize,
+    pub max_query_bytes: usize,
+    pub max_response_bytes: usize,
+    pub max_context_bytes: usize,
+    pub default_detail: SearchResponseDetail,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -843,6 +858,7 @@ fn index_metadata(
                 diagnostic_count: manifest.diagnostic_count,
                 component_versions: manifest.component_versions.clone(),
                 lexical_checksum: manifest.lexical_checksum.as_ref().map(ToString::to_string),
+                limits: search_limits(config),
             });
         }
     }
@@ -859,7 +875,19 @@ fn index_metadata(
         diagnostic_count: 0,
         component_versions: BTreeMap::new(),
         lexical_checksum: None,
+        limits: search_limits(config),
     })
+}
+
+fn search_limits(config: &KnowledgeConfig) -> SearchVescKnowledgeLimits {
+    SearchVescKnowledgeLimits {
+        default_limit: default_search_limit(),
+        max_limit: config.max_limit,
+        max_query_bytes: config.max_query_bytes,
+        max_response_bytes: config.max_response_bytes,
+        max_context_bytes: config.max_passage_bytes,
+        default_detail: SearchResponseDetail::Full,
+    }
 }
 
 fn parse_filters(
@@ -2333,7 +2361,7 @@ mod tests {
             mode: RetrievalMode::Lexical,
             max_limit: 1,
             max_query_bytes: 32,
-            max_response_bytes: 1024,
+            max_response_bytes: 64 * 1024,
             max_passage_bytes: 128,
             ..KnowledgeConfig::default()
         };
@@ -2354,6 +2382,10 @@ mod tests {
         assert!(response.ok);
         assert_eq!(response.mode, SearchMode::Lexical);
         assert!(response.results.len() <= 1);
+        let limits = &response.index.expect("index metadata").limits;
+        assert_eq!(limits.default_limit, 10);
+        assert_eq!(limits.max_limit, 1);
+        assert_eq!(limits.default_detail, SearchResponseDetail::Full);
     }
 
     #[test]
@@ -2371,9 +2403,15 @@ mod tests {
         let schema = serde_json::to_value(schemars::schema_for!(SearchVescKnowledgeParams))
             .expect("search schema");
         let detail = &schema["properties"]["detail"];
-        let detail_definition = &schema["$defs"]["SearchResponseDetail"];
+        let detail_definition = detail;
 
-        assert_eq!(detail["$ref"], "#/$defs/SearchResponseDetail");
+        assert!(detail_definition["oneOf"].is_array());
+        assert!(
+            schema["properties"]["mode"]["anyOf"]
+                .as_array()
+                .is_some_and(|variants| variants.iter().any(|variant| variant["oneOf"].is_array()))
+        );
+        assert_eq!(schema["properties"]["filters"]["type"], "object");
         assert_eq!(
             detail_definition["oneOf"]
                 .as_array()

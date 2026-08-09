@@ -325,6 +325,11 @@ max_response_bytes = 65536
 max_passage_bytes = 8192
 ```
 
+`search_vesc_knowledge` returns full evidence, provenance, and diagnostics by
+default. Set `detail = "compact"` only when a smaller ranked-row response is
+preferable. Each response's `index.limits` object reports the effective limits
+for the running server, including deployment-specific overrides.
+
 ## Optional source checkouts
 
 Most users do not need upstream source repositories. They are used only for
