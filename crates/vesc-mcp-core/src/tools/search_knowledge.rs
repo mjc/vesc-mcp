@@ -3238,6 +3238,94 @@ mod tests {
     }
 
     #[test]
+    fn auto_handler_failure_matrix_keeps_lexical_evidence_and_hybrid_strict() {
+        for failure in ["missing", "incompatible", "provider"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let (model_id, mut provider) = match failure {
+                "missing" => {
+                    vesc_knowledge_index::build_embedded_artifacts(temp.path())
+                        .expect("lexical artifact build");
+                    ("fake", vesc_knowledge_index::FakeEmbeddingProvider::new(8))
+                }
+                "incompatible" => {
+                    let mut build_provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+                    vesc_knowledge_index::build_embedded_artifacts_with_provider(
+                        temp.path(),
+                        &mut build_provider,
+                        "other",
+                        "test",
+                    )
+                    .expect("semantic artifact build");
+                    ("fake", vesc_knowledge_index::FakeEmbeddingProvider::new(8))
+                }
+                "provider" => {
+                    let mut build_provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+                    vesc_knowledge_index::build_embedded_artifacts_with_provider(
+                        temp.path(),
+                        &mut build_provider,
+                        "fake",
+                        "test",
+                    )
+                    .expect("semantic artifact build");
+                    ("fake", vesc_knowledge_index::FakeEmbeddingProvider::new(0))
+                }
+                _ => unreachable!("failure case is exhaustive"),
+            };
+            let config = KnowledgeConfig {
+                mode: RetrievalMode::Auto,
+                artifact_path: Some(temp.path().into()),
+                semantic_model_id: Some(model_id.into()),
+                semantic_model_revision: Some("test".into()),
+                ..KnowledgeConfig::default()
+            };
+            let mut params = SearchVescKnowledgeParams {
+                query: "lbm_add_extension".into(),
+                snapshot_id: None,
+                limit: 3,
+                mode: Some(SearchMode::Auto),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
+            };
+
+            let response =
+                search_vesc_knowledge_tool_with_provider(&params, &config, &mut provider);
+            assert!(response.ok, "{failure}: {response:?}");
+            assert_eq!(response.mode_used, SearchMode::Lexical, "{failure}");
+            assert!(!response.results.is_empty(), "{failure}");
+            assert!(
+                response
+                    .results
+                    .iter()
+                    .all(|result| result.provenance.is_some()),
+                "{failure}"
+            );
+            assert!(
+                response
+                    .warning_codes
+                    .iter()
+                    .any(|code| code == "semantic_unavailable"),
+                "{failure}"
+            );
+
+            params.mode = Some(SearchMode::Hybrid);
+            let response =
+                search_vesc_knowledge_tool_with_provider(&params, &config, &mut provider);
+            assert!(!response.ok, "{failure}: {response:?}");
+            assert!(response.results.is_empty(), "{failure}: {response:?}");
+            assert_eq!(response.warning_codes, vec!["retrieval_failed"]);
+            assert!(
+                response
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("retry with mode \"lexical\"")),
+                "{failure}: {response:?}"
+            );
+        }
+    }
+
+    #[test]
     fn configured_artifact_is_loaded_for_lexical_search() {
         let temp = tempfile::tempdir().expect("tempdir");
         vesc_knowledge_index::build_embedded_artifacts(temp.path()).expect("artifact build");
