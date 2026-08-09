@@ -783,10 +783,10 @@ impl KnowledgeSnapshotStore {
         Ok(manifest)
     }
 
-    /// Return whether the default snapshot still matches configured sources.
+    /// Return whether the default snapshot still matches configured sources and refs.
     ///
-    /// This compares component, semantic, repository, and policy identities
-    /// without fetching remotes or rebuilding the artifact.
+    /// This compares component, semantic, repository, policy, and resolved
+    /// default-ref identities without fetching remotes or rebuilding the artifact.
     ///
     /// # Errors
     ///
@@ -796,7 +796,7 @@ impl KnowledgeSnapshotStore {
         repositories: &RepositoryRegistry,
     ) -> Result<bool, SnapshotError> {
         let manifest = self.default_manifest()?;
-        self.snapshot_contract_matches(&manifest, repositories)
+        self.default_is_compatible(&manifest, repositories, true)
     }
 
     #[must_use]
