@@ -254,7 +254,7 @@ fn full_history_ingests_changed_blobs_once_and_noop_refresh_reuses_everything() 
     assert_eq!(cold.ingested_commits, 3);
     assert_eq!(cold.ingested_blobs, 3);
     assert_eq!(cold.ingested_commit_messages, 3);
-    assert_eq!(contents.len(), 6);
+    assert_eq!(contents.len(), 7);
     assert!(
         contents
             .iter()
