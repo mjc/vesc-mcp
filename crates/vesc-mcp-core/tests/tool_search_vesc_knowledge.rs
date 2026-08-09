@@ -4,6 +4,26 @@ use serde_json::Value;
 use vesc_mcp_core::test_support::McpTestHarness;
 
 #[test]
+fn capabilities_tool_reports_limits_before_search() {
+    let harness = McpTestHarness::new();
+    let body: Value = serde_json::from_str(
+        &harness.call_tool("get_vesc_knowledge_capabilities", serde_json::json!({})),
+    )
+    .expect("capabilities response");
+
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["limits"]["default_detail"], "full");
+    assert_eq!(body["limits"]["max_query_bytes"], 4096);
+    assert_eq!(body["limits"]["max_response_bytes"], 65536);
+    assert_eq!(body["limits"]["max_context_bytes"], 8192);
+    assert_eq!(
+        body["modes"],
+        serde_json::json!(["lexical", "auto", "hybrid"])
+    );
+    assert_eq!(body["details"], serde_json::json!(["full", "compact"]));
+}
+
+#[test]
 fn compact_search_is_opt_in_with_bounded_field_rows() {
     let harness = McpTestHarness::new();
     let response = harness.call_tool(

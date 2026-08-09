@@ -58,6 +58,7 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             .map(|tool| tool.name.as_ref())
             .collect::<Vec<_>>(),
         vec![
+            "get_vesc_knowledge_capabilities",
             "list_vesc_source_versions",
             "ping",
             "prepare_vesc_knowledge",
@@ -90,6 +91,24 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
     }
     assert_eq!(properties["detail"]["default"], "full");
     assert_eq!(properties["limit"]["default"], 10);
+
+    let capabilities = first
+        .call_tool(CallToolRequestParams::new(
+            "get_vesc_knowledge_capabilities",
+        ))
+        .await?;
+    assert_eq!(capabilities.is_error, Some(false));
+    let capabilities_body: serde_json::Value = serde_json::from_str(
+        capabilities
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .expect("capabilities text response")
+            .text
+            .as_str(),
+    )?;
+    assert_eq!(capabilities_body["limits"]["default_detail"], "full");
+    assert_eq!(capabilities_body["limits"]["max_context_bytes"], 8192);
     let resources = first.list_all_resources().await?;
     assert!(
         resources

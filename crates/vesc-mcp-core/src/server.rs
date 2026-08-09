@@ -44,7 +44,8 @@ use crate::tools::prepare_knowledge::{
     PrepareVescKnowledgeParams, prepare_vesc_knowledge_failure_json, prepare_vesc_knowledge_json,
 };
 use crate::tools::search_knowledge::{
-    SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
+    SearchVescKnowledgeCapabilitiesParams, SearchVescKnowledgeParams,
+    search_vesc_knowledge_capabilities_json, search_vesc_knowledge_json_with_feedback,
 };
 use crate::tools::validate::{
     ValidatePackageLayoutParams, validate_package_layout_json_with_sandbox,
@@ -595,6 +596,16 @@ impl VescMcpService {
     }
 
     #[tool(
+        description = "Report effective VESC knowledge-search limits and accepted mode/detail profiles before issuing a search"
+    )]
+    fn get_vesc_knowledge_capabilities(
+        &self,
+        Parameters(_params): Parameters<SearchVescKnowledgeCapabilitiesParams>,
+    ) -> String {
+        search_vesc_knowledge_capabilities_json(&self.state.knowledge)
+    }
+
+    #[tool(
         description = "Persist a low-trust reusable lesson after a user correction or newly discovered gap. Use for helpful notes that are not yet backed by registered VESC resources; the note remains visibly unverified in later search."
     )]
     fn submit_vesc_knowledge_feedback(
@@ -931,6 +942,16 @@ impl HttpMcpService {
             self.state.feedback.as_ref(),
             &self.state.resources,
         )
+    }
+
+    #[tool(
+        description = "Report effective VESC knowledge-search limits and accepted mode/detail profiles before issuing a search"
+    )]
+    fn get_vesc_knowledge_capabilities(
+        &self,
+        Parameters(_params): Parameters<SearchVescKnowledgeCapabilitiesParams>,
+    ) -> String {
+        search_vesc_knowledge_capabilities_json(&self.state.knowledge)
     }
 
     #[tool(
@@ -1551,6 +1572,24 @@ max_total_bytes = 1
         let service = VescMcpService::new();
         let names = service.list_tool_names();
         assert!(names.iter().any(|name| name == "search_vesc_knowledge"));
+    }
+
+    #[test]
+    fn list_tool_names_includes_search_capabilities() {
+        let service = VescMcpService::new();
+        assert!(
+            service
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "get_vesc_knowledge_capabilities")
+        );
+        assert!(
+            service
+                .http_service()
+                .list_tool_names()
+                .iter()
+                .any(|name| name == "get_vesc_knowledge_capabilities")
+        );
     }
 
     #[test]

@@ -491,7 +491,8 @@ impl McpTestHarness {
         };
         use crate::tools::list_packages::{ListPackagesParams, list_vesc_packages_json};
         use crate::tools::search_knowledge::{
-            SearchVescKnowledgeParams, search_vesc_knowledge_json_with_feedback,
+            SearchVescKnowledgeCapabilitiesParams, SearchVescKnowledgeParams,
+            search_vesc_knowledge_capabilities_json, search_vesc_knowledge_json_with_feedback,
         };
         use crate::tools::validate::{
             ValidatePackageLayoutParams, validate_package_layout_tool_with_sandbox,
@@ -568,6 +569,11 @@ impl McpTestHarness {
                     self.feedback.as_ref(),
                     self.service.resource_registry(),
                 )
+            }
+            "get_vesc_knowledge_capabilities" => {
+                let _: SearchVescKnowledgeCapabilitiesParams = serde_json::from_value(arguments)
+                    .expect("get_vesc_knowledge_capabilities requires an object");
+                search_vesc_knowledge_capabilities_json(&self.knowledge)
             }
             other => panic!("missing harness dispatch for registered tool: {other}"),
         }

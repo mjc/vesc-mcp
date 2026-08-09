@@ -96,6 +96,11 @@ pub struct SearchVescKnowledgeParams {
     pub detail: SearchResponseDetail,
 }
 
+/// Empty request for retrieving the effective search contract.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchVescKnowledgeCapabilitiesParams {}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(inline)]
 #[serde(deny_unknown_fields)]
@@ -280,6 +285,15 @@ pub struct SearchVescKnowledgeLimits {
     pub max_response_bytes: usize,
     pub max_context_bytes: usize,
     pub default_detail: SearchResponseDetail,
+}
+
+/// Effective search capabilities for clients that need limits before issuing a search.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct SearchVescKnowledgeCapabilities {
+    pub ok: bool,
+    pub modes: Vec<SearchMode>,
+    pub details: Vec<SearchResponseDetail>,
+    pub limits: SearchVescKnowledgeLimits,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
@@ -1091,6 +1105,18 @@ const fn search_limits(config: &KnowledgeConfig) -> SearchVescKnowledgeLimits {
         max_context_bytes: config.max_passage_bytes,
         default_detail: SearchResponseDetail::Full,
     }
+}
+
+/// Serialize the effective search contract without requiring a trial search.
+#[must_use]
+pub fn search_vesc_knowledge_capabilities_json(config: &KnowledgeConfig) -> String {
+    serde_json::to_string(&SearchVescKnowledgeCapabilities {
+        ok: true,
+        modes: vec![SearchMode::Lexical, SearchMode::Auto, SearchMode::Hybrid],
+        details: vec![SearchResponseDetail::Full, SearchResponseDetail::Compact],
+        limits: search_limits(config),
+    })
+    .expect("search capabilities contain only infallibly serializable fields")
 }
 
 fn parse_filters(
@@ -2752,6 +2778,25 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![serde_json::json!("full"), serde_json::json!("compact")]
         );
+    }
+
+    #[test]
+    fn capabilities_report_effective_search_limits() {
+        let mut config = KnowledgeConfig::default();
+        config.max_limit = 7;
+        config.max_query_bytes = 123;
+        config.max_response_bytes = 456;
+        config.max_passage_bytes = 789;
+
+        let value: serde_json::Value =
+            serde_json::from_str(&search_vesc_knowledge_capabilities_json(&config))
+                .expect("capabilities JSON");
+
+        assert_eq!(value["limits"]["max_limit"], 7);
+        assert_eq!(value["limits"]["max_query_bytes"], 123);
+        assert_eq!(value["limits"]["max_response_bytes"], 456);
+        assert_eq!(value["limits"]["max_context_bytes"], 789);
+        assert_eq!(value["limits"]["default_detail"], "full");
     }
 
     #[test]
