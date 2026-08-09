@@ -151,6 +151,48 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             .is_some_and(|codes| codes.iter().any(|code| code == "semantic_unavailable"))
     );
 
+    let compact = first
+        .call_tool(
+            CallToolRequestParams::new("search_vesc_knowledge").with_arguments(
+                serde_json::json!({
+                    "query": "lbm_add_extension",
+                    "mode": "lexical",
+                    "limit": 1,
+                    "detail": "compact"
+                })
+                .as_object()
+                .cloned()
+                .expect("compact arguments object"),
+            ),
+        )
+        .await?;
+    let compact_body: serde_json::Value = serde_json::from_str(
+        compact
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .expect("compact text response")
+            .text
+            .as_str(),
+    )?;
+    assert_eq!(compact_body["ok"], true, "compact response: {compact_body}");
+    assert_eq!(compact_body["detail"], "compact");
+    assert_eq!(compact_body["mode_requested"], "lexical");
+    assert_eq!(compact_body["mode_used"], "lexical");
+    assert_eq!(
+        compact_body["fields"],
+        serde_json::json!([
+            "name",
+            "category",
+            "excerpt",
+            "source_index",
+            "chunk_id",
+            "correction_ids",
+            "origin"
+        ])
+    );
+    assert!(compact_body["results"][0].is_array());
+
     let resources = first.list_all_resources().await?;
     assert!(
         resources
