@@ -133,11 +133,11 @@ const fn default_search_limit() -> usize {
     10
 }
 
-fn default_max_response_bytes() -> usize {
+const fn default_max_response_bytes() -> usize {
     DEFAULT_KNOWLEDGE_MAX_RESPONSE_BYTES
 }
 
-fn default_max_context_bytes() -> usize {
+const fn default_max_context_bytes() -> usize {
     DEFAULT_KNOWLEDGE_MAX_PASSAGE_BYTES
 }
 
@@ -1109,6 +1109,10 @@ const fn search_limits(config: &KnowledgeConfig) -> SearchVescKnowledgeLimits {
 }
 
 /// Serialize the effective search contract without requiring a trial search.
+///
+/// # Panics
+///
+/// Panics only if the infallible capabilities response cannot be serialized.
 #[must_use]
 pub fn search_vesc_knowledge_capabilities_json(config: &KnowledgeConfig) -> String {
     serde_json::to_string(&search_vesc_knowledge_capabilities(config))
@@ -2801,11 +2805,13 @@ mod tests {
 
     #[test]
     fn capabilities_report_effective_search_limits() {
-        let mut config = KnowledgeConfig::default();
-        config.max_limit = 7;
-        config.max_query_bytes = 123;
-        config.max_response_bytes = 456;
-        config.max_passage_bytes = 789;
+        let config = KnowledgeConfig {
+            max_limit: 7,
+            max_query_bytes: 123,
+            max_response_bytes: 456,
+            max_passage_bytes: 789,
+            ..KnowledgeConfig::default()
+        };
 
         let value: serde_json::Value =
             serde_json::from_str(&search_vesc_knowledge_capabilities_json(&config))

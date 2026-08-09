@@ -340,6 +340,7 @@ fn main() -> anyhow::Result<()> {
         .block_on(async_main(args))
 }
 
+#[allow(clippy::too_many_lines)]
 async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--benchmark-search") {
         run_benchmark(&args)?;
