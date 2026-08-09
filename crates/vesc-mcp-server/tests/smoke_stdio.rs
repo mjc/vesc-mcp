@@ -247,7 +247,9 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
     assert!(properties["detail"].get("$ref").is_none());
     let search_bytes = search_bytes.expect("search response");
     assert!(
-        tools_list_bytes <= 9_000,
+        // Keep the discovery payload bounded while leaving room for the
+        // self-describing search-field constraints and filter prose.
+        tools_list_bytes <= 10_240,
         "tools/list was {tools_list_bytes} bytes"
     );
     assert!(
