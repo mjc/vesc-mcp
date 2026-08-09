@@ -158,11 +158,19 @@ impl PreparationReporter {
         } else {
             prior_repositories
         };
-        let status = status
-            .clone()
-            .with_freshness_required(self.freshness_required)
-            .with_validated_vector(self.validated_vector.clone())
-            .with_publication(
+        let publication = if status.active_snapshot.is_some()
+            || status.available_snapshot.is_some()
+            || status.last_refresh_unix_secs.is_some()
+            || status.last_error.is_some()
+        {
+            (
+                status.active_snapshot.clone(),
+                status.available_snapshot.clone(),
+                status.last_refresh_unix_secs,
+                status.last_error.clone(),
+            )
+        } else {
+            (
                 prior
                     .as_ref()
                     .and_then(|value| value.active_snapshot.clone()),
@@ -174,6 +182,12 @@ impl PreparationReporter {
                     .and_then(|value| value.last_refresh_unix_secs),
                 prior.as_ref().and_then(|value| value.last_error.clone()),
             )
+        };
+        let status = status
+            .clone()
+            .with_freshness_required(self.freshness_required)
+            .with_validated_vector(self.validated_vector.clone())
+            .with_publication(publication.0, publication.1, publication.2, publication.3)
             .with_repositories(repositories);
         if let Err(error) = write_preparation_status(&self.data_root, &status) {
             tracing::warn!(%error, "could not publish knowledge preparation status");
@@ -1360,7 +1374,8 @@ mod tests {
         KnowledgeSnapshotManifest, SnapshotBuildPhase, SnapshotDisposition, SnapshotRepository,
     };
     use vesc_mcp_core::preparation_status::{
-        KnowledgeRepositoryPublicationStatus, PreparationPhase,
+        KnowledgeRepositoryPublicationStatus, PreparationPhase, PreparationState,
+        read_preparation_status,
     };
     use vesc_mcp_core::server::KnowledgePreparation;
 
@@ -1834,6 +1849,20 @@ mod tests {
                 failure_reason: None,
             })
         );
+    }
+
+    #[test]
+    fn preparation_reporter_preserves_new_publication_metadata() {
+        let root = tempfile::tempdir().expect("data root");
+        let mut reporter = PreparationReporter::new(root.path().to_owned(), 1, false);
+
+        reporter.snapshot_available("snapshot-1");
+        reporter.finish(PreparationState::Ready);
+
+        let status = read_preparation_status(root.path()).expect("published status");
+        assert_eq!(status.active_snapshot.as_deref(), Some("snapshot-1"));
+        assert_eq!(status.available_snapshot.as_deref(), Some("snapshot-1"));
+        assert!(status.last_refresh_unix_secs.is_some());
     }
 
     #[test]
