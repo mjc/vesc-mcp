@@ -594,15 +594,36 @@ pub fn search_vesc_knowledge_tool_with_config(
     params: &SearchVescKnowledgeParams,
     config: &KnowledgeConfig,
 ) -> SearchVescKnowledgeResponse {
-    let mode = params.mode.unwrap_or_else(|| configured_mode(config));
-    let (selected, config, limit) = match validate_search_inputs(params, config, mode) {
+    search_vesc_knowledge_tool_with_executor(
+        params,
+        config,
+        |params, mode, filters, limit, config| search_mode(params, mode, filters, limit, config),
+    )
+}
+
+fn search_vesc_knowledge_tool_with_executor<F>(
+    params: &SearchVescKnowledgeParams,
+    configured: &KnowledgeConfig,
+    executor: F,
+) -> SearchVescKnowledgeResponse
+where
+    F: FnOnce(
+        &SearchVescKnowledgeParams,
+        SearchMode,
+        &vesc_knowledge_index::LexicalFilters,
+        usize,
+        &KnowledgeConfig,
+    ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>, SearchMode), String>,
+{
+    let mode = params.mode.unwrap_or_else(|| configured_mode(configured));
+    let (selected, config, limit) = match validate_search_inputs(params, configured, mode) {
         Ok(inputs) => inputs,
         Err(response) => return *response,
     };
     let started = Instant::now();
 
     match parse_filters(params) {
-        Ok(filters) => match search_mode(params, mode, &filters, limit, &config) {
+        Ok(filters) => match executor(params, mode, &filters, limit, &config) {
             Ok((mut results, warnings, mode_used)) => {
                 if let Some(snapshot_id) = selected
                     .as_ref()
@@ -662,6 +683,21 @@ pub fn search_vesc_knowledge_tool_with_config(
             error,
         ),
     }
+}
+
+#[cfg(test)]
+fn search_vesc_knowledge_tool_with_provider<P: EmbeddingProvider + ?Sized>(
+    params: &SearchVescKnowledgeParams,
+    config: &KnowledgeConfig,
+    provider: &mut P,
+) -> SearchVescKnowledgeResponse {
+    search_vesc_knowledge_tool_with_executor(
+        params,
+        config,
+        |params, mode, filters, limit, config| {
+            search_mode_with_provider(params, mode, filters, limit, config, provider)
+        },
+    )
 }
 
 fn selected_search_config(
@@ -1225,6 +1261,43 @@ fn search_mode(
             .map_err(|error| {
                 format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
             }),
+    }
+}
+
+#[cfg(test)]
+fn search_mode_with_provider<P: EmbeddingProvider + ?Sized>(
+    params: &SearchVescKnowledgeParams,
+    mode: SearchMode,
+    filters: &vesc_knowledge_index::LexicalFilters,
+    limit: usize,
+    config: &KnowledgeConfig,
+    provider: &mut P,
+) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>, SearchMode), String> {
+    match mode {
+        SearchMode::Lexical => lexical_search_results(params, filters, limit, config)
+            .map(|(results, warnings)| (results, warnings, SearchMode::Lexical)),
+        SearchMode::Auto => {
+            match hybrid_results_with_provider(params, filters, limit, config, provider) {
+                Ok((results, _)) => Ok((results, Vec::new(), SearchMode::Hybrid)),
+                Err(error) => {
+                    let (results, _) = lexical_search_results(params, filters, limit, config)?;
+                    Ok((
+                        results,
+                        vec![format!(
+                            "semantic_unavailable: {error}; used lexical retrieval"
+                        )],
+                        SearchMode::Lexical,
+                    ))
+                }
+            }
+        }
+        SearchMode::Hybrid => {
+            hybrid_results_with_provider(params, filters, limit, config, provider)
+                .map(|(results, _)| (results, Vec::new(), SearchMode::Hybrid))
+                .map_err(|error| {
+                    format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
+                })
+        }
     }
 }
 
@@ -3125,6 +3198,65 @@ mod tests {
         assert!(response.warnings.iter().any(|warning| {
             warning.contains("semantic_unavailable") && warning.contains("lexical")
         }));
+    }
+
+    #[test]
+    fn auto_handler_falls_back_after_corrupt_vector_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut build_provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+        vesc_knowledge_index::build_embedded_artifacts_with_provider(
+            temp.path(),
+            &mut build_provider,
+            "fake",
+            "test",
+        )
+        .expect("semantic artifact build");
+        let config = KnowledgeConfig {
+            mode: RetrievalMode::Auto,
+            artifact_path: Some(temp.path().into()),
+            semantic_model_id: Some("fake".into()),
+            semantic_model_revision: Some("test".into()),
+            ..KnowledgeConfig::default()
+        };
+        let params = SearchVescKnowledgeParams {
+            query: "lbm_add_extension".into(),
+            snapshot_id: None,
+            limit: 3,
+            mode: Some(SearchMode::Auto),
+            filters: SearchVescKnowledgeFilters::default(),
+            max_response_bytes: None,
+            max_context_bytes: None,
+            detail: SearchResponseDetail::Full,
+        };
+        let mut provider = vesc_knowledge_index::FakeEmbeddingProvider::new(8);
+        let response = search_vesc_knowledge_tool_with_provider(&params, &config, &mut provider);
+        assert!(response.ok, "response: {response:?}");
+        assert_eq!(response.mode_used, SearchMode::Hybrid);
+
+        let vector_path = vesc_knowledge_index::active_generation_path(temp.path())
+            .expect("active generation")
+            .join("vectors.bin");
+        let mut bytes = std::fs::read(&vector_path).expect("read vectors");
+        let payload_byte = bytes.len() / 2;
+        bytes[payload_byte] ^= 1;
+        std::fs::write(&vector_path, bytes).expect("corrupt vectors");
+
+        let response = search_vesc_knowledge_tool_with_provider(&params, &config, &mut provider);
+        assert!(response.ok, "response: {response:?}");
+        assert_eq!(response.mode_used, SearchMode::Lexical);
+        assert!(!response.results.is_empty());
+        assert!(
+            response
+                .warning_codes
+                .iter()
+                .any(|code| code == "semantic_unavailable")
+        );
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|result| result.provenance.is_some())
+        );
     }
 
     #[test]
