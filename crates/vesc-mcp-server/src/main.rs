@@ -978,7 +978,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
         }
     }
     if !policy.eager_index {
-        reporter.finish(PreparationState::Stale);
+        reporter.finish(cached_only_terminal_state(current_snapshot_ready));
         return Ok(());
     }
 
@@ -1042,6 +1042,14 @@ const fn terminal_preparation_state(
         PreparationState::Stale
     } else {
         PreparationState::Ready
+    }
+}
+
+const fn cached_only_terminal_state(current_snapshot_ready: bool) -> PreparationState {
+    if current_snapshot_ready {
+        PreparationState::Ready
+    } else {
+        PreparationState::Stale
     }
 }
 
@@ -1154,11 +1162,12 @@ mod tests {
         INSTALL_DISTRIBUTED_CACHE_ARG, PROFILE_INITIAL_TRAINING_ARG, PUBLISH_DISTRIBUTED_CACHE_ARG,
         PreparationReporter, REFRESH_INTERVAL_ARG, REFRESH_ON_STARTUP_ARG,
         REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
-        WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, migraphx_cache_path,
-        policy_for_available_data, preparation_phase_for_build, publish_bundle,
-        publish_child_preparation_failure, publish_distributed_cache, published_manifest_id,
-        refresh_interval, repository_preparation_timeout, repository_refresh_args, run_http,
-        staged_manifest_id, supervise_preparation_child, terminal_preparation_state,
+        WATCH_DISTRIBUTED_CACHE_ARG, cached_only_terminal_state, distributed_cache_watch_path,
+        migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
+        publish_bundle, publish_child_preparation_failure, publish_distributed_cache,
+        published_manifest_id, refresh_interval, repository_preparation_timeout,
+        repository_refresh_args, run_http, staged_manifest_id, supervise_preparation_child,
+        terminal_preparation_state,
     };
 
     #[test]
@@ -1452,6 +1461,18 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(target.join("payload")).expect("payload"),
             "complete"
+        );
+    }
+
+    #[test]
+    fn cached_only_ready_snapshot_reports_ready_state() {
+        assert_eq!(
+            cached_only_terminal_state(true),
+            vesc_mcp_core::preparation_status::PreparationState::Ready
+        );
+        assert_eq!(
+            cached_only_terminal_state(false),
+            vesc_mcp_core::preparation_status::PreparationState::Stale
         );
     }
 
