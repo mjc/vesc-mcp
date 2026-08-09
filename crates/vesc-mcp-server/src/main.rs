@@ -158,36 +158,42 @@ impl PreparationReporter {
         } else {
             prior_repositories
         };
-        let publication = if status.active_snapshot.is_some()
-            || status.available_snapshot.is_some()
-            || status.last_refresh_unix_secs.is_some()
-            || status.last_error.is_some()
-        {
-            (
-                status.active_snapshot.clone(),
-                status.available_snapshot.clone(),
-                status.last_refresh_unix_secs,
-                status.last_error.clone(),
-            )
-        } else {
-            (
-                prior
-                    .as_ref()
-                    .and_then(|value| value.active_snapshot.clone()),
-                prior
-                    .as_ref()
-                    .and_then(|value| value.available_snapshot.clone()),
-                prior
-                    .as_ref()
-                    .and_then(|value| value.last_refresh_unix_secs),
-                prior.as_ref().and_then(|value| value.last_error.clone()),
-            )
-        };
+        let (active_snapshot, available_snapshot, last_refresh_unix_secs, last_error) =
+            if status.active_snapshot.is_some()
+                || status.available_snapshot.is_some()
+                || status.last_refresh_unix_secs.is_some()
+                || status.last_error.is_some()
+            {
+                (
+                    status.active_snapshot.clone(),
+                    status.available_snapshot.clone(),
+                    status.last_refresh_unix_secs,
+                    status.last_error.clone(),
+                )
+            } else {
+                (
+                    prior
+                        .as_ref()
+                        .and_then(|value| value.active_snapshot.clone()),
+                    prior
+                        .as_ref()
+                        .and_then(|value| value.available_snapshot.clone()),
+                    prior
+                        .as_ref()
+                        .and_then(|value| value.last_refresh_unix_secs),
+                    prior.as_ref().and_then(|value| value.last_error.clone()),
+                )
+            };
         let status = status
             .clone()
             .with_freshness_required(self.freshness_required)
             .with_validated_vector(self.validated_vector.clone())
-            .with_publication(publication.0, publication.1, publication.2, publication.3)
+            .with_publication(
+                active_snapshot,
+                available_snapshot,
+                last_refresh_unix_secs,
+                last_error,
+            )
             .with_repositories(repositories);
         if let Err(error) = write_preparation_status(&self.data_root, &status) {
             tracing::warn!(%error, "could not publish knowledge preparation status");
