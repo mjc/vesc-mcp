@@ -134,6 +134,30 @@ impl PreparationReporter {
 
     fn publish(&self, status: &KnowledgePreparationStatus) {
         let prior = read_preparation_status(&self.data_root);
+        let prior_repositories = prior
+            .as_ref()
+            .map_or_else(BTreeMap::new, |value| value.repositories.clone());
+        let repositories = if prior_repositories.is_empty() {
+            DataRoot::new(self.data_root.clone())
+                .ok()
+                .and_then(|data_root| {
+                    KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(data_root))
+                        .default_manifest()
+                        .ok()
+                })
+                .map(|manifest| {
+                    repository_publication_status(
+                        &manifest,
+                        None,
+                        prior
+                            .as_ref()
+                            .and_then(|value| value.last_refresh_unix_secs),
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            prior_repositories
+        };
         let status = status
             .clone()
             .with_freshness_required(self.freshness_required)
@@ -150,7 +174,7 @@ impl PreparationReporter {
                     .and_then(|value| value.last_refresh_unix_secs),
                 prior.as_ref().and_then(|value| value.last_error.clone()),
             )
-            .with_repositories(prior.map_or_else(BTreeMap::new, |value| value.repositories));
+            .with_repositories(repositories);
         if let Err(error) = write_preparation_status(&self.data_root, &status) {
             tracing::warn!(%error, "could not publish knowledge preparation status");
         }
