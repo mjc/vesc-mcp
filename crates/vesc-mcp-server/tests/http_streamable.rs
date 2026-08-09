@@ -198,6 +198,29 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
     )?;
     assert_compact_search_body(&compact_body);
 
+    let invalid = first
+        .call_tool(
+            CallToolRequestParams::new("search_vesc_knowledge").with_arguments(
+                serde_json::json!({
+                    "query": "lbm_add_extension",
+                    "repository_ids": ["refloat"]
+                })
+                .as_object()
+                .cloned()
+                .expect("invalid arguments object"),
+            ),
+        )
+        .await?;
+    assert_eq!(invalid.is_error, Some(true));
+    let invalid_text = invalid
+        .content
+        .first()
+        .and_then(|content| content.as_text())
+        .expect("invalid response text")
+        .text
+        .as_str();
+    assert!(invalid_text.contains("unknown field"), "{invalid_text}");
+
     let resources = first.list_all_resources().await?;
     assert!(
         resources
