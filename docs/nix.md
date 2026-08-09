@@ -155,8 +155,10 @@ and `ProtectSystem=strict` prevents writes to the Nix store or project checkout.
 With `allowOfflineRestart = true`, a source outage may retain and serve the last
 valid default snapshot when its enabled repositories, resolved selections, and
 indexing policies still match. Build or configuration failures do not silently
-fall back. A cached outage restart and an intentionally skipped refresh publish
-`ping.knowledge.state = "stale"`; strict preparation, terminal failure, or an
+fall back. A cached outage restart may publish `ping.knowledge.state = "stale"`
+when the last refresh failed or the cached snapshot is no longer usable. An
+intentionally skipped refresh with a valid cached snapshot remains `ready`
+while repository work is disabled. Strict preparation, terminal failure, or an
 invalid managed artifact makes search explicitly unavailable. Set
 `refresh = false` for an intentionally offline cached restart. Set
 `cachedOnly = true` on serving-only hosts to prohibit repository fetches and
