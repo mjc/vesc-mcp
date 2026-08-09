@@ -960,12 +960,17 @@ fn lexical_search_results(
     limit: usize,
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
+    let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
     Ok((
-        lexical_results(&params.query, filters, limit, config)?
-            .into_iter()
-            .enumerate()
-            .map(|(rank, hit)| lexical_result(hit, rank, filters))
-            .collect(),
+        retain_diverse_results(
+            lexical_results(&params.query, filters, candidate_limit, config)?
+                .into_iter()
+                .enumerate()
+                .map(|(rank, hit)| lexical_result(hit, rank, filters))
+                .collect(),
+            filters,
+            limit,
+        ),
         Vec::new(),
     ))
 }
@@ -1010,24 +1015,28 @@ fn hybrid_results(
         &semantic,
         &metadata,
         FusionConfig {
-            limit,
+            limit: candidate_limit,
             ..FusionConfig::default()
         },
     );
     let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
     hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
-    let results = fused
-        .into_iter()
-        .map(|hit| {
-            let context = expand_adjacent_context(
-                &hit.chunk,
-                &chunks,
-                MAX_EXPANDED_NEIGHBORS,
-                context_budget,
-            );
-            fused_result(hit, &context, filters)
-        })
-        .collect();
+    let results = retain_diverse_results(
+        fused
+            .into_iter()
+            .map(|hit| {
+                let context = expand_adjacent_context(
+                    &hit.chunk,
+                    &chunks,
+                    MAX_EXPANDED_NEIGHBORS,
+                    context_budget,
+                );
+                fused_result(hit, &context, filters)
+            })
+            .collect(),
+        filters,
+        limit,
+    );
     let warnings = live_rerank
         .then(|| {
             "snapshot vector artifact unavailable; used the local model to semantically rerank lexical candidates"
@@ -1062,24 +1071,28 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
         &semantic,
         &metadata,
         FusionConfig {
-            limit,
+            limit: candidate_limit,
             ..FusionConfig::default()
         },
     );
     let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
     hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
-    let results = fused
-        .into_iter()
-        .map(|hit| {
-            let context = expand_adjacent_context(
-                &hit.chunk,
-                &chunks,
-                MAX_EXPANDED_NEIGHBORS,
-                context_budget,
-            );
-            fused_result(hit, &context, filters)
-        })
-        .collect();
+    let results = retain_diverse_results(
+        fused
+            .into_iter()
+            .map(|hit| {
+                let context = expand_adjacent_context(
+                    &hit.chunk,
+                    &chunks,
+                    MAX_EXPANDED_NEIGHBORS,
+                    context_budget,
+                );
+                fused_result(hit, &context, filters)
+            })
+            .collect(),
+        filters,
+        limit,
+    );
     Ok((results, false))
 }
 
@@ -1665,6 +1678,35 @@ fn fused_result(
             expansion_reason: context.reason.clone(),
         }),
     }
+}
+
+fn retain_diverse_results(
+    results: Vec<SearchVescKnowledgeResult>,
+    filters: &vesc_knowledge_index::LexicalFilters,
+    limit: usize,
+) -> Vec<SearchVescKnowledgeResult> {
+    if filters.revision.is_some() {
+        return results.into_iter().take(limit).collect();
+    }
+    let mut seen = BTreeSet::new();
+    results
+        .into_iter()
+        .filter(|result| {
+            let passage = result
+                .passage
+                .as_deref()
+                .unwrap_or(result.summary.as_str())
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            seen.insert((
+                result.source.repo.clone(),
+                result.source.path.clone(),
+                passage,
+            ))
+        })
+        .take(limit)
+        .collect()
 }
 
 fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
@@ -2341,6 +2383,72 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![serde_json::json!("full"), serde_json::json!("compact")]
         );
+    }
+
+    #[test]
+    fn unversioned_search_collapses_duplicate_history_passages() {
+        let filters = vesc_knowledge_index::LexicalFilters::default();
+        let results = vec![
+            history_test_result("old", "abc123", "same body"),
+            history_test_result("new", "def456", "same   body"),
+            history_test_result("new", "ghi789", "different body"),
+        ];
+
+        let retained = retain_diverse_results(results, &filters, 10);
+
+        assert_eq!(
+            retained
+                .iter()
+                .map(|result| result.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old", "new"]
+        );
+    }
+
+    #[test]
+    fn revision_filter_preserves_duplicate_history_passages() {
+        let filters = vesc_knowledge_index::LexicalFilters {
+            revision: Some("abc123".try_into().expect("revision")),
+            ..vesc_knowledge_index::LexicalFilters::default()
+        };
+        let results = vec![
+            history_test_result("old", "abc123", "same body"),
+            history_test_result("new", "def456", "same body"),
+        ];
+
+        let retained = retain_diverse_results(results, &filters, 10);
+
+        assert_eq!(retained.len(), 2);
+    }
+
+    fn history_test_result(id: &str, revision: &str, passage: &str) -> SearchVescKnowledgeResult {
+        SearchVescKnowledgeResult {
+            id: id.into(),
+            name: "motor.rs".into(),
+            category: "firmware_api".into(),
+            summary: passage.into(),
+            source: SearchVescKnowledgeSource {
+                repo: "vesc".into(),
+                path: "motor.rs".into(),
+                line: 1,
+                end_line: None,
+                start_byte: None,
+                end_byte: None,
+                revision: Some(revision.into()),
+            },
+            score: 1,
+            chunk_id: None,
+            document_id: None,
+            passage: Some(passage.into()),
+            heading_path: None,
+            resource_uri: None,
+            document_uri: None,
+            retrieval_score: None,
+            origin: None,
+            correction_ids: Vec::new(),
+            provenance: None,
+            explanation: None,
+        }
     }
 
     #[test]
