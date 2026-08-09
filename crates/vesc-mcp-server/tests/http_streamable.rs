@@ -9,7 +9,7 @@ use rmcp::{
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use vesc_mcp_core::config::KnowledgeConfig;
+use vesc_mcp_core::config::{KnowledgeConfig, RetrievalMode};
 use vesc_mcp_core::test_support::VersionedKnowledgeFixture;
 use vesc_mcp_core::{VescMcpService, resources::VESC_C_IF_URI};
 use vesc_mcp_server::http::{HttpServerConfig, router};
@@ -27,7 +27,11 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
     };
     let app = router(
         &config,
-        VescMcpService::with_knowledge_config(KnowledgeConfig::default()).http_service(),
+        VescMcpService::with_knowledge_config(KnowledgeConfig {
+            mode: RetrievalMode::Auto,
+            ..KnowledgeConfig::default()
+        })
+        .http_service(),
         &cancellation,
     );
     let listener = TcpListener::bind(config.bind).await?;
@@ -109,6 +113,44 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
     )?;
     assert_eq!(capabilities_body["limits"]["default_detail"], "full");
     assert_eq!(capabilities_body["limits"]["max_context_bytes"], 8192);
+
+    let fallback = first
+        .call_tool(
+            CallToolRequestParams::new("search_vesc_knowledge").with_arguments(
+                serde_json::json!({
+                    "query": "lbm_add_extension",
+                    "mode": "auto",
+                    "limit": 1,
+                    "detail": "full"
+                })
+                .as_object()
+                .cloned()
+                .expect("fallback arguments object"),
+            ),
+        )
+        .await?;
+    let fallback_body: serde_json::Value = serde_json::from_str(
+        fallback
+            .content
+            .first()
+            .and_then(|content| content.as_text())
+            .expect("fallback text response")
+            .text
+            .as_str(),
+    )?;
+    assert_eq!(
+        fallback_body["ok"], true,
+        "fallback response: {fallback_body}"
+    );
+    assert_eq!(fallback_body["mode_requested"], "auto");
+    assert_eq!(fallback_body["mode_used"], "lexical");
+    assert!(fallback_body["results"][0]["provenance"].is_object());
+    assert!(
+        fallback_body["warning_codes"]
+            .as_array()
+            .is_some_and(|codes| codes.iter().any(|code| code == "semantic_unavailable"))
+    );
+
     let resources = first.list_all_resources().await?;
     assert!(
         resources
