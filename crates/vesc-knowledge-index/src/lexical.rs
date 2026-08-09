@@ -615,10 +615,7 @@ impl HistoryContentLookup {
         let query = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
         let matches = searcher
-            .search(
-                &query,
-                &TopDocs::with_limit(1).order_by_score(),
-            )
+            .search(&query, &TopDocs::with_limit(1).order_by_score())
             .map_err(LexicalError::Search)?;
         for (_, address) in matches {
             let document = searcher

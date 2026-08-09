@@ -401,11 +401,7 @@ impl HistoryBlobDeduper {
         })
     }
 
-    fn content_keys(
-        &self,
-        path: &str,
-        id: gix::ObjectId,
-    ) -> Option<&[(ContentDigest, u32)]> {
+    fn content_keys(&self, path: &str, id: gix::ObjectId) -> Option<&[(ContentDigest, u32)]> {
         let path_id = *self.path_ids.get(path)?;
         self.content_keys.get(&(path_id, id)).map(Vec::as_slice)
     }
@@ -900,8 +896,7 @@ impl GitHistoryBuildPlan {
                 );
                 let actual_key =
                     history_content_key(&source.repository_id, &document.path, &embedding_key);
-                if actual_key != expected_key.content
-                    || document.revision != expected_key.revision
+                if actual_key != expected_key.content || document.revision != expected_key.revision
                 {
                     return Err(GitHistoryError::Invalid(format!(
                         "pinned Git chunk identity changed for {}:{}#{}",
@@ -1762,12 +1757,14 @@ fn ingest_reused_blob_occurrences(
     source: &GitCorpusSource,
     revision: &Revision,
     tree_id: gix::ObjectId,
-    seen_blobs: &HistoryBlobDeduper,
+    seen_blobs: &mut HistoryBlobDeduper,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
     coverage: &mut CommitCoverage,
 ) -> Result<(), GitHistoryError> {
     let mut trees = vec![(String::new(), tree_id)];
+    let revision_id = gix::ObjectId::from_hex(revision.as_str().as_bytes())
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     while let Some((prefix, tree_id)) = trees.pop() {
         let tree = repo
             .find_tree(tree_id)
@@ -1788,22 +1785,39 @@ fn ingest_reused_blob_occurrences(
             if !entry.mode().is_blob() || !is_selected(&path, &source.policy) {
                 continue;
             }
-            let Some(keys) = seen_blobs.content_keys(&path, id) else {
-                continue;
+            let keys = if let Some(keys) = seen_blobs.content_keys(&path, id) {
+                keys.to_vec()
+            } else {
+                let size = repo
+                    .find_header(id)
+                    .map_err(|error| GitHistoryError::Git(error.to_string()))?
+                    .size();
+                let (inserted, keys) = ingest_upsert(
+                    repo,
+                    source_index,
+                    source,
+                    revision,
+                    &path,
+                    id,
+                    size,
+                    contents,
+                    observations,
+                )?;
+                seen_blobs.insert_with_keys(&path, id, revision_id, inserted, keys.clone());
+                keys
             };
             coverage.selected = true;
             coverage.reused_from_prior = false;
             let locator = GitHistoryDocumentLocator {
                 source_index,
                 repository: &source.repository_id,
-                revision: gix::ObjectId::from_hex(revision.as_str().as_bytes())
-                    .map_err(|error| GitHistoryError::Git(error.to_string()))?,
+                revision: revision_id,
                 object: id,
                 source_kind: SourceKind::GitBlob,
                 path: &path,
             };
             let mut document_index = None;
-            for (content, ordinal) in keys.iter().cloned() {
+            for (content, ordinal) in keys {
                 contents.insert_draft(
                     content,
                     ordinal,
@@ -1946,6 +1960,7 @@ fn insert_document_drafts(
     };
     let mut document_index = None;
     let mut all_inserted = drafts.len() != 0;
+    let mut keys = Vec::with_capacity(drafts.len());
     for index in 0..drafts.len() {
         let draft = drafts.get(index);
         let mut identifier_buffer = [""; MAX_IDENTIFIERS];
@@ -1961,6 +1976,7 @@ fn insert_document_drafts(
             draft.text(),
         );
         let key = history_content_key(&source.repository_id, &document.path, &embedding_key);
+        keys.push((key.clone(), draft.ordinal()));
         all_inserted &= contents.insert_draft(
             key,
             draft.ordinal(),
@@ -1969,21 +1985,6 @@ fn insert_document_drafts(
             observations,
         )?;
     }
-    let keys = (0..drafts.len())
-        .map(|index| {
-            let draft = drafts.get(index);
-            let mut identifier_buffer = [""; MAX_IDENTIFIERS];
-            let identifiers = identifier_refs(&document.path, draft.text(), &mut identifier_buffer);
-            let embedding_key = embedding_text_digest_from_parts(
-                &document.title,
-                draft.headings().iter().copied(),
-                identifiers,
-                &document.tags,
-                draft.text(),
-            );
-            (history_content_key(&source.repository_id, &document.path, &embedding_key), draft.ordinal())
-        })
-        .collect();
     Ok((all_inserted, keys))
 }
 
