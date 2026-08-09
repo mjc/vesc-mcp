@@ -4788,6 +4788,16 @@ max_total_bytes = 10485760
             .prepare_default(&main)
             .await
             .expect("initial all-ref snapshot");
+        assert!(
+            store
+                .default_configuration_is_current(&main)
+                .expect("initial configuration is current")
+        );
+        assert!(
+            !store
+                .default_configuration_is_current(&release)
+                .expect("changed default ref is inspected")
+        );
         let switched = store
             .prepare_default(&release)
             .await

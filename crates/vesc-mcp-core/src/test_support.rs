@@ -112,7 +112,7 @@ impl VersionedKnowledgeFixture {
         let layout = crate::managed_repositories::KnowledgeDataLayout::new(
             knowledge.data_root.clone().expect("data root"),
         );
-        let git = crate::managed_git::ManagedGitStore::new(layout);
+        let git = crate::managed_git::ManagedGitStore::new(layout.clone());
         for repository in knowledge.repositories.iter() {
             git.sync_source(
                 repository.id(),
@@ -121,6 +121,15 @@ impl VersionedKnowledgeFixture {
             )
             .await
             .expect("managed source sync");
+            // The fixture is cloned from a local path, but the configured
+            // identity must still exercise the production credential-free
+            // HTTPS validation path.  Make the cached origin match that
+            // validated identity after the local seed.
+            let repository_path = layout.repository(repository.id());
+            versioned_git(
+                &repository_path,
+                &["config", "remote.origin.url", repository.remote_url()],
+            );
         }
         Self {
             _temp: temp,
@@ -239,7 +248,7 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
     (remote, old, tagged)
 }
 
-fn versioned_repository_toml(id: &str, remote: &Path) -> String {
+fn versioned_repository_toml(id: &str, _remote: &Path) -> String {
     let include = if id == "bldc" {
         r#"["**/*.md", "**/*.rs"]"#
     } else {
@@ -249,7 +258,7 @@ fn versioned_repository_toml(id: &str, remote: &Path) -> String {
         r#"
 [[knowledge.repositories]]
 id = "{id}"
-remote_url = "{}"
+remote_url = "https://example.invalid/{id}.git"
 default_ref = "refs/heads/main"
 policy = "required"
 include = {include}
@@ -261,7 +270,7 @@ max_file_bytes = 1048576
 max_files = 100
 max_total_bytes = 10485760
 "#,
-        remote.display()
+        id = id,
     )
 }
 
