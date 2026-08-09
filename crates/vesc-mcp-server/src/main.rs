@@ -661,8 +661,8 @@ fn publish_distributed_bundle(target: &Path) -> anyhow::Result<()> {
 }
 
 fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Result<()> {
-    if let Some(target_id) = published_manifest_id(target)
-        && source_id == target_id
+    if published_manifest_id(target).as_deref() == Some(source_id)
+        && published_bundle_is_current(target, source_id)
     {
         return Ok(());
     }
@@ -699,6 +699,40 @@ fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Resu
     fs::rename(marker_tmp, marker)?;
     fs::remove_dir_all(staged)?;
     Ok(())
+}
+
+fn published_bundle_is_current(target: &Path, source_id: &str) -> bool {
+    let Ok(entries) = fs::read_dir(target) else {
+        return false;
+    };
+    let allowed = [
+        DISTRIBUTED_PUBLICATION_MARKER,
+        "default-snapshot-corpus-1.1.json",
+        "snapshots",
+        "repositories",
+        "artifacts",
+    ];
+    if entries.filter_map(Result::ok).any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        !allowed.contains(&name.as_ref())
+    }) {
+        return false;
+    }
+    target.join("default-snapshot-corpus-1.1.json").is_file()
+        && target.join("repositories").is_dir()
+        && target.join("artifacts").is_dir()
+        && directory_has_only_entry(&target.join("snapshots"), &format!("{source_id}.json"))
+        && directory_has_only_entry(&target.join("artifacts"), source_id)
+}
+
+fn directory_has_only_entry(directory: &Path, expected: &str) -> bool {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .all(|entry| entry.file_name() == expected)
 }
 
 #[derive(Debug, Default)]
@@ -1573,6 +1607,19 @@ mod tests {
         assert!(target.join("repositories/catalog").is_file());
         assert!(!target.join("migraphx-cache").exists());
         assert!(!target.join("artifacts/old").exists());
+
+        std::fs::write(target.join("migraphx-cache"), "obsolete").expect("obsolete cache");
+        std::fs::create_dir_all(target.join("artifacts/old")).expect("obsolete artifact");
+        std::fs::write(target.join("artifacts/old/active.json"), "obsolete")
+            .expect("obsolete artifact");
+        std::fs::write(target.join("preparation-status.json"), "obsolete")
+            .expect("obsolete status");
+
+        publish_bundle(&source, &target, "new").expect("republish unchanged manifest");
+
+        assert!(!target.join("migraphx-cache").exists());
+        assert!(!target.join("artifacts/old").exists());
+        assert!(!target.join("preparation-status.json").exists());
     }
 
     #[test]
