@@ -206,7 +206,12 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
         "pub trait MotorControlBindings {\n    fn update_pid_position_offset(&self, position: PidPosition, store: bool);\n}\n\nimpl MotorControlBindings for RealMotor {\n    fn update_pid_position_offset(&self, position: PidPosition, store: bool) {\n        self.apply_position(position, store);\n    }\n}\n\npub fn set_position(bindings: &impl MotorControlBindings, position: PidPosition) {\n    bindings.update_pid_position_offset(position, true);\n}\n",
     )
     .expect("motor source");
-    versioned_git(&work, &["add", "README.md", "motor.rs"]);
+    std::fs::write(
+        work.join("vesc_c_if.c"),
+        "#include \"vesc_c_if.h\"\n\nvoid lbm_add_extension(void) {\n    register_extension();\n}\n",
+    )
+    .expect("Refloat C source");
+    versioned_git(&work, &["add", "README.md", "motor.rs", "vesc_c_if.c"]);
     versioned_git(
         &work,
         &[
@@ -221,19 +226,30 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
     );
     let old = versioned_git(&work, &["rev-parse", "HEAD"]);
     versioned_git(&work, &["branch", "release_6_06", &old]);
-    std::fs::write(work.join("README.md"), "betaunique refloat tag\n").expect("tagged source");
-    versioned_git(
-        &work,
-        &[
-            "-c",
-            "user.name=Test Author",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "-am",
-            "refloat tag",
-        ],
-    );
+    for (subject, suffix) in [
+        ("refloat tag", "tag"),
+        ("unchanged C history one", "one"),
+        ("unchanged C history two", "two"),
+        ("unchanged C history three", "three"),
+    ] {
+        std::fs::write(
+            work.join("README.md"),
+            format!("betaunique refloat {suffix}\n"),
+        )
+        .expect("tagged source");
+        versioned_git(
+            &work,
+            &[
+                "-c",
+                "user.name=Test Author",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-am",
+                subject,
+            ],
+        );
+    }
     let tagged = versioned_git(&work, &["rev-parse", "HEAD"]);
     versioned_git(&work, &["tag", "v1.2.3", &tagged]);
     versioned_git(
@@ -249,8 +265,8 @@ fn versioned_fixture_remote(root: &Path) -> (PathBuf, String, String) {
 }
 
 fn versioned_repository_toml(id: &str, _remote: &Path) -> String {
-    let include = if id == "bldc" {
-        r#"["**/*.md", "**/*.rs"]"#
+    let include = if matches!(id, "bldc" | "refloat") {
+        r#"["**/*.md", "**/*.rs", "**/*.c", "**/*.h"]"#
     } else {
         r#"["**/*.md"]"#
     };

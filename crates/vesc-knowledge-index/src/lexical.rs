@@ -564,6 +564,10 @@ impl HistoryContentLookup {
                     has_next: optional_text(&document, self.fields.next_chunk).is_some(),
                     blob,
                     source_kind,
+                    content_key: optional_text(&document, self.fields.history_content_key)
+                        .map(ContentDigest::try_from)
+                        .transpose()
+                        .map_err(|_| invalid_field("history_content_key"))?,
                 });
             }
         }
@@ -581,7 +585,7 @@ impl HistoryContentLookup {
         path: &str,
         key: &ContentDigest,
     ) -> Result<bool, LexicalError> {
-        self.contains_retained(repository, path, key, &BTreeSet::new())
+        self.contains_retained(repository, path, key, None, &BTreeSet::new())
     }
 
     pub(crate) fn contains_retained(
@@ -589,17 +593,30 @@ impl HistoryContentLookup {
         _repository: &RepositoryId,
         _path: &str,
         key: &ContentDigest,
+        revision: Option<&Revision>,
         removed_document_ids: &BTreeSet<String>,
     ) -> Result<bool, LexicalError> {
-        let query = TermQuery::new(
-            Term::from_field_text(self.fields.history_content_key, &key.to_string()),
-            IndexRecordOption::Basic,
-        );
+        let mut clauses = vec![(
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(self.fields.history_content_key, &key.to_string()),
+                IndexRecordOption::Basic,
+            )) as Box<dyn Query>,
+        )];
+        if let Some(revision) = revision {
+            clauses.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(self.fields.revision, revision.as_str()),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+        let query = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
         let matches = searcher
             .search(
                 &query,
-                // History content keys are unique in every committed artifact.
                 &TopDocs::with_limit(1).order_by_score(),
             )
             .map_err(LexicalError::Search)?;

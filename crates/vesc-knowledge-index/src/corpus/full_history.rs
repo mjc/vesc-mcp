@@ -162,7 +162,7 @@ impl TipAdmissions {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct CachedGitHistoryChunk<'a> {
     pub document_id: &'a str,
     pub repository: &'a str,
@@ -173,6 +173,7 @@ pub(crate) struct CachedGitHistoryChunk<'a> {
     pub has_next: bool,
     pub blob: Option<gix::ObjectId>,
     pub source_kind: SourceKind,
+    pub content_key: Option<ContentDigest>,
 }
 
 #[derive(Default)]
@@ -190,6 +191,7 @@ struct CachedGitHistoryDocument {
     last_ordinal: Option<u32>,
     starts_at_zero: bool,
     consistent: bool,
+    content_keys: Vec<(ContentDigest, u32)>,
 }
 
 #[derive(Default)]
@@ -218,6 +220,7 @@ impl CachedGitHistory {
                 last_ordinal: None,
                 starts_at_zero: false,
                 consistent: true,
+                content_keys: Vec::new(),
             });
         document.consistent &= document.revision.as_ref() == chunk.revision
             && document.path.as_ref() == chunk.path
@@ -227,6 +230,9 @@ impl CachedGitHistory {
         document.chunk_count = document.chunk_count.saturating_add(1);
         document.maximum_ordinal = document.maximum_ordinal.max(chunk.ordinal);
         document.starts_at_zero |= chunk.ordinal == 0 && !chunk.has_previous;
+        if let Some(content_key) = chunk.content_key {
+            document.content_keys.push((content_key, chunk.ordinal));
+        }
         if !chunk.has_next {
             document.consistent &= document
                 .last_ordinal
@@ -287,7 +293,13 @@ impl CachedGitHistory {
                 },
                 Ok,
             )?;
-            blobs.insert(document.path.as_ref(), blob, revision, true);
+            blobs.insert_with_keys(
+                document.path.as_ref(),
+                blob,
+                revision,
+                true,
+                document.content_keys,
+            );
         }
         Ok(blobs)
     }
@@ -348,6 +360,7 @@ struct HistoryBlobDeduper {
     // Each path/blob heads a shared proof arena instead of allocating its own Vec.
     blobs: HashMap<(usize, gix::ObjectId), u32>,
     proofs: Vec<IndexedBlob>,
+    content_keys: HashMap<(usize, gix::ObjectId), Vec<(ContentDigest, u32)>>,
 }
 
 const NO_BLOB_PROOF: u32 = u32::MAX;
@@ -388,7 +401,23 @@ impl HistoryBlobDeduper {
         })
     }
 
-    fn insert(&mut self, path: &str, id: gix::ObjectId, revision: gix::ObjectId, reusable: bool) {
+    fn content_keys(
+        &self,
+        path: &str,
+        id: gix::ObjectId,
+    ) -> Option<&[(ContentDigest, u32)]> {
+        let path_id = *self.path_ids.get(path)?;
+        self.content_keys.get(&(path_id, id)).map(Vec::as_slice)
+    }
+
+    fn insert_with_keys(
+        &mut self,
+        path: &str,
+        id: gix::ObjectId,
+        revision: gix::ObjectId,
+        reusable: bool,
+        keys: Vec<(ContentDigest, u32)>,
+    ) {
         let path_id = if let Some(&path_id) = self.path_ids.get(path) {
             path_id
         } else {
@@ -397,6 +426,9 @@ impl HistoryBlobDeduper {
             path_id
         };
         self.insert_proof(path_id, id, revision, reusable);
+        if !keys.is_empty() {
+            self.content_keys.entry((path_id, id)).or_insert(keys);
+        }
     }
 
     fn insert_proof(
@@ -432,6 +464,7 @@ impl HistoryBlobDeduper {
             path_ids: other_paths,
             blobs: other_blobs,
             proofs: other_proofs,
+            content_keys: other_content_keys,
         } = other;
         let mut reusable_paths = vec![false; other_paths.len()];
         for ((path_id, _), &head) in &other_blobs {
@@ -464,6 +497,13 @@ impl HistoryBlobDeduper {
                     self.insert_proof(path_ids[old_path_id], id, indexed.revision, true);
                 }
                 proof = indexed.next;
+            }
+        }
+        for ((old_path_id, id), keys) in other_content_keys {
+            if path_ids[old_path_id] != usize::MAX {
+                self.content_keys
+                    .entry((path_ids[old_path_id], id))
+                    .or_insert(keys);
             }
         }
     }
@@ -509,12 +549,18 @@ struct GitHistoryChunk {
     ordinal: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct HistoryChunkKey {
+    content: ContentDigest,
+    revision: Revision,
+}
+
 /// Compact cold-build state. Git remains the source of passage text and
 /// per-chunk metadata until the exact chunk is written or embedded.
 #[derive(Debug, Default)]
 pub(crate) struct GitHistoryBuildPlan {
     documents: Vec<GitHistoryDocument>,
-    chunks: HashMap<ContentDigest, GitHistoryChunk>,
+    chunks: HashMap<HistoryChunkKey, GitHistoryChunk>,
     removed_document_ids: BTreeSet<String>,
 }
 
@@ -709,10 +755,17 @@ impl GitHistoryBuildPlan {
                     has_next: chunk.next_chunk.is_some(),
                     blob: Some(descriptor.object),
                     source_kind: chunk.source_kind,
+                    content_key: Some(
+                        history_content_key_for_chunk(&chunk)
+                            .expect("filtered Git-history chunk has a content key"),
+                    ),
                 });
             }
-            let key = history_content_key_for_chunk(&chunk)
-                .expect("filtered Git-history chunk has a content key");
+            let key = HistoryChunkKey {
+                content: history_content_key_for_chunk(&chunk)
+                    .expect("filtered Git-history chunk has a content key"),
+                revision: chunk.revision.clone(),
+            };
             plan.chunks.insert(
                 key,
                 GitHistoryChunk {
@@ -847,7 +900,9 @@ impl GitHistoryBuildPlan {
                 );
                 let actual_key =
                     history_content_key(&source.repository_id, &document.path, &embedding_key);
-                if &actual_key != *expected_key {
+                if actual_key != expected_key.content
+                    || document.revision != expected_key.revision
+                {
                     return Err(GitHistoryError::Invalid(format!(
                         "pinned Git chunk identity changed for {}:{}#{}",
                         source.repository_id, descriptor.path, selection.ordinal
@@ -887,7 +942,13 @@ impl GitHistoryBuildPlan {
     }
 }
 
-type PreviousContentLookup<'a> = dyn FnMut(&RepositoryId, &str, &ContentDigest, &BTreeSet<String>) -> Result<bool, GitHistoryError>
+type PreviousContentLookup<'a> = dyn FnMut(
+        &RepositoryId,
+        &str,
+        &ContentDigest,
+        &Revision,
+        &BTreeSet<String>,
+    ) -> Result<bool, GitHistoryError>
     + 'a;
 
 enum HistoryContents<'a> {
@@ -918,12 +979,18 @@ impl HistoryContents<'_> {
 
     fn insert_draft(
         &mut self,
-        key: ContentDigest,
+        content: ContentDigest,
         ordinal: u32,
         locator: GitHistoryDocumentLocator<'_>,
         document: &mut Option<u32>,
         observations: &mut GitHistoryRefreshObservations,
     ) -> Result<bool, GitHistoryError> {
+        let revision = Revision::try_from(locator.revision.to_string())
+            .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
+        let key = HistoryChunkKey {
+            content,
+            revision: revision.clone(),
+        };
         let inserted = match self {
             Self::All(plan) => {
                 if plan.chunks.contains_key(&key) {
@@ -944,7 +1011,8 @@ impl HistoryContents<'_> {
                     || previous_contains(
                         locator.repository,
                         locator.path,
-                        &key,
+                        &key.content,
+                        &revision,
                         &plan.removed_document_ids,
                     )?
                 {
@@ -1660,7 +1728,7 @@ fn ingest_commit_changes(
     pending.sort_by(|left, right| pending_path(left).cmp(pending_path(right)));
 
     for PendingChange { path, id, size } in pending {
-        let reusable = ingest_upsert(
+        let (reusable, keys) = ingest_upsert(
             repo,
             source_index,
             source,
@@ -1671,9 +1739,82 @@ fn ingest_commit_changes(
             contents,
             observations,
         )?;
-        seen_blobs.insert(&path, id, commit.id, reusable);
+        seen_blobs.insert_with_keys(&path, id, commit.id, reusable, keys);
     }
+    ingest_reused_blob_occurrences(
+        repo,
+        source_index,
+        source,
+        &revision,
+        current.id,
+        seen_blobs,
+        contents,
+        observations,
+        &mut coverage,
+    )?;
     Ok(coverage)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ingest_reused_blob_occurrences(
+    repo: &gix::Repository,
+    source_index: usize,
+    source: &GitCorpusSource,
+    revision: &Revision,
+    tree_id: gix::ObjectId,
+    seen_blobs: &HistoryBlobDeduper,
+    contents: &mut HistoryContents<'_>,
+    observations: &mut GitHistoryRefreshObservations,
+    coverage: &mut CommitCoverage,
+) -> Result<(), GitHistoryError> {
+    let mut trees = vec![(String::new(), tree_id)];
+    while let Some((prefix, tree_id)) = trees.pop() {
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+        for entry in tree.iter() {
+            let entry = entry.map_err(|error| GitHistoryError::Git(error.to_string()))?;
+            let filename = entry.filename().to_str_lossy();
+            let path = if prefix.is_empty() {
+                filename.into_owned()
+            } else {
+                format!("{prefix}/{filename}")
+            };
+            let id = entry.object_id();
+            if entry.mode().is_tree() {
+                trees.push((path, id));
+                continue;
+            }
+            if !entry.mode().is_blob() || !is_selected(&path, &source.policy) {
+                continue;
+            }
+            let Some(keys) = seen_blobs.content_keys(&path, id) else {
+                continue;
+            };
+            coverage.selected = true;
+            coverage.reused_from_prior = false;
+            let locator = GitHistoryDocumentLocator {
+                source_index,
+                repository: &source.repository_id,
+                revision: gix::ObjectId::from_hex(revision.as_str().as_bytes())
+                    .map_err(|error| GitHistoryError::Git(error.to_string()))?,
+                object: id,
+                source_kind: SourceKind::GitBlob,
+                path: &path,
+            };
+            let mut document_index = None;
+            for (content, ordinal) in keys.iter().cloned() {
+                contents.insert_draft(
+                    content,
+                    ordinal,
+                    locator,
+                    &mut document_index,
+                    observations,
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn commit_parent_tree(
@@ -1715,7 +1856,7 @@ fn ingest_commit_message(
         .flatten();
     if let Some(document) = document {
         coverage.selected = true;
-        let inserted = insert_document_drafts(
+        let (inserted, _) = insert_document_drafts(
             source_index,
             source,
             &document,
@@ -1749,7 +1890,7 @@ fn ingest_upsert(
     size: u64,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
-) -> Result<bool, GitHistoryError> {
+) -> Result<(bool, Vec<(ContentDigest, u32)>), GitHistoryError> {
     let candidate = Candidate {
         path: path.to_string(),
         id,
@@ -1765,7 +1906,7 @@ fn ingest_upsert(
         false,
     )?;
     if matches!(blob, CachedGitBlob::Rejected { .. }) {
-        return Ok(false);
+        return Ok((false, Vec::new()));
     }
     observations.ingested_blobs = observations.ingested_blobs.saturating_add(1);
     let document = document_from_git_blob(
@@ -1776,11 +1917,11 @@ fn ingest_upsert(
         &source.license,
         blob,
     )?;
-    let inserted =
+    let (inserted, keys) =
         insert_document_drafts(source_index, source, &document, id, contents, observations)?;
     #[cfg(feature = "coz-profile")]
     coz::progress!("git_history_ingested_blob");
-    Ok(inserted)
+    Ok((inserted, keys))
 }
 
 fn insert_document_drafts(
@@ -1790,7 +1931,7 @@ fn insert_document_drafts(
     object: gix::ObjectId,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
-) -> Result<bool, GitHistoryError> {
+) -> Result<(bool, Vec<(ContentDigest, u32)>), GitHistoryError> {
     let drafts = chunk_document_drafts(document, ChunkingConfig::default())
         .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
     let revision_id = gix::ObjectId::from_hex(document.revision.as_str().as_bytes())
@@ -1828,7 +1969,22 @@ fn insert_document_drafts(
             observations,
         )?;
     }
-    Ok(all_inserted)
+    let keys = (0..drafts.len())
+        .map(|index| {
+            let draft = drafts.get(index);
+            let mut identifier_buffer = [""; MAX_IDENTIFIERS];
+            let identifiers = identifier_refs(&document.path, draft.text(), &mut identifier_buffer);
+            let embedding_key = embedding_text_digest_from_parts(
+                &document.title,
+                draft.headings().iter().copied(),
+                identifiers,
+                &document.tags,
+                draft.text(),
+            );
+            (history_content_key(&source.repository_id, &document.path, &embedding_key), draft.ordinal())
+        })
+        .collect();
+    Ok((all_inserted, keys))
 }
 
 fn history_content_key(
@@ -1917,9 +2073,9 @@ mod tests {
         let alpha = gix::ObjectId::from_hex("b".repeat(40).as_bytes()).expect("alpha revision");
         let beta = gix::ObjectId::from_hex("c".repeat(40).as_bytes()).expect("beta revision");
         let mut proofs = HistoryBlobDeduper::default();
-        proofs.insert("src/shared.rs", blob, alpha, true);
+        proofs.insert_with_keys("src/shared.rs", blob, alpha, true, Vec::new());
         let mut divergent = HistoryBlobDeduper::default();
-        divergent.insert("src/shared.rs", blob, beta, true);
+        divergent.insert_with_keys("src/shared.rs", blob, beta, true, Vec::new());
 
         proofs.merge_reusable(divergent);
         let revisions = proofs

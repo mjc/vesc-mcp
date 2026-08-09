@@ -217,6 +217,64 @@ async fn unversioned_symbol_search_prefers_default_revision_and_reports_occurren
 }
 
 #[tokio::test]
+async fn unversioned_refloat_c_symbol_collapses_unchanged_history() {
+    let fixture = VersionedKnowledgeFixture::new().await;
+    let harness = McpTestHarness::with_knowledge_config(fixture.knowledge().clone());
+    let prepared: Value = serde_json::from_str(
+        &harness
+            .call_tool_async(
+                "prepare_vesc_knowledge",
+                VersionedKnowledgeFixture::selection(),
+            )
+            .await,
+    )
+    .expect("prepare response");
+    assert_eq!(prepared["ok"], true, "prepare response: {prepared}");
+    let layout = vesc_mcp_core::managed_repositories::KnowledgeDataLayout::new(
+        fixture
+            .knowledge()
+            .data_root
+            .clone()
+            .expect("managed data root"),
+    );
+    vesc_mcp_core::managed_snapshots::KnowledgeSnapshotStore::new(layout)
+        .prepare_default(&fixture.knowledge().repositories)
+        .await
+        .expect("prepare default snapshot");
+
+    let body: Value = serde_json::from_str(&harness.call_tool(
+        "search_vesc_knowledge",
+        json!({
+            "query": "lbm_add_extension",
+            "mode": "lexical",
+            "detail": "full",
+            "limit": 10,
+            "filters": { "repository": "bldc" }
+        }),
+    ))
+    .expect("search response");
+    assert_eq!(body["ok"], true, "response: {body}");
+    let results = body["results"].as_array().expect("results");
+    let c_results = results
+        .iter()
+        .filter(|result| result["source"]["path"] == "vesc_c_if.c")
+        .collect::<Vec<_>>();
+    assert_eq!(c_results.len(), 1, "C evidence was not collapsed: {body}");
+    let occurrence = c_results[0]["occurrence"]
+        .as_object()
+        .expect("bounded C occurrence metadata");
+    assert!(occurrence["count"].as_u64().unwrap_or_default() >= 2);
+    assert!(occurrence["revisions"].as_array().is_some_and(|revisions| {
+        revisions
+            .iter()
+            .any(|revision| revision == fixture.old_commit())
+    }));
+    assert!(c_results[0]["passage"]
+        .as_str()
+        .is_some_and(|passage| passage.contains("lbm_add_extension")));
+}
+
+#[tokio::test]
 async fn agent_can_list_prepare_search_and_read_an_explicit_snapshot() {
     let fixture = VersionedKnowledgeFixture::new().await;
     let harness = McpTestHarness::with_knowledge_config(fixture.knowledge().clone());

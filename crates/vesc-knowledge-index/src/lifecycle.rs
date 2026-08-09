@@ -931,9 +931,10 @@ pub fn build_git_history_artifacts_from_previous(
             |repository: &RepositoryId,
              path: &str,
              key: &ContentDigest,
+             revision: &Revision,
              removed_document_ids: &BTreeSet<String>| {
                 lookup
-                    .contains_retained(repository, path, key, removed_document_ids)
+                    .contains_retained(repository, path, key, Some(revision), removed_document_ids)
                     .map_err(|error| {
                         lookup_failed = true;
                         GitHistoryError::Invalid(error.to_string())
