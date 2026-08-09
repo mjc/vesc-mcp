@@ -549,10 +549,10 @@ fn manifest_id(root: &Path) -> Option<String> {
 
 fn staged_manifest_id(staged_root: &Path) -> Option<String> {
     let id = manifest_id(staged_root)?;
-    match fs::read_to_string(staged_root.join(DISTRIBUTED_PUBLICATION_MARKER)) {
-        Ok(marker) if marker.trim() != id => None,
-        _ => Some(id),
-    }
+    fs::read_to_string(staged_root.join(DISTRIBUTED_PUBLICATION_MARKER))
+        .ok()
+        .filter(|marker| marker.trim() == id)
+        .map(|_| id)
 }
 
 fn published_manifest_id(root: &Path) -> Option<String> {
@@ -1407,17 +1407,14 @@ mod tests {
     }
 
     #[test]
-    fn distributed_cache_watcher_rejects_a_mismatched_publication_marker() {
+    fn distributed_cache_watcher_requires_a_matching_publication_marker() {
         let root = tempfile::tempdir().expect("temporary root");
         std::fs::write(
             root.path().join("default-snapshot-corpus-1.1.json"),
             r#"{"id":"snapshot-1"}"#,
         )
         .expect("manifest");
-        assert_eq!(
-            staged_manifest_id(root.path()).as_deref(),
-            Some("snapshot-1")
-        );
+        assert_eq!(staged_manifest_id(root.path()), None);
         assert_eq!(published_manifest_id(root.path()), None);
         std::fs::write(root.path().join(DISTRIBUTED_PUBLICATION_MARKER), "wrong\n")
             .expect("mismatched publication marker");
