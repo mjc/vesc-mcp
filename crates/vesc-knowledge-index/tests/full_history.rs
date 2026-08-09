@@ -220,11 +220,23 @@ impl EmbeddingProvider for FailAfterOneBatch {
     }
 }
 
-struct SingleItemEmbeddingProvider(FakeEmbeddingProvider);
+struct SingleItemEmbeddingProvider {
+    provider: FakeEmbeddingProvider,
+    embedded_documents: usize,
+}
+
+impl SingleItemEmbeddingProvider {
+    const fn new(dimension: usize) -> Self {
+        Self {
+            provider: FakeEmbeddingProvider::new(dimension),
+            embedded_documents: 0,
+        }
+    }
+}
 
 impl EmbeddingProvider for SingleItemEmbeddingProvider {
     fn embedding_dimension(&self) -> Option<usize> {
-        self.0.embedding_dimension()
+        self.provider.embedding_dimension()
     }
 
     fn embedding_batch_size(&self) -> EmbeddingBatchSize {
@@ -232,11 +244,12 @@ impl EmbeddingProvider for SingleItemEmbeddingProvider {
     }
 
     fn output_normalization(&self) -> OutputNormalization {
-        self.0.output_normalization()
+        self.provider.output_normalization()
     }
 
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        self.0.embed_documents(texts)
+        self.embedded_documents = self.embedded_documents.saturating_add(texts.len());
+        self.provider.embed_documents(texts)
     }
 
     fn embed_query(&mut self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
@@ -1249,7 +1262,7 @@ fn full_history_build_with_provider_writes_matching_vectors() {
 }
 
 #[test]
-fn semantic_build_hydrates_each_git_blob_once() {
+fn semantic_build_embeds_each_git_history_occurrence() {
     let (_root, work) = fixture();
     let passage = "bounded semantic passage ".repeat(300);
     let mut content = String::new();
@@ -1260,7 +1273,7 @@ fn semantic_build_hydrates_each_git_blob_once() {
     git(&work, &["add", "many-chunks.md"]);
     git(&work, &["commit", "-qm", "many chunks"]);
     let source = at_head(source(work.clone(), "fixture"), &work);
-    let (history, observations) = cold_history(std::slice::from_ref(&source));
+    let (history, _observations) = cold_history(std::slice::from_ref(&source));
     assert!(
         history
             .iter()
@@ -1271,7 +1284,7 @@ fn semantic_build_hydrates_each_git_blob_once() {
     );
 
     let artifacts = tempdir().expect("artifact root");
-    let mut provider = SingleItemEmbeddingProvider(FakeEmbeddingProvider::new(8));
+    let mut provider = SingleItemEmbeddingProvider::new(8);
     let summary = build_git_history_artifacts_incrementally(
         artifacts.path(),
         &[source],
@@ -1284,9 +1297,9 @@ fn semantic_build_hydrates_each_git_blob_once() {
     )
     .expect("semantic history build");
 
-    assert!(
-        summary.artifacts.observations.embedding_git_blob_loads >= observations.ingested_blobs + 2,
-        "semantic hydration includes unchanged revision occurrences"
+    assert_eq!(
+        provider.embedded_documents, summary.artifacts.chunk_count,
+        "semantic inference includes every indexed revision occurrence"
     );
 }
 
