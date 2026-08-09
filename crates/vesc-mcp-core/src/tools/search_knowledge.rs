@@ -152,8 +152,9 @@ const COMPACT_FIELDS: [&str; 7] = [
     "origin",
 ];
 
-/// One neighboring passage is enough to complete a bounded evidence context.
-const MAX_EXPANDED_NEIGHBORS: usize = 1;
+/// Keep the enclosing symbol and nearby caller/test context in full results.
+/// The per-passage byte budget still bounds the resulting response.
+const MAX_EXPANDED_NEIGHBORS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct SearchVescKnowledgeSource {
@@ -2805,6 +2806,52 @@ mod tests {
         assert_eq!(value["limits"]["max_response_bytes"], 456);
         assert_eq!(value["limits"]["max_context_bytes"], 789);
         assert_eq!(value["limits"]["default_detail"], "full");
+    }
+
+    #[test]
+    fn full_context_admits_three_adjacent_chunks() {
+        use vesc_knowledge_index::{Chunk, NormalizedDocument, RepositoryId, Revision, SourceKind};
+
+        let document = NormalizedDocument::new(
+            "doc",
+            SourceKind::Markdown,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("rev").expect("revision"),
+            "docs/doc.md",
+            "text/markdown",
+            "one two three four",
+        )
+        .expect("document");
+        let mut chunks = (0..4)
+            .map(|index| {
+                Chunk::from_document(
+                    &document,
+                    index,
+                    ["one", "two", "three", "four"][index as usize].into(),
+                    Vec::new(),
+                    None,
+                )
+                .expect("chunk")
+            })
+            .collect::<Vec<_>>();
+        for index in 0..3 {
+            chunks[index].next_chunk = Some(chunks[index + 1].chunk_id.clone());
+            chunks[index + 1].previous_chunk = Some(chunks[index].chunk_id.clone());
+        }
+        let map = chunks
+            .iter()
+            .cloned()
+            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+            .collect();
+
+        let context = vesc_knowledge_index::expand_adjacent_context(
+            &chunks[0],
+            &map,
+            MAX_EXPANDED_NEIGHBORS,
+            4096,
+        );
+        assert_eq!(context.neighbor_count, 3);
+        assert!(context.passage.contains("four"));
     }
 
     #[test]
