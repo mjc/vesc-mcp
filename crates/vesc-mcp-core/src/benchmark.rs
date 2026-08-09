@@ -119,12 +119,7 @@ impl BenchmarkEvidence {
             {
                 self.seen_source_paths.insert(path.into());
             }
-            if let Some(content) = result
-                .get("passage")
-                .or_else(|| result.get("summary"))
-                .and_then(serde_json::Value::as_str)
-            {
-                let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+            if let Some(normalized) = normalized_result_content(result) {
                 if seen_content.insert(normalized) {
                     self.distinct_content_rows += 1;
                 } else {
@@ -134,6 +129,14 @@ impl BenchmarkEvidence {
         }
         self.distinct_source_paths = self.seen_source_paths.len();
     }
+}
+
+fn normalized_result_content(result: &serde_json::Value) -> Option<String> {
+    result
+        .get("passage")
+        .or_else(|| result.get("summary"))
+        .and_then(serde_json::Value::as_str)
+        .map(|content| content.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Errors raised while measuring MCP search responses.
