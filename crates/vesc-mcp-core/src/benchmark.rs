@@ -86,6 +86,8 @@ pub struct BenchmarkEvidence {
     pub result_rows: usize,
     pub provenance_rows: usize,
     pub distinct_source_paths: usize,
+    pub distinct_content_rows: usize,
+    pub duplicate_content_rows: usize,
     pub occurrence_rows: usize,
     pub expanded_context_rows: usize,
     #[serde(skip)]
@@ -94,6 +96,7 @@ pub struct BenchmarkEvidence {
 
 impl BenchmarkEvidence {
     fn observe(&mut self, results: &[serde_json::Value]) {
+        let mut seen_content = BTreeSet::new();
         for result in results {
             self.result_rows += 1;
             if result.get("provenance").is_some() {
@@ -115,6 +118,18 @@ impl BenchmarkEvidence {
                 .and_then(serde_json::Value::as_str)
             {
                 self.seen_source_paths.insert(path.into());
+            }
+            if let Some(content) = result
+                .get("passage")
+                .or_else(|| result.get("summary"))
+                .and_then(serde_json::Value::as_str)
+            {
+                let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+                if seen_content.insert(normalized) {
+                    self.distinct_content_rows += 1;
+                } else {
+                    self.duplicate_content_rows += 1;
+                }
             }
         }
         self.distinct_source_paths = self.seen_source_paths.len();
@@ -280,7 +295,7 @@ pub fn benchmark_search_profile(
         });
 
     Ok(McpBenchmarkReport {
-        schema: 3,
+        schema: 4,
         mode,
         detail,
         warmup_iterations,
@@ -424,7 +439,7 @@ mod tests {
             2,
         )
         .expect("benchmark");
-        assert_eq!(report.schema, 3);
+        assert_eq!(report.schema, 4);
         assert_eq!(report.query_count, 1);
         assert_eq!(report.response_digests.len(), 1);
         assert_eq!(report.handler_and_serialization.samples, 2);
@@ -461,5 +476,22 @@ mod tests {
         assert_eq!(report.detail, SearchResponseDetail::Full);
         assert!(report.evidence.provenance_rows > 0);
         assert!(report.evidence.distinct_source_paths > 0);
+    }
+
+    #[test]
+    fn full_profile_reports_duplicate_content_shape() {
+        let report = benchmark_search_profile(
+            &KnowledgeConfig::default(),
+            &["lbm_add_extension".into()],
+            0,
+            1,
+            SearchMode::Lexical,
+            SearchResponseDetail::Full,
+        )
+        .expect("benchmark");
+
+        assert_eq!(report.schema, 4);
+        assert!(report.evidence.distinct_content_rows > 0);
+        assert!(report.evidence.duplicate_content_rows <= report.evidence.result_rows);
     }
 }

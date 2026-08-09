@@ -1235,6 +1235,7 @@ const fn lazy_preparation_terminal_state(current_snapshot_ready: bool) -> Prepar
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
     let suite = argument_value(args, "--suite").map_or_else(
         || PathBuf::from("tests/evaluation/v1/queries.json"),
@@ -1315,10 +1316,12 @@ fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
                 bytes.samples, bytes.min_bytes, bytes.p50_bytes, bytes.p95_bytes, bytes.max_bytes
             );
             println!(
-                "evidence: rows={} provenance={} paths={} occurrences={} expanded={}",
+                "evidence: rows={} provenance={} paths={} distinct-content={} duplicate-content={} occurrences={} expanded={}",
                 report.evidence.result_rows,
                 report.evidence.provenance_rows,
                 report.evidence.distinct_source_paths,
+                report.evidence.distinct_content_rows,
+                report.evidence.duplicate_content_rows,
                 report.evidence.occurrence_rows,
                 report.evidence.expanded_context_rows,
             );
