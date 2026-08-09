@@ -45,11 +45,11 @@ pub enum SearchMode {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum SearchResponseDetail {
-    /// Return bounded ranked rows; read the linked resource for full evidence.
+    /// Return provenance, bounded passages, and diagnostics in the first response.
     #[default]
-    Compact,
-    /// Return provenance and diagnostics.
     Full,
+    /// Return bounded ranked rows when lower response cost is more important than context.
+    Compact,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -76,9 +76,8 @@ pub struct SearchVescKnowledgeParams {
     /// Maximum bytes retained in each returned evidence passage.
     #[serde(default)]
     pub max_context_bytes: Option<usize>,
-    /// Response detail; defaults to compact progressive disclosure.
+    /// Response detail; defaults to full evidence. Use compact for an explicit low-token query.
     #[serde(default)]
-    #[schemars(skip)]
     pub detail: SearchResponseDetail,
 }
 
@@ -2293,6 +2292,35 @@ mod tests {
         assert!(response.ok);
         assert_eq!(response.mode, SearchMode::Lexical);
         assert!(response.results.len() <= 1);
+    }
+
+    #[test]
+    fn omitted_detail_defaults_to_full_evidence() {
+        let params: SearchVescKnowledgeParams = serde_json::from_value(serde_json::json!({
+            "query": "nvm",
+        }))
+        .expect("search params");
+
+        assert_eq!(params.detail, SearchResponseDetail::Full);
+    }
+
+    #[test]
+    fn search_schema_advertises_detail_profiles() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchVescKnowledgeParams))
+            .expect("search schema");
+        let detail = &schema["properties"]["detail"];
+        let detail_definition = &schema["$defs"]["SearchResponseDetail"];
+
+        assert_eq!(detail["$ref"], "#/$defs/SearchResponseDetail");
+        assert_eq!(
+            detail_definition["oneOf"]
+                .as_array()
+                .expect("detail variants")
+                .iter()
+                .map(|variant| variant["const"].clone())
+                .collect::<Vec<_>>(),
+            vec![serde_json::json!("full"), serde_json::json!("compact")]
+        );
     }
 
     #[test]

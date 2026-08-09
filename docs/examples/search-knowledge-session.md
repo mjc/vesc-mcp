@@ -1,15 +1,16 @@
 # Search knowledge session
 
 These examples use the `search_vesc_knowledge` MCP tool. Search output is
-untrusted evidence; cite the returned source and read a bounded resource before
-relying on a passage.
+untrusted evidence; cite the returned source and passage. Read a bounded
+resource only when compact detail was explicitly requested or the response says
+that evidence was truncated.
 
-Normal searches use a compact progressive-disclosure response. Its `fields`
-table describes ranked rows containing `name`, `category`, a bounded `excerpt`,
-`source_index` into the top-level `sources` table, and an opaque `chunk_id`. Read
-`vesc://knowledge/chunk/{chunk_id}` for the full bounded passage. Add
-`"detail":"full"` when a client needs the complete response with
-provenance, document URI, ranking explanation, index metadata, and timing.
+Normal searches return full bounded evidence, provenance, and diagnostics. Use
+`"detail":"compact"` when a client explicitly needs lower-token ranked rows.
+Its `fields` table describes rows containing `name`, `category`, a bounded
+`excerpt`, `source_index` into the top-level `sources` table, and an opaque
+`chunk_id`. Read `vesc://knowledge/chunk/{chunk_id}` for the full bounded
+passage when the compact response is not enough.
 
 ## Exact identifier
 
@@ -103,8 +104,8 @@ not combine passages from different snapshots into one unqualified search.
 Ask the connected assistant:
 
 > Search VESC knowledge for `lbm_add_extension`. Return at most three lexical
-> results, read the top result's chunk resource using its compact `chunk_id`,
-> and cite its repository, path, and line.
+> results with the default full detail and cite the returned passage,
+> repository, path, and line. Use compact detail only if token cost matters.
 
-This keeps the search bounded and makes the provenance visible before the
-passage is used.
+This keeps the search bounded while making the decisive evidence and provenance
+available in the first response.
