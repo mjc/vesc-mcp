@@ -64,6 +64,7 @@ pub struct SearchVescKnowledgeParams {
     pub snapshot_id: Option<String>,
     /// Maximum number of hits to return (default 10).
     #[serde(default = "default_search_limit")]
+    #[schemars(range(min = 1), default = "default_search_limit")]
     pub limit: usize,
     /// Retrieval mode. Omit to use the server default; auto keeps lexical
     /// evidence in the same response when semantic retrieval is unavailable.
@@ -74,9 +75,11 @@ pub struct SearchVescKnowledgeParams {
     pub filters: SearchVescKnowledgeFilters,
     /// Maximum response JSON size; bounded to 64 KiB by default.
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub max_response_bytes: Option<usize>,
     /// Maximum bytes retained in each returned evidence passage.
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub max_context_bytes: Option<usize>,
     /// Response detail; defaults to full evidence. Use compact for an explicit low-token query.
     #[serde(default)]
@@ -174,6 +177,21 @@ pub struct SearchVescKnowledgeResult {
     /// Deterministic explanation of the ranking stages that contributed this hit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<SearchVescKnowledgeExplanation>,
+    /// Bounded history information merged when identical evidence occurs in
+    /// multiple revisions. The retained row remains the preferred ranked hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<SearchVescKnowledgeOccurrence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct SearchVescKnowledgeOccurrence {
+    pub count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<String>,
+    pub first_revision: Option<String>,
+    pub last_revision: Option<String>,
+    /// Stable handle for expanding the representative passage/document.
+    pub representative_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
@@ -297,7 +315,17 @@ impl CorrectionReplayReport {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 pub struct SearchVescKnowledgeResponse {
     pub ok: bool,
+    /// Mode requested by the caller (or the configured default when omitted).
+    #[serde(default)]
+    pub mode_requested: SearchMode,
+    /// Mode that actually produced the results. This differs from `mode` when
+    /// auto mode degrades to lexical retrieval.
+    #[serde(default)]
+    pub mode_used: SearchMode,
     pub mode: SearchMode,
+    /// Detail profile actually represented on the wire after response bounds.
+    #[serde(default)]
+    pub detail: SearchResponseDetail,
     /// Retrieval capabilities available for the selected mode.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
@@ -310,10 +338,24 @@ pub struct SearchVescKnowledgeResponse {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Stable machine-readable warning identifiers parallel to `warnings`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warning_codes: Vec<String>,
+    /// Typed request validation diagnostics for rejected fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<SearchVescKnowledgeValidation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<SearchVescKnowledgeIndex>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<SearchVescKnowledgeTiming>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct SearchVescKnowledgeValidation {
+    pub field: String,
+    pub rejected_value: String,
+    pub accepted: String,
+    pub clamping_safe: bool,
 }
 
 type CompactResultRow = (
@@ -331,7 +373,10 @@ type CompactResultRow = (
 #[derive(Debug, Clone, Serialize, PartialEq)]
 struct CompactSearchResponse {
     ok: bool,
+    mode_requested: SearchMode,
+    mode_used: SearchMode,
     mode: SearchMode,
+    detail: SearchResponseDetail,
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -345,6 +390,10 @@ struct CompactSearchResponse {
     error: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    warning_codes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation: Option<SearchVescKnowledgeValidation>,
 }
 
 #[must_use]
@@ -376,7 +425,10 @@ fn compact_response(response: &SearchVescKnowledgeResponse, query: &str) -> Comp
     }
     CompactSearchResponse {
         ok: response.ok,
+        mode_requested: response.mode_requested,
+        mode_used: response.mode_used,
         mode: response.mode,
+        detail: response.detail,
         snapshot_id: response
             .index
             .as_ref()
@@ -392,6 +444,8 @@ fn compact_response(response: &SearchVescKnowledgeResponse, query: &str) -> Comp
         results,
         error: response.error.clone(),
         warnings: response.warnings.clone(),
+        warning_codes: response.warning_codes.clone(),
+        validation: response.validation.clone(),
     }
 }
 
@@ -503,63 +557,15 @@ pub fn search_vesc_knowledge_tool_with_config(
     config: &KnowledgeConfig,
 ) -> SearchVescKnowledgeResponse {
     let mode = params.mode.unwrap_or_else(|| configured_mode(config));
-    if config.mode == RetrievalMode::Lexical && mode != SearchMode::Lexical {
-        return error_response(
-            mode,
-            "service is configured for lexical search; retry with mode \"lexical\"".into(),
-        );
-    }
-    let (selected, selected_config) = match selected_search_config(params, config) {
-        Ok(selected) => selected,
-        Err(error) => return error_response(mode, error),
+    let (selected, config, limit) = match validate_search_inputs(params, config, mode) {
+        Ok(inputs) => inputs,
+        Err(response) => return *response,
     };
-    let config = selected_config.as_ref().unwrap_or(config);
-    if let Err(error) = resolved_search_artifact(config) {
-        return error_response(mode, error);
-    }
     let started = Instant::now();
-    if params.query.len() > config.max_query_bytes {
-        return error_response(
-            mode,
-            format!("query exceeds {} bytes", config.max_query_bytes),
-        );
-    }
-    let limit = if params.limit == 0 {
-        default_search_limit()
-    } else {
-        params.limit
-    };
-    if limit > config.max_limit {
-        return error_response(mode, format!("limit exceeds maximum {}", config.max_limit));
-    }
-    if params
-        .max_response_bytes
-        .is_some_and(|budget| budget == 0 || budget > config.max_response_bytes)
-    {
-        return error_response(
-            mode,
-            format!(
-                "max_response_bytes must be between 1 and {}",
-                config.max_response_bytes
-            ),
-        );
-    }
-    if params
-        .max_context_bytes
-        .is_some_and(|budget| budget == 0 || budget > config.max_passage_bytes)
-    {
-        return error_response(
-            mode,
-            format!(
-                "max_context_bytes must be between 1 and {}",
-                config.max_passage_bytes
-            ),
-        );
-    }
 
     match parse_filters(params) {
-        Ok(filters) => match search_mode(params, mode, &filters, limit, config) {
-            Ok((mut results, warnings)) => {
+        Ok(filters) => match search_mode(params, mode, &filters, limit, &config) {
+            Ok((mut results, warnings, mode_used)) => {
                 if let Some(snapshot_id) = selected
                     .as_ref()
                     .and_then(|artifact| artifact.snapshot_id.as_ref())
@@ -568,20 +574,25 @@ pub fn search_vesc_knowledge_tool_with_config(
                 }
                 let mut response = SearchVescKnowledgeResponse {
                     ok: true,
+                    mode_requested: mode,
+                    mode_used,
                     mode,
-                    capabilities: capabilities_for_mode(mode),
+                    detail: params.detail,
+                    capabilities: capabilities_for_mode(mode_used),
                     corrections: Vec::new(),
                     results,
                     error: None,
                     warnings,
-                    index: index_metadata(config, selected.as_ref()),
+                    warning_codes: Vec::new(),
+                    validation: None,
+                    index: index_metadata(&config, selected.as_ref()),
                     timing: None,
                 };
                 response.timing = Some(SearchVescKnowledgeTiming {
                     total_us: elapsed_us(started),
                     result_count: response.results.len(),
                 });
-                response = response.bounded(params, config, params.detail);
+                response = response.bounded(params, &config, params.detail);
                 if let Some(timing) = &mut response.timing {
                     timing.result_count = response.results.len();
                 }
@@ -589,17 +600,29 @@ pub fn search_vesc_knowledge_tool_with_config(
             }
             Err(error) => SearchVescKnowledgeResponse {
                 ok: false,
+                mode_requested: mode,
+                mode_used: mode,
                 mode,
+                detail: params.detail,
                 capabilities: Vec::new(),
                 corrections: Vec::new(),
                 results: Vec::new(),
                 error: Some(error),
                 warnings: Vec::new(),
-                index: index_metadata(config, selected.as_ref()),
+                warning_codes: vec!["retrieval_failed".into()],
+                validation: None,
+                index: index_metadata(&config, selected.as_ref()),
                 timing: None,
             },
         },
-        Err(error) => error_response(mode, error),
+        Err(error) => validation_error_response(
+            mode,
+            "filters",
+            "provided object".into(),
+            "object with supported enum values and non-empty identifiers".into(),
+            false,
+            error,
+        ),
     }
 }
 
@@ -624,6 +647,103 @@ fn selected_search_config(
     selected.managed_git = false;
     selected.artifact_path = Some(resolved.path.clone());
     Ok((Some(resolved), Some(selected)))
+}
+
+fn validate_search_inputs(
+    params: &SearchVescKnowledgeParams,
+    configured: &KnowledgeConfig,
+    mode: SearchMode,
+) -> Result<
+    (
+        Option<crate::config::ResolvedKnowledgeArtifact>,
+        KnowledgeConfig,
+        usize,
+    ),
+    Box<SearchVescKnowledgeResponse>,
+> {
+    if configured.mode == RetrievalMode::Lexical && mode != SearchMode::Lexical {
+        return Err(Box::new(validation_error_response(
+            mode,
+            "mode",
+            format!("{mode:?}"),
+            "lexical".into(),
+            false,
+            "service is configured for lexical search; retry with mode \"lexical\"".into(),
+        )));
+    }
+    let (selected, selected_config) =
+        selected_search_config(params, configured).map_err(|error| {
+            Box::new(validation_error_response(
+                mode,
+                "snapshot_id",
+                params.snapshot_id.clone().unwrap_or_default(),
+                "an available snapshot ID from list_vesc_source_versions".into(),
+                false,
+                error,
+            ))
+        })?;
+    let config = selected_config.unwrap_or_else(|| configured.clone());
+    if let Err(error) = resolved_search_artifact(&config) {
+        return Err(Box::new(error_response(mode, error)));
+    }
+    if params.query.len() > config.max_query_bytes {
+        return Err(Box::new(validation_error_response(
+            mode,
+            "query",
+            params.query.clone(),
+            format!("UTF-8 string up to {} bytes", config.max_query_bytes),
+            false,
+            format!("query exceeds {} bytes", config.max_query_bytes),
+        )));
+    }
+    let limit = if params.limit == 0 {
+        default_search_limit()
+    } else {
+        params.limit
+    };
+    if limit > config.max_limit {
+        return Err(Box::new(validation_error_response(
+            mode,
+            "limit",
+            limit.to_string(),
+            format!("integer in 1..={}", config.max_limit),
+            true,
+            format!("limit exceeds maximum {}", config.max_limit),
+        )));
+    }
+    if params
+        .max_response_bytes
+        .is_some_and(|budget| budget == 0 || budget > config.max_response_bytes)
+    {
+        return Err(Box::new(validation_error_response(
+            mode,
+            "max_response_bytes",
+            params.max_response_bytes.unwrap_or_default().to_string(),
+            format!("integer in 1..={}", config.max_response_bytes),
+            true,
+            format!(
+                "max_response_bytes must be between 1 and {}",
+                config.max_response_bytes
+            ),
+        )));
+    }
+    if params
+        .max_context_bytes
+        .is_some_and(|budget| budget == 0 || budget > config.max_passage_bytes)
+    {
+        return Err(Box::new(validation_error_response(
+            mode,
+            "max_context_bytes",
+            params.max_context_bytes.unwrap_or_default().to_string(),
+            format!("integer in 1..={}", config.max_passage_bytes),
+            true,
+            format!(
+                "max_context_bytes must be between 1 and {}",
+                config.max_passage_bytes
+            ),
+        )));
+    }
+    Ok((selected, config, limit))
 }
 
 fn resolved_search_artifact(config: &KnowledgeConfig) -> Result<Option<PathBuf>, String> {
@@ -681,18 +801,42 @@ fn capabilities_for_mode(mode: SearchMode) -> Vec<String> {
     }
 }
 
-const fn error_response(mode: SearchMode, error: String) -> SearchVescKnowledgeResponse {
+fn error_response(mode: SearchMode, error: String) -> SearchVescKnowledgeResponse {
     SearchVescKnowledgeResponse {
         ok: false,
+        mode_requested: mode,
+        mode_used: mode,
         mode,
+        detail: SearchResponseDetail::Full,
         capabilities: Vec::new(),
         corrections: Vec::new(),
         results: Vec::new(),
         error: Some(error),
         warnings: Vec::new(),
+        warning_codes: vec!["request_failed".into()],
+        validation: None,
         index: None,
         timing: None,
     }
+}
+
+fn validation_error_response(
+    mode: SearchMode,
+    field: &str,
+    rejected_value: String,
+    accepted: String,
+    clamping_safe: bool,
+    error: String,
+) -> SearchVescKnowledgeResponse {
+    let mut response = error_response(mode, error);
+    response.warning_codes = vec!["validation_failed".into()];
+    response.validation = Some(SearchVescKnowledgeValidation {
+        field: field.into(),
+        rejected_value,
+        accepted,
+        clamping_safe,
+    });
+    response
 }
 
 impl SearchVescKnowledgeResponse {
@@ -702,6 +846,7 @@ impl SearchVescKnowledgeResponse {
         config: &KnowledgeConfig,
         detail: SearchResponseDetail,
     ) -> Self {
+        self.warning_codes = warning_codes(&self.warnings);
         let limit = if params.limit == 0 {
             default_search_limit()
         } else {
@@ -730,20 +875,37 @@ impl SearchVescKnowledgeResponse {
                 compact_correction(correction);
             }
         }
+        let initial_results = self.results.len();
         while response_exceeds_budget(&self, budget, detail, &params.query)
             && self.results.len() > 1
         {
             self.results.pop();
+        }
+        if self.results.len() < initial_results {
+            self.warning_codes.push("results_dropped".into());
+            self.warnings
+                .push("response budget removed lower-ranked result rows".into());
         }
         if response_exceeds_budget(&self, budget, detail, &params.query) {
             for result in &mut self.results {
                 compact_result(result);
             }
+            self.detail = SearchResponseDetail::Compact;
+            self.warning_codes.push("detail_degraded".into());
+            self.warning_codes.push("provenance_removed".into());
+            self.warnings.push(
+                "full detail exceeded the response budget; returned compact rows without provenance"
+                    .into(),
+            );
         }
+        let compacted_results = self.results.len();
         while response_exceeds_budget(&self, budget, detail, &params.query)
             && self.results.len() > 1
         {
             self.results.pop();
+        }
+        if self.results.len() < compacted_results {
+            self.warning_codes.push("results_dropped".into());
         }
         if response_exceeds_budget(&self, budget, detail, &params.query) {
             self.results.clear();
@@ -760,12 +922,22 @@ impl SearchVescKnowledgeResponse {
         if response_exceeds_budget(&self, budget, detail, &params.query) {
             self.warnings
                 .push("response budget is smaller than the fixed response envelope".into());
+            self.warning_codes.push("response_budget_exceeded".into());
         }
         if let Some(timing) = &mut self.timing {
             timing.result_count = self.results.len();
         }
         self
     }
+}
+
+fn warning_codes(warnings: &[String]) -> Vec<String> {
+    warnings
+        .iter()
+        .filter_map(|warning| warning.split(':').next())
+        .map(|code| code.trim().to_owned())
+        .filter(|code| !code.is_empty() && *code != "full detail exceeded the response budget")
+        .collect()
 }
 
 fn response_exceeds_budget(
@@ -961,11 +1133,12 @@ fn search_mode(
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
+) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>, SearchMode), String> {
     match mode {
-        SearchMode::Lexical => lexical_search_results(params, filters, limit, config),
+        SearchMode::Lexical => lexical_search_results(params, filters, limit, config)
+            .map(|(results, warnings)| (results, warnings, SearchMode::Lexical)),
         SearchMode::Auto => match hybrid_results(params, filters, limit, config) {
-            Ok(results) => Ok(results),
+            Ok((results, warnings)) => Ok((results, warnings, SearchMode::Hybrid)),
             Err(error) => {
                 let (results, _) = lexical_search_results(params, filters, limit, config)?;
                 Ok((
@@ -973,12 +1146,15 @@ fn search_mode(
                     vec![format!(
                         "semantic_unavailable: {error}; used lexical retrieval"
                     )],
+                    SearchMode::Lexical,
                 ))
             }
         },
-        SearchMode::Hybrid => hybrid_results(params, filters, limit, config).map_err(|error| {
-            format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
-        }),
+        SearchMode::Hybrid => hybrid_results(params, filters, limit, config)
+            .map(|(results, warnings)| (results, warnings, SearchMode::Hybrid))
+            .map_err(|error| {
+                format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
+            }),
     }
 }
 
@@ -1705,6 +1881,7 @@ fn fused_result(
             filter_effects: filter_effects(filters),
             expansion_reason: context.reason.clone(),
         }),
+        occurrence: None,
     }
 }
 
@@ -1716,25 +1893,61 @@ fn retain_diverse_results(
     if filters.revision.is_some() {
         return results.into_iter().take(limit).collect();
     }
+    let mut retained = Vec::with_capacity(limit);
     let mut seen = BTreeSet::new();
-    results
-        .into_iter()
-        .filter(|result| {
-            let passage = result
+    for mut result in results {
+        let key = (
+            result.source.repo.clone(),
+            result.source.path.clone(),
+            result
                 .passage
                 .as_deref()
                 .unwrap_or(result.summary.as_str())
                 .split_whitespace()
                 .collect::<Vec<_>>()
-                .join(" ");
-            seen.insert((
-                result.source.repo.clone(),
-                result.source.path.clone(),
-                passage,
-            ))
-        })
-        .take(limit)
-        .collect()
+                .join(" "),
+        );
+        if seen.insert(key) {
+            if retained.len() < limit {
+                retained.push(result);
+            }
+            continue;
+        }
+        if let Some(existing) = retained.iter_mut().find(|existing| {
+            existing.source.repo == result.source.repo
+                && existing.source.path == result.source.path
+                && normalized_passage(existing) == normalized_passage(&result)
+        }) {
+            let occurrence =
+                existing
+                    .occurrence
+                    .get_or_insert_with(|| SearchVescKnowledgeOccurrence {
+                        count: 1,
+                        revisions: existing.source.revision.clone().into_iter().collect(),
+                        first_revision: existing.source.revision.clone(),
+                        last_revision: existing.source.revision.clone(),
+                        representative_id: existing.id.clone(),
+                    });
+            occurrence.count += 1;
+            if let Some(revision) = result.source.revision.take() {
+                if occurrence.revisions.len() < 8 && !occurrence.revisions.contains(&revision) {
+                    occurrence.revisions.push(revision.clone());
+                }
+                occurrence.last_revision = Some(revision);
+            }
+        }
+    }
+    retained
+}
+
+fn normalized_passage(result: &SearchVescKnowledgeResult) -> String {
+    result
+        .passage
+        .as_deref()
+        .unwrap_or(result.summary.as_str())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn active_lexical_path(root: &Path) -> Result<std::path::PathBuf, String> {
@@ -1820,6 +2033,7 @@ fn lexical_result(
             filter_effects: filter_effects(filters),
             expansion_reason: None,
         }),
+        occurrence: None,
     }
 }
 
@@ -2095,6 +2309,7 @@ fn feedback_note_result(
         correction_ids: Vec::new(),
         provenance: None,
         explanation: None,
+        occurrence: None,
         id,
         summary,
     }
@@ -2412,6 +2627,10 @@ mod tests {
                 .is_some_and(|variants| variants.iter().any(|variant| variant["oneOf"].is_array()))
         );
         assert_eq!(schema["properties"]["filters"]["type"], "object");
+        assert_eq!(schema["properties"]["limit"]["default"], 10);
+        assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+        assert_eq!(schema["properties"]["max_response_bytes"]["minimum"], 1);
+        assert_eq!(schema["properties"]["max_context_bytes"]["minimum"], 1);
         assert_eq!(
             detail_definition["oneOf"]
                 .as_array()
@@ -2441,6 +2660,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["old", "new"]
         );
+        let occurrence = retained[0].occurrence.as_ref().expect("history summary");
+        assert_eq!(occurrence.count, 2);
+        assert_eq!(occurrence.revisions, vec!["abc123", "def456"]);
+        assert_eq!(occurrence.representative_id, "old");
     }
 
     #[test]
@@ -2486,6 +2709,7 @@ mod tests {
             correction_ids: Vec::new(),
             provenance: None,
             explanation: None,
+            occurrence: None,
         }
     }
 
@@ -2567,6 +2791,14 @@ mod tests {
         assert!(response.ok);
         assert!(!response.results.is_empty());
         assert!(response.error.is_none());
+        assert_eq!(response.mode_requested, SearchMode::Auto);
+        assert_eq!(response.mode_used, SearchMode::Lexical);
+        assert!(
+            response
+                .warning_codes
+                .iter()
+                .any(|code| code == "semantic_unavailable")
+        );
         assert!(response.warnings.iter().any(|warning| {
             warning.contains("semantic_unavailable") && warning.contains("lexical")
         }));
@@ -2772,7 +3004,10 @@ max_total_bytes = 1073741824
     fn compact_symbol_rows_center_exact_identifier_in_code() {
         let response = SearchVescKnowledgeResponse {
             ok: true,
+            mode_requested: SearchMode::Lexical,
+            mode_used: SearchMode::Lexical,
             mode: SearchMode::Lexical,
+            detail: SearchResponseDetail::Full,
             capabilities: Vec::new(),
             corrections: Vec::new(),
             results: vec![SearchVescKnowledgeResult {
@@ -2814,9 +3049,12 @@ max_total_bytes = 1073741824
                     filter_effects: Vec::new(),
                     expansion_reason: None,
                 }),
+                occurrence: None,
             }],
             error: None,
             warnings: Vec::new(),
+            warning_codes: Vec::new(),
+            validation: None,
             index: None,
             timing: None,
         };

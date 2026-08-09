@@ -1,6 +1,6 @@
 //! Shared, bounded readiness state for background knowledge preparation.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -44,6 +44,28 @@ pub struct KnowledgePreparationStatus {
     pub freshness_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validated_vector: Option<ValidatedVectorArtifact>,
+    /// Snapshot currently serving requests, when a managed store is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_snapshot: Option<String>,
+    /// Most recently published snapshot visible to this host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_snapshot: Option<String>,
+    /// Last successful refresh/publication time as Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_refresh_unix_secs: Option<u64>,
+    /// Bounded failure reason from the last publication or refresh attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repositories: BTreeMap<String, KnowledgeRepositoryPublicationStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct KnowledgeRepositoryPublicationStatus {
+    pub serving_revision: Option<String>,
+    pub available_revision: Option<String>,
+    pub last_refresh_unix_secs: Option<u64>,
+    pub failure_reason: Option<String>,
 }
 
 /// File identity of a vector generation that completed lifecycle validation.
@@ -138,6 +160,11 @@ impl KnowledgePreparationStatus {
             repositories_total,
             freshness_required: false,
             validated_vector: None,
+            active_snapshot: None,
+            available_snapshot: None,
+            last_refresh_unix_secs: None,
+            last_error: None,
+            repositories: BTreeMap::new(),
         }
     }
 
@@ -154,6 +181,11 @@ impl KnowledgePreparationStatus {
             repositories_total,
             freshness_required: false,
             validated_vector: None,
+            active_snapshot: None,
+            available_snapshot: None,
+            last_refresh_unix_secs: None,
+            last_error: None,
+            repositories: BTreeMap::new(),
         }
     }
 
@@ -169,6 +201,30 @@ impl KnowledgePreparationStatus {
         validated_vector: Option<ValidatedVectorArtifact>,
     ) -> Self {
         self.validated_vector = validated_vector;
+        self
+    }
+
+    #[must_use]
+    pub fn with_publication(
+        mut self,
+        active_snapshot: Option<String>,
+        available_snapshot: Option<String>,
+        last_refresh_unix_secs: Option<u64>,
+        last_error: Option<String>,
+    ) -> Self {
+        self.active_snapshot = active_snapshot;
+        self.available_snapshot = available_snapshot;
+        self.last_refresh_unix_secs = last_refresh_unix_secs;
+        self.last_error = last_error;
+        self
+    }
+
+    #[must_use]
+    pub fn with_repositories(
+        mut self,
+        repositories: BTreeMap<String, KnowledgeRepositoryPublicationStatus>,
+    ) -> Self {
+        self.repositories = repositories;
         self
     }
 }

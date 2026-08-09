@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::future::Future;
@@ -13,8 +13,8 @@ use vesc_mcp_core::managed_snapshots::{
     KnowledgeSnapshotStore, SnapshotBuildPhase, SnapshotDisposition, SnapshotState,
 };
 use vesc_mcp_core::preparation_status::{
-    KnowledgePreparationStatus, PreparationPhase, PreparationState, ValidatedVectorArtifact,
-    read_preparation_status, write_preparation_status,
+    KnowledgePreparationStatus, KnowledgeRepositoryPublicationStatus, PreparationPhase,
+    PreparationState, ValidatedVectorArtifact, read_preparation_status, write_preparation_status,
 };
 use vesc_mcp_core::server::KnowledgePreparation;
 use vesc_mcp_core::tools::prepare_knowledge::{
@@ -30,6 +30,7 @@ const REFRESH_ON_STARTUP_ARG: &str = "--refresh-on-startup";
 const EAGER_INDEX_ARG: &str = "--eager-index";
 const REFRESH_INTERVAL_ARG: &str = "--refresh-interval-secs";
 const WATCH_DISTRIBUTED_CACHE_ARG: &str = "--watch-distributed-cache";
+const PUBLISH_DISTRIBUTED_CACHE_ARG: &str = "--publish-distributed-cache";
 const DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS: u64 = 900;
 
 struct PreparationReporter {
@@ -110,11 +111,44 @@ impl PreparationReporter {
         self.validated_vector = vesc_mcp_core::preparation_status::validated_vector(artifact_root);
     }
 
+    fn snapshot_available(&self, snapshot: &str) {
+        let status = KnowledgePreparationStatus::finished(
+            PreparationState::Ready,
+            self.repositories_completed,
+            self.repositories_total,
+        )
+        .with_publication(
+            Some(snapshot.to_owned()),
+            Some(snapshot.to_owned()),
+            Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_secs()),
+            ),
+            None,
+        );
+        self.publish(&status);
+    }
+
     fn publish(&self, status: &KnowledgePreparationStatus) {
+        let prior = read_preparation_status(&self.data_root);
         let status = status
             .clone()
             .with_freshness_required(self.freshness_required)
-            .with_validated_vector(self.validated_vector.clone());
+            .with_validated_vector(self.validated_vector.clone())
+            .with_publication(
+                prior
+                    .as_ref()
+                    .and_then(|value| value.active_snapshot.clone()),
+                prior
+                    .as_ref()
+                    .and_then(|value| value.available_snapshot.clone()),
+                prior
+                    .as_ref()
+                    .and_then(|value| value.last_refresh_unix_secs),
+                prior.as_ref().and_then(|value| value.last_error.clone()),
+            )
+            .with_repositories(prior.map_or_else(BTreeMap::new, |value| value.repositories));
         if let Err(error) = write_preparation_status(&self.data_root, &status) {
             tracing::warn!(%error, "could not publish knowledge preparation status");
         }
@@ -304,6 +338,7 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
     let startup_policy = StartupPolicy::from_args(&args);
     let refresh_interval = refresh_interval(&args)?;
     let watch_distributed_cache = distributed_cache_watch_path(&args)?;
+    let publish_distributed_cache = publish_distributed_cache(&args)?;
     if args.iter().any(|arg| arg == "--refresh-repositories") {
         synchronize_managed_repositories(startup_policy).await?;
         return Ok(());
@@ -350,7 +385,11 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--http") {
         let refresh_args = repository_refresh_args(&args);
         initialize_managed_repository_preparation(&refresh_args)?;
-        spawn_background_refresh(refresh_interval, startup_policy);
+        spawn_background_refresh(
+            refresh_interval,
+            startup_policy,
+            publish_distributed_cache.clone(),
+        );
         spawn_distributed_cache_watcher(watch_distributed_cache, refresh_interval);
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
@@ -363,7 +402,7 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
 
     let refresh_args = repository_refresh_args(&args);
     initialize_managed_repository_preparation(&refresh_args)?;
-    spawn_background_refresh(refresh_interval, startup_policy);
+    spawn_background_refresh(refresh_interval, startup_policy, publish_distributed_cache);
     spawn_distributed_cache_watcher(watch_distributed_cache, refresh_interval);
     tokio::spawn(async move {
         if let Err(error) = synchronize_managed_repositories_in_child(refresh_args).await {
@@ -423,7 +462,22 @@ fn distributed_cache_watch_path(args: &[String]) -> anyhow::Result<Option<PathBu
     Ok(Some(PathBuf::from(value)))
 }
 
-fn spawn_background_refresh(interval: Option<Duration>, startup: StartupPolicy) {
+fn publish_distributed_cache(args: &[String]) -> anyhow::Result<Option<PathBuf>> {
+    let requested = args.iter().any(|arg| arg == PUBLISH_DISTRIBUTED_CACHE_ARG);
+    let Some(value) = argument_value(args, PUBLISH_DISTRIBUTED_CACHE_ARG) else {
+        if requested {
+            anyhow::bail!("{PUBLISH_DISTRIBUTED_CACHE_ARG} requires a path");
+        }
+        return Ok(None);
+    };
+    Ok(Some(PathBuf::from(value)))
+}
+
+fn spawn_background_refresh(
+    interval: Option<Duration>,
+    startup: StartupPolicy,
+    publish_target: Option<PathBuf>,
+) {
     let Some(interval) = interval else { return };
     if matches!(
         startup.knowledge_preparation,
@@ -442,6 +496,10 @@ fn spawn_background_refresh(interval: Option<Duration>, startup: StartupPolicy) 
             tokio::time::sleep(interval).await;
             if let Err(error) = synchronize_managed_repositories(policy).await {
                 tracing::warn!(%error, "background knowledge refresh failed; retaining prior generation");
+            } else if let Some(target) = &publish_target
+                && let Err(error) = publish_distributed_bundle(target)
+            {
+                tracing::warn!(%error, "distributed knowledge publication failed; retaining prior target");
             }
         }
     });
@@ -452,8 +510,13 @@ fn spawn_distributed_cache_watcher(staged_root: Option<PathBuf>, interval: Optio
         return;
     };
     tokio::spawn(async move {
+        let mut last_staged = None;
         loop {
             tokio::time::sleep(interval).await;
+            let staged_id = staged_manifest_id(&staged_root);
+            if staged_id.is_some() && staged_id == last_staged {
+                continue;
+            }
             let staged_root = staged_root.clone();
             let result =
                 tokio::task::spawn_blocking(move || install_distributed_cache(&staged_root))
@@ -464,14 +527,155 @@ fn spawn_distributed_cache_watcher(staged_root: Option<PathBuf>, interval: Optio
                     .and_then(|result| result);
             match result {
                 Ok(snapshot) => {
+                    last_staged = Some(snapshot.clone());
+                    publish_distributed_status(Some(snapshot.clone()), None);
                     tracing::info!(%snapshot, "activated distributed knowledge snapshot");
                 }
                 Err(error) => {
+                    publish_distributed_status(None, Some(error.to_string()));
                     tracing::warn!(%error, "distributed cache refresh failed; retaining prior generation");
                 }
             }
         }
     });
+}
+
+fn staged_manifest_id(staged_root: &Path) -> Option<String> {
+    let bytes = fs::read(staged_root.join("default-snapshot-corpus-1.1.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    manifest.get("id")?.as_str().map(str::to_owned)
+}
+
+fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
+    let config = McpConfig::load();
+    let Some(data_root) = config.knowledge.data_root.as_ref() else {
+        return;
+    };
+    let prior = read_preparation_status(data_root.as_path());
+    let active = snapshot.clone().or_else(|| {
+        prior
+            .as_ref()
+            .and_then(|status| status.active_snapshot.clone())
+    });
+    let available = snapshot.or_else(|| {
+        prior
+            .as_ref()
+            .and_then(|status| status.available_snapshot.clone())
+    });
+    let state = if error.is_some() {
+        PreparationState::Stale
+    } else {
+        PreparationState::Ready
+    };
+    let repositories = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(data_root.clone()))
+        .default_manifest()
+        .ok()
+        .map(|manifest| {
+            manifest
+                .repositories
+                .into_iter()
+                .map(|repository| {
+                    (
+                        repository.repository.to_string(),
+                        KnowledgeRepositoryPublicationStatus {
+                            serving_revision: Some(repository.commit.clone()),
+                            available_revision: Some(repository.commit),
+                            last_refresh_unix_secs: error.is_none().then(|| {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map_or(0, |duration| duration.as_secs())
+                            }),
+                            failure_reason: error.clone(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .or_else(|| prior.as_ref().map(|status| status.repositories.clone()))
+        .unwrap_or_default();
+    let status =
+        KnowledgePreparationStatus::finished(state, 0, config.knowledge.repositories.enabled_len())
+            .with_publication(
+                active,
+                available,
+                error.is_none().then(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |duration| duration.as_secs())
+                }),
+                error.map(|mut reason| {
+                    reason.truncate(512);
+                    reason
+                }),
+            )
+            .with_repositories(repositories);
+    if let Err(write_error) = write_preparation_status(data_root.as_path(), &status) {
+        tracing::warn!(%write_error, "could not publish distributed knowledge status");
+    }
+}
+
+/// Publish a complete immutable data-root bundle through a single directory
+/// rename. Readers therefore see either the previous bundle or the new one,
+/// never the partially copied repository/artifact tuple.
+fn publish_distributed_bundle(target: &Path) -> anyhow::Result<()> {
+    let config = McpConfig::load();
+    let source = config
+        .knowledge
+        .data_root
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("distributed publication requires a data root"))?
+        .as_path();
+    if source == target || source.starts_with(target) || target.starts_with(source) {
+        anyhow::bail!("distributed publication target must not overlap the source data root");
+    }
+    if let (Some(source_id), Some(target_id)) =
+        (staged_manifest_id(source), staged_manifest_id(target))
+        && source_id == target_id
+    {
+        return Ok(());
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("distributed publication target has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let staged = parent.join(format!(".vesc-mcp-publish-{}", std::process::id()));
+    if staged.exists() {
+        fs::remove_dir_all(&staged)?;
+    }
+    copy_directory_tree(source, &staged)?;
+    let backup = target.with_extension("previous");
+    if backup.exists() {
+        fs::remove_dir_all(&backup)?;
+    }
+    if target.exists() {
+        fs::rename(target, &backup)?;
+    }
+    if let Err(error) = fs::rename(&staged, target) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, target);
+        }
+        let _ = fs::remove_dir_all(&staged);
+        return Err(error.into());
+    }
+    if backup.exists() {
+        fs::remove_dir_all(backup)?;
+    }
+    Ok(())
+}
+
+fn copy_directory_tree(source: &Path, target: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory_tree(&source_path, &target_path)?;
+        } else {
+            fs::copy(source_path, target_path)?;
+        }
+    }
+    Ok(())
 }
 
 fn install_distributed_cache(staged_root: &Path) -> anyhow::Result<String> {
@@ -793,6 +997,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
         );
     }
     reporter.validated_vector(&prepared.default.artifact_path);
+    reporter.snapshot_available(prepared.default.manifest.id.as_str());
     reporter.finish(terminal_preparation_state(
         used_stale_sources,
         prepared.default.disposition,
@@ -917,11 +1122,12 @@ mod tests {
 
     use super::{
         CACHED_ONLY_ARG, EAGER_INDEX_ARG, INSTALL_DISTRIBUTED_CACHE_ARG,
-        PROFILE_INITIAL_TRAINING_ARG, PreparationReporter, REFRESH_INTERVAL_ARG,
-        REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
-        WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, migraphx_cache_path,
-        policy_for_available_data, preparation_phase_for_build, publish_child_preparation_failure,
-        refresh_interval, repository_preparation_timeout, repository_refresh_args, run_http,
+        PROFILE_INITIAL_TRAINING_ARG, PUBLISH_DISTRIBUTED_CACHE_ARG, PreparationReporter,
+        REFRESH_INTERVAL_ARG, REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG,
+        RuntimeProfile, StartupPolicy, WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path,
+        migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
+        publish_child_preparation_failure, publish_distributed_cache, refresh_interval,
+        repository_preparation_timeout, repository_refresh_args, run_http,
         supervise_preparation_child, terminal_preparation_state,
     };
 
@@ -1143,6 +1349,20 @@ mod tests {
             Some(PathBuf::from("/stage"))
         );
         assert!(distributed_cache_watch_path(&[WATCH_DISTRIBUTED_CACHE_ARG.into()]).is_err());
+    }
+
+    #[test]
+    fn distributed_cache_publisher_requires_a_target() {
+        assert_eq!(publish_distributed_cache(&[]).expect("no publisher"), None);
+        assert_eq!(
+            publish_distributed_cache(&[
+                PUBLISH_DISTRIBUTED_CACHE_ARG.into(),
+                "/srv/vesc-cache".into()
+            ])
+            .expect("publisher target"),
+            Some(PathBuf::from("/srv/vesc-cache"))
+        );
+        assert!(publish_distributed_cache(&[PUBLISH_DISTRIBUTED_CACHE_ARG.into()]).is_err());
     }
 
     #[test]

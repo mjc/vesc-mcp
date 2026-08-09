@@ -294,13 +294,15 @@ from the old cached repository. Run
 `vesc-mcp-server --refresh-repositories` performs a refresh and exits. For a
 long-running accelerated host, add `--refresh-interval-secs N`; each cycle is
 serialized behind the snapshot build lock and publishes either a complete new
-generation or leaves the prior one serving. A cached-only host can activate a
-complete bundle staged by its deployment transport with
+generation or leaves the prior one serving. Add `--publish-distributed-cache
+PATH` to atomically publish the complete data-root bundle for a cached-only
+host. That host can activate it with
 `--cached-only --watch-distributed-cache PATH --refresh-interval-secs N`.
-Watcher failures are logged and leave the previous generation active; the
-normal preparation status remains the source for readiness and stale-state
-diagnostics. The watcher never fetches repositories or runs embedding
-inference on a cached-only host.
+Publication is coalesced by snapshot ID. Watcher failures are logged and leave
+the previous generation active; ping preparation status includes active and
+available snapshot IDs, last refresh time, and a bounded failure reason. The
+watcher never fetches repositories or runs embedding inference on a cached-only
+host.
 
 Agents discover this local state with the read-only
 `list_vesc_source_versions` tool before choosing evidence. It accepts optional

@@ -196,11 +196,15 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
     stdin.flush().await?;
 
     let mut tools_list_bytes = None;
+    let mut tools_list_value = None;
     let mut search_bytes = None;
     while let Some(line) = lines.next_line().await? {
         let value: serde_json::Value = serde_json::from_str(&line)?;
         match value["id"].as_u64() {
-            Some(2) => tools_list_bytes = Some(line.len()),
+            Some(2) => {
+                tools_list_bytes = Some(line.len());
+                tools_list_value = Some(value);
+            }
             Some(3) => {
                 search_bytes = Some(line.len());
                 break;
@@ -212,6 +216,35 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
     child.wait().await?;
 
     let tools_list_bytes = tools_list_bytes.expect("tools/list response");
+    let tools_list_value = tools_list_value.expect("tools/list payload");
+    let search_tool = tools_list_value["result"]["tools"]
+        .as_array()
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool["name"] == "search_vesc_knowledge")
+        })
+        .expect("search tool schema");
+    let properties = &search_tool["inputSchema"]["properties"];
+    for field in [
+        "query",
+        "snapshot_id",
+        "limit",
+        "mode",
+        "filters",
+        "max_response_bytes",
+        "max_context_bytes",
+        "detail",
+    ] {
+        assert!(
+            properties.get(field).is_some(),
+            "missing schema field {field}"
+        );
+    }
+    assert_eq!(properties["limit"]["default"], 10);
+    assert_eq!(properties["detail"]["default"], "full");
+    assert!(properties["mode"].get("$ref").is_none());
+    assert!(properties["detail"].get("$ref").is_none());
     let search_bytes = search_bytes.expect("search response");
     assert!(
         tools_list_bytes <= 9_000,
