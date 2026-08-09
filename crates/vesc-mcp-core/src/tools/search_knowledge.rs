@@ -1922,7 +1922,9 @@ fn fused_result(
             || "unknown".into(),
             |category| category_label(category).into(),
         ),
-        summary: passage.clone(),
+        // Keep the anchor as the internal diversity identity; the bounded
+        // response rewrites `summary` to the expanded passage after ranking.
+        summary: chunk.text.clone(),
         source: SearchVescKnowledgeSource {
             repo: chunk.repository.to_string(),
             path: chunk.path.clone(),
@@ -1985,13 +1987,7 @@ fn retain_diverse_results(
         let key = (
             result.source.repo.clone(),
             result.source.path.clone(),
-            result
-                .passage
-                .as_deref()
-                .unwrap_or(result.summary.as_str())
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" "),
+            normalized_passage(&result),
         );
         if seen.insert(key) {
             if retained.len() < limit {
@@ -2057,9 +2053,7 @@ fn preferred_revisions(config: &KnowledgeConfig) -> BTreeMap<String, String> {
 
 fn normalized_passage(result: &SearchVescKnowledgeResult) -> String {
     result
-        .passage
-        .as_deref()
-        .unwrap_or(result.summary.as_str())
+        .summary
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

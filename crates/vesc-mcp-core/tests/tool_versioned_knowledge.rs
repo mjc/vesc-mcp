@@ -219,11 +219,6 @@ async fn unversioned_symbol_search_prefers_default_revision_and_reports_occurren
         results.len(),
         "duplicate rows: {body}"
     );
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["source"]["revision"] == fixture.old_commit() })
-    );
 }
 
 #[tokio::test]
