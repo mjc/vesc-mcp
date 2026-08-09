@@ -674,7 +674,10 @@ fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Resu
     if staged.exists() {
         fs::remove_dir_all(&staged)?;
     }
-    copy_directory_tree(source, &staged, false)?;
+    copy_serving_bundle(source, &staged, source_id)?;
+    if target.exists() {
+        fs::remove_dir_all(target)?;
+    }
     fs::create_dir_all(target)?;
     let marker = target.join(DISTRIBUTED_PUBLICATION_MARKER);
     let _ = fs::remove_file(&marker);
@@ -689,6 +692,48 @@ fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Resu
     fs::rename(marker_tmp, marker)?;
     fs::remove_dir_all(staged)?;
     Ok(())
+}
+
+fn copy_serving_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Result<()> {
+    fs::create_dir_all(target)?;
+    copy_required_file(
+        &source.join("default-snapshot-corpus-1.1.json"),
+        &target.join("default-snapshot-corpus-1.1.json"),
+    )?;
+    copy_required_file(
+        &source.join("snapshots").join(format!("{source_id}.json")),
+        &target.join("snapshots").join(format!("{source_id}.json")),
+    )?;
+    copy_required_directory(&source.join("repositories"), &target.join("repositories"))?;
+    copy_required_directory(
+        &source.join("artifacts").join(source_id),
+        &target.join("artifacts").join(source_id),
+    )?;
+    Ok(())
+}
+
+fn copy_required_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+    if !source.is_file() {
+        anyhow::bail!(
+            "distributed publication is missing required file {}",
+            source.display()
+        );
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(source, target)?;
+    Ok(())
+}
+
+fn copy_required_directory(source: &Path, target: &Path) -> anyhow::Result<()> {
+    if !source.is_dir() {
+        anyhow::bail!(
+            "distributed publication is missing required directory {}",
+            source.display()
+        );
+    }
+    copy_directory_tree(source, target, false)
 }
 
 fn copy_directory_tree(
@@ -1465,7 +1510,15 @@ mod tests {
             r#"{"id":"new"}"#,
         )
         .expect("source manifest");
-        std::fs::write(source.join("payload"), "complete").expect("source payload");
+        std::fs::create_dir_all(source.join("snapshots")).expect("snapshots");
+        std::fs::write(source.join("snapshots/new.json"), "snapshot").expect("snapshot");
+        std::fs::create_dir_all(source.join("artifacts/new")).expect("artifact");
+        std::fs::write(source.join("artifacts/new/active.json"), "artifact").expect("artifact");
+        std::fs::create_dir_all(source.join("repositories")).expect("repositories");
+        std::fs::write(source.join("repositories/catalog"), "catalog").expect("catalog");
+        std::fs::write(source.join("migraphx-cache"), "producer-only").expect("cache");
+        std::fs::create_dir_all(source.join("artifacts/old")).expect("old artifact");
+        std::fs::write(source.join("artifacts/old/active.json"), "old").expect("old artifact");
         std::fs::write(
             target.join("default-snapshot-corpus-1.1.json"),
             r#"{"id":"old"}"#,
@@ -1477,9 +1530,13 @@ mod tests {
 
         assert_eq!(published_manifest_id(&target).as_deref(), Some("new"));
         assert_eq!(
-            std::fs::read_to_string(target.join("payload")).expect("payload"),
-            "complete"
+            std::fs::read_to_string(target.join("snapshots/new.json")).expect("snapshot"),
+            "snapshot"
         );
+        assert!(target.join("artifacts/new/active.json").is_file());
+        assert!(target.join("repositories/catalog").is_file());
+        assert!(!target.join("migraphx-cache").exists());
+        assert!(!target.join("artifacts/old").exists());
     }
 
     #[test]
