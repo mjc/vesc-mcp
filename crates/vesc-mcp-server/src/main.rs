@@ -611,11 +611,7 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
             .with_publication(
                 active,
                 available,
-                error.is_none().then(|| {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |duration| duration.as_secs())
-                }),
+                refreshed_at,
                 error.map(|mut reason| {
                     reason.truncate(512);
                     reason
