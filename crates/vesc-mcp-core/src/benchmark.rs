@@ -88,6 +88,37 @@ pub struct BenchmarkEvidence {
     pub distinct_source_paths: usize,
     pub occurrence_rows: usize,
     pub expanded_context_rows: usize,
+    #[serde(skip)]
+    seen_source_paths: BTreeSet<String>,
+}
+
+impl BenchmarkEvidence {
+    fn observe(&mut self, results: &[serde_json::Value]) {
+        for result in results {
+            self.result_rows += 1;
+            if result.get("provenance").is_some() {
+                self.provenance_rows += 1;
+            }
+            if result.get("occurrence").is_some() {
+                self.occurrence_rows += 1;
+            }
+            if result
+                .get("explanation")
+                .and_then(|explanation| explanation.get("expansion_reason"))
+                .is_some()
+            {
+                self.expanded_context_rows += 1;
+            }
+            if let Some(path) = result
+                .get("source")
+                .and_then(|source| source.get("path"))
+                .and_then(serde_json::Value::as_str)
+            {
+                self.seen_source_paths.insert(path.into());
+            }
+        }
+        self.distinct_source_paths = self.seen_source_paths.len();
+    }
 }
 
 /// Errors raised while measuring MCP search responses.
@@ -221,7 +252,7 @@ pub fn benchmark_search_profile(
             let validated = validate_search_response(&response, mode, detail)?;
             snapshot_ids.extend(validated.snapshot_id);
             result_counts.insert(validated.results.len());
-            accumulate_evidence(&validated.results, &mut evidence);
+            evidence.observe(&validated.results);
             response_digests
                 .insert(vesc_knowledge_index::ContentDigest::of(response.as_bytes()).to_string());
             response_sizes.push(bytes as u64);
@@ -287,34 +318,6 @@ fn validate_search_response(
         return Err(BenchmarkError::SearchWarnings(response.warnings.join("; ")));
     }
     Ok(response)
-}
-
-fn accumulate_evidence(results: &[serde_json::Value], evidence: &mut BenchmarkEvidence) {
-    let mut paths = BTreeSet::new();
-    for result in results {
-        evidence.result_rows += 1;
-        if result.get("provenance").is_some() {
-            evidence.provenance_rows += 1;
-        }
-        if result.get("occurrence").is_some() {
-            evidence.occurrence_rows += 1;
-        }
-        if result
-            .get("explanation")
-            .and_then(|explanation| explanation.get("expansion_reason"))
-            .is_some()
-        {
-            evidence.expanded_context_rows += 1;
-        }
-        if let Some(path) = result
-            .get("source")
-            .and_then(|source| source.get("path"))
-            .and_then(serde_json::Value::as_str)
-        {
-            paths.insert(path);
-        }
-    }
-    evidence.distinct_source_paths += paths.len();
 }
 
 impl TimingDistribution {
