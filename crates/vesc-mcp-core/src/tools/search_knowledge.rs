@@ -594,11 +594,7 @@ pub fn search_vesc_knowledge_tool_with_config(
     params: &SearchVescKnowledgeParams,
     config: &KnowledgeConfig,
 ) -> SearchVescKnowledgeResponse {
-    search_vesc_knowledge_tool_with_executor(
-        params,
-        config,
-        |params, mode, filters, limit, config| search_mode(params, mode, filters, limit, config),
-    )
+    search_vesc_knowledge_tool_with_executor(params, config, search_mode)
 }
 
 fn search_vesc_knowledge_tool_with_executor<F>(
@@ -695,7 +691,18 @@ fn search_vesc_knowledge_tool_with_provider<P: EmbeddingProvider + ?Sized>(
         params,
         config,
         |params, mode, filters, limit, config| {
-            search_mode_with_provider(params, mode, filters, limit, config, provider)
+            search_mode_with_semantic(
+                params,
+                mode,
+                filters,
+                limit,
+                config,
+                |query, limit, config| {
+                    let vector = load_vector_artifact(config)?;
+                    let hits = semantic_hits_with_provider(query, limit, &vector, provider)?;
+                    Ok((hits, false))
+                },
+            )
         },
     )
 }
@@ -1240,45 +1247,26 @@ fn search_mode(
     limit: usize,
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>, SearchMode), String> {
-    match mode {
-        SearchMode::Lexical => lexical_search_results(params, filters, limit, config)
-            .map(|(results, warnings)| (results, warnings, SearchMode::Lexical)),
-        SearchMode::Auto => match hybrid_results(params, filters, limit, config) {
-            Ok((results, warnings)) => Ok((results, warnings, SearchMode::Hybrid)),
-            Err(error) => {
-                let (results, _) = lexical_search_results(params, filters, limit, config)?;
-                Ok((
-                    results,
-                    vec![format!(
-                        "semantic_unavailable: {error}; used lexical retrieval"
-                    )],
-                    SearchMode::Lexical,
-                ))
-            }
-        },
-        SearchMode::Hybrid => hybrid_results(params, filters, limit, config)
-            .map(|(results, warnings)| (results, warnings, SearchMode::Hybrid))
-            .map_err(|error| {
-                format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
-            }),
-    }
+    search_mode_with_semantic(params, mode, filters, limit, config, semantic_hits)
 }
 
-#[cfg(test)]
-fn search_mode_with_provider<P: EmbeddingProvider + ?Sized>(
+fn search_mode_with_semantic<S>(
     params: &SearchVescKnowledgeParams,
     mode: SearchMode,
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-    provider: &mut P,
-) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>, SearchMode), String> {
+    mut semantic: S,
+) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>, SearchMode), String>
+where
+    S: FnMut(&str, usize, &KnowledgeConfig) -> Result<(Vec<SemanticHit>, bool), String>,
+{
     match mode {
         SearchMode::Lexical => lexical_search_results(params, filters, limit, config)
             .map(|(results, warnings)| (results, warnings, SearchMode::Lexical)),
         SearchMode::Auto => {
-            match hybrid_results_with_provider(params, filters, limit, config, provider) {
-                Ok((results, _)) => Ok((results, Vec::new(), SearchMode::Hybrid)),
+            match hybrid_results_with_semantic(params, filters, limit, config, &mut semantic) {
+                Ok((results, warnings)) => Ok((results, warnings, SearchMode::Hybrid)),
                 Err(error) => {
                     let (results, _) = lexical_search_results(params, filters, limit, config)?;
                     Ok((
@@ -1292,8 +1280,8 @@ fn search_mode_with_provider<P: EmbeddingProvider + ?Sized>(
             }
         }
         SearchMode::Hybrid => {
-            hybrid_results_with_provider(params, filters, limit, config, provider)
-                .map(|(results, _)| (results, Vec::new(), SearchMode::Hybrid))
+            hybrid_results_with_semantic(params, filters, limit, config, &mut semantic)
+                .map(|(results, warnings)| (results, warnings, SearchMode::Hybrid))
                 .map_err(|error| {
                     format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
                 })
@@ -1387,21 +1375,25 @@ fn lexical_results(
         .map_err(|error| error.to_string())
 }
 
-fn hybrid_results(
+fn hybrid_results_with_semantic<S>(
     params: &SearchVescKnowledgeParams,
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
     config: &KnowledgeConfig,
-) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
+    semantic: &mut S,
+) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String>
+where
+    S: FnMut(&str, usize, &KnowledgeConfig) -> Result<(Vec<SemanticHit>, bool), String>,
+{
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
     let (lexical, mut metadata) =
         lexical_candidates_and_metadata(&params.query, filters, candidate_limit, config)?;
-    let (mut semantic, live_rerank) = semantic_hits(&params.query, candidate_limit, config)?;
-    load_semantic_metadata(&mut semantic, filters, config, &mut metadata)?;
+    let (mut semantic_hits, live_rerank) = semantic(&params.query, candidate_limit, config)?;
+    load_semantic_metadata(&mut semantic_hits, filters, config, &mut metadata)?;
     let context_budget = context_budget(params, config);
     let fused = fuse_candidate_metadata(
         &lexical,
-        &semantic,
+        &semantic_hits,
         &metadata,
         FusionConfig {
             limit: candidate_limit,
@@ -1434,32 +1426,18 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     config: &KnowledgeConfig,
     provider: &mut P,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, bool), String> {
-    let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
-    let (lexical, mut metadata) =
-        lexical_candidates_and_metadata(&params.query, filters, candidate_limit, config)?;
-    let vector = load_vector_artifact(config)?;
-    let mut semantic =
-        semantic_hits_with_provider(&params.query, candidate_limit, &vector, provider)?;
-    load_semantic_metadata(&mut semantic, filters, config, &mut metadata)?;
-    let context_budget = context_budget(params, config);
-    let fused = fuse_candidate_metadata(
-        &lexical,
-        &semantic,
-        &metadata,
-        FusionConfig {
-            limit: candidate_limit,
-            ..FusionConfig::default()
-        },
-    );
-    let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
-    hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
-    let results = retain_diverse_results(
-        lexical_results_with_context(fused, filters, &chunks, context_budget),
+    hybrid_results_with_semantic(
+        params,
         filters,
         limit,
-        &preferred_revisions(config),
-    );
-    Ok((results, false))
+        config,
+        &mut |query, limit, config| {
+            let vector = load_vector_artifact(config)?;
+            let hits = semantic_hits_with_provider(query, limit, &vector, provider)?;
+            Ok((hits, false))
+        },
+    )
+    .map(|(results, _warnings)| (results, false))
 }
 
 fn lexical_candidates_and_metadata(
