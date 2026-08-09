@@ -132,8 +132,8 @@ flowchart LR
 `lexical` is the offline default after passing the locked evaluation gate.
 The lexical path uses the normalized Tantivy index. Hybrid fusion uses RRF with a lexical floor
 and bounded adjacent context, so an uncalibrated semantic model cannot displace
-trusted lexical evidence; `auto` reports an error when semantic capability is
-unavailable. Artifact writes are staged and the active manifest
+trusted lexical evidence; `auto` returns lexical evidence with an explicit
+semantic-degradation warning when semantic capability is unavailable. Artifact writes are staged and the active manifest
 selector is replaced only after checksum validation. The selector in
 `active.json` points to the full generation manifest and carries its checksum;
 readers should use the lifecycle inspection API.

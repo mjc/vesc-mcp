@@ -63,8 +63,8 @@ pub struct SearchVescKnowledgeParams {
     /// Maximum number of hits to return (default 10).
     #[serde(default = "default_search_limit")]
     pub limit: usize,
-    /// Retrieval mode. Omit to use the server default; retry with `lexical` only
-    /// when a semantic failure explicitly recommends it.
+    /// Retrieval mode. Omit to use the server default; auto keeps lexical
+    /// evidence in the same response when semantic retrieval is unavailable.
     #[serde(default)]
     pub mode: Option<SearchMode>,
     /// Additive filters for lexical/hybrid retrieval.
@@ -935,19 +935,39 @@ fn search_mode(
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
     match mode {
-        SearchMode::Lexical => Ok((
-            lexical_results(&params.query, filters, limit, config)?
-                .into_iter()
-                .enumerate()
-                .map(|(rank, hit)| lexical_result(hit, rank, filters))
-                .collect(),
-            Vec::new(),
-        )),
-        SearchMode::Auto | SearchMode::Hybrid => hybrid_results(params, filters, limit, config)
-            .map_err(|error| {
-                format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
-            }),
+        SearchMode::Lexical => lexical_search_results(params, filters, limit, config),
+        SearchMode::Auto => match hybrid_results(params, filters, limit, config) {
+            Ok(results) => Ok(results),
+            Err(error) => {
+                let (results, _) = lexical_search_results(params, filters, limit, config)?;
+                Ok((
+                    results,
+                    vec![format!(
+                        "semantic_unavailable: {error}; used lexical retrieval"
+                    )],
+                ))
+            }
+        },
+        SearchMode::Hybrid => hybrid_results(params, filters, limit, config).map_err(|error| {
+            format!("semantic retrieval failed: {error}; retry with mode \"lexical\"")
+        }),
     }
+}
+
+fn lexical_search_results(
+    params: &SearchVescKnowledgeParams,
+    filters: &vesc_knowledge_index::LexicalFilters,
+    limit: usize,
+    config: &KnowledgeConfig,
+) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
+    Ok((
+        lexical_results(&params.query, filters, limit, config)?
+            .into_iter()
+            .enumerate()
+            .map(|(rank, hit)| lexical_result(hit, rank, filters))
+            .collect(),
+        Vec::new(),
+    ))
 }
 
 fn lexical_results(
@@ -2380,7 +2400,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_semantic_failure_recommends_explicit_lexical_retry() {
+    fn auto_semantic_failure_returns_lexical_results_with_warning() {
         let response = search_vesc_knowledge_tool_with_config(
             &SearchVescKnowledgeParams {
                 query: "nvm".into(),
@@ -2398,14 +2418,12 @@ mod tests {
             },
         );
 
-        assert!(!response.ok);
-        assert!(response.results.is_empty());
-        assert!(
-            response
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("retry with mode \"lexical\""))
-        );
+        assert!(response.ok);
+        assert!(!response.results.is_empty());
+        assert!(response.error.is_none());
+        assert!(response.warnings.iter().any(|warning| {
+            warning.contains("semantic_unavailable") && warning.contains("lexical")
+        }));
     }
 
     #[test]

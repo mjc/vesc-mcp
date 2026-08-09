@@ -158,7 +158,7 @@ Supported modes:
 | Mode | Behavior |
 |------|----------|
 | `lexical` | Offline keyword and identifier search; recommended default |
-| `auto` | Uses hybrid search and reports an error with an explicit lexical retry when semantic retrieval fails |
+| `auto` | Uses hybrid search when available and returns lexical evidence with a degradation warning when semantic retrieval fails |
 | `hybrid` | Requires a compatible local vector artifact and model; reports an error if unavailable |
 
 The server never downloads a semantic model at startup. Model identity,
