@@ -35,6 +35,11 @@ fn assert_compact_search_body(body: &Value) {
     assert!(body["results"][0].is_array());
 }
 
+fn assert_unknown_search_field(text: &str) {
+    assert!(text.contains("unknown field"), "{text}");
+    assert!(text.contains("query"), "{text}");
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> anyhow::Result<()> {
@@ -219,7 +224,7 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
         .expect("invalid response text")
         .text
         .as_str();
-    assert!(invalid_text.contains("unknown field"), "{invalid_text}");
+    assert_unknown_search_field(invalid_text);
 
     let resources = first.list_all_resources().await?;
     assert!(
