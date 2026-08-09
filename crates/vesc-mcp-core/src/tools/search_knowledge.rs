@@ -58,9 +58,12 @@ pub enum SearchResponseDetail {
 #[serde(deny_unknown_fields)]
 pub struct SearchVescKnowledgeParams {
     /// Free-text query matched against entry names, keywords, and summaries.
+    /// The built-in maximum is 4,096 UTF-8 bytes; the effective configured
+    /// maximum is returned in `index.limits.max_query_bytes`.
     pub query: String,
     /// Immutable snapshot returned by `prepare_vesc_knowledge`.
     #[serde(default)]
+    #[schemars(length(min = 1))]
     pub snapshot_id: Option<String>,
     /// Maximum number of hits to return (default 10).
     #[serde(default = "default_search_limit")]
@@ -73,13 +76,17 @@ pub struct SearchVescKnowledgeParams {
     /// Additive filters for lexical/hybrid retrieval.
     #[serde(default)]
     pub filters: SearchVescKnowledgeFilters,
-    /// Maximum response JSON size; bounded to 64 KiB by default.
+    /// Maximum response JSON size. The built-in default and maximum are 65,536
+    /// bytes; the effective configured maximum is returned in
+    /// `index.limits.max_response_bytes`.
     #[serde(default)]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 1), default = "default_max_response_bytes")]
     pub max_response_bytes: Option<usize>,
-    /// Maximum bytes retained in each returned evidence passage.
+    /// Maximum bytes retained in each returned evidence passage. The built-in
+    /// default and maximum are 8,192 bytes; the effective configured maximum
+    /// is returned in `index.limits.max_context_bytes`.
     #[serde(default)]
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 1), default = "default_max_context_bytes")]
     pub max_context_bytes: Option<usize>,
     /// Response detail; defaults to full evidence. Use compact for an explicit low-token query.
     #[serde(default)]
@@ -93,6 +100,7 @@ pub struct SearchVescKnowledgeFilters {
     /// Category filter. Unrecognized values are ignored.
     #[serde(default)]
     pub category: Option<String>,
+    /// Exact repository identifier, such as `refloat` or `vesc-rust-poc`.
     #[serde(default)]
     pub repository: Option<String>,
     /// Exact source paths. Multiple paths are additive alternatives.
@@ -101,16 +109,28 @@ pub struct SearchVescKnowledgeFilters {
     /// Exact immutable source revision filter.
     #[serde(default)]
     pub revision: Option<String>,
+    /// Exact trust classification: `first_party`, `curated_upstream`,
+    /// `fixture`, or `unverified_model_feedback`.
     #[serde(default)]
     pub trust_tier: Option<String>,
+    /// Exact source family, such as `git_blob`, `git_commit`, or `markdown`.
     #[serde(default)]
     pub source_kind: Option<String>,
+    /// Additive tag filters; every supplied tag must be present.
     #[serde(default)]
     pub tags: Vec<String>,
 }
 
 const fn default_search_limit() -> usize {
     10
+}
+
+fn default_max_response_bytes() -> usize {
+    KnowledgeConfig::default().max_response_bytes
+}
+
+fn default_max_context_bytes() -> usize {
+    KnowledgeConfig::default().max_passage_bytes
 }
 
 const COMPACT_EXCERPT_BYTES: usize = 384;
@@ -2700,6 +2720,17 @@ mod tests {
         assert_eq!(schema["properties"]["limit"]["minimum"], 1);
         assert_eq!(schema["properties"]["max_response_bytes"]["minimum"], 1);
         assert_eq!(schema["properties"]["max_context_bytes"]["minimum"], 1);
+        assert_eq!(schema["properties"]["max_response_bytes"]["default"], 65_536);
+        assert_eq!(schema["properties"]["max_context_bytes"]["default"], 8_192);
+        assert!(schema["properties"]["query"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("max_query_bytes")));
+        assert!(schema["properties"]["filters"]["properties"]["repository"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("Exact repository identifier")));
+        assert!(schema["properties"]["filters"]["properties"]["tags"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("every supplied tag")));
         assert_eq!(
             detail_definition["oneOf"]
                 .as_array()
