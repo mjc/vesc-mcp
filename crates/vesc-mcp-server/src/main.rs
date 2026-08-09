@@ -28,6 +28,8 @@ const INSTALL_DISTRIBUTED_CACHE_ARG: &str = "--install-distributed-cache";
 const REPOSITORY_PREPARATION_TIMEOUT_ARG: &str = "--repository-preparation-timeout-secs";
 const REFRESH_ON_STARTUP_ARG: &str = "--refresh-on-startup";
 const EAGER_INDEX_ARG: &str = "--eager-index";
+const REFRESH_INTERVAL_ARG: &str = "--refresh-interval-secs";
+const WATCH_DISTRIBUTED_CACHE_ARG: &str = "--watch-distributed-cache";
 const DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS: u64 = 900;
 
 struct PreparationReporter {
@@ -292,24 +294,16 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == INSTALL_DISTRIBUTED_CACHE_ARG) {
         let staged_root = argument_value(&args, INSTALL_DISTRIBUTED_CACHE_ARG)
             .ok_or_else(|| anyhow::anyhow!("{INSTALL_DISTRIBUTED_CACHE_ARG} requires a path"))?;
-        let config = McpConfig::load();
-        let live_root = config.knowledge.data_root.clone().ok_or_else(|| {
-            anyhow::anyhow!("distributed cache installation requires a data root")
-        })?;
-        let installed = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(live_root))
-            .with_semantic_config(&config.knowledge)?
-            .install_distributed_default(
-                DataRoot::new(PathBuf::from(staged_root))?,
-                &config.knowledge.repositories,
-            )?;
         println!(
             "installed distributed knowledge snapshot {}",
-            installed.manifest.id
+            install_distributed_cache(Path::new(staged_root.as_str()),)?
         );
         return Ok(());
     }
 
     let startup_policy = StartupPolicy::from_args(&args);
+    let refresh_interval = refresh_interval(&args)?;
+    let watch_distributed_cache = distributed_cache_watch_path(&args)?;
     if args.iter().any(|arg| arg == "--refresh-repositories") {
         synchronize_managed_repositories(startup_policy).await?;
         return Ok(());
@@ -356,6 +350,8 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
     if args.iter().any(|arg| arg == "--http") {
         let refresh_args = repository_refresh_args(&args);
         initialize_managed_repository_preparation(&refresh_args)?;
+        spawn_background_refresh(refresh_interval, startup_policy);
+        spawn_distributed_cache_watcher(watch_distributed_cache, refresh_interval);
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
             synchronize_managed_repositories_in_child(refresh_args),
@@ -367,6 +363,8 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
 
     let refresh_args = repository_refresh_args(&args);
     initialize_managed_repository_preparation(&refresh_args)?;
+    spawn_background_refresh(refresh_interval, startup_policy);
+    spawn_distributed_cache_watcher(watch_distributed_cache, refresh_interval);
     tokio::spawn(async move {
         if let Err(error) = synchronize_managed_repositories_in_child(refresh_args).await {
             tracing::error!(%error, "managed repository preparation failed");
@@ -395,6 +393,100 @@ where
     server
         .serve_with_knowledge_preparation(knowledge_preparation)
         .await
+}
+
+fn refresh_interval(args: &[String]) -> anyhow::Result<Option<Duration>> {
+    let requested = args.iter().any(|arg| arg == REFRESH_INTERVAL_ARG);
+    let Some(value) = argument_value(args, REFRESH_INTERVAL_ARG) else {
+        if requested {
+            anyhow::bail!("{REFRESH_INTERVAL_ARG} requires a value");
+        }
+        return Ok(None);
+    };
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("{REFRESH_INTERVAL_ARG} must be an integer"))?;
+    if seconds == 0 {
+        anyhow::bail!("{REFRESH_INTERVAL_ARG} must be greater than zero");
+    }
+    Ok(Some(Duration::from_secs(seconds)))
+}
+
+fn distributed_cache_watch_path(args: &[String]) -> anyhow::Result<Option<PathBuf>> {
+    let requested = args.iter().any(|arg| arg == WATCH_DISTRIBUTED_CACHE_ARG);
+    let Some(value) = argument_value(args, WATCH_DISTRIBUTED_CACHE_ARG) else {
+        if requested {
+            anyhow::bail!("{WATCH_DISTRIBUTED_CACHE_ARG} requires a path");
+        }
+        return Ok(None);
+    };
+    Ok(Some(PathBuf::from(value)))
+}
+
+fn spawn_background_refresh(interval: Option<Duration>, startup: StartupPolicy) {
+    let Some(interval) = interval else { return };
+    if matches!(
+        startup.knowledge_preparation,
+        KnowledgePreparation::CachedOnly
+    ) {
+        return;
+    }
+    tokio::spawn(async move {
+        let policy = StartupPolicy {
+            refresh: true,
+            eager_index: true,
+            allow_offline_restart: startup.allow_offline_restart,
+            knowledge_preparation: KnowledgePreparation::BuildMissing,
+        };
+        loop {
+            tokio::time::sleep(interval).await;
+            if let Err(error) = synchronize_managed_repositories(policy).await {
+                tracing::warn!(%error, "background knowledge refresh failed; retaining prior generation");
+            }
+        }
+    });
+}
+
+fn spawn_distributed_cache_watcher(staged_root: Option<PathBuf>, interval: Option<Duration>) {
+    let (Some(staged_root), Some(interval)) = (staged_root, interval) else {
+        return;
+    };
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            let staged_root = staged_root.clone();
+            let result =
+                tokio::task::spawn_blocking(move || install_distributed_cache(&staged_root))
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("distributed cache watcher join failed: {error}")
+                    })
+                    .and_then(|result| result);
+            match result {
+                Ok(snapshot) => {
+                    tracing::info!(%snapshot, "activated distributed knowledge snapshot")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "distributed cache refresh failed; retaining prior generation")
+                }
+            }
+        }
+    });
+}
+
+fn install_distributed_cache(staged_root: &Path) -> anyhow::Result<String> {
+    let config = McpConfig::load();
+    let live_root =
+        config.knowledge.data_root.clone().ok_or_else(|| {
+            anyhow::anyhow!("distributed cache installation requires a data root")
+        })?;
+    let installed = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(live_root))
+        .with_semantic_config(&config.knowledge)?
+        .install_distributed_default(
+            DataRoot::new(staged_root.to_owned())?,
+            &config.knowledge.repositories,
+        )?;
+    Ok(installed.manifest.id.to_string())
 }
 
 fn repository_refresh_args(args: &[String]) -> Vec<String> {
@@ -825,10 +917,11 @@ mod tests {
 
     use super::{
         CACHED_ONLY_ARG, EAGER_INDEX_ARG, INSTALL_DISTRIBUTED_CACHE_ARG,
-        PROFILE_INITIAL_TRAINING_ARG, PreparationReporter, REFRESH_ON_STARTUP_ARG,
-        REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy, migraphx_cache_path,
+        PROFILE_INITIAL_TRAINING_ARG, PreparationReporter, REFRESH_INTERVAL_ARG,
+        REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
+        WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, migraphx_cache_path,
         policy_for_available_data, preparation_phase_for_build, publish_child_preparation_failure,
-        repository_preparation_timeout, repository_refresh_args, run_http,
+        refresh_interval, repository_preparation_timeout, repository_refresh_args, run_http,
         supervise_preparation_child, terminal_preparation_state,
     };
 
@@ -1028,6 +1121,28 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn refresh_interval_is_opt_in_and_rejects_invalid_values() {
+        assert_eq!(refresh_interval(&[]).expect("no interval"), None);
+        assert_eq!(
+            refresh_interval(&[REFRESH_INTERVAL_ARG.into(), "42".into()]).expect("interval"),
+            Some(std::time::Duration::from_secs(42))
+        );
+        assert!(refresh_interval(&[REFRESH_INTERVAL_ARG.into(), "0".into()]).is_err());
+        assert!(refresh_interval(&[REFRESH_INTERVAL_ARG.into()]).is_err());
+    }
+
+    #[test]
+    fn distributed_cache_watcher_requires_a_staging_path() {
+        assert_eq!(distributed_cache_watch_path(&[]).expect("no watcher"), None);
+        assert_eq!(
+            distributed_cache_watch_path(&[WATCH_DISTRIBUTED_CACHE_ARG.into(), "/stage".into()])
+                .expect("staging path"),
+            Some(PathBuf::from("/stage"))
+        );
+        assert!(distributed_cache_watch_path(&[WATCH_DISTRIBUTED_CACHE_ARG.into()]).is_err());
     }
 
     #[test]

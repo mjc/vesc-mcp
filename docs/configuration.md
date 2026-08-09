@@ -291,8 +291,16 @@ is allowed. Snapshot compatibility includes each repository's configured
 remote URL and default ref. An unavailable optional repository is excluded from
 the new snapshot; in particular, changing its remote URL never indexes content
 from the old cached repository. Run
-`vesc-mcp-server --refresh-repositories` from a deployment hook or timer to
-perform a refresh and exit. There is no built-in background scheduler.
+`vesc-mcp-server --refresh-repositories` performs a refresh and exits. For a
+long-running accelerated host, add `--refresh-interval-secs N`; each cycle is
+serialized behind the snapshot build lock and publishes either a complete new
+generation or leaves the prior one serving. A cached-only host can activate a
+complete bundle staged by its deployment transport with
+`--cached-only --watch-distributed-cache PATH --refresh-interval-secs N`.
+Watcher failures are logged and leave the previous generation active; the
+normal preparation status remains the source for readiness and stale-state
+diagnostics. The watcher never fetches repositories or runs embedding
+inference on a cached-only host.
 
 Agents discover this local state with the read-only
 `list_vesc_source_versions` tool before choosing evidence. It accepts optional
