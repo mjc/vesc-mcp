@@ -1110,13 +1110,21 @@ const fn search_limits(config: &KnowledgeConfig) -> SearchVescKnowledgeLimits {
 /// Serialize the effective search contract without requiring a trial search.
 #[must_use]
 pub fn search_vesc_knowledge_capabilities_json(config: &KnowledgeConfig) -> String {
-    serde_json::to_string(&SearchVescKnowledgeCapabilities {
+    serde_json::to_string(&search_vesc_knowledge_capabilities(config))
+        .expect("search capabilities contain only infallibly serializable fields")
+}
+
+/// Return the effective search contract without requiring a trial search.
+#[must_use]
+pub fn search_vesc_knowledge_capabilities(
+    config: &KnowledgeConfig,
+) -> SearchVescKnowledgeCapabilities {
+    SearchVescKnowledgeCapabilities {
         ok: true,
         modes: vec![SearchMode::Lexical, SearchMode::Auto, SearchMode::Hybrid],
         details: vec![SearchResponseDetail::Full, SearchResponseDetail::Compact],
         limits: search_limits(config),
-    })
-    .expect("search capabilities contain only infallibly serializable fields")
+    }
 }
 
 fn parse_filters(
