@@ -1269,22 +1269,32 @@ fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
             anyhow::bail!("unsupported benchmark mode {other:?}; use lexical, hybrid, or auto")
         }
     };
+    let detail = match argument_value(args, "--detail")
+        .as_deref()
+        .unwrap_or("full")
+    {
+        "full" => vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Full,
+        "compact" => vesc_mcp_core::tools::search_knowledge::SearchResponseDetail::Compact,
+        other => anyhow::bail!("unsupported benchmark detail {other:?}; use full or compact"),
+    };
     let format = argument_value(args, "--format").unwrap_or_else(|| "text".into());
     let mut config = vesc_mcp_core::config::McpConfig::load().knowledge.clone();
     if let Some(artifact) = argument_value(args, "--artifact") {
         config.artifact_path = Some(PathBuf::from(artifact));
     }
-    let report = vesc_mcp_core::benchmark::benchmark_search_mode(
+    let report = vesc_mcp_core::benchmark::benchmark_search_profile(
         &config,
         &queries,
         warmup,
         repetitions,
         mode,
+        detail,
     )?;
     match format.as_str() {
         "json" => println!("{}", serde_json::to_string_pretty(&report)?),
         "text" => {
             println!("mode: {:?}", report.mode);
+            println!("detail: {:?}", report.detail);
             println!(
                 "machine: {} {} target={}",
                 report.machine.os, report.machine.arch, report.machine.rust_target
@@ -1302,6 +1312,14 @@ fn run_benchmark(args: &[String]) -> anyhow::Result<()> {
             println!(
                 "response-bytes: samples={} min={} p50={} p95={} max={}",
                 bytes.samples, bytes.min_bytes, bytes.p50_bytes, bytes.p95_bytes, bytes.max_bytes
+            );
+            println!(
+                "evidence: rows={} provenance={} paths={} occurrences={} expanded={}",
+                report.evidence.result_rows,
+                report.evidence.provenance_rows,
+                report.evidence.distinct_source_paths,
+                report.evidence.occurrence_rows,
+                report.evidence.expanded_context_rows,
             );
             println!(
                 "rss-retained-bytes: before={:?} after={:?} delta={:?}",
