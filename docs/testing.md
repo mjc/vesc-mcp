@@ -125,10 +125,14 @@ The in-process handler benchmark is:
 ```bash
 cargo run --release -p vesc-mcp-server -- \
   --benchmark-search --artifact target/knowledge-artifacts \
-  --warmup 3 --repetitions 10 --format json
+  --detail full --warmup 3 --repetitions 10 --format json
 ```
 
 This measures the search handler and JSON serialization, not MCP transport.
+The benchmark defaults to the production `full` profile; pass
+`--detail compact` to measure the explicit low-token profile. The report
+includes result/provenance/path/occurrence/context-expansion counts alongside
+response bytes and latency so full-versus-compact evidence is reproducible.
 Record the operating system, architecture, corpus digest, warmup and
 repetition counts, and memory measurement method with any performance claim.
 Never record user names, hostnames, or personal paths.
