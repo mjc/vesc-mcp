@@ -66,6 +66,30 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             "set_current_repository",
         ]
     );
+    let search_schema = tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "search_vesc_knowledge")
+        .map(serde_json::to_value)
+        .transpose()?
+        .expect("search schema");
+    let properties = &search_schema["inputSchema"]["properties"];
+    for field in [
+        "query",
+        "snapshot_id",
+        "limit",
+        "mode",
+        "filters",
+        "max_response_bytes",
+        "max_context_bytes",
+        "detail",
+    ] {
+        assert!(
+            properties.get(field).is_some(),
+            "missing HTTP schema field {field}"
+        );
+    }
+    assert_eq!(properties["detail"]["default"], "full");
+    assert_eq!(properties["limit"]["default"], 10);
     let resources = first.list_all_resources().await?;
     assert!(
         resources

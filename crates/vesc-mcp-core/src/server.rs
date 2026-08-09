@@ -579,7 +579,7 @@ impl VescMcpService {
     }
 
     #[tool(
-        description = "Search VESC knowledge with full evidence by default; set detail=compact when lower token cost is preferred. Auto keeps lexical results with a degradation warning if semantic retrieval is unavailable. Corrections come first and notes are unverified."
+        description = "Search VESC knowledge with full evidence by default; set detail=compact when lower token cost is preferred. Auto keeps lexical results with a degradation warning if semantic retrieval is unavailable. Runtime maxima and defaults are returned in index.limits. Corrections come first and notes are unverified."
     )]
     fn search_vesc_knowledge(
         &self,
@@ -918,7 +918,7 @@ impl HttpMcpService {
     }
 
     #[tool(
-        description = "Search VESC knowledge with full evidence by default; set detail=compact when lower token cost is preferred. Auto keeps lexical results with a degradation warning if semantic retrieval is unavailable. Corrections come first and notes are unverified."
+        description = "Search VESC knowledge with full evidence by default; set detail=compact when lower token cost is preferred. Auto keeps lexical results with a degradation warning if semantic retrieval is unavailable. Runtime maxima and defaults are returned in index.limits. Corrections come first and notes are unverified."
     )]
     fn search_vesc_knowledge(
         &self,

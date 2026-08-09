@@ -31,6 +31,7 @@ const EAGER_INDEX_ARG: &str = "--eager-index";
 const REFRESH_INTERVAL_ARG: &str = "--refresh-interval-secs";
 const WATCH_DISTRIBUTED_CACHE_ARG: &str = "--watch-distributed-cache";
 const PUBLISH_DISTRIBUTED_CACHE_ARG: &str = "--publish-distributed-cache";
+const DISTRIBUTED_PUBLICATION_MARKER: &str = ".vesc-mcp-publication-complete";
 const DEFAULT_REPOSITORY_PREPARATION_TIMEOUT_SECS: u64 = 900;
 
 struct PreparationReporter {
@@ -540,10 +541,27 @@ fn spawn_distributed_cache_watcher(staged_root: Option<PathBuf>, interval: Optio
     });
 }
 
-fn staged_manifest_id(staged_root: &Path) -> Option<String> {
-    let bytes = fs::read(staged_root.join("default-snapshot-corpus-1.1.json")).ok()?;
+fn manifest_id(root: &Path) -> Option<String> {
+    let bytes = fs::read(root.join("default-snapshot-corpus-1.1.json")).ok()?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     manifest.get("id")?.as_str().map(str::to_owned)
+}
+
+fn staged_manifest_id(staged_root: &Path) -> Option<String> {
+    let id = manifest_id(staged_root)?;
+    match fs::read_to_string(staged_root.join(DISTRIBUTED_PUBLICATION_MARKER)) {
+        Ok(marker) if marker.trim() != id => None,
+        _ => Some(id),
+    }
+}
+
+fn published_manifest_id(root: &Path) -> Option<String> {
+    let id = manifest_id(root)?;
+    (fs::read_to_string(root.join(DISTRIBUTED_PUBLICATION_MARKER))
+        .ok()?
+        .trim()
+        == id)
+        .then_some(id)
 }
 
 fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
@@ -614,9 +632,9 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
     }
 }
 
-/// Publish a complete immutable data-root bundle through a single directory
-/// rename. Readers therefore see either the previous bundle or the new one,
-/// never the partially copied repository/artifact tuple.
+/// Publish a complete immutable data-root bundle with a final marker commit.
+/// The watcher ignores the target while that marker is absent, so an
+/// interrupted copy leaves the previous live generation untouched.
 fn publish_distributed_bundle(target: &Path) -> anyhow::Result<()> {
     let config = McpConfig::load();
     let source = config
@@ -628,8 +646,13 @@ fn publish_distributed_bundle(target: &Path) -> anyhow::Result<()> {
     if source == target || source.starts_with(target) || target.starts_with(source) {
         anyhow::bail!("distributed publication target must not overlap the source data root");
     }
-    if let (Some(source_id), Some(target_id)) =
-        (staged_manifest_id(source), staged_manifest_id(target))
+    let source_id = manifest_id(source)
+        .ok_or_else(|| anyhow::anyhow!("source data root has no valid snapshot manifest"))?;
+    publish_bundle(source, target, &source_id)
+}
+
+fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Result<()> {
+    if let Some(target_id) = published_manifest_id(target)
         && source_id == target_id
     {
         return Ok(());
@@ -642,35 +665,41 @@ fn publish_distributed_bundle(target: &Path) -> anyhow::Result<()> {
     if staged.exists() {
         fs::remove_dir_all(&staged)?;
     }
-    copy_directory_tree(source, &staged)?;
-    let backup = target.with_extension("previous");
-    if backup.exists() {
-        fs::remove_dir_all(&backup)?;
-    }
-    if target.exists() {
-        fs::rename(target, &backup)?;
-    }
-    if let Err(error) = fs::rename(&staged, target) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, target);
-        }
-        let _ = fs::remove_dir_all(&staged);
-        return Err(error.into());
-    }
-    if backup.exists() {
-        fs::remove_dir_all(backup)?;
-    }
+    copy_directory_tree(source, &staged, false)?;
+    fs::create_dir_all(target)?;
+    let marker = target.join(DISTRIBUTED_PUBLICATION_MARKER);
+    let _ = fs::remove_file(&marker);
+    copy_directory_tree(&staged, target, true)?;
+    let manifest = target.join("default-snapshot-corpus-1.1.json");
+    let staged_manifest = staged.join("default-snapshot-corpus-1.1.json");
+    let manifest_tmp = target.join(".default-snapshot-corpus-1.1.json.tmp");
+    fs::copy(staged_manifest, &manifest_tmp)?;
+    fs::rename(manifest_tmp, manifest)?;
+    let marker_tmp = target.join(format!("{DISTRIBUTED_PUBLICATION_MARKER}.tmp"));
+    fs::write(&marker_tmp, format!("{source_id}\n"))?;
+    fs::rename(marker_tmp, marker)?;
+    fs::remove_dir_all(staged)?;
     Ok(())
 }
 
-fn copy_directory_tree(source: &Path, target: &Path) -> anyhow::Result<()> {
+fn copy_directory_tree(
+    source: &Path,
+    target: &Path,
+    skip_publication_files: bool,
+) -> anyhow::Result<()> {
     fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
+        if entry.file_name().to_str() == Some(DISTRIBUTED_PUBLICATION_MARKER)
+            || (skip_publication_files
+                && entry.file_name().to_str() == Some("default-snapshot-corpus-1.1.json"))
+        {
+            continue;
+        }
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
         if source_path.is_dir() {
-            copy_directory_tree(&source_path, &target_path)?;
+            copy_directory_tree(&source_path, &target_path, skip_publication_files)?;
         } else {
             fs::copy(source_path, target_path)?;
         }
@@ -1121,14 +1150,15 @@ mod tests {
     use vesc_mcp_core::server::KnowledgePreparation;
 
     use super::{
-        CACHED_ONLY_ARG, EAGER_INDEX_ARG, INSTALL_DISTRIBUTED_CACHE_ARG,
-        PROFILE_INITIAL_TRAINING_ARG, PUBLISH_DISTRIBUTED_CACHE_ARG, PreparationReporter,
-        REFRESH_INTERVAL_ARG, REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG,
-        RuntimeProfile, StartupPolicy, WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path,
-        migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
-        publish_child_preparation_failure, publish_distributed_cache, refresh_interval,
-        repository_preparation_timeout, repository_refresh_args, run_http,
-        supervise_preparation_child, terminal_preparation_state,
+        CACHED_ONLY_ARG, DISTRIBUTED_PUBLICATION_MARKER, EAGER_INDEX_ARG,
+        INSTALL_DISTRIBUTED_CACHE_ARG, PROFILE_INITIAL_TRAINING_ARG, PUBLISH_DISTRIBUTED_CACHE_ARG,
+        PreparationReporter, REFRESH_INTERVAL_ARG, REFRESH_ON_STARTUP_ARG,
+        REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
+        WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, migraphx_cache_path,
+        policy_for_available_data, preparation_phase_for_build, publish_bundle,
+        publish_child_preparation_failure, publish_distributed_cache, published_manifest_id,
+        refresh_interval, repository_preparation_timeout, repository_refresh_args, run_http,
+        staged_manifest_id, supervise_preparation_child, terminal_preparation_state,
     };
 
     #[test]
@@ -1363,6 +1393,66 @@ mod tests {
             Some(PathBuf::from("/srv/vesc-cache"))
         );
         assert!(publish_distributed_cache(&[PUBLISH_DISTRIBUTED_CACHE_ARG.into()]).is_err());
+    }
+
+    #[test]
+    fn distributed_cache_watcher_rejects_a_mismatched_publication_marker() {
+        let root = tempfile::tempdir().expect("temporary root");
+        std::fs::write(
+            root.path().join("default-snapshot-corpus-1.1.json"),
+            r#"{"id":"snapshot-1"}"#,
+        )
+        .expect("manifest");
+        assert_eq!(
+            staged_manifest_id(root.path()).as_deref(),
+            Some("snapshot-1")
+        );
+        assert_eq!(published_manifest_id(root.path()), None);
+        std::fs::write(root.path().join(DISTRIBUTED_PUBLICATION_MARKER), "wrong\n")
+            .expect("mismatched publication marker");
+        assert_eq!(staged_manifest_id(root.path()), None);
+        std::fs::write(
+            root.path().join(DISTRIBUTED_PUBLICATION_MARKER),
+            "snapshot-1\n",
+        )
+        .expect("publication marker");
+        assert_eq!(
+            staged_manifest_id(root.path()).as_deref(),
+            Some("snapshot-1")
+        );
+        assert_eq!(
+            published_manifest_id(root.path()).as_deref(),
+            Some("snapshot-1")
+        );
+    }
+
+    #[test]
+    fn distributed_bundle_publishes_new_manifest_before_activation_marker() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        std::fs::create_dir_all(&source).expect("source");
+        std::fs::create_dir_all(&target).expect("target");
+        std::fs::write(
+            source.join("default-snapshot-corpus-1.1.json"),
+            r#"{"id":"new"}"#,
+        )
+        .expect("source manifest");
+        std::fs::write(source.join("payload"), "complete").expect("source payload");
+        std::fs::write(
+            target.join("default-snapshot-corpus-1.1.json"),
+            r#"{"id":"old"}"#,
+        )
+        .expect("target manifest");
+        std::fs::write(target.join(DISTRIBUTED_PUBLICATION_MARKER), "old\n").expect("old marker");
+
+        publish_bundle(&source, &target, "new").expect("publish");
+
+        assert_eq!(published_manifest_id(&target).as_deref(), Some("new"));
+        assert_eq!(
+            std::fs::read_to_string(target.join("payload")).expect("payload"),
+            "complete"
+        );
     }
 
     #[test]

@@ -81,6 +81,30 @@ fn full_search_detail_preserves_current_result_fields() {
 }
 
 #[test]
+fn omitted_detail_matches_explicit_full_semantics() {
+    let harness = McpTestHarness::new();
+    let omitted: Value = serde_json::from_str(&harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({ "query": "lbm_add_extension", "mode": "lexical" }),
+    ))
+    .expect("omitted response");
+    let explicit: Value = serde_json::from_str(&harness.call_tool(
+        "search_vesc_knowledge",
+        serde_json::json!({
+            "query": "lbm_add_extension",
+            "mode": "lexical",
+            "detail": "full"
+        }),
+    ))
+    .expect("explicit response");
+    assert_eq!(omitted["detail"], "full");
+    assert_eq!(explicit["detail"], "full");
+    assert_eq!(omitted["results"], explicit["results"]);
+    assert_eq!(omitted["index"], explicit["index"]);
+    assert_eq!(omitted["warnings"], explicit["warnings"]);
+}
+
+#[test]
 fn compact_response_budget_is_applied_to_compact_shape() {
     let harness = McpTestHarness::new();
     let response = harness.call_tool(

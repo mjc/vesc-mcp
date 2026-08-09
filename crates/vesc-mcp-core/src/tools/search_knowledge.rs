@@ -910,6 +910,14 @@ impl SearchVescKnowledgeResponse {
         if response_exceeds_budget(&self, budget, detail, &params.query) {
             self.results.clear();
             self.index = None;
+            if detail == SearchResponseDetail::Full {
+                self.detail = SearchResponseDetail::Compact;
+                self.warning_codes.push("detail_degraded".into());
+                self.warnings.push(
+                    "full detail could not fit the response budget; evidence fields were removed"
+                        .into(),
+                );
+            }
         }
         while response_exceeds_budget(&self, budget, detail, &params.query)
             && self.corrections.len() > 1
@@ -1174,6 +1182,7 @@ fn lexical_search_results(
                 .collect(),
             filters,
             limit,
+            &preferred_revisions(config),
         ),
         Vec::new(),
     ))
@@ -1240,6 +1249,7 @@ fn hybrid_results(
             .collect(),
         filters,
         limit,
+        &preferred_revisions(config),
     );
     let warnings = live_rerank
         .then(|| {
@@ -1296,6 +1306,7 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
             .collect(),
         filters,
         limit,
+        &preferred_revisions(config),
     );
     Ok((results, false))
 }
@@ -1416,8 +1427,8 @@ fn semantic_hits(
 ) -> Result<(Vec<SemanticHit>, bool), String> {
     #[cfg(feature = "semantic-fastembed")]
     {
-        let mut state = initialize_semantic_model(config)?;
         let vector = load_vector_artifact(config)?;
+        let mut state = initialize_semantic_model(config)?;
         let entry = state
             .as_mut()
             .ok_or_else(|| "semantic provider cache is empty".to_string())?;
@@ -1889,13 +1900,14 @@ fn retain_diverse_results(
     results: Vec<SearchVescKnowledgeResult>,
     filters: &vesc_knowledge_index::LexicalFilters,
     limit: usize,
+    preferred_revisions: &BTreeMap<String, String>,
 ) -> Vec<SearchVescKnowledgeResult> {
     if filters.revision.is_some() {
         return results.into_iter().take(limit).collect();
     }
     let mut retained = Vec::with_capacity(limit);
     let mut seen = BTreeSet::new();
-    for mut result in results {
+    for result in results {
         let key = (
             result.source.repo.clone(),
             result.source.path.clone(),
@@ -1913,31 +1925,60 @@ fn retain_diverse_results(
             }
             continue;
         }
-        if let Some(existing) = retained.iter_mut().find(|existing| {
+        let Some(existing_index) = retained.iter().position(|existing| {
             existing.source.repo == result.source.repo
                 && existing.source.path == result.source.path
                 && normalized_passage(existing) == normalized_passage(&result)
-        }) {
-            let occurrence =
-                existing
-                    .occurrence
-                    .get_or_insert_with(|| SearchVescKnowledgeOccurrence {
-                        count: 1,
-                        revisions: existing.source.revision.clone().into_iter().collect(),
-                        first_revision: existing.source.revision.clone(),
-                        last_revision: existing.source.revision.clone(),
-                        representative_id: existing.id.clone(),
-                    });
-            occurrence.count += 1;
-            if let Some(revision) = result.source.revision.take() {
-                if occurrence.revisions.len() < 8 && !occurrence.revisions.contains(&revision) {
-                    occurrence.revisions.push(revision.clone());
-                }
-                occurrence.last_revision = Some(revision);
+        }) else {
+            continue;
+        };
+        let candidate_revision = result.source.revision.clone();
+        let existing = &mut retained[existing_index];
+        let occurrence = existing
+            .occurrence
+            .get_or_insert_with(|| SearchVescKnowledgeOccurrence {
+                count: 1,
+                revisions: existing.source.revision.clone().into_iter().collect(),
+                first_revision: existing.source.revision.clone(),
+                last_revision: existing.source.revision.clone(),
+                representative_id: existing.id.clone(),
+            });
+        occurrence.count += 1;
+        if let Some(revision) = candidate_revision.as_ref() {
+            if occurrence.revisions.len() < 8 && !occurrence.revisions.contains(revision) {
+                occurrence.revisions.push(revision.clone());
+            }
+            occurrence.last_revision = Some(revision.clone());
+        }
+        if preferred_revisions
+            .get(&result.source.repo)
+            .is_some_and(|preferred| candidate_revision.as_deref() == Some(preferred))
+            && existing.source.revision != candidate_revision
+        {
+            let occurrence = existing.occurrence.take();
+            let mut replacement = result;
+            replacement.occurrence = occurrence;
+            retained[existing_index] = replacement;
+            let representative_id = retained[existing_index].id.clone();
+            if let Some(occurrence) = &mut retained[existing_index].occurrence {
+                occurrence.representative_id = representative_id;
             }
         }
     }
     retained
+}
+
+fn preferred_revisions(config: &KnowledgeConfig) -> BTreeMap<String, String> {
+    config
+        .resolved_artifact()
+        .map(|artifact| {
+            artifact
+                .repositories
+                .into_iter()
+                .map(|(repository, commit)| (repository.to_string(), commit))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn normalized_passage(result: &SearchVescKnowledgeResult) -> String {
@@ -2563,6 +2604,34 @@ mod tests {
     }
 
     #[test]
+    fn invalid_limit_returns_structured_validation_remediation() {
+        let response = search_vesc_knowledge_tool_with_config(
+            &SearchVescKnowledgeParams {
+                query: "nvm".into(),
+                snapshot_id: None,
+                limit: 999,
+                mode: Some(SearchMode::Lexical),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: None,
+                detail: SearchResponseDetail::Full,
+            },
+            &KnowledgeConfig {
+                mode: RetrievalMode::Lexical,
+                max_limit: 10,
+                ..KnowledgeConfig::default()
+            },
+        );
+
+        let validation = response.validation.expect("validation details");
+        assert_eq!(validation.field, "limit");
+        assert_eq!(validation.rejected_value, "999");
+        assert!(validation.accepted.contains("1..=10"));
+        assert!(validation.clamping_safe);
+        assert_eq!(response.warning_codes, vec!["validation_failed"]);
+    }
+
+    #[test]
     fn category_label_maps_firmware_api() {
         assert_eq!(
             category_label(vesc_knowledge_index::Category::FirmwareApi),
@@ -2651,7 +2720,7 @@ mod tests {
             history_test_result("new", "ghi789", "different body"),
         ];
 
-        let retained = retain_diverse_results(results, &filters, 10);
+        let retained = retain_diverse_results(results, &filters, 10, &BTreeMap::new());
 
         assert_eq!(
             retained
@@ -2677,9 +2746,35 @@ mod tests {
             history_test_result("new", "def456", "same body"),
         ];
 
-        let retained = retain_diverse_results(results, &filters, 10);
+        let retained = retain_diverse_results(results, &filters, 10, &BTreeMap::new());
 
         assert_eq!(retained.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_history_prefers_the_configured_default_revision() {
+        let filters = vesc_knowledge_index::LexicalFilters::default();
+        let results = vec![
+            history_test_result("old", "oldrev", "same body"),
+            history_test_result("default", "defaultrev", "same body"),
+        ];
+        let preferred = BTreeMap::from([(String::from("vesc"), String::from("defaultrev"))]);
+
+        let retained = retain_diverse_results(results, &filters, 10, &preferred);
+
+        assert_eq!(retained[0].id, "default");
+        assert_eq!(
+            retained[0].occurrence.as_ref().expect("occurrence").count,
+            2
+        );
+        assert_eq!(
+            retained[0]
+                .occurrence
+                .as_ref()
+                .expect("occurrence")
+                .representative_id,
+            "default"
+        );
     }
 
     fn history_test_result(id: &str, revision: &str, passage: &str) -> SearchVescKnowledgeResult {
@@ -3267,5 +3362,12 @@ max_total_bytes = 1073741824
 
         let bytes = serde_json::to_vec(&response).expect("response JSON");
         assert!(bytes.len() <= 1_024, "{} bytes", bytes.len());
+        assert!(
+            response
+                .warning_codes
+                .iter()
+                .any(|code| code == "detail_degraded")
+        );
+        assert_eq!(response.detail, SearchResponseDetail::Compact);
     }
 }
