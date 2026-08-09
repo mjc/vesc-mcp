@@ -674,14 +674,21 @@ fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Resu
     if staged.exists() {
         fs::remove_dir_all(&staged)?;
     }
-    copy_serving_bundle(source, &staged, source_id)?;
+    let staged_stats = copy_serving_bundle(source, &staged, source_id)?;
+    tracing::info!(
+        snapshot = source_id,
+        files = staged_stats.files,
+        bytes = staged_stats.bytes,
+        "prepared bounded distributed publication bundle"
+    );
     if target.exists() {
         fs::remove_dir_all(target)?;
     }
     fs::create_dir_all(target)?;
     let marker = target.join(DISTRIBUTED_PUBLICATION_MARKER);
     let _ = fs::remove_file(&marker);
-    copy_directory_tree(&staged, target, true)?;
+    let mut target_stats = PublicationCopyStats::default();
+    copy_directory_tree(&staged, target, true, &mut target_stats)?;
     let manifest = target.join("default-snapshot-corpus-1.1.json");
     let staged_manifest = staged.join("default-snapshot-corpus-1.1.json");
     let manifest_tmp = target.join(".default-snapshot-corpus-1.1.json.tmp");
@@ -694,25 +701,47 @@ fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Resu
     Ok(())
 }
 
-fn copy_serving_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Result<()> {
+#[derive(Debug, Default)]
+struct PublicationCopyStats {
+    files: u64,
+    bytes: u64,
+}
+
+fn copy_serving_bundle(
+    source: &Path,
+    target: &Path,
+    source_id: &str,
+) -> anyhow::Result<PublicationCopyStats> {
     fs::create_dir_all(target)?;
+    let mut stats = PublicationCopyStats::default();
     copy_required_file(
         &source.join("default-snapshot-corpus-1.1.json"),
         &target.join("default-snapshot-corpus-1.1.json"),
+        &mut stats,
     )?;
     copy_required_file(
         &source.join("snapshots").join(format!("{source_id}.json")),
         &target.join("snapshots").join(format!("{source_id}.json")),
+        &mut stats,
     )?;
-    copy_required_directory(&source.join("repositories"), &target.join("repositories"))?;
+    copy_required_directory(
+        &source.join("repositories"),
+        &target.join("repositories"),
+        &mut stats,
+    )?;
     copy_required_directory(
         &source.join("artifacts").join(source_id),
         &target.join("artifacts").join(source_id),
+        &mut stats,
     )?;
-    Ok(())
+    Ok(stats)
 }
 
-fn copy_required_file(source: &Path, target: &Path) -> anyhow::Result<()> {
+fn copy_required_file(
+    source: &Path,
+    target: &Path,
+    stats: &mut PublicationCopyStats,
+) -> anyhow::Result<()> {
     if !source.is_file() {
         anyhow::bail!(
             "distributed publication is missing required file {}",
@@ -722,24 +751,30 @@ fn copy_required_file(source: &Path, target: &Path) -> anyhow::Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::copy(source, target)?;
+    stats.bytes += fs::copy(source, target)?;
+    stats.files += 1;
     Ok(())
 }
 
-fn copy_required_directory(source: &Path, target: &Path) -> anyhow::Result<()> {
+fn copy_required_directory(
+    source: &Path,
+    target: &Path,
+    stats: &mut PublicationCopyStats,
+) -> anyhow::Result<()> {
     if !source.is_dir() {
         anyhow::bail!(
             "distributed publication is missing required directory {}",
             source.display()
         );
     }
-    copy_directory_tree(source, target, false)
+    copy_directory_tree(source, target, false, stats)
 }
 
 fn copy_directory_tree(
     source: &Path,
     target: &Path,
     skip_publication_files: bool,
+    stats: &mut PublicationCopyStats,
 ) -> anyhow::Result<()> {
     fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
@@ -753,9 +788,10 @@ fn copy_directory_tree(
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
         if source_path.is_dir() {
-            copy_directory_tree(&source_path, &target_path, skip_publication_files)?;
+            copy_directory_tree(&source_path, &target_path, skip_publication_files, stats)?;
         } else {
-            fs::copy(source_path, target_path)?;
+            stats.bytes += fs::copy(source_path, target_path)?;
+            stats.files += 1;
         }
     }
     Ok(())
