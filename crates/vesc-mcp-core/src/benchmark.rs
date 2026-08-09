@@ -16,6 +16,7 @@ use crate::tools::search_knowledge::{
 struct BenchmarkSearchResponse {
     ok: bool,
     mode: SearchMode,
+    detail: SearchResponseDetail,
     #[serde(default)]
     results: Vec<serde_json::Value>,
     #[serde(default)]
@@ -61,6 +62,7 @@ pub struct MachineProfile {
 pub struct McpBenchmarkReport {
     pub schema: u16,
     pub mode: SearchMode,
+    pub detail: SearchResponseDetail,
     pub warmup_iterations: usize,
     pub repetitions: usize,
     pub query_count: usize,
@@ -69,11 +71,23 @@ pub struct McpBenchmarkReport {
     pub response_digests: Vec<String>,
     pub handler_and_serialization: TimingDistribution,
     pub response_bytes: ByteDistribution,
+    pub evidence: BenchmarkEvidence,
     pub rss_before_queries_bytes: Option<u64>,
     pub rss_after_queries_bytes: Option<u64>,
     pub rss_retained_delta_bytes: Option<i64>,
     pub machine: MachineProfile,
     pub warnings: Vec<String>,
+}
+
+/// Counts the evidence-bearing fields exposed by the benchmarked response.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchmarkEvidence {
+    pub result_rows: usize,
+    pub provenance_rows: usize,
+    pub distinct_source_paths: usize,
+    pub occurrence_rows: usize,
+    pub expanded_context_rows: usize,
 }
 
 /// Errors raised while measuring MCP search responses.
@@ -92,6 +106,11 @@ pub enum BenchmarkError {
     UnexpectedMode {
         expected: SearchMode,
         actual: SearchMode,
+    },
+    #[error("MCP benchmark requested detail {expected:?}, but the response used {actual:?}")]
+    UnexpectedDetail {
+        expected: SearchResponseDetail,
+        actual: SearchResponseDetail,
     },
     #[error("MCP benchmark search returned no results")]
     NoResults,
@@ -136,6 +155,32 @@ pub fn benchmark_search_mode(
     repetitions: usize,
     mode: SearchMode,
 ) -> Result<McpBenchmarkReport, BenchmarkError> {
+    benchmark_search_profile(
+        config,
+        queries,
+        warmup_iterations,
+        repetitions,
+        mode,
+        SearchResponseDetail::Compact,
+    )
+}
+
+/// Measures a search profile and reports the evidence shape returned by it.
+///
+/// This is the benchmark boundary for comparing the default full response
+/// with the explicit compact profile without counting transport scheduling.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] for invalid inputs or response serialization.
+pub fn benchmark_search_profile(
+    config: &KnowledgeConfig,
+    queries: &[String],
+    warmup_iterations: usize,
+    repetitions: usize,
+    mode: SearchMode,
+    detail: SearchResponseDetail,
+) -> Result<McpBenchmarkReport, BenchmarkError> {
     if queries.is_empty() {
         return Err(BenchmarkError::EmptyQueries);
     }
@@ -151,12 +196,12 @@ pub fn benchmark_search_mode(
         filters: SearchVescKnowledgeFilters::default(),
         max_response_bytes: None,
         max_context_bytes: None,
-        detail: SearchResponseDetail::Compact,
+        detail,
     };
     for _ in 0..warmup_iterations {
         for query in queries {
             let response = search_vesc_knowledge_json_with_config(&params(query), config);
-            validate_search_response(&response, mode)?;
+            validate_search_response(&response, mode, detail)?;
         }
     }
 
@@ -166,15 +211,17 @@ pub fn benchmark_search_mode(
     let mut snapshot_ids = BTreeSet::new();
     let mut result_counts = BTreeSet::new();
     let mut response_digests = BTreeSet::new();
+    let mut evidence = BenchmarkEvidence::default();
     for _ in 0..repetitions {
         for query in queries {
             let started = Instant::now();
             let response = search_vesc_knowledge_json_with_config(&params(query), config);
             let bytes = response.len();
             timings.push(elapsed_us(started));
-            let validated = validate_search_response(&response, mode)?;
+            let validated = validate_search_response(&response, mode, detail)?;
             snapshot_ids.extend(validated.snapshot_id);
             result_counts.insert(validated.results.len());
+            accumulate_evidence(&validated.results, &mut evidence);
             response_digests
                 .insert(vesc_knowledge_index::ContentDigest::of(response.as_bytes()).to_string());
             response_sizes.push(bytes as u64);
@@ -190,8 +237,9 @@ pub fn benchmark_search_mode(
         });
 
     Ok(McpBenchmarkReport {
-        schema: 2,
+        schema: 3,
         mode,
+        detail,
         warmup_iterations,
         repetitions,
         query_count: queries.len(),
@@ -200,6 +248,7 @@ pub fn benchmark_search_mode(
         response_digests: response_digests.into_iter().collect(),
         handler_and_serialization: TimingDistribution::from_samples(timings),
         response_bytes: ByteDistribution::from_samples(response_sizes),
+        evidence,
         rss_before_queries_bytes,
         rss_after_queries_bytes,
         rss_retained_delta_bytes,
@@ -211,6 +260,7 @@ pub fn benchmark_search_mode(
 fn validate_search_response(
     response: &str,
     expected_mode: SearchMode,
+    expected_detail: SearchResponseDetail,
 ) -> Result<BenchmarkSearchResponse, BenchmarkError> {
     let response: BenchmarkSearchResponse = serde_json::from_str(response)?;
     if !response.ok {
@@ -224,6 +274,12 @@ fn validate_search_response(
             actual: response.mode,
         });
     }
+    if response.detail != expected_detail {
+        return Err(BenchmarkError::UnexpectedDetail {
+            expected: expected_detail,
+            actual: response.detail,
+        });
+    }
     if response.results.is_empty() {
         return Err(BenchmarkError::NoResults);
     }
@@ -231,6 +287,34 @@ fn validate_search_response(
         return Err(BenchmarkError::SearchWarnings(response.warnings.join("; ")));
     }
     Ok(response)
+}
+
+fn accumulate_evidence(results: &[serde_json::Value], evidence: &mut BenchmarkEvidence) {
+    let mut paths = BTreeSet::new();
+    for result in results {
+        evidence.result_rows += 1;
+        if result.get("provenance").is_some() {
+            evidence.provenance_rows += 1;
+        }
+        if result.get("occurrence").is_some() {
+            evidence.occurrence_rows += 1;
+        }
+        if result
+            .get("explanation")
+            .and_then(|explanation| explanation.get("expansion_reason"))
+            .is_some()
+        {
+            evidence.expanded_context_rows += 1;
+        }
+        if let Some(path) = result
+            .get("source")
+            .and_then(|source| source.get("path"))
+            .and_then(serde_json::Value::as_str)
+        {
+            paths.insert(path);
+        }
+    }
+    evidence.distinct_source_paths += paths.len();
 }
 
 impl TimingDistribution {
@@ -318,7 +402,7 @@ mod tests {
             2,
         )
         .expect("benchmark");
-        assert_eq!(report.schema, 2);
+        assert_eq!(report.schema, 3);
         assert_eq!(report.query_count, 1);
         assert_eq!(report.response_digests.len(), 1);
         assert_eq!(report.handler_and_serialization.samples, 2);
@@ -338,5 +422,22 @@ mod tests {
         .expect_err("hybrid search must fail against lexical-only configuration");
 
         assert!(matches!(error, BenchmarkError::SearchFailed(_)));
+    }
+
+    #[test]
+    fn full_profile_reports_evidence_shape() {
+        let report = benchmark_search_profile(
+            &KnowledgeConfig::default(),
+            &["lbm_add_extension".into()],
+            0,
+            1,
+            SearchMode::Lexical,
+            SearchResponseDetail::Full,
+        )
+        .expect("benchmark");
+
+        assert_eq!(report.detail, SearchResponseDetail::Full);
+        assert!(report.evidence.provenance_rows > 0);
+        assert!(report.evidence.distinct_source_paths > 0);
     }
 }
