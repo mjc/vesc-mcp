@@ -180,9 +180,9 @@ impl PreparationReporter {
         if status.last_error.is_none()
             && let Some(refresh_unix_secs) = status.last_refresh_unix_secs
         {
-            for repository in repositories.values_mut() {
-                repository.last_refresh_unix_secs = Some(refresh_unix_secs);
-                repository.failure_reason = None;
+            for repository_status in repositories.values_mut() {
+                repository_status.last_refresh_unix_secs = Some(refresh_unix_secs);
+                repository_status.failure_reason = None;
             }
         }
         let (active_snapshot, available_snapshot, last_refresh_unix_secs, last_error) =
