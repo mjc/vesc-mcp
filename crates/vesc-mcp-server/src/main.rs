@@ -620,7 +620,7 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
         PreparationState::Ready
     };
     let refreshed_at = publication_refresh_timestamp(
-        error.as_deref(),
+        error.is_none(),
         prior
             .as_ref()
             .and_then(|status| status.last_refresh_unix_secs),
@@ -648,11 +648,8 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
     }
 }
 
-fn publication_refresh_timestamp(
-    error: Option<&str>,
-    previous: Option<u64>,
-) -> Option<u64> {
-    if error.is_some() {
+fn publication_refresh_timestamp(refresh_succeeded: bool, previous: Option<u64>) -> Option<u64> {
+    if !refresh_succeeded {
         return previous;
     }
     Some(
@@ -1352,11 +1349,10 @@ mod tests {
         REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
         WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, lazy_preparation_terminal_state,
         migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
-        publish_bundle, publish_child_preparation_failure, publish_distributed_cache,
-        published_manifest_id, refresh_interval, repository_preparation_timeout,
-        publication_refresh_timestamp, repository_publication_status, repository_refresh_args,
-        run_http, staged_manifest_id,
-        supervise_preparation_child, terminal_preparation_state,
+        publication_refresh_timestamp, publish_bundle, publish_child_preparation_failure,
+        publish_distributed_cache, published_manifest_id, refresh_interval,
+        repository_preparation_timeout, repository_publication_status, repository_refresh_args,
+        run_http, staged_manifest_id, supervise_preparation_child, terminal_preparation_state,
     };
 
     #[test]
@@ -1820,10 +1816,8 @@ mod tests {
 
     #[test]
     fn failed_publication_preserves_last_success_timestamp() {
-        assert_eq!(
-            publication_refresh_timestamp(Some("copy interrupted"), Some(42)),
-            Some(42)
-        );
+        assert_eq!(publication_refresh_timestamp(false, Some(42)), Some(42));
+        assert_eq!(publication_refresh_timestamp(false, None), None);
     }
 
     #[tokio::test]
