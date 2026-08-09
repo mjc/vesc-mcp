@@ -154,7 +154,7 @@ const COMPACT_FIELDS: [&str; 7] = [
 
 /// Keep the enclosing symbol and nearby caller/test context in full results.
 /// The per-passage byte budget still bounds the resulting response.
-const MAX_EXPANDED_NEIGHBORS: usize = 3;
+const MAX_CONTEXT_NEIGHBORS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct SearchVescKnowledgeSource {
@@ -1299,7 +1299,7 @@ fn hybrid_results(
                 let context = expand_adjacent_context(
                     &hit.chunk,
                     &chunks,
-                    MAX_EXPANDED_NEIGHBORS,
+                    MAX_CONTEXT_NEIGHBORS,
                     context_budget,
                 );
                 fused_result(hit, &context, filters)
@@ -1356,7 +1356,7 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
                 let context = expand_adjacent_context(
                     &hit.chunk,
                     &chunks,
-                    MAX_EXPANDED_NEIGHBORS,
+                    MAX_CONTEXT_NEIGHBORS,
                     context_budget,
                 );
                 fused_result(hit, &context, filters)
@@ -1820,7 +1820,7 @@ fn hydrate_adjacent_chunks(
         .map(|hit| hit.chunk.chunk_id.clone())
         .collect::<BTreeSet<_>>();
     let mut seen = frontier.clone();
-    for _ in 0..MAX_EXPANDED_NEIGHBORS {
+    for _ in 0..MAX_CONTEXT_NEIGHBORS {
         let adjacent = frontier
             .iter()
             .filter_map(|id| chunks.get(id))
@@ -2847,7 +2847,7 @@ mod tests {
         let context = vesc_knowledge_index::expand_adjacent_context(
             &chunks[0],
             &map,
-            MAX_EXPANDED_NEIGHBORS,
+            MAX_CONTEXT_NEIGHBORS,
             4096,
         );
         assert_eq!(context.neighbor_count, 3);
