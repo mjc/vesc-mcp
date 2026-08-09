@@ -106,18 +106,18 @@ impl PreparationReporter {
             self.repositories_completed,
             self.repositories_total,
         );
-        let prior = read_preparation_status(&self.data_root);
+        let previous_status = read_preparation_status(&self.data_root);
         if state == PreparationState::Ready
-            && prior
+            && previous_status
                 .as_ref()
                 .and_then(|value| value.last_refresh_unix_secs)
                 .is_none()
         {
-            let snapshot = prior
+            let snapshot = previous_status
                 .as_ref()
                 .and_then(|value| value.active_snapshot.clone())
                 .or_else(|| manifest_id(&self.data_root));
-            let available_snapshot = prior
+            let available_snapshot = previous_status
                 .as_ref()
                 .and_then(|value| value.available_snapshot.clone())
                 .or_else(|| snapshot.clone());
