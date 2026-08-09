@@ -422,7 +422,9 @@ impl HistoryBlobDeduper {
             path_id
         };
         self.insert_proof(path_id, id, revision, reusable);
-        if !keys.is_empty() {
+        // Empty keys from a rejected blob are a negative cache entry. A
+        // reusable cached blob with no keys remains lazy-hydratable.
+        if !keys.is_empty() || !reusable {
             self.content_keys.entry((path_id, id)).or_insert(keys);
         }
     }
@@ -664,6 +666,7 @@ impl GitHistoryBuildPlan {
         self
     }
 
+    #[allow(clippy::too_many_lines)]
     fn from_chunks(
         sources: &[GitCorpusSource],
         chunks: impl IntoIterator<Item = Chunk>,
@@ -1783,6 +1786,9 @@ fn ingest_reused_blob_occurrences(
                 continue;
             }
             if !entry.mode().is_blob() || !is_selected(&path, &source.policy) {
+                continue;
+            }
+            if !seen_blobs.contains(&path, id) {
                 continue;
             }
             let keys = if let Some(keys) = seen_blobs.content_keys(&path, id) {

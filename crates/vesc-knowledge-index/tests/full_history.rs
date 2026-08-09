@@ -1140,7 +1140,11 @@ fn cold_history_seeds_files_unchanged_at_the_selected_tip_before_deleted_history
             .filter(|chunk| chunk.source_kind == SourceKind::GitBlob)
             .map(|chunk| chunk.path.as_str())
             .collect::<Vec<_>>(),
-        ["limits/current.rs"]
+        [
+            "limits/current.rs",
+            "limits/current.rs",
+            "limits/current.rs",
+        ]
     );
 }
 
