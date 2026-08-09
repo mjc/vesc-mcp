@@ -394,7 +394,10 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
         spawn_distributed_cache_watcher(watch_distributed_cache, refresh_interval);
         run_http(
             vesc_mcp_server::http::HttpServerConfig::from_env(),
-            synchronize_managed_repositories_in_child(refresh_args),
+            synchronize_managed_repositories_in_child(
+                refresh_args,
+                publish_distributed_cache.clone(),
+            ),
             startup_policy.knowledge_preparation,
         )
         .await?;
@@ -403,10 +406,16 @@ async fn async_main(args: Vec<String>) -> anyhow::Result<()> {
 
     let refresh_args = repository_refresh_args(&args);
     initialize_managed_repository_preparation(&refresh_args)?;
-    spawn_background_refresh(refresh_interval, startup_policy, publish_distributed_cache);
+    spawn_background_refresh(
+        refresh_interval,
+        startup_policy,
+        publish_distributed_cache.clone(),
+    );
     spawn_distributed_cache_watcher(watch_distributed_cache, refresh_interval);
     tokio::spawn(async move {
-        if let Err(error) = synchronize_managed_repositories_in_child(refresh_args).await {
+        if let Err(error) =
+            synchronize_managed_repositories_in_child(refresh_args, publish_distributed_cache).await
+        {
             tracing::error!(%error, "managed repository preparation failed");
         }
     });
@@ -796,7 +805,10 @@ fn initialize_managed_repository_preparation(args: &[String]) -> anyhow::Result<
     write_preparation_status(data_root.as_path(), &status)
 }
 
-async fn synchronize_managed_repositories_in_child(args: Vec<String>) -> anyhow::Result<()> {
+async fn synchronize_managed_repositories_in_child(
+    args: Vec<String>,
+    publish_target: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let config = McpConfig::load();
     if !config.knowledge.manages_repositories() {
         return Ok(());
@@ -826,14 +838,21 @@ async fn synchronize_managed_repositories_in_child(args: Vec<String>) -> anyhow:
             return Err(error.into());
         }
     };
-    supervise_preparation_child(
+    let result = supervise_preparation_child(
         &mut child,
         timeout,
         data_root,
         repositories_total,
         freshness_required,
     )
-    .await
+    .await;
+    if result.is_ok()
+        && let Some(target) = publish_target
+        && let Err(error) = publish_distributed_bundle(&target)
+    {
+        tracing::warn!(%error, "initial distributed knowledge publication failed; retaining prior target");
+    }
+    result
 }
 
 async fn supervise_preparation_child(
