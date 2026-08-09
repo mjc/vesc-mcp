@@ -619,11 +619,12 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
     } else {
         PreparationState::Ready
     };
-    let refreshed_at = error.is_none().then(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs())
-    });
+    let refreshed_at = publication_refresh_timestamp(
+        error.as_deref(),
+        prior
+            .as_ref()
+            .and_then(|status| status.last_refresh_unix_secs),
+    );
     let repositories = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(data_root.clone()))
         .default_manifest()
         .ok()
@@ -645,6 +646,20 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
     if let Err(write_error) = write_preparation_status(data_root.as_path(), &status) {
         tracing::warn!(%write_error, "could not publish distributed knowledge status");
     }
+}
+
+fn publication_refresh_timestamp(
+    error: Option<&str>,
+    previous: Option<u64>,
+) -> Option<u64> {
+    if error.is_some() {
+        return previous;
+    }
+    Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs()),
+    )
 }
 
 fn repository_publication_status(
@@ -1339,7 +1354,8 @@ mod tests {
         migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
         publish_bundle, publish_child_preparation_failure, publish_distributed_cache,
         published_manifest_id, refresh_interval, repository_preparation_timeout,
-        repository_publication_status, repository_refresh_args, run_http, staged_manifest_id,
+        publication_refresh_timestamp, repository_publication_status, repository_refresh_args,
+        run_http, staged_manifest_id,
         supervise_preparation_child, terminal_preparation_state,
     };
 
@@ -1799,6 +1815,14 @@ mod tests {
                 last_refresh_unix_secs: Some(42),
                 failure_reason: None,
             })
+        );
+    }
+
+    #[test]
+    fn failed_publication_preserves_last_success_timestamp() {
+        assert_eq!(
+            publication_refresh_timestamp(Some("copy interrupted"), Some(42)),
+            Some(42)
         );
     }
 
