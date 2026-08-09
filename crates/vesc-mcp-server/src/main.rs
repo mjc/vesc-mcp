@@ -10,7 +10,8 @@ use vesc_mcp_core::config::{McpConfig, SemanticIngestionProvider};
 use vesc_mcp_core::managed_git::ManagedGitStore;
 use vesc_mcp_core::managed_repositories::{DataRoot, KnowledgeDataLayout, RepositoryPolicy};
 use vesc_mcp_core::managed_snapshots::{
-    KnowledgeSnapshotStore, SnapshotBuildPhase, SnapshotDisposition, SnapshotState,
+    KnowledgeSnapshotManifest, KnowledgeSnapshotStore, SnapshotBuildPhase, SnapshotDisposition,
+    SnapshotState,
 };
 use vesc_mcp_core::preparation_status::{
     KnowledgePreparationStatus, KnowledgeRepositoryPublicationStatus, PreparationPhase,
@@ -594,30 +595,15 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
     } else {
         PreparationState::Ready
     };
+    let refreshed_at = error.is_none().then(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs())
+    });
     let repositories = KnowledgeSnapshotStore::new(KnowledgeDataLayout::new(data_root.clone()))
         .default_manifest()
         .ok()
-        .map(|manifest| {
-            manifest
-                .repositories
-                .into_iter()
-                .map(|repository| {
-                    (
-                        repository.repository.to_string(),
-                        KnowledgeRepositoryPublicationStatus {
-                            serving_revision: Some(repository.commit.clone()),
-                            available_revision: Some(repository.commit),
-                            last_refresh_unix_secs: error.is_none().then(|| {
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map_or(0, |duration| duration.as_secs())
-                            }),
-                            failure_reason: error.clone(),
-                        },
-                    )
-                })
-                .collect::<BTreeMap<_, _>>()
-        })
+        .map(|manifest| repository_publication_status(&manifest, error.clone(), refreshed_at))
         .or_else(|| prior.as_ref().map(|status| status.repositories.clone()))
         .unwrap_or_default();
     let status =
@@ -639,6 +625,32 @@ fn publish_distributed_status(snapshot: Option<String>, error: Option<String>) {
     if let Err(write_error) = write_preparation_status(data_root.as_path(), &status) {
         tracing::warn!(%write_error, "could not publish distributed knowledge status");
     }
+}
+
+fn repository_publication_status(
+    manifest: &KnowledgeSnapshotManifest,
+    failure_reason: Option<String>,
+    last_refresh_unix_secs: Option<u64>,
+) -> BTreeMap<String, KnowledgeRepositoryPublicationStatus> {
+    let failure_reason = failure_reason.map(|mut reason| {
+        reason.truncate(512);
+        reason
+    });
+    manifest
+        .repositories
+        .iter()
+        .map(|repository| {
+            (
+                repository.repository.to_string(),
+                KnowledgeRepositoryPublicationStatus {
+                    serving_revision: Some(repository.commit.clone()),
+                    available_revision: Some(repository.commit.clone()),
+                    last_refresh_unix_secs,
+                    failure_reason: failure_reason.clone(),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Publish a complete immutable data-root bundle with a final marker commit.
@@ -1161,6 +1173,7 @@ async fn synchronize_managed_repositories(policy: StartupPolicy) -> anyhow::Resu
     }
     reporter.validated_vector(&prepared.default.artifact_path);
     reporter.snapshot_available(prepared.default.manifest.id.as_str());
+    publish_distributed_status(Some(prepared.default.manifest.id.as_str().to_owned()), None);
     reporter.finish(terminal_preparation_state(
         used_stale_sources,
         prepared.default.disposition,
@@ -1289,8 +1302,12 @@ mod tests {
 
     use vesc_mcp_core::config::SemanticIngestionProvider;
     use vesc_mcp_core::managed_repositories::DataRoot;
-    use vesc_mcp_core::managed_snapshots::{SnapshotBuildPhase, SnapshotDisposition};
-    use vesc_mcp_core::preparation_status::PreparationPhase;
+    use vesc_mcp_core::managed_snapshots::{
+        KnowledgeSnapshotManifest, SnapshotBuildPhase, SnapshotDisposition, SnapshotRepository,
+    };
+    use vesc_mcp_core::preparation_status::{
+        KnowledgeRepositoryPublicationStatus, PreparationPhase,
+    };
     use vesc_mcp_core::server::KnowledgePreparation;
 
     use super::{
@@ -1302,8 +1319,8 @@ mod tests {
         migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
         publish_bundle, publish_child_preparation_failure, publish_distributed_cache,
         published_manifest_id, refresh_interval, repository_preparation_timeout,
-        repository_refresh_args, run_http, staged_manifest_id, supervise_preparation_child,
-        terminal_preparation_state,
+        repository_publication_status, repository_refresh_args, run_http, staged_manifest_id,
+        supervise_preparation_child, terminal_preparation_state,
     };
 
     #[test]
@@ -1733,6 +1750,35 @@ mod tests {
                 )
                 .with_freshness_required(true)
             ),
+        );
+    }
+
+    #[test]
+    fn repository_publication_status_projects_manifest_revisions() {
+        let commit = "a".repeat(40);
+        let repository = vesc_mcp_core::managed_repositories::RepositoryId::new("refloat")
+            .expect("repository id");
+        let manifest = KnowledgeSnapshotManifest::new(
+            vec![SnapshotRepository {
+                repository,
+                commit: commit.clone(),
+                history_tips: vec![commit.clone()],
+                policy_digest: "policy".into(),
+            }],
+            None,
+        )
+        .expect("manifest");
+
+        let statuses = repository_publication_status(&manifest, None, Some(42));
+
+        assert_eq!(
+            statuses.get("refloat"),
+            Some(&KnowledgeRepositoryPublicationStatus {
+                serving_revision: Some(commit.clone()),
+                available_revision: Some(commit),
+                last_refresh_unix_secs: Some(42),
+                failure_reason: None,
+            })
         );
     }
 
