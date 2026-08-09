@@ -101,11 +101,30 @@ impl PreparationReporter {
     }
 
     fn finish(&mut self, state: PreparationState) {
-        self.publish(&KnowledgePreparationStatus::finished(
+        let mut status = KnowledgePreparationStatus::finished(
             state,
             self.repositories_completed,
             self.repositories_total,
-        ));
+        );
+        if state == PreparationState::Ready
+            && read_preparation_status(&self.data_root)
+                .as_ref()
+                .and_then(|value| value.last_refresh_unix_secs)
+                .is_none()
+        {
+            let prior = read_preparation_status(&self.data_root);
+            status = status.with_publication(
+                prior
+                    .as_ref()
+                    .and_then(|value| value.active_snapshot.clone()),
+                prior
+                    .as_ref()
+                    .and_then(|value| value.available_snapshot.clone()),
+                publication_refresh_timestamp(true, None),
+                None,
+            );
+        }
+        self.publish(&status);
         self.finished = true;
     }
 
@@ -1868,6 +1887,26 @@ mod tests {
         let status = read_preparation_status(root.path()).expect("published status");
         assert_eq!(status.active_snapshot.as_deref(), Some("snapshot-1"));
         assert_eq!(status.available_snapshot.as_deref(), Some("snapshot-1"));
+        assert!(status.last_refresh_unix_secs.is_some());
+    }
+
+    #[test]
+    fn preparation_reporter_records_ready_time_when_reusing_data() {
+        let root = tempfile::tempdir().expect("data root");
+        let mut reporter = PreparationReporter::new(root.path().to_owned(), 1, false);
+        vesc_mcp_core::preparation_status::write_preparation_status(
+            root.path(),
+            &vesc_mcp_core::preparation_status::KnowledgePreparationStatus::finished(
+                PreparationState::Ready,
+                1,
+                1,
+            ),
+        )
+        .expect("write reusable status");
+
+        reporter.finish(PreparationState::Ready);
+
+        let status = read_preparation_status(root.path()).expect("published status");
         assert!(status.last_refresh_unix_secs.is_some());
     }
 
