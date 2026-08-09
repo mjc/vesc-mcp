@@ -7,12 +7,33 @@ use rmcp::{
         StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
+use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use vesc_mcp_core::config::{KnowledgeConfig, RetrievalMode};
 use vesc_mcp_core::test_support::VersionedKnowledgeFixture;
 use vesc_mcp_core::{VescMcpService, resources::VESC_C_IF_URI};
 use vesc_mcp_server::http::{HttpServerConfig, router};
+
+fn assert_compact_search_body(body: &Value) {
+    assert_eq!(body["ok"], true, "compact response: {body}");
+    assert_eq!(body["detail"], "compact");
+    assert_eq!(body["mode_requested"], "lexical");
+    assert_eq!(body["mode_used"], "lexical");
+    assert_eq!(
+        body["fields"],
+        serde_json::json!([
+            "name",
+            "category",
+            "excerpt",
+            "source_index",
+            "chunk_id",
+            "correction_ids",
+            "origin"
+        ])
+    );
+    assert!(body["results"][0].is_array());
+}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -175,23 +196,7 @@ async fn streamable_http_shares_safe_tools_and_resources_between_clients() -> an
             .text
             .as_str(),
     )?;
-    assert_eq!(compact_body["ok"], true, "compact response: {compact_body}");
-    assert_eq!(compact_body["detail"], "compact");
-    assert_eq!(compact_body["mode_requested"], "lexical");
-    assert_eq!(compact_body["mode_used"], "lexical");
-    assert_eq!(
-        compact_body["fields"],
-        serde_json::json!([
-            "name",
-            "category",
-            "excerpt",
-            "source_index",
-            "chunk_id",
-            "correction_ids",
-            "origin"
-        ])
-    );
-    assert!(compact_body["results"][0].is_array());
+    assert_compact_search_body(&compact_body);
 
     let resources = first.list_all_resources().await?;
     assert!(
