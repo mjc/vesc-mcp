@@ -106,13 +106,13 @@ impl PreparationReporter {
             self.repositories_completed,
             self.repositories_total,
         );
+        let prior = read_preparation_status(&self.data_root);
         if state == PreparationState::Ready
-            && read_preparation_status(&self.data_root)
+            && prior
                 .as_ref()
                 .and_then(|value| value.last_refresh_unix_secs)
                 .is_none()
         {
-            let prior = read_preparation_status(&self.data_root);
             status = status.with_publication(
                 prior
                     .as_ref()
