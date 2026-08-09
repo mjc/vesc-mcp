@@ -156,7 +156,7 @@ impl PreparationReporter {
         let prior_repositories = prior
             .as_ref()
             .map_or_else(BTreeMap::new, |value| value.repositories.clone());
-        let repositories = if prior_repositories.is_empty() {
+        let mut repositories = if prior_repositories.is_empty() {
             DataRoot::new(self.data_root.clone())
                 .ok()
                 .and_then(|data_root| {
@@ -177,6 +177,14 @@ impl PreparationReporter {
         } else {
             prior_repositories
         };
+        if status.last_error.is_none()
+            && let Some(refresh_unix_secs) = status.last_refresh_unix_secs
+        {
+            for repository in repositories.values_mut() {
+                repository.last_refresh_unix_secs = Some(refresh_unix_secs);
+                repository.failure_reason = None;
+            }
+        }
         let (active_snapshot, available_snapshot, last_refresh_unix_secs, last_error) =
             if status.active_snapshot.is_some()
                 || status.available_snapshot.is_some()
@@ -1387,6 +1395,7 @@ fn argument_value(args: &[String], name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::{
         Arc,
@@ -1880,6 +1889,26 @@ mod tests {
     fn preparation_reporter_preserves_new_publication_metadata() {
         let root = tempfile::tempdir().expect("data root");
         let mut reporter = PreparationReporter::new(root.path().to_owned(), 1, false);
+        let mut repositories = BTreeMap::new();
+        repositories.insert(
+            "refloat".to_owned(),
+            KnowledgeRepositoryPublicationStatus {
+                serving_revision: Some("a".repeat(40)),
+                available_revision: Some("a".repeat(40)),
+                last_refresh_unix_secs: None,
+                failure_reason: None,
+            },
+        );
+        vesc_mcp_core::preparation_status::write_preparation_status(
+            root.path(),
+            &vesc_mcp_core::preparation_status::KnowledgePreparationStatus::finished(
+                PreparationState::Ready,
+                1,
+                1,
+            )
+            .with_repositories(repositories),
+        )
+        .expect("write reusable status");
 
         reporter.snapshot_available("snapshot-1");
         reporter.finish(PreparationState::Ready);
@@ -1888,6 +1917,13 @@ mod tests {
         assert_eq!(status.active_snapshot.as_deref(), Some("snapshot-1"));
         assert_eq!(status.available_snapshot.as_deref(), Some("snapshot-1"));
         assert!(status.last_refresh_unix_secs.is_some());
+        assert!(
+            status
+                .repositories
+                .get("refloat")
+                .and_then(|value| value.last_refresh_unix_secs)
+                .is_some()
+        );
     }
 
     #[test]
