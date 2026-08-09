@@ -270,7 +270,6 @@ max_file_bytes = 1048576
 max_files = 100
 max_total_bytes = 10485760
 "#,
-        id = id,
     )
 }
 

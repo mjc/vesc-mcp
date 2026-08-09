@@ -879,7 +879,7 @@ fn index_metadata(
     })
 }
 
-fn search_limits(config: &KnowledgeConfig) -> SearchVescKnowledgeLimits {
+const fn search_limits(config: &KnowledgeConfig) -> SearchVescKnowledgeLimits {
     SearchVescKnowledgeLimits {
         default_limit: default_search_limit(),
         max_limit: config.max_limit,

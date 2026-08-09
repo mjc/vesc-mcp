@@ -877,12 +877,10 @@ impl KnowledgeSnapshotStore {
             {
                 Ok((resolved, history_tips))
                     if selected.is_some_and(|selected| {
-                        manifest.profile == SnapshotProfile::CompleteHistory
+                        (manifest.profile == SnapshotProfile::CompleteHistory
+                            || manifest.profile == SnapshotProfile::SelectedTrees)
                             && selected.commit == resolved.commit
                             && selected.history_tips == history_tips
-                            || manifest.profile == SnapshotProfile::SelectedTrees
-                                && selected.commit == resolved.commit
-                                && selected.history_tips == history_tips
                     }) => {}
                 Err(ManagedGitError::Storage(_) | ManagedGitError::Git(_))
                     if allow_unavailable

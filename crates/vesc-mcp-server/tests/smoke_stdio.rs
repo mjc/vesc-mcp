@@ -113,7 +113,7 @@ async fn smoke_compact_search_rows_cross_stdio_boundary() -> anyhow::Result<()> 
         .expect("CARGO_BIN_EXE_vesc-mcp-server");
     let transport = TokioChildProcess::new(isolated_server_command(server))?;
     let client = ().serve(transport).await?;
-    let arguments = serde_json::json!({"query":"lbm_add_extension"})
+    let arguments = serde_json::json!({"query":"lbm_add_extension", "detail":"compact"})
         .as_object()
         .cloned()
         .expect("search arguments object");
@@ -186,7 +186,7 @@ async fn smoke_wire_payloads_keep_catalog_and_compact_search_bounded() -> anyhow
             "method":"tools/call",
             "params":{
                 "name":"search_vesc_knowledge",
-                "arguments":{"query":"lbm_add_extension","mode":"lexical","limit":10}
+                "arguments":{"query":"lbm_add_extension","mode":"lexical","limit":10,"detail":"compact"}
             }
         }),
     ] {

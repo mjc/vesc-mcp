@@ -76,6 +76,7 @@ async fn bounded_mcp_symbol_search_returns_decisive_git_evidence_and_follow_up_r
             "query": "update_pid_position_offset|trait MotorControlBindings|impl.*MotorControlBindings|PidPosition",
             "snapshot_id": snapshot,
             "mode": "lexical",
+            "detail": "compact",
             "limit": 5,
             "max_context_bytes": 8192,
             "max_response_bytes": 16384,

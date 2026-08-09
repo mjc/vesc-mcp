@@ -464,10 +464,10 @@ fn spawn_distributed_cache_watcher(staged_root: Option<PathBuf>, interval: Optio
                     .and_then(|result| result);
             match result {
                 Ok(snapshot) => {
-                    tracing::info!(%snapshot, "activated distributed knowledge snapshot")
+                    tracing::info!(%snapshot, "activated distributed knowledge snapshot");
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "distributed cache refresh failed; retaining prior generation")
+                    tracing::warn!(%error, "distributed cache refresh failed; retaining prior generation");
                 }
             }
         }

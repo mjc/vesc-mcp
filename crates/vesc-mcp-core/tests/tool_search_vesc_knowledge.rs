@@ -4,11 +4,11 @@ use serde_json::Value;
 use vesc_mcp_core::test_support::McpTestHarness;
 
 #[test]
-fn compact_search_default_uses_bounded_field_rows() {
+fn compact_search_is_opt_in_with_bounded_field_rows() {
     let harness = McpTestHarness::new();
     let response = harness.call_tool(
         "search_vesc_knowledge",
-        serde_json::json!({ "query": "lbm_add_extension" }),
+        serde_json::json!({ "query": "lbm_add_extension", "detail": "compact" }),
     );
 
     let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
@@ -208,7 +208,7 @@ fn loader_corrections_are_top_context_in_base_knowledge() {
     for (query, expected_name, decisive_excerpt) in cases {
         let response = harness.call_tool(
             "search_vesc_knowledge",
-            serde_json::json!({ "query": query, "limit": 5 }),
+            serde_json::json!({ "query": query, "limit": 5, "detail": "compact" }),
         );
         let body: Value = serde_json::from_str(&response).expect("tool returns JSON");
         let results = body["results"].as_array().expect("compact results");

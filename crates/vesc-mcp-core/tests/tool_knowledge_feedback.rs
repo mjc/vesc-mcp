@@ -163,7 +163,7 @@ fn feedback_workflow_crosses_the_registered_mcp_boundary() {
 
     let search: Value = serde_json::from_str(&harness.call_tool(
         "search_vesc_knowledge",
-        serde_json::json!({ "query": "load-native-lib import tag", "limit": 2 }),
+        serde_json::json!({ "query": "load-native-lib import tag", "limit": 2, "detail": "compact" }),
     ))
     .expect("search response JSON");
     assert!(
