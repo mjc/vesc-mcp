@@ -1334,18 +1334,7 @@ fn hybrid_results(
     let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
     hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
     let results = retain_diverse_results(
-        fused
-            .into_iter()
-            .map(|hit| {
-                let context = expand_adjacent_context(
-                    &hit.chunk,
-                    &chunks,
-                    MAX_CONTEXT_NEIGHBORS,
-                    context_budget,
-                );
-                fused_result(hit, &context, filters)
-            })
-            .collect(),
+        lexical_results_with_context(fused, filters, &chunks, context_budget),
         filters,
         limit,
         &preferred_revisions(config),
@@ -1388,18 +1377,7 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     let (fused, mut chunks) = hydrate_fused_candidates(fused, config)?;
     hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
     let results = retain_diverse_results(
-        fused
-            .into_iter()
-            .map(|hit| {
-                let context = expand_adjacent_context(
-                    &hit.chunk,
-                    &chunks,
-                    MAX_CONTEXT_NEIGHBORS,
-                    context_budget,
-                );
-                fused_result(hit, &context, filters)
-            })
-            .collect(),
+        lexical_results_with_context(fused, filters, &chunks, context_budget),
         filters,
         limit,
         &preferred_revisions(config),
