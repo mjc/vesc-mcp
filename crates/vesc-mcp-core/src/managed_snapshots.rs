@@ -163,9 +163,6 @@ impl KnowledgeSnapshotManifest {
             {
                 return Err(SnapshotError::InvalidHistoryTips);
             }
-            if profile == SnapshotProfile::CompleteHistory {
-                repository.commit = repository.history_tips[0].clone();
-            }
         }
         repositories.sort_by(|left, right| left.repository.cmp(&right.repository));
         configured_repositories.sort();
@@ -298,9 +295,7 @@ fn history_tips_are_canonical(profile: SnapshotProfile, repository: &SnapshotRep
             SnapshotProfile::SelectedTrees => {
                 repository.history_tips.as_slice() == [repository.commit.as_str()]
             }
-            SnapshotProfile::CompleteHistory => {
-                repository.history_tips.first() == Some(&repository.commit)
-            }
+            SnapshotProfile::CompleteHistory => true,
         }
 }
 
@@ -883,6 +878,7 @@ impl KnowledgeSnapshotStore {
                 Ok((resolved, history_tips))
                     if selected.is_some_and(|selected| {
                         manifest.profile == SnapshotProfile::CompleteHistory
+                            && selected.commit == resolved.commit
                             && selected.history_tips == history_tips
                             || manifest.profile == SnapshotProfile::SelectedTrees
                                 && selected.commit == resolved.commit
@@ -3034,7 +3030,7 @@ max_total_bytes = 10485760
         expected.dedup();
 
         assert_eq!(selected.history_tips, expected);
-        assert_eq!(selected.commit, selected.history_tips[0]);
+        assert_eq!(selected.commit, second);
         assert_ne!(manifest.id, initial_history.id);
         assert_eq!(selected_manifest.id, initial_selected.id);
     }
@@ -3611,7 +3607,7 @@ max_total_bytes = 10485760
     }
 
     #[test]
-    fn complete_history_manifest_rejects_a_noncanonical_anchor() {
+    fn complete_history_manifest_preserves_the_configured_anchor() {
         let repository = RepositoryId::new("fixture").expect("repository ID");
         let mut manifest = KnowledgeSnapshotManifest::with_profile(
             vec![SnapshotRepository {
@@ -3624,7 +3620,8 @@ max_total_bytes = 10485760
             SnapshotProfile::CompleteHistory,
         )
         .expect("canonical complete-history manifest");
-        manifest.repositories[0].commit = "b".repeat(40);
+        assert_eq!(manifest.repositories[0].commit, "b".repeat(40));
+        manifest.repositories[0].commit = "c".repeat(40);
         let identity = SnapshotIdentity {
             schema: manifest.schema,
             profile: manifest.profile,
@@ -3640,7 +3637,7 @@ max_total_bytes = 10485760
 
         assert!(
             !manifest.has_valid_identity(),
-            "all-ref manifests have exactly one canonical anchor"
+            "the configured anchor must still be one of the history tips"
         );
     }
 
@@ -4751,7 +4748,7 @@ max_total_bytes = 10485760
     }
 
     #[tokio::test]
-    async fn changing_default_ref_reuses_the_same_all_ref_snapshot() {
+    async fn changing_default_ref_records_a_distinct_all_ref_anchor() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let (work, remote, _first, _second) = fixture_remote(temp.path());
         run_git(&work, &["switch", "-c", "release/7", "v1"]);
@@ -4796,9 +4793,13 @@ max_total_bytes = 10485760
             .await
             .expect("switched all-ref snapshot");
 
-        assert_eq!(switched.disposition, SnapshotDisposition::Reused);
-        assert_eq!(switched.manifest.id, initial.manifest.id);
-        assert_eq!(switched.artifact_path, initial.artifact_path);
+        assert_eq!(switched.disposition, SnapshotDisposition::Built);
+        assert_ne!(switched.manifest.id, initial.manifest.id);
+        assert_ne!(switched.artifact_path, initial.artifact_path);
+        assert_ne!(
+            switched.manifest.repositories[0].commit,
+            initial.manifest.repositories[0].commit
+        );
     }
 
     #[tokio::test]
