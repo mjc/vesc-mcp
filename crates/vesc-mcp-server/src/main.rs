@@ -113,13 +113,17 @@ impl PreparationReporter {
                 .and_then(|value| value.last_refresh_unix_secs)
                 .is_none()
         {
+            let snapshot = prior
+                .as_ref()
+                .and_then(|value| value.active_snapshot.clone())
+                .or_else(|| manifest_id(&self.data_root));
+            let available_snapshot = prior
+                .as_ref()
+                .and_then(|value| value.available_snapshot.clone())
+                .or_else(|| snapshot.clone());
             status = status.with_publication(
-                prior
-                    .as_ref()
-                    .and_then(|value| value.active_snapshot.clone()),
-                prior
-                    .as_ref()
-                    .and_then(|value| value.available_snapshot.clone()),
+                snapshot,
+                available_snapshot,
                 publication_refresh_timestamp(true, None),
                 None,
             );
@@ -1930,6 +1934,11 @@ mod tests {
     fn preparation_reporter_records_ready_time_when_reusing_data() {
         let root = tempfile::tempdir().expect("data root");
         let mut reporter = PreparationReporter::new(root.path().to_owned(), 1, false);
+        std::fs::write(
+            root.path().join("default-snapshot-corpus-1.1.json"),
+            r#"{"id":"snapshot-1"}"#,
+        )
+        .expect("write reusable manifest");
         vesc_mcp_core::preparation_status::write_preparation_status(
             root.path(),
             &vesc_mcp_core::preparation_status::KnowledgePreparationStatus::finished(
@@ -1944,6 +1953,8 @@ mod tests {
 
         let status = read_preparation_status(root.path()).expect("published status");
         assert!(status.last_refresh_unix_secs.is_some());
+        assert_eq!(status.active_snapshot.as_deref(), Some("snapshot-1"));
+        assert_eq!(status.available_snapshot.as_deref(), Some("snapshot-1"));
     }
 
     #[test]
