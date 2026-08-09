@@ -1231,19 +1231,63 @@ fn lexical_search_results(
     config: &KnowledgeConfig,
 ) -> Result<(Vec<SearchVescKnowledgeResult>, Vec<String>), String> {
     let candidate_limit = limit.saturating_mul(5).clamp(20, 100);
+    let hits = lexical_results(&params.query, filters, candidate_limit, config)?;
+    let results = if params.detail == SearchResponseDetail::Full {
+        let mut chunks = hits
+            .iter()
+            .map(|hit| (hit.chunk.chunk_id.clone(), hit.chunk.clone()))
+            .collect::<ChunkMap>();
+        let fused = hits
+            .iter()
+            .enumerate()
+            .map(|(rank, hit)| FusedHit {
+                chunk: hit.chunk.clone(),
+                score: f64::from(hit.score),
+                lexical_rank: Some(rank + 1),
+                semantic_rank: None,
+                lexical_score: Some(hit.score),
+                semantic_similarity: None,
+                exact_identifier: hit.exact_identifier,
+            })
+            .collect::<Vec<_>>();
+        hydrate_adjacent_chunks(&fused, config, &mut chunks)?;
+        lexical_results_with_context(fused, filters, &chunks, context_budget(params, config))
+    } else {
+        hits.into_iter()
+            .enumerate()
+            .map(|(rank, hit)| lexical_result(hit, rank, filters))
+            .collect()
+    };
     Ok((
-        retain_diverse_results(
-            lexical_results(&params.query, filters, candidate_limit, config)?
-                .into_iter()
-                .enumerate()
-                .map(|(rank, hit)| lexical_result(hit, rank, filters))
-                .collect(),
-            filters,
-            limit,
-            &preferred_revisions(config),
-        ),
+        retain_diverse_results(results, filters, limit, &preferred_revisions(config)),
         Vec::new(),
     ))
+}
+
+fn context_budget(params: &SearchVescKnowledgeParams, config: &KnowledgeConfig) -> usize {
+    params
+        .max_context_bytes
+        .unwrap_or(config.max_passage_bytes)
+        .min(config.max_passage_bytes)
+}
+
+fn lexical_results_with_context(
+    hits: Vec<FusedHit>,
+    filters: &vesc_knowledge_index::LexicalFilters,
+    chunks: &ChunkMap,
+    max_context_bytes: usize,
+) -> Vec<SearchVescKnowledgeResult> {
+    hits.into_iter()
+        .map(|hit| {
+            let context = expand_adjacent_context(
+                &hit.chunk,
+                chunks,
+                MAX_CONTEXT_NEIGHBORS,
+                max_context_bytes,
+            );
+            fused_result(hit, &context, filters)
+        })
+        .collect()
 }
 
 fn lexical_results(
@@ -1277,10 +1321,7 @@ fn hybrid_results(
         lexical_candidates_and_metadata(&params.query, filters, candidate_limit, config)?;
     let (mut semantic, live_rerank) = semantic_hits(&params.query, candidate_limit, config)?;
     load_semantic_metadata(&mut semantic, filters, config, &mut metadata)?;
-    let context_budget = params
-        .max_context_bytes
-        .unwrap_or(config.max_passage_bytes)
-        .min(config.max_passage_bytes);
+    let context_budget = context_budget(params, config);
     let fused = fuse_candidate_metadata(
         &lexical,
         &semantic,
@@ -1334,10 +1375,7 @@ fn hybrid_results_with_provider<P: EmbeddingProvider + ?Sized>(
     let mut semantic =
         semantic_hits_with_provider(&params.query, candidate_limit, &vector, provider)?;
     load_semantic_metadata(&mut semantic, filters, config, &mut metadata)?;
-    let context_budget = params
-        .max_context_bytes
-        .unwrap_or(config.max_passage_bytes)
-        .min(config.max_passage_bytes);
+    let context_budget = context_budget(params, config);
     let fused = fuse_candidate_metadata(
         &lexical,
         &semantic,
@@ -2852,6 +2890,75 @@ mod tests {
         );
         assert_eq!(context.neighbor_count, 3);
         assert!(context.passage.contains("four"));
+    }
+
+    #[test]
+    fn lexical_full_results_expand_adjacent_context() {
+        use vesc_knowledge_index::{Chunk, NormalizedDocument, RepositoryId, Revision, SourceKind};
+
+        let document = NormalizedDocument::new(
+            "doc",
+            SourceKind::Markdown,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("rev").expect("revision"),
+            "docs/doc.md",
+            "text/markdown",
+            "anchor before after",
+        )
+        .expect("document");
+        let mut chunks = (0..3)
+            .map(|index| {
+                Chunk::from_document(
+                    &document,
+                    index,
+                    ["anchor", "before", "after"][index as usize].into(),
+                    Vec::new(),
+                    None,
+                )
+                .expect("chunk")
+            })
+            .collect::<Vec<_>>();
+        chunks[0].next_chunk = Some(chunks[1].chunk_id.clone());
+        chunks[1].previous_chunk = Some(chunks[0].chunk_id.clone());
+        chunks[1].next_chunk = Some(chunks[2].chunk_id.clone());
+        chunks[2].previous_chunk = Some(chunks[1].chunk_id.clone());
+        let map = chunks
+            .iter()
+            .cloned()
+            .map(|chunk| (chunk.chunk_id.clone(), chunk))
+            .collect::<ChunkMap>();
+        let hit = FusedHit {
+            chunk: chunks[1].clone(),
+            score: 1.0,
+            lexical_rank: Some(1),
+            semantic_rank: None,
+            lexical_score: Some(1.0),
+            semantic_similarity: None,
+            exact_identifier: true,
+        };
+
+        let results = lexical_results_with_context(
+            vec![hit],
+            &vesc_knowledge_index::LexicalFilters::default(),
+            &map,
+            4096,
+        );
+
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert!(
+            result
+                .passage
+                .as_deref()
+                .is_some_and(|passage| { passage.contains("anchor") && passage.contains("after") })
+        );
+        assert_eq!(
+            result
+                .explanation
+                .as_ref()
+                .and_then(|explanation| explanation.expansion_reason.as_deref()),
+            Some("adjacent chunks included")
+        );
     }
 
     #[test]
