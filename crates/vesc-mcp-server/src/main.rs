@@ -1424,7 +1424,8 @@ mod tests {
         REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
         WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, lazy_preparation_terminal_state,
         migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
-        publication_refresh_timestamp, publish_bundle, publish_child_preparation_failure,
+        publication_refresh_timestamp, publish_bundle, publish_bundle_with_hook,
+        publish_child_preparation_failure,
         publish_distributed_cache, published_manifest_id, refresh_interval,
         repository_preparation_timeout, repository_publication_status, repository_refresh_args,
         run_http, staged_manifest_id, supervise_preparation_child, terminal_preparation_state,
@@ -1744,6 +1745,58 @@ mod tests {
         assert!(!target.join("migraphx-cache").exists());
         assert!(!target.join("artifacts/old").exists());
         assert!(!target.join("preparation-status.json").exists());
+    }
+
+    #[test]
+    fn interrupted_distributed_bundle_handoff_restores_previous_generation() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        std::fs::create_dir_all(source.join("snapshots")).expect("source snapshots");
+        std::fs::create_dir_all(source.join("artifacts/new")).expect("source artifact");
+        std::fs::create_dir_all(source.join("repositories")).expect("source repositories");
+        std::fs::write(
+            source.join("default-snapshot-corpus-1.1.json"),
+            r#"{"id":"new"}"#,
+        )
+        .expect("source manifest");
+        std::fs::write(source.join("snapshots/new.json"), "new snapshot")
+            .expect("source snapshot");
+        std::fs::write(source.join("artifacts/new/active.json"), "new artifact")
+            .expect("source artifact");
+        std::fs::write(source.join("repositories/catalog"), "new catalog")
+            .expect("source catalog");
+
+        std::fs::create_dir_all(target.join("snapshots")).expect("target snapshots");
+        std::fs::create_dir_all(target.join("artifacts/old")).expect("target artifact");
+        std::fs::create_dir_all(target.join("repositories")).expect("target repositories");
+        std::fs::write(
+            target.join("default-snapshot-corpus-1.1.json"),
+            r#"{"id":"old"}"#,
+        )
+        .expect("target manifest");
+        std::fs::write(target.join(DISTRIBUTED_PUBLICATION_MARKER), "old\n")
+            .expect("target marker");
+        std::fs::write(target.join("snapshots/old.json"), "old snapshot")
+            .expect("target snapshot");
+        std::fs::write(target.join("artifacts/old/active.json"), "old artifact")
+            .expect("target artifact");
+        std::fs::write(target.join("repositories/catalog"), "old catalog")
+            .expect("target catalog");
+
+        let error = publish_bundle_with_hook(&source, &target, "new", || {
+            anyhow::bail!("simulated transport interruption")
+        })
+        .expect_err("handoff interruption");
+
+        assert!(error.to_string().contains("simulated transport interruption"));
+        assert_eq!(published_manifest_id(&target).as_deref(), Some("old"));
+        assert_eq!(
+            std::fs::read_to_string(target.join("snapshots/old.json")).expect("old snapshot"),
+            "old snapshot"
+        );
+        assert!(!target.join("snapshots/new.json").exists());
+        assert!(!root.path().join(".vesc-mcp-publish-old").exists());
     }
 
     #[test]
