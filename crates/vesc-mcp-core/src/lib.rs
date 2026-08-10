@@ -28,6 +28,7 @@ pub use catalog::{
 };
 pub use error::{CoreError, CoreResult};
 pub use server::{HttpMcpService, VescMcpService};
+pub use vesc_knowledge_index::configure_profile_progress_limit;
 
 const DEFAULT_SNAPSHOT_FILE: &str = "default-snapshot-corpus-1.1.json";
 

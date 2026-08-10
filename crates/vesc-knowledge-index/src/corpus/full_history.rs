@@ -1243,7 +1243,7 @@ fn ingest_git_history_fast_forward_with_contents(
         for info in walk {
             let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
             #[cfg(feature = "coz-profile")]
-            coz::progress!("git_history_walk_commit");
+            crate::profile_progress!("git_history_walk_commit");
             let commit = info
                 .object()
                 .map_err(|error| GitHistoryError::Git(error.to_string()))?;
@@ -1279,7 +1279,7 @@ fn ingest_git_history_fast_forward_with_contents(
                 &mut observations,
             )?;
             #[cfg(feature = "coz-profile")]
-            coz::progress!("git_history_ingested_commit");
+            crate::profile_progress!("git_history_ingested_commit");
         }
         if let Some(index) = known_history {
             let known = &mut processed[index];
@@ -1388,7 +1388,7 @@ fn select_commit_messages(
     for info in &mut walk {
         let info = info.map_err(|error| GitHistoryError::Git(error.to_string()))?;
         #[cfg(feature = "coz-profile")]
-        coz::progress!("git_history_walk_commit");
+        crate::profile_progress!("git_history_walk_commit");
         let commit = info
             .object()
             .map_err(|error| GitHistoryError::Git(error.to_string()))?;
@@ -1940,7 +1940,7 @@ fn ingest_upsert(
     let (inserted, keys) =
         insert_document_drafts(source_index, source, &document, id, contents, observations)?;
     #[cfg(feature = "coz-profile")]
-    coz::progress!("git_history_ingested_blob");
+    crate::profile_progress!("git_history_ingested_blob");
     Ok((inserted, keys))
 }
 

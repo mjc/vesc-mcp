@@ -26,6 +26,7 @@ fi
 profile_root=${VESC_MCP_PROFILE_ROOT:-"${XDG_CONFIG_HOME:-"$HOME/.config"}/vesc-mcp/profiles"}
 profile_migraphx_cache=${VESC_MCP_PROFILE_MIGRAPHX_CACHE_PATH:-}
 timeout_secs=${VESC_MCP_PROFILE_TIMEOUT_SECS:-600}
+coz_progress_points=${VESC_MCP_PROFILE_MAX_PROGRESS_POINTS:-10000}
 memory_high=${VESC_MCP_PROFILE_MEMORY_HIGH:-3G}
 memory_max=${VESC_MCP_PROFILE_MEMORY_MAX:-4G}
 build_memory_high=${VESC_MCP_PROFILE_BUILD_MEMORY_HIGH:-4G}
@@ -933,6 +934,7 @@ case "$command" in
     load_preparation_args "$@"
     load_profile_binary
     new_output_dir coz
+    service_args+=(--profile-max-progress-points "$coz_progress_points")
     exec "${scope[@]}" timeout --signal=INT --kill-after=15s "$timeout_secs" \
       coz run --output "$output_dir/profile.coz" \
       --source-scope '/build/source/crates/vesc-knowledge-index/src/%' \

@@ -735,7 +735,7 @@ impl LexicalIndex {
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
             #[cfg(feature = "coz-profile")]
-            coz::progress!("lexical_indexed_chunk");
+            crate::profile_progress!("lexical_indexed_chunk");
         })
         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         writer.commit().map_err(LexicalError::Commit)?;
@@ -769,7 +769,7 @@ impl LexicalIndex {
         for chunk in chunks {
             add_chunk(&writer, fields, chunk);
             #[cfg(feature = "coz-profile")]
-            coz::progress!("lexical_indexed_chunk");
+            crate::profile_progress!("lexical_indexed_chunk");
         }
         writer.commit().map_err(LexicalError::Commit)?;
         let mut segments = index
@@ -817,7 +817,7 @@ impl LexicalIndex {
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
             #[cfg(feature = "coz-profile")]
-            coz::progress!("lexical_indexed_chunk");
+            crate::profile_progress!("lexical_indexed_chunk");
         })
         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         writer.commit().map_err(LexicalError::Commit)?;
@@ -1150,7 +1150,7 @@ impl LexicalIndex {
         for chunk in chunks {
             add_chunk(&writer, fields, chunk);
             #[cfg(feature = "coz-profile")]
-            coz::progress!("lexical_indexed_chunk");
+            crate::profile_progress!("lexical_indexed_chunk");
         }
         writer.commit().map_err(LexicalError::Commit)?;
         Ok(())

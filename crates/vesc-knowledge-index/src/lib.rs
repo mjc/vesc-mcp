@@ -19,6 +19,46 @@ pub mod release_repositories;
 pub mod reranking;
 pub mod semantic;
 
+#[cfg(feature = "coz-profile")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(feature = "coz-profile")]
+static PROFILE_PROGRESS_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
+#[cfg(feature = "coz-profile")]
+static PROFILE_PROGRESS_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Configure the profiling-only number of completed work units before exit.
+pub fn configure_profile_progress_limit(limit: Option<usize>) {
+    #[cfg(feature = "coz-profile")]
+    {
+        PROFILE_PROGRESS_COUNT.store(0, Ordering::Relaxed);
+        PROFILE_PROGRESS_LIMIT.store(limit.unwrap_or(usize::MAX), Ordering::Relaxed);
+    }
+    #[cfg(not(feature = "coz-profile"))]
+    let _ = limit;
+}
+
+#[cfg(feature = "coz-profile")]
+#[doc(hidden)]
+pub fn profile_progress_reached() -> bool {
+    let count = PROFILE_PROGRESS_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    count >= PROFILE_PROGRESS_LIMIT.load(Ordering::Relaxed)
+}
+
+/// Record a Coz progress point and stop a bounded profiling run at a unit boundary.
+#[cfg(feature = "coz-profile")]
+#[macro_export]
+macro_rules! profile_progress {
+    ($name:expr) => {{
+        coz::progress!($name);
+        if $crate::profile_progress_reached() {
+            std::process::exit(0);
+        }
+    }};
+}
+
 pub use builder::IndexBuilder;
 pub use corpus::chunking::{ChunkingConfig, ChunkingError, chunk_document, chunk_markdown};
 pub use corpus::full_history::{
