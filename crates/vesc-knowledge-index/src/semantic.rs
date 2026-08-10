@@ -2558,7 +2558,7 @@ where
             .saturating_add(elapsed_us(finalization_started));
         observations.embedded_vectors = observations.embedded_vectors.saturating_add(batch.len());
         #[cfg(feature = "coz-profile")]
-            crate::profile_progress!("semantic_inference_batch");
+        crate::profile_progress!("semantic_inference_batch");
     }
     flush_checkpoint_batch(
         &mut checkpoint,

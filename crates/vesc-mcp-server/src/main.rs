@@ -395,7 +395,10 @@ fn main() -> anyhow::Result<()> {
 
 fn profile_progress_limit(args: &[String]) -> anyhow::Result<Option<usize>> {
     let Some(value) = argument_value(args, PROFILE_MAX_PROGRESS_POINTS_ARG) else {
-        if args.iter().any(|arg| arg == PROFILE_MAX_PROGRESS_POINTS_ARG) {
+        if args
+            .iter()
+            .any(|arg| arg == PROFILE_MAX_PROGRESS_POINTS_ARG)
+        {
             anyhow::bail!("{PROFILE_MAX_PROGRESS_POINTS_ARG} requires a positive integer");
         }
         return Ok(None);
@@ -809,10 +812,7 @@ where
     );
     let marker_tmp = staged.join(format!("{DISTRIBUTED_PUBLICATION_MARKER}.tmp"));
     fs::write(&marker_tmp, format!("{source_id}\n"))?;
-    fs::rename(
-        marker_tmp,
-        staged.join(DISTRIBUTED_PUBLICATION_MARKER),
-    )?;
+    fs::rename(marker_tmp, staged.join(DISTRIBUTED_PUBLICATION_MARKER))?;
 
     // Keep the old generation intact while the reduced bundle is copied and
     // validated. The only handoff is a directory rename, with rollback for
@@ -838,7 +838,11 @@ where
     Ok(())
 }
 
-fn restore_publication_generation(target: &Path, previous: &Path, staged: &Path) -> anyhow::Result<()> {
+fn restore_publication_generation(
+    target: &Path,
+    previous: &Path,
+    staged: &Path,
+) -> anyhow::Result<()> {
     if target.exists() {
         fs::remove_dir_all(target)?;
     }
@@ -1474,14 +1478,13 @@ mod tests {
     use super::{
         CACHED_ONLY_ARG, DISTRIBUTED_PUBLICATION_MARKER, EAGER_INDEX_ARG,
         INSTALL_DISTRIBUTED_CACHE_ARG, PROFILE_INITIAL_TRAINING_ARG,
-        PROFILE_MAX_PROGRESS_POINTS_ARG, PUBLISH_DISTRIBUTED_CACHE_ARG,
-        PreparationReporter, REFRESH_INTERVAL_ARG, REFRESH_ON_STARTUP_ARG,
-        REPOSITORY_PREPARATION_TIMEOUT_ARG, RuntimeProfile, StartupPolicy,
-        WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path, lazy_preparation_terminal_state,
-        migraphx_cache_path, policy_for_available_data, preparation_phase_for_build,
-        publication_refresh_timestamp, publish_bundle, publish_bundle_with_hook,
-        publish_child_preparation_failure,
-        profile_progress_limit, publish_distributed_cache, published_manifest_id, refresh_interval,
+        PROFILE_MAX_PROGRESS_POINTS_ARG, PUBLISH_DISTRIBUTED_CACHE_ARG, PreparationReporter,
+        REFRESH_INTERVAL_ARG, REFRESH_ON_STARTUP_ARG, REPOSITORY_PREPARATION_TIMEOUT_ARG,
+        RuntimeProfile, StartupPolicy, WATCH_DISTRIBUTED_CACHE_ARG, distributed_cache_watch_path,
+        lazy_preparation_terminal_state, migraphx_cache_path, policy_for_available_data,
+        preparation_phase_for_build, profile_progress_limit, publication_refresh_timestamp,
+        publish_bundle, publish_bundle_with_hook, publish_child_preparation_failure,
+        publish_distributed_cache, published_manifest_id, refresh_interval,
         repository_preparation_timeout, repository_publication_status, repository_refresh_args,
         run_http, staged_manifest_id, supervise_preparation_child, terminal_preparation_state,
     };
@@ -1630,17 +1633,13 @@ mod tests {
     fn profile_progress_limit_is_optional_and_positive() {
         assert_eq!(profile_progress_limit(&[]).expect("no limit"), None);
         assert_eq!(
-            profile_progress_limit(&[
-                PROFILE_MAX_PROGRESS_POINTS_ARG.into(),
-                "42".into(),
-            ])
-            .expect("configured limit"),
+            profile_progress_limit(&[PROFILE_MAX_PROGRESS_POINTS_ARG.into(), "42".into(),])
+                .expect("configured limit"),
             Some(42)
         );
         assert!(profile_progress_limit(&[PROFILE_MAX_PROGRESS_POINTS_ARG.into()]).is_err());
         assert!(
-            profile_progress_limit(&[PROFILE_MAX_PROGRESS_POINTS_ARG.into(), "0".into()])
-                .is_err()
+            profile_progress_limit(&[PROFILE_MAX_PROGRESS_POINTS_ARG.into(), "0".into()]).is_err()
         );
     }
 
@@ -1833,12 +1832,10 @@ mod tests {
             r#"{"id":"new"}"#,
         )
         .expect("source manifest");
-        std::fs::write(source.join("snapshots/new.json"), "new snapshot")
-            .expect("source snapshot");
+        std::fs::write(source.join("snapshots/new.json"), "new snapshot").expect("source snapshot");
         std::fs::write(source.join("artifacts/new/active.json"), "new artifact")
             .expect("source artifact");
-        std::fs::write(source.join("repositories/catalog"), "new catalog")
-            .expect("source catalog");
+        std::fs::write(source.join("repositories/catalog"), "new catalog").expect("source catalog");
 
         std::fs::create_dir_all(target.join("snapshots")).expect("target snapshots");
         std::fs::create_dir_all(target.join("artifacts/old")).expect("target artifact");
@@ -1850,19 +1847,21 @@ mod tests {
         .expect("target manifest");
         std::fs::write(target.join(DISTRIBUTED_PUBLICATION_MARKER), "old\n")
             .expect("target marker");
-        std::fs::write(target.join("snapshots/old.json"), "old snapshot")
-            .expect("target snapshot");
+        std::fs::write(target.join("snapshots/old.json"), "old snapshot").expect("target snapshot");
         std::fs::write(target.join("artifacts/old/active.json"), "old artifact")
             .expect("target artifact");
-        std::fs::write(target.join("repositories/catalog"), "old catalog")
-            .expect("target catalog");
+        std::fs::write(target.join("repositories/catalog"), "old catalog").expect("target catalog");
 
         let error = publish_bundle_with_hook(&source, &target, "new", || {
             anyhow::bail!("simulated transport interruption")
         })
         .expect_err("handoff interruption");
 
-        assert!(error.to_string().contains("simulated transport interruption"));
+        assert!(
+            error
+                .to_string()
+                .contains("simulated transport interruption")
+        );
         assert_eq!(published_manifest_id(&target).as_deref(), Some("old"));
         assert_eq!(
             std::fs::read_to_string(target.join("snapshots/old.json")).expect("old snapshot"),
