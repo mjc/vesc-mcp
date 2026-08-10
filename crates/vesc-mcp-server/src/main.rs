@@ -757,6 +757,18 @@ fn publish_distributed_bundle(target: &Path) -> anyhow::Result<()> {
 }
 
 fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Result<()> {
+    publish_bundle_with_hook(source, target, source_id, || Ok(()))
+}
+
+fn publish_bundle_with_hook<F>(
+    source: &Path,
+    target: &Path,
+    source_id: &str,
+    on_live_generation_detached: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> anyhow::Result<()>,
+{
     if published_manifest_id(target).as_deref() == Some(source_id)
         && published_bundle_is_current(target, source_id)
     {
@@ -777,23 +789,47 @@ fn publish_bundle(source: &Path, target: &Path, source_id: &str) -> anyhow::Resu
         bytes = staged_stats.bytes,
         "prepared bounded distributed publication bundle"
     );
+    let marker_tmp = staged.join(format!("{DISTRIBUTED_PUBLICATION_MARKER}.tmp"));
+    fs::write(&marker_tmp, format!("{source_id}\n"))?;
+    fs::rename(
+        marker_tmp,
+        staged.join(DISTRIBUTED_PUBLICATION_MARKER),
+    )?;
+
+    // Keep the old generation intact while the reduced bundle is copied and
+    // validated. The only handoff is a directory rename, with rollback for
+    // failures between detaching the old generation and installing the new.
+    let previous = parent.join(format!(".vesc-mcp-publish-previous-{}", std::process::id()));
+    if previous.exists() {
+        fs::remove_dir_all(&previous)?;
+    }
+    if target.exists() {
+        fs::rename(target, &previous)?;
+    }
+    if let Err(error) = on_live_generation_detached() {
+        restore_publication_generation(target, &previous, &staged)?;
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&staged, target) {
+        restore_publication_generation(target, &previous, &staged)?;
+        return Err(error.into());
+    }
+    if previous.exists() {
+        fs::remove_dir_all(previous)?;
+    }
+    Ok(())
+}
+
+fn restore_publication_generation(target: &Path, previous: &Path, staged: &Path) -> anyhow::Result<()> {
     if target.exists() {
         fs::remove_dir_all(target)?;
     }
-    fs::create_dir_all(target)?;
-    let marker = target.join(DISTRIBUTED_PUBLICATION_MARKER);
-    let _ = fs::remove_file(&marker);
-    let mut target_stats = PublicationCopyStats::default();
-    copy_directory_tree(&staged, target, true, &mut target_stats)?;
-    let manifest = target.join("default-snapshot-corpus-1.1.json");
-    let staged_manifest = staged.join("default-snapshot-corpus-1.1.json");
-    let manifest_tmp = target.join(".default-snapshot-corpus-1.1.json.tmp");
-    fs::copy(staged_manifest, &manifest_tmp)?;
-    fs::rename(manifest_tmp, manifest)?;
-    let marker_tmp = target.join(format!("{DISTRIBUTED_PUBLICATION_MARKER}.tmp"));
-    fs::write(&marker_tmp, format!("{source_id}\n"))?;
-    fs::rename(marker_tmp, marker)?;
-    fs::remove_dir_all(staged)?;
+    if previous.exists() {
+        fs::rename(previous, target)?;
+    }
+    if staged.exists() {
+        fs::remove_dir_all(staged)?;
+    }
     Ok(())
 }
 
