@@ -7,6 +7,7 @@ mod embedded;
 mod entry;
 pub mod evaluation;
 pub mod fusion;
+pub mod graph;
 pub mod hardware;
 pub mod investigation;
 pub mod lexical;
@@ -79,6 +80,10 @@ pub use entry::{Category, IndexEntry, SourceRef};
 pub use fusion::{
     ExpandedContext, FusedCandidate, FusedHit, FusionConfig, expand_adjacent_context,
     fuse_candidate_metadata, fuse_candidates,
+};
+pub use graph::{
+    GRAPH_ARTIFACT_SCHEMA_V1, GraphArtifact, GraphArtifactError, GraphArtifactSummary, GraphEdge,
+    GraphEvidence, GraphNode,
 };
 pub use hardware::{
     JINA_CODE_FP16_SHA256, JINA_CODE_INGEST_BATCH_SIZE, JINA_CODE_INGEST_MAX_LENGTH,
