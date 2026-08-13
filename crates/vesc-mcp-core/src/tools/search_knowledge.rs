@@ -808,20 +808,14 @@ fn validate_search_inputs(
             ),
         )));
     }
-    if params
-        .max_context_bytes
-        .is_some_and(|budget| budget == 0 || budget > config.max_passage_bytes)
-    {
+    if params.max_context_bytes.is_some_and(|budget| budget == 0) {
         return Err(Box::new(validation_error_response(
             mode,
             "max_context_bytes",
-            params.max_context_bytes.unwrap_or_default().to_string(),
-            format!("integer in 1..={}", config.max_passage_bytes),
-            true,
-            format!(
-                "max_context_bytes must be between 1 and {}",
-                config.max_passage_bytes
-            ),
+            "0".into(),
+            "integer >= 1".into(),
+            false,
+            "max_context_bytes must be at least 1".into(),
         )));
     }
     Ok((selected, config, limit))
@@ -927,6 +921,15 @@ impl SearchVescKnowledgeResponse {
         config: &KnowledgeConfig,
         detail: SearchResponseDetail,
     ) -> Self {
+        if params
+            .max_context_bytes
+            .is_some_and(|budget| budget > config.max_passage_bytes)
+        {
+            self.warnings.push(format!(
+                "context_bytes_clamped: max_context_bytes was clamped to {} bytes",
+                config.max_passage_bytes
+            ));
+        }
         self.warning_codes = warning_codes(&self.warnings);
         let limit = if params.limit == 0 {
             default_search_limit()
@@ -2752,6 +2755,62 @@ mod tests {
         assert!(validation.accepted.contains("1..=10"));
         assert!(validation.clamping_safe);
         assert_eq!(response.warning_codes, vec!["validation_failed"]);
+    }
+
+    #[test]
+    fn oversized_context_budget_is_clamped_to_configured_maximum() {
+        let passage = "x".repeat(12_000);
+        let response = search_vesc_knowledge_tool_with_executor(
+            &SearchVescKnowledgeParams {
+                query: "nvm".into(),
+                snapshot_id: None,
+                limit: 1,
+                mode: Some(SearchMode::Lexical),
+                filters: SearchVescKnowledgeFilters::default(),
+                max_response_bytes: None,
+                max_context_bytes: Some(12_000),
+                detail: SearchResponseDetail::Full,
+            },
+            &KnowledgeConfig {
+                mode: RetrievalMode::Lexical,
+                max_passage_bytes: 8_192,
+                ..KnowledgeConfig::default()
+            },
+            |_params, _mode, _filters, _limit, _config| {
+                let mut result = history_test_result("result", "revision", &passage);
+                result.provenance = Some(SearchVescKnowledgeProvenance {
+                    document_id: "document".into(),
+                    chunk_id: "chunk".into(),
+                    passage,
+                    heading_path: Vec::new(),
+                    resource_uri: None,
+                    revision: None,
+                    source_span: None,
+                });
+                Ok((vec![result], Vec::new(), SearchMode::Lexical))
+            },
+        );
+
+        assert!(response.ok);
+        assert_eq!(
+            response.warning_codes,
+            vec!["context_bytes_clamped".to_owned()]
+        );
+        assert_eq!(
+            response.warnings,
+            vec!["context_bytes_clamped: max_context_bytes was clamped to 8192 bytes".to_owned()]
+        );
+        let result = &response.results[0];
+        assert_eq!(
+            result
+                .provenance
+                .as_ref()
+                .expect("provenance")
+                .passage
+                .len(),
+            8_192
+        );
+        assert_eq!(result.passage.as_ref().expect("passage").len(), 8_192);
     }
 
     #[test]
