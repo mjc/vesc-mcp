@@ -989,6 +989,7 @@ fn commit_messages_do_not_bury_an_exact_code_identifier() {
             "clone",
             "--quiet",
             "--bare",
+            "--no-local",
             work.to_str().expect("UTF-8 worktree path"),
             bare.to_str().expect("UTF-8 bare repository path"),
         ],
