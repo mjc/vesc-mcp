@@ -34,6 +34,22 @@ fn git(cwd: &Path, args: &[&str]) -> String {
         .to_owned()
 }
 
+fn clone_bare(source: &Path, destination: &Path) {
+    let output = Command::new("git")
+        .args(["clone", "--quiet", "--bare", "--no-local"])
+        .arg(source)
+        .arg(destination)
+        .output()
+        .expect("clone Git fixture repository");
+    assert!(
+        output.status.success(),
+        "git clone --bare {} {}: {}",
+        source.display(),
+        destination.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn fixture() -> (tempfile::TempDir, PathBuf) {
     let root = tempdir().expect("fixture root");
     let work = root.path().join("work");
@@ -565,16 +581,7 @@ fn commit_message_budget_cannot_consume_the_source_budget() {
     git(&work, &["commit", "--allow-empty", "-qm", "document one"]);
     git(&work, &["commit", "--allow-empty", "-qm", "document two"]);
     let bare = root.path().join("bounded.git");
-    git(
-        root.path(),
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            work.to_str().expect("UTF-8 worktree path"),
-            bare.to_str().expect("UTF-8 bare repository path"),
-        ],
-    );
+    clone_bare(&work, &bare);
     let mut source = at_head(source(bare, "fixture"), &work);
     source.policy.include_patterns = vec!["native.c".into()];
     source.policy.limits = GitCorpusLimits::new(128, 1, 128).expect("bounded corpus");
@@ -925,16 +932,7 @@ fn persisted_history_rehydrates_commit_messages_from_managed_git() {
     let repositories = root.path().join("repositories");
     fs::create_dir(&repositories).expect("repository directory");
     let bare = repositories.join("fixture.git");
-    git(
-        root.path(),
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            work.to_str().expect("UTF-8 worktree path"),
-            bare.to_str().expect("UTF-8 bare repository path"),
-        ],
-    );
+    clone_bare(&work, &bare);
     let source = at_head(source(bare, "fixture"), &work);
     let artifact_root = root.path().join("artifacts").join("fixture");
     let summary = build_git_history_artifacts_incrementally(
@@ -983,17 +981,7 @@ fn commit_messages_do_not_bury_an_exact_code_identifier() {
     let repositories = root.path().join("repositories");
     fs::create_dir(&repositories).expect("repository directory");
     let bare = repositories.join("fixture.git");
-    git(
-        root.path(),
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            "--no-local",
-            work.to_str().expect("UTF-8 worktree path"),
-            bare.to_str().expect("UTF-8 bare repository path"),
-        ],
-    );
+    clone_bare(&work, &bare);
     let source = at_head(source(bare, "fixture"), &work);
     let artifact_root = root.path().join("artifacts").join("fixture");
     let summary = build_git_history_artifacts_incrementally(
@@ -1590,16 +1578,7 @@ fn persisted_history_hydrates_top_hits_from_managed_git_without_stored_chunks() 
     let repositories = root.path().join("repositories");
     fs::create_dir(&repositories).expect("repository directory");
     let bare = repositories.join("fixture.git");
-    git(
-        root.path(),
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            work.to_str().expect("UTF-8 worktree path"),
-            bare.to_str().expect("UTF-8 bare repository path"),
-        ],
-    );
+    clone_bare(&work, &bare);
     let source = at_head(source(bare.clone(), "fixture"), &work);
     let artifact_root = root.path().join("artifacts").join("fixture");
     let summary = build_git_history_artifacts_incrementally(
@@ -1688,16 +1667,7 @@ fn persisted_search_hydrates_only_returned_top_k() {
     let exact_bare = repositories.join("exact.git");
     let prose_bare = repositories.join("prose.git");
     for (worktree, bare) in [(&work, &exact_bare), (&prose, &prose_bare)] {
-        git(
-            root.path(),
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                worktree.to_str().expect("UTF-8 worktree path"),
-                bare.to_str().expect("UTF-8 bare repository path"),
-            ],
-        );
+        clone_bare(worktree, bare);
     }
 
     let sources = [
@@ -1768,16 +1738,7 @@ fn repository_filter_matches_a_canonical_locator_present_in_a_managed_fork() {
     let alpha = repositories.join("alpha.git");
     let beta = repositories.join("beta.git");
     for bare in [&alpha, &beta] {
-        git(
-            root.path(),
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                work.to_str().expect("UTF-8 worktree path"),
-                bare.to_str().expect("UTF-8 bare repository path"),
-            ],
-        );
+        clone_bare(&work, bare);
     }
     let sources = [
         at_head(source(alpha, "alpha"), &work),
@@ -1832,16 +1793,7 @@ fn repository_filter_does_not_cross_git_corpus_contracts() {
     let alpha = repositories.join("alpha.git");
     let beta = repositories.join("beta.git");
     for bare in [&alpha, &beta] {
-        git(
-            root.path(),
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                work.to_str().expect("UTF-8 worktree path"),
-                bare.to_str().expect("UTF-8 bare repository path"),
-            ],
-        );
+        clone_bare(&work, bare);
     }
     let alpha = at_head(source(alpha, "alpha"), &work);
     let mut beta = at_head(source(beta, "beta"), &work);
@@ -1900,29 +1852,9 @@ fn repository_filter_requires_revision_reachability_not_object_presence() {
     let repositories = root.path().join("repositories");
     fs::create_dir(&repositories).expect("repository directory");
     let shared = repositories.join("shared.git");
-    git(
-        root.path(),
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            work.to_str().expect("UTF-8 worktree path"),
-            shared.to_str().expect("UTF-8 bare repository path"),
-        ],
-    );
+    clone_bare(&work, &shared);
     let beta_repository = repositories.join("beta.git");
-    git(
-        root.path(),
-        &[
-            "clone",
-            "--quiet",
-            "--bare",
-            shared.to_str().expect("UTF-8 shared repository path"),
-            beta_repository
-                .to_str()
-                .expect("UTF-8 beta repository path"),
-        ],
-    );
+    clone_bare(&shared, &beta_repository);
     let alpha_id =
         gix::ObjectId::from_hex(alpha_tip.as_bytes()).expect("valid alpha object identifier");
     assert!(
@@ -1999,16 +1931,7 @@ fn repository_filter_is_applied_before_the_global_top_docs_limit() {
     let noise_bare = repositories.join("noise.git");
     let target_bare = repositories.join("target.git");
     for (work, bare) in [(&noise, &noise_bare), (&target, &target_bare)] {
-        git(
-            root.path(),
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                work.to_str().expect("UTF-8 worktree path"),
-                bare.to_str().expect("UTF-8 bare repository path"),
-            ],
-        );
+        clone_bare(work, bare);
     }
     let sources = [
         at_head(source(noise_bare, "noise"), &noise),
@@ -2908,16 +2831,7 @@ fn shared_blobs_are_reused_only_when_the_stored_locator_is_reachable() {
     let alpha = repositories.join("alpha.git");
     let beta = repositories.join("beta.git");
     for bare in [&alpha, &beta] {
-        git(
-            root.path(),
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                work.to_str().expect("UTF-8 worktree path"),
-                bare.to_str().expect("UTF-8 bare repository path"),
-            ],
-        );
+        clone_bare(&work, bare);
     }
     let bounded = |repository: &str, path: PathBuf, revision: &str| {
         let mut source = source(path, repository);
@@ -2991,16 +2905,7 @@ fn partially_reused_blob_is_not_proof_of_a_reachable_locator() {
     let alpha = repositories.join("alpha.git");
     let beta = repositories.join("beta.git");
     for bare in [&alpha, &beta] {
-        git(
-            root.path(),
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                work.to_str().expect("UTF-8 worktree path"),
-                bare.to_str().expect("UTF-8 bare repository path"),
-            ],
-        );
+        clone_bare(&work, bare);
     }
     let bounded = |repository: &str, path: PathBuf, revision: &str| {
         let mut source = source(path, repository);
