@@ -97,7 +97,7 @@ pub use lifecycle::{
     artifact_component_versions, build_allowlisted_artifacts,
     build_allowlisted_artifacts_with_provider, build_embedded_artifacts,
     build_embedded_artifacts_with_provider, git_history_corpus_versions_are_compatible,
-    inspect_manifest, inspect_previous_artifact, validate_active_generation,
+    inspect_manifest, inspect_previous_artifact, load_active_graph, validate_active_generation,
 };
 pub use lifecycle::{
     IncrementalGitHistoryBuildSummary, PreviousArtifactSummary, PreviousGitHistoryArtifact,

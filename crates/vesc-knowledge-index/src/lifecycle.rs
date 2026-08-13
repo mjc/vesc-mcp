@@ -37,6 +37,8 @@ pub enum LifecycleError {
     Io(#[from] std::io::Error),
     #[error("artifact JSON failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("graph artifact failed: {0}")]
+    Graph(#[from] crate::GraphArtifactError),
     #[error("artifact contract failed: {0}")]
     Contract(String),
     #[error("lexical artifact failed: {0}")]
@@ -2115,6 +2117,45 @@ pub fn active_generation_path(root: &Path) -> Result<PathBuf, LifecycleError> {
         .join(pointer.generation.to_string()))
 }
 
+/// Load the graph selected by the active immutable generation.
+///
+/// A graph-free legacy generation returns `Ok(None)`; a declared graph is
+/// fully decoded and checked against its manifest before it is returned.
+///
+/// # Errors
+///
+/// Returns [`LifecycleError`] when the active generation or declared graph is
+/// missing, corrupt, incompatible, or inconsistent with its manifest.
+pub fn load_active_graph(root: &Path) -> Result<Option<crate::GraphArtifact>, LifecycleError> {
+    let artifact = inspect_previous_artifact(&active_manifest_path(root))?;
+    let Some(expected_checksum) = artifact.graph_checksum else {
+        return Ok(None);
+    };
+    let generation_root = active_generation_path(root)?;
+    let graph = crate::GraphArtifact::open(&generation_root.join("graph.bin"))?;
+    let encoded = graph.encode()?;
+    if graph.corpus_digest != artifact.corpus_digest {
+        return Err(
+            crate::GraphArtifactError::Contract("graph artifact corpus mismatch".into()).into(),
+        );
+    }
+    if ContentDigest::of(&encoded) != expected_checksum {
+        return Err(
+            crate::GraphArtifactError::Contract("graph artifact checksum mismatch".into()).into(),
+        );
+    }
+    validate_graph_counts(
+        artifact.graph_node_count,
+        artifact.graph_edge_count,
+        crate::GraphArtifactSummary {
+            bytes: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+            node_count: u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX),
+            edge_count: u64::try_from(graph.edges.len()).unwrap_or(u64::MAX),
+        },
+    )?;
+    Ok(Some(graph))
+}
+
 fn read_selected_manifest(pointer_path: &Path) -> Result<(ContentDigest, Vec<u8>), LifecycleError> {
     let pointer: ActiveManifestPointer =
         serde_json::from_reader(BufReader::new(File::open(pointer_path)?))?;
@@ -2546,6 +2587,28 @@ mod tests {
         fs::write(generation_root.join("graph.bin"), b"corrupt").expect("corrupt graph");
         let error = validate_active_generation(temp.path()).expect_err("reject graph");
         assert!(error.to_string().contains("graph"));
+    }
+
+    #[test]
+    fn load_active_graph_checks_manifest_identity_and_returns_graph() {
+        let temp = tempfile::tempdir().expect("artifact root");
+        let built = build_embedded_artifacts(temp.path()).expect("artifact build");
+        let graph = load_active_graph(temp.path())
+            .expect("load graph")
+            .expect("graph is declared");
+        assert_eq!(
+            graph.nodes.len(),
+            usize::try_from(built.manifest.graph_node_count.unwrap()).unwrap()
+        );
+        assert_eq!(
+            graph.edges.len(),
+            usize::try_from(built.manifest.graph_edge_count.unwrap()).unwrap()
+        );
+
+        let generation_root = temp.path().join("generations").join(&built.generation);
+        fs::write(generation_root.join("graph.bin"), b"corrupt").expect("corrupt graph");
+        let error = load_active_graph(temp.path()).expect_err("reject corrupt graph");
+        assert!(matches!(error, LifecycleError::Graph(_)));
     }
 
     #[test]
