@@ -9,11 +9,11 @@ use vesc_knowledge_index::corpus::git::{GitCorpusLimits, GitCorpusPolicy, GitCor
 use vesc_knowledge_index::{
     BuildPhase, Chunk, ContentDigest, EmbeddingBatchSize, EmbeddingError, EmbeddingProvider,
     FakeEmbeddingProvider, FusionConfig, GitHistoryRefreshObservations, GitHistoryTip,
-    LexicalFilters, LexicalIndex, LicenseStatus, OutputNormalization, PreviousGitHistoryArtifact,
-    PreviousVectorArtifact, RepositoryId, Revision, SourceKind, TrustTier, VectorArtifact,
-    build_git_artifacts_with_provider, build_git_history_artifacts_from_previous,
-    build_git_history_artifacts_incrementally, fuse_candidate_metadata,
-    ingest_git_history_fast_forward,
+    GraphArtifact, LexicalFilters, LexicalIndex, LicenseStatus, OutputNormalization,
+    PreviousGitHistoryArtifact, PreviousVectorArtifact, RepositoryId, Revision, SourceKind,
+    TrustTier, VectorArtifact, build_git_artifacts_with_provider,
+    build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
+    fuse_candidate_metadata, ingest_git_history_fast_forward,
 };
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -1259,6 +1259,27 @@ fn full_history_build_with_provider_writes_matching_vectors() {
     assert_eq!(vector.model_id, "fake");
     assert_eq!(vector.model_revision, "test-revision");
     assert_eq!(vector.ids.len(), summary.artifacts.chunk_count);
+    let graph_checksum = summary
+        .artifacts
+        .manifest
+        .graph_checksum
+        .as_ref()
+        .expect("full-history graph checksum");
+    let graph_path = artifacts
+        .path()
+        .join("generations")
+        .join(&summary.artifacts.generation)
+        .join("graph.bin");
+    let graph = GraphArtifact::open(&graph_path).expect("full-history graph");
+    assert_eq!(
+        graph.encoded_digest().expect("graph digest"),
+        *graph_checksum
+    );
+    assert_eq!(graph.nodes.len(), summary.artifacts.chunk_count);
+    assert_eq!(
+        summary.artifacts.graph_bytes,
+        Some(fs::metadata(graph_path).expect("graph metadata").len())
+    );
 }
 
 #[test]

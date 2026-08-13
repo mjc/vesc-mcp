@@ -1276,6 +1276,36 @@ fn finish_git_history_lexical_stage(
     observations.chunks = corpus.chunk_count();
     observations.documents = corpus.document_count();
 
+    let graph = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
+    let graph_ids = graph.embedding_chunk_ids()?;
+    let mut graph_chunks = graph
+        .chunks_by_id(&graph_ids.iter().cloned().collect::<BTreeSet<_>>())?
+        .into_values()
+        .collect::<Vec<_>>();
+    if graph_chunks.len() != graph_ids.len() {
+        return Err(LifecycleError::Contract(
+            "lexical artifact graph hydration is incomplete".into(),
+        ));
+    }
+    let graph_chunk_ids = graph_chunks
+        .iter()
+        .map(|chunk| chunk.chunk_id.clone())
+        .collect::<BTreeSet<_>>();
+    for chunk in &mut graph_chunks {
+        if chunk
+            .next_chunk
+            .as_ref()
+            .is_some_and(|next| !graph_chunk_ids.contains(next))
+        {
+            chunk.next_chunk = None;
+        }
+    }
+    let (graph_checksum, graph_node_count, graph_edge_count) = write_graph_artifact(
+        &temp_root.join("graph.bin"),
+        &corpus.content_digest,
+        &graph_chunks,
+    )?;
+
     let (vector_checksum, vector_bytes) = if let Some((provider, model_id, model_revision)) =
         semantic
     {
@@ -1379,9 +1409,9 @@ fn finish_git_history_lexical_stage(
         lexical_bytes,
         vector_checksum,
         vector_bytes,
-        None,
-        None,
-        None,
+        Some(graph_checksum),
+        Some(graph_node_count),
+        Some(graph_edge_count),
         corpus,
         Vec::new(),
         Vec::new(),
@@ -1555,13 +1585,8 @@ fn stage_chunks(
     observations.chunks = corpus.chunk_count();
     observations.documents = corpus.document_count();
     observations.record(BuildPhase::Corpus, corpus_started);
-    let graph = crate::GraphArtifact::from_chunks(corpus.content_digest.clone(), chunks)
-        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
-    let graph_checksum = graph
-        .write(&temp_root.join("graph.bin"))
-        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
-    let graph_node_count = u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX);
-    let graph_edge_count = u64::try_from(graph.edges.len()).unwrap_or(u64::MAX);
+    let (graph_checksum, graph_node_count, graph_edge_count) =
+        write_graph_artifact(&temp_root.join("graph.bin"), &corpus.content_digest, chunks)?;
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
         let vector_path = temp_root.join("vectors.bin");
         let (checksum, bytes, count, dimension, vector_build, git_blob_loads) = if let Some(
@@ -1702,6 +1727,21 @@ fn stage_chunks(
         started,
         observations,
     )
+}
+
+fn write_graph_artifact(
+    path: &Path,
+    corpus_digest: &ContentDigest,
+    chunks: &[Chunk],
+) -> Result<(ContentDigest, u64, u64), LifecycleError> {
+    let graph = crate::GraphArtifact::from_chunks(corpus_digest.clone(), chunks)
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let checksum = graph
+        .write(path)
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let node_count = u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX);
+    let edge_count = u64::try_from(graph.edges.len()).unwrap_or(u64::MAX);
+    Ok((checksum, node_count, edge_count))
 }
 
 #[allow(
