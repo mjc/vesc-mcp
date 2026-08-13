@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "ticket": "VESCM-207",
+  "suite": "vescm-207-codegraphrag-baseline",
+  "snapshot_id": "1216231c4cc2f5df69ad9759ff3d3755fad25d6fe7fca69275ab793ef869834c",
+  "corpus_digest": "sha256:d4d385aab3f913b91552f38b5f0573112f38ebe35e78223d938fcd22ed3ca1ea",
+  "requested_modes": ["lexical", "hybrid", "auto"],
+  "query_cases": 12,
+  "captures_per_run": 36,
+  "reviewed_evidence_targets": 9,
+  "runs": [
+    {"file": "run-1.json", "judged_output_digest": "sha256:6cadc8f1421e553d10c8dafe058cf82e05f5f41c4612ac6b442e26a37f529da6"},
+    {"file": "run-2.json", "judged_output_digest": "sha256:6cadc8f1421e553d10c8dafe058cf82e05f5f41c4612ac6b442e26a37f529da6"}
+  ],
+  "deterministic_judged_outputs": true,
+  "first_response_completeness": {"matched": 27, "required": 27, "complete_captures": 36},
+  "bounded_response_manual_reads_required": 0,
+  "preserved_historical_manual_reads": 6,
+  "candidate_count": 131,
+  "context_bytes": 255068,
+  "expanded_context_rows": 78,
+  "duplicate_content_rows": 0,
+  "artifact_conditions": {
+    "missing_vector": {
+      "status": "covered_by_existing_unit_test",
+      "test": "hybrid_without_vector_artifact_recommends_lexical",
+      "source": "crates/vesc-mcp-core/src/tools/search_knowledge.rs"
+    },
+    "missing_graph": {
+      "status": "not_implemented",
+      "owner_ticket": "VESCM-208"
+    }
+  },
+  "service_memory": {
+    "available": false,
+    "reason": "authenticated HTTP MCP does not expose server RSS"
+  },
+  "graph_artifact": {
+    "status": "not_implemented",
+    "owner_ticket": "VESCM-208",
+    "not_claimed_by_this_baseline": true
+  }
+}

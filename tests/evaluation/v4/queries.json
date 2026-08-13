@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "suite_id": "vescm-207-codegraphrag-baseline",
+  "description": "Locked relationship and no-reread queries. Gold rows are reviewed evidence targets; observed result identities are captured per run.",
+  "queries": [
+    {
+      "id": "rust-declaration-definition-caller",
+      "relationship_families": ["declaration-definition", "caller-callee"],
+      "repository": "vesc-rust-poc",
+      "query": "update_pid_position_offset MotorControlBindings PidPosition",
+      "limit": 5,
+      "gold": [
+        {"id": "motor-source", "repository": "vesc-rust-poc", "path": "crates/vescpkg-rs/src/motor.rs", "required_terms": ["update_pid_position_offset"], "reviewed_evidence": "VESCM-257 production replay"}
+      ],
+      "observed_manual_reads": ["build.rs", "raw.rs", "motor.rs", "motor_control.rs", "motor.rs", "motor.rs"]
+    },
+    {
+      "id": "refloat-command-handler",
+      "relationship_families": ["command-id-handler", "protocol-implementation"],
+      "repository": "refloat",
+      "query": "REALTIME_DATA command handler protocol ID 33",
+      "limit": 5,
+      "gold": [
+        {"id": "realtime-command-doc", "repository": "refloat", "path": "doc/commands/REALTIME_DATA.md", "required_terms": ["REALTIME_DATA"], "reviewed_evidence": "Refloat command catalog and versioned doc"}
+      ]
+    },
+    {
+      "id": "include-import-abi",
+      "relationship_families": ["include-import"],
+      "repository": "vesc",
+      "query": "vesc_c_if.h include lbm_add_extension",
+      "limit": 5,
+      "gold": [
+        {"id": "vesc-c-if", "repository": "vesc", "path": "lispBM/c_libs/vesc_c_if.h", "required_terms": ["vesc_c_if"], "reviewed_evidence": "embedded VESC ABI catalog"}
+      ]
+    },
+    {
+      "id": "qml-backend",
+      "relationship_families": ["qml-backend"],
+      "repository": "refloat",
+      "query": "QML backend REALTIME_DATA telemetry",
+      "limit": 5,
+      "gold": [
+        {"id": "qml-telemetry", "repository": "refloat", "path_prefix": "doc/", "required_terms": ["REALTIME_DATA"], "reviewed_evidence": "Refloat telemetry command documentation"}
+      ]
+    },
+    {
+      "id": "package-firmware-api",
+      "relationship_families": ["package-firmware-api"],
+      "repository": "vesc-rust-poc",
+      "query": "vescpkg MotorControlBindings firmware API",
+      "limit": 5,
+      "gold": [
+        {"id": "package-api", "repository": "vesc-rust-poc", "path_prefix": "crates/vescpkg-rs/", "required_terms": ["MotorControlBindings"], "reviewed_evidence": "VESCM-257 production replay"}
+      ]
+    },
+    {
+      "id": "configuration-runtime-consumer",
+      "relationship_families": ["configuration-runtime-consumer"],
+      "repository": "bldc",
+      "query": "mcconf configuration runtime consumer motor control",
+      "limit": 5,
+      "gold": [
+        {"id": "mcconf-consumer", "repository": "bldc", "path_prefix": "motor/", "required_terms": ["mcconf"], "reviewed_evidence": "BLDC configuration/runtime query"}
+      ]
+    },
+    {
+      "id": "parser-produced-artifact",
+      "relationship_families": ["parser-produced-artifact"],
+      "repository": "vesc-pkg",
+      "query": "pkgdesc vesc_tool .vescpkg build",
+      "limit": 5,
+      "gold": [
+        {"id": "vescpkg-build", "repository": "vesc-pkg", "required_terms": ["vescpkg"], "reviewed_evidence": "package build recipe"}
+      ]
+    },
+    {
+      "id": "generated-source",
+      "relationship_families": ["generated-source"],
+      "repository": "vesc-rust-poc",
+      "query": "MotorControlBindings implementation",
+      "limit": 5,
+      "gold": [
+        {"id": "generated-bindings", "repository": "vesc-rust-poc", "path_prefix": "crates/", "required_terms": ["MotorControlBindings"], "reviewed_evidence": "Rust package binding source"}
+      ]
+    },
+    {
+      "id": "tagged-history-occurrence",
+      "relationship_families": ["tagged-history-occurrence-change"],
+      "repository": "refloat",
+      "query": "REALTIME_DATA history revision change",
+      "limit": 5,
+      "gold": [
+        {"id": "realtime-history", "repository": "refloat", "path": "doc/commands/REALTIME_DATA.md", "required_terms": ["REALTIME_DATA"], "reviewed_evidence": "versioned Refloat command docs"}
+      ]
+    },
+    {
+      "id": "adversarial-lexical-sufficient",
+      "relationship_families": ["adversarial-control"],
+      "repository": "refloat",
+      "query": "REALTIME_DATA",
+      "limit": 5,
+      "gold": [],
+      "control": "direct lexical evidence is sufficient; graph expansion must not be required"
+    },
+    {
+      "id": "adversarial-missing-path",
+      "relationship_families": ["adversarial-control"],
+      "repository": "refloat",
+      "query": "nonexistent_relationship_path_vescm207",
+      "limit": 5,
+      "gold": [],
+      "control": "required repository/path is absent; report insufficiency rather than guessing"
+    },
+    {
+      "id": "adversarial-invalid-category",
+      "relationship_families": ["adversarial-control"],
+      "repository": "refloat",
+      "query": "REALTIME_DATA",
+      "limit": 5,
+      "gold": [],
+      "filters": {"category": "unknown-category-vescm207"},
+      "control": "unknown category is accepted as an ignored filter and must be visible in warnings/trace"
+    }
+  ]
+}
