@@ -989,6 +989,12 @@ pub struct ArtifactManifest {
     pub sources: Vec<SourceInventory>,
     pub lexical_checksum: Option<ContentDigest>,
     pub vector_checksum: Option<ContentDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_checksum: Option<ContentDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_node_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_edge_count: Option<u64>,
     pub tool_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<SourceRejection>,
@@ -1023,6 +1029,16 @@ impl ArtifactManifest {
         if self.tool_version.trim().is_empty() {
             return Err(CorpusError::EmptyValue {
                 kind: "artifact tool version",
+            });
+        }
+        if (self.graph_node_count.is_some() || self.graph_edge_count.is_some())
+            != self.graph_checksum.is_some()
+            || self.graph_checksum.is_some()
+                && (self.graph_node_count.is_none() || self.graph_edge_count.is_none())
+        {
+            return Err(CorpusError::InvalidValue {
+                kind: "graph artifact metadata",
+                value: "checksum and node/edge counts must be provided together".into(),
             });
         }
         if self.component_versions.is_empty()

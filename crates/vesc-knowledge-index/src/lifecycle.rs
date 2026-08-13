@@ -174,6 +174,7 @@ pub struct BuildSummary {
     pub chunk_count: usize,
     pub lexical_bytes: u64,
     pub vector_bytes: Option<u64>,
+    pub graph_bytes: Option<u64>,
     pub build_duration_us: u64,
     pub observations: BuildObservations,
     pub manifest: ArtifactManifest,
@@ -325,6 +326,9 @@ pub struct PreviousArtifactSummary {
     pub component_versions: BTreeMap<String, String>,
     pub lexical_checksum: Option<ContentDigest>,
     pub vector_checksum: Option<ContentDigest>,
+    pub graph_checksum: Option<ContentDigest>,
+    pub graph_node_count: Option<u64>,
+    pub graph_edge_count: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -337,6 +341,12 @@ struct PreviousArtifactProjection {
     sources: Vec<IgnoredAny>,
     lexical_checksum: Option<ContentDigest>,
     vector_checksum: Option<ContentDigest>,
+    #[serde(default)]
+    graph_checksum: Option<ContentDigest>,
+    #[serde(default)]
+    graph_node_count: Option<u64>,
+    #[serde(default)]
+    graph_edge_count: Option<u64>,
     #[serde(default)]
     diagnostics: Vec<IgnoredAny>,
 }
@@ -1218,7 +1228,6 @@ fn persist_git_history_lexical_stage(
     observations.chunks = corpus.chunk_count();
     observations.documents = corpus.document_count();
     observations.record(BuildPhase::Corpus, corpus_started);
-
     let marker = GitHistoryLexicalStageMarker {
         schema: GIT_HISTORY_LEXICAL_STAGE_SCHEMA,
         contract_digest: git_history_lexical_contract_digest(sources)?,
@@ -1370,6 +1379,9 @@ fn finish_git_history_lexical_stage(
         lexical_bytes,
         vector_checksum,
         vector_bytes,
+        None,
+        None,
+        None,
         corpus,
         Vec::new(),
         Vec::new(),
@@ -1543,6 +1555,13 @@ fn stage_chunks(
     observations.chunks = corpus.chunk_count();
     observations.documents = corpus.document_count();
     observations.record(BuildPhase::Corpus, corpus_started);
+    let graph = crate::GraphArtifact::from_chunks(corpus.content_digest.clone(), chunks)
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let graph_checksum = graph
+        .write(&temp_root.join("graph.bin"))
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let graph_node_count = u64::try_from(graph.nodes.len()).unwrap_or(u64::MAX);
+    let graph_edge_count = u64::try_from(graph.edges.len()).unwrap_or(u64::MAX);
     let (vector_checksum, vector_bytes) = if let Some(semantic) = semantic {
         let vector_path = temp_root.join("vectors.bin");
         let (checksum, bytes, count, dimension, vector_build, git_blob_loads) = if let Some(
@@ -1674,6 +1693,9 @@ fn stage_chunks(
         lexical_bytes,
         vector_checksum,
         vector_bytes,
+        Some(graph_checksum),
+        Some(graph_node_count),
+        Some(graph_edge_count),
         corpus,
         diagnostics,
         sources,
@@ -1694,6 +1716,9 @@ fn publish_staged_generation(
     lexical_bytes: u64,
     vector_checksum: Option<ContentDigest>,
     vector_bytes: Option<u64>,
+    graph_checksum: Option<ContentDigest>,
+    graph_node_count: Option<u64>,
+    graph_edge_count: Option<u64>,
     corpus: CorpusManifest,
     diagnostics: Vec<SourceRejection>,
     sources: Vec<SourceInventory>,
@@ -1708,6 +1733,10 @@ fn publish_staged_generation(
         )));
     }
     let temp_root = staging.path();
+    let graph_bytes = graph_checksum
+        .as_ref()
+        .map(|_| fs::metadata(temp_root.join("graph.bin")).map(|metadata| metadata.len()))
+        .transpose()?;
     let manifest = ArtifactManifest {
         schema: crate::corpus::ARTIFACT_SCHEMA_V1,
         corpus,
@@ -1716,6 +1745,9 @@ fn publish_staged_generation(
         sources,
         lexical_checksum: Some(lexical_checksum),
         vector_checksum,
+        graph_checksum,
+        graph_node_count,
+        graph_edge_count,
         tool_version: env!("CARGO_PKG_VERSION").into(),
         diagnostics,
     };
@@ -1735,6 +1767,7 @@ fn publish_staged_generation(
         &manifest,
         lexical_bytes,
         vector_bytes,
+        graph_bytes,
         manifest_byte_count,
     )?;
     observations.record(BuildPhase::Validation, validation_started);
@@ -1773,7 +1806,8 @@ fn publish_staged_generation(
     fs::rename(active_tmp, root.join("active.json"))?;
     observations.record(BuildPhase::Activation, activation_started);
     observations.active_manifest_bytes = u64::try_from(active_bytes.len()).unwrap_or(u64::MAX);
-    observations.artifact_bytes = lexical_bytes + vector_bytes.unwrap_or(0);
+    observations.artifact_bytes =
+        lexical_bytes + vector_bytes.unwrap_or(0) + graph_bytes.unwrap_or(0);
     observations.total_duration_us = elapsed_us(started);
 
     Ok(BuildSummary {
@@ -1782,6 +1816,7 @@ fn publish_staged_generation(
         chunk_count: manifest.corpus.chunk_count(),
         lexical_bytes,
         vector_bytes,
+        graph_bytes,
         build_duration_us: observations.total_duration_us,
         observations,
         manifest,
@@ -1843,6 +1878,7 @@ pub fn artifact_component_versions() -> BTreeMap<String, String> {
             env!("CARGO_PKG_VERSION").into(),
         ),
         ("vector-format".into(), "dense-cosine-v2".into()),
+        ("graph-format".into(), "adjacency-csr-v1".into()),
     ]);
     versions
 }
@@ -1882,6 +1918,15 @@ fn validate_generation(root: &Path, expected: &ArtifactManifest) -> Result<(), L
             manifest.corpus.chunk_count(),
         )?;
     }
+    if let Some(checksum) = &manifest.graph_checksum {
+        let graph = crate::GraphArtifact::validate_path(
+            &root.join("graph.bin"),
+            checksum,
+            &manifest.corpus.content_digest,
+        )
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+        validate_graph_counts(manifest.graph_node_count, manifest.graph_edge_count, graph)?;
+    }
     Ok(())
 }
 
@@ -1890,6 +1935,7 @@ fn validate_written_generation(
     expected: &ArtifactManifest,
     lexical_bytes: u64,
     vector_bytes: Option<u64>,
+    graph_bytes: Option<u64>,
     manifest_bytes: u64,
 ) -> Result<(), LifecycleError> {
     expected
@@ -1902,6 +1948,9 @@ fn validate_written_generation(
     if let Some(vector_bytes) = vector_bytes {
         expected_files.push(("vectors.bin", vector_bytes));
     }
+    if let Some(graph_bytes) = graph_bytes {
+        expected_files.push(("graph.bin", graph_bytes));
+    }
     for (name, expected_bytes) in expected_files {
         let path = root.join(name);
         let actual_bytes = fs::metadata(&path)?.len();
@@ -1912,6 +1961,15 @@ fn validate_written_generation(
         }
     }
     validate_lexical_inventory(&root.join("lexical.json"), &expected.corpus)?;
+    if let Some(graph_checksum) = &expected.graph_checksum {
+        let graph = crate::GraphArtifact::validate_path(
+            &root.join("graph.bin"),
+            graph_checksum,
+            &expected.corpus.content_digest,
+        )
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+        validate_graph_counts(expected.graph_node_count, expected.graph_edge_count, graph)?;
+    }
     Ok(())
 }
 
@@ -1988,6 +2046,9 @@ fn previous_summary(
         component_versions: manifest.component_versions,
         lexical_checksum: manifest.lexical_checksum,
         vector_checksum: manifest.vector_checksum,
+        graph_checksum: manifest.graph_checksum,
+        graph_node_count: manifest.graph_node_count,
+        graph_edge_count: manifest.graph_edge_count,
     })
 }
 
@@ -2073,7 +2134,29 @@ pub fn validate_active_generation(root: &Path) -> Result<PreviousArtifactSummary
             chunk_count,
         )?;
     }
+    if let Some(graph_checksum) = &artifact.graph_checksum {
+        let graph = crate::GraphArtifact::validate_path(
+            &generation_root.join("graph.bin"),
+            graph_checksum,
+            &artifact.corpus_digest,
+        )
+        .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+        validate_graph_counts(artifact.graph_node_count, artifact.graph_edge_count, graph)?;
+    }
     Ok(artifact)
+}
+
+fn validate_graph_counts(
+    node_count: Option<u64>,
+    edge_count: Option<u64>,
+    graph: crate::GraphArtifactSummary,
+) -> Result<(), LifecycleError> {
+    if node_count != Some(graph.node_count) || edge_count != Some(graph.edge_count) {
+        return Err(LifecycleError::Contract(
+            "graph artifact counts do not match manifest".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2194,6 +2277,11 @@ mod tests {
         );
         assert!(!summary.manifest.component_versions.is_empty());
         assert!(summary.vector_bytes.is_none());
+        assert!(summary.graph_bytes.is_some_and(|bytes| bytes > 0));
+        assert!(summary.manifest.graph_checksum.is_some());
+        assert!(summary.manifest.graph_node_count.unwrap_or(0) > 0);
+        assert!(summary.manifest.graph_edge_count.is_some());
+        validate_active_generation(temp.path()).expect("graph-backed generation validates");
         let text = fs::read_to_string(active_manifest_path(temp.path())).expect("manifest");
         assert!(!text.contains(temp.path().to_string_lossy().as_ref()));
     }
@@ -2377,6 +2465,47 @@ mod tests {
         let error = validate_active_generation(temp.path()).expect_err("reject corrupt vector");
 
         assert!(error.to_string().contains("vector"));
+    }
+
+    #[test]
+    fn active_generation_validates_a_declared_graph_artifact() {
+        let temp = tempfile::tempdir().expect("artifact root");
+        let built = build_embedded_artifacts(temp.path()).expect("artifact build");
+        let generation_root = temp.path().join("generations").join(&built.generation);
+        let graph = crate::GraphArtifact::new(
+            built.manifest.corpus.content_digest.clone(),
+            vec![crate::GraphNode::new(
+                "fixture",
+                "revision",
+                "src/lib.rs",
+                (1, 1, 0, 4),
+                "fixture",
+                "declaration",
+            )],
+            Vec::new(),
+        )
+        .expect("graph");
+        let graph_checksum = graph
+            .write(&generation_root.join("graph.bin"))
+            .expect("write graph");
+        let mut manifest = built.manifest;
+        manifest.graph_checksum = Some(graph_checksum);
+        manifest.graph_node_count = Some(1);
+        manifest.graph_edge_count = Some(0);
+        let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest JSON");
+        fs::write(generation_root.join("manifest.json"), &manifest_bytes).expect("manifest");
+        let pointer =
+            ActiveManifestPointer::new(&built.generation, &manifest_bytes).expect("active pointer");
+        fs::write(
+            active_manifest_path(temp.path()),
+            serde_json::to_vec(&pointer).expect("pointer JSON"),
+        )
+        .expect("pointer");
+
+        validate_active_generation(temp.path()).expect("valid graph");
+        fs::write(generation_root.join("graph.bin"), b"corrupt").expect("corrupt graph");
+        let error = validate_active_generation(temp.path()).expect_err("reject graph");
+        assert!(error.to_string().contains("graph"));
     }
 
     #[test]
