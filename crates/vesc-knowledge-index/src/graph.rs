@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::corpus::{Chunk, ChunkId, ContentDigest, SchemaVersion};
+use crate::corpus::{
+    Chunk, ChunkId, ContentDigest, RepositoryId, Revision, SchemaVersion, SourceSpan,
+};
 
 pub const GRAPH_ARTIFACT_SCHEMA_V1: SchemaVersion = SchemaVersion { major: 1, minor: 0 };
 const MAGIC: &[u8; 8] = b"VESCGRPH";
@@ -105,6 +107,33 @@ pub struct GraphArtifact {
     pub reverse_edge_indices: Vec<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GraphChunk {
+    pub(crate) chunk_id: ChunkId,
+    pub(crate) repository: RepositoryId,
+    pub(crate) revision: Revision,
+    pub(crate) path: String,
+    pub(crate) title: String,
+    pub(crate) ordinal: u32,
+    pub(crate) source_span: Option<SourceSpan>,
+    pub(crate) next_chunk: Option<ChunkId>,
+}
+
+impl GraphChunk {
+    pub(crate) fn from_chunk(chunk: &Chunk) -> Self {
+        Self {
+            chunk_id: chunk.chunk_id.clone(),
+            repository: chunk.repository.clone(),
+            revision: chunk.revision.clone(),
+            path: chunk.path.clone(),
+            title: chunk.title.clone(),
+            ordinal: chunk.ordinal,
+            source_span: chunk.source_span,
+            next_chunk: chunk.next_chunk.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphArtifactSummary {
     pub bytes: u64,
@@ -126,10 +155,18 @@ impl GraphArtifact {
         corpus_digest: ContentDigest,
         chunks: &[Chunk],
     ) -> Result<Self, GraphArtifactError> {
+        Self::from_graph_chunks(corpus_digest, chunks.iter().map(GraphChunk::from_chunk))
+    }
+
+    pub(crate) fn from_graph_chunks(
+        corpus_digest: ContentDigest,
+        chunks: impl IntoIterator<Item = GraphChunk>,
+    ) -> Result<Self, GraphArtifactError> {
+        let chunks = chunks.into_iter().collect::<Vec<_>>();
         let mut nodes = Vec::with_capacity(chunks.len());
         let mut node_by_chunk: BTreeMap<ChunkId, NodeLocator> = BTreeMap::new();
-        for chunk in chunks {
-            let (start_line, end_line, start_byte, end_byte) = graph_span(chunk)?;
+        for chunk in &chunks {
+            let (start_line, end_line, start_byte, end_byte) = graph_span(chunk.source_span)?;
             let symbol = format!("{}#{}", chunk.title, chunk.ordinal);
             let node = GraphNode::new(
                 chunk.repository.as_str(),
@@ -149,7 +186,7 @@ impl GraphArtifact {
             nodes.push(node);
         }
         let mut edges = Vec::new();
-        for chunk in chunks {
+        for chunk in &chunks {
             let Some(next) = &chunk.next_chunk else {
                 continue;
             };
@@ -721,8 +758,8 @@ impl GraphArtifact {
     }
 }
 
-fn graph_span(chunk: &Chunk) -> Result<(u32, u32, u32, u32), GraphArtifactError> {
-    let Some(span) = chunk.source_span else {
+fn graph_span(source_span: Option<SourceSpan>) -> Result<(u32, u32, u32, u32), GraphArtifactError> {
+    let Some(span) = source_span else {
         return Ok((0, 0, 0, 0));
     };
     let start_byte = span
@@ -1114,7 +1151,10 @@ mod tests {
         .expect("full graph");
         let projected = GraphArtifact::from_graph_chunks(
             ContentDigest::of(b"corpus"),
-            [GraphChunk::from_chunk(&first), GraphChunk::from_chunk(&second)],
+            [
+                GraphChunk::from_chunk(&first),
+                GraphChunk::from_chunk(&second),
+            ],
         )
         .expect("projected graph");
 

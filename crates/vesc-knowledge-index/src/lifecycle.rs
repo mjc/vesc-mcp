@@ -1280,10 +1280,8 @@ fn finish_git_history_lexical_stage(
 
     let graph = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
     let graph_ids = graph.embedding_chunk_ids()?;
-    let mut graph_chunks = graph
-        .chunks_by_id(&graph_ids.iter().cloned().collect::<BTreeSet<_>>())?
-        .into_values()
-        .collect::<Vec<_>>();
+    let graph_ids = graph_ids.into_iter().collect::<BTreeSet<_>>();
+    let mut graph_chunks = graph.graph_chunks_by_id(&graph_ids)?;
     if graph_chunks.len() != graph_ids.len() {
         return Err(LifecycleError::Contract(
             "lexical artifact graph hydration is incomplete".into(),
@@ -1302,11 +1300,11 @@ fn finish_git_history_lexical_stage(
             chunk.next_chunk = None;
         }
     }
-    let (graph_checksum, graph_node_count, graph_edge_count) = write_graph_artifact(
-        &temp_root.join("graph.bin"),
-        &corpus.content_digest,
-        &graph_chunks,
-    )?;
+    let graph =
+        crate::GraphArtifact::from_graph_chunks(corpus.content_digest.clone(), graph_chunks)
+            .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    let (graph_checksum, graph_node_count, graph_edge_count) =
+        write_graph(&temp_root.join("graph.bin"), graph)?;
 
     let (vector_checksum, vector_bytes) = if let Some((provider, model_id, model_revision)) =
         semantic
@@ -1738,6 +1736,13 @@ fn write_graph_artifact(
 ) -> Result<(ContentDigest, u64, u64), LifecycleError> {
     let graph = crate::GraphArtifact::from_chunks(corpus_digest.clone(), chunks)
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
+    write_graph(path, graph)
+}
+
+fn write_graph(
+    path: &Path,
+    graph: crate::GraphArtifact,
+) -> Result<(ContentDigest, u64, u64), LifecycleError> {
     let checksum = graph
         .write(path)
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;

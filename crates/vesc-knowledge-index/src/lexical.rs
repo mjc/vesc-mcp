@@ -25,6 +25,7 @@ use crate::corpus::{
     CORPUS_SCHEMA_V1, Chunk, ChunkId, ContentDigest, DocumentId, ResourceUri, RetrievalMetadata,
     SourceKind, SourceSpan, TrustTier, parse_prefixed_digest,
 };
+use crate::graph::GraphChunk;
 use crate::{Category, RepositoryId, Revision};
 
 pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-object-locators-v14";
@@ -1631,6 +1632,32 @@ impl LexicalIndex {
             .collect()
     }
 
+    pub(crate) fn graph_chunks_by_id(
+        &self,
+        ids: &BTreeSet<ChunkId>,
+    ) -> Result<Vec<GraphChunk>, LexicalError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = TermSetQuery::new(ids.iter().map(|id| {
+            let encoded = id.encoded();
+            Term::from_field_text(self.fields.chunk_id, encoded.as_str())
+        }));
+        let searcher = self.reader.searcher();
+        let documents = searcher
+            .search(&query, &TopDocs::with_limit(ids.len()).order_by_score())
+            .map_err(LexicalError::Search)?;
+        documents
+            .into_iter()
+            .map(|(_, address)| {
+                let document = searcher
+                    .doc::<TantivyDocument>(address)
+                    .map_err(LexicalError::Search)?;
+                graph_chunk_from_document(self.fields, &document)
+            })
+            .collect()
+    }
+
     pub(crate) fn embedding_texts_by_id(
         &self,
         ids: &[ChunkId],
@@ -2123,6 +2150,52 @@ impl ChunkLocator {
             message: message.into(),
         }
     }
+}
+
+fn graph_chunk_from_document(
+    fields: LexicalFields,
+    document: &TantivyDocument,
+) -> Result<GraphChunk, LexicalError> {
+    let start_line = optional_u64(document, fields.start_line)
+        .map(|value| u32::try_from(value).map_err(|_| invalid_field("start_line")))
+        .transpose()?;
+    let end_line = optional_u64(document, fields.end_line)
+        .map(|value| u32::try_from(value).map_err(|_| invalid_field("end_line")))
+        .transpose()?;
+    let source_span = match (start_line, end_line) {
+        (None, None) => None,
+        (Some(start_line), Some(end_line)) => Some(
+            SourceSpan::new(
+                start_line,
+                end_line,
+                optional_u64(document, fields.start_byte),
+                optional_u64(document, fields.end_byte),
+            )
+            .map_err(|_| invalid_field("source_span"))?,
+        ),
+        _ => return Err(invalid_field("source_span")),
+    };
+    Ok(GraphChunk {
+        chunk_id: ChunkId::try_from(required_text(document, fields.chunk_id, "chunk_id")?)
+            .map_err(|_| invalid_field("chunk_id"))?,
+        repository: RepositoryId::try_from(required_text(
+            document,
+            fields.repository,
+            "repository",
+        )?)
+        .map_err(|_| invalid_field("repository"))?,
+        revision: Revision::try_from(required_text(document, fields.revision, "revision")?)
+            .map_err(|_| invalid_field("revision"))?,
+        path: required_text(document, fields.path, "path")?.to_owned(),
+        title: required_text(document, fields.title, "title")?.to_owned(),
+        ordinal: u32::try_from(required_u64(document, fields.ordinal, "ordinal")?)
+            .map_err(|_| invalid_field("ordinal"))?,
+        source_span,
+        next_chunk: optional_text(document, fields.next_chunk)
+            .map(ChunkId::try_from)
+            .transpose()
+            .map_err(|_| invalid_field("next_chunk"))?,
+    })
 }
 
 fn embedded_chunk(id: &ChunkId) -> Option<Chunk> {
