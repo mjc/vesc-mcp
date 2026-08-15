@@ -1077,6 +1077,50 @@ mod tests {
         assert!(GraphArtifact::from_chunks(ContentDigest::of(b"corpus"), &[dangling]).is_err());
     }
 
+    #[test]
+    fn projected_graph_metadata_matches_full_chunks() {
+        let repository = RepositoryId::try_from("fixture-repo").expect("repository");
+        let revision = Revision::try_from("fixture-revision").expect("revision");
+        let first_document = NormalizedDocument::new(
+            "first",
+            SourceKind::EmbeddedCatalog,
+            repository.clone(),
+            revision.clone(),
+            "src/first.rs",
+            "text/plain",
+            "first",
+        )
+        .expect("first document");
+        let second_document = NormalizedDocument::new(
+            "second",
+            SourceKind::EmbeddedCatalog,
+            repository,
+            revision,
+            "src/second.rs",
+            "text/plain",
+            "second",
+        )
+        .expect("second document");
+        let mut first = Chunk::from_document(&first_document, 0, "first".into(), Vec::new(), None)
+            .expect("first chunk");
+        let second = Chunk::from_document(&second_document, 0, "second".into(), Vec::new(), None)
+            .expect("second chunk");
+        first.next_chunk = Some(second.chunk_id.clone());
+
+        let full = GraphArtifact::from_chunks(
+            ContentDigest::of(b"corpus"),
+            &[first.clone(), second.clone()],
+        )
+        .expect("full graph");
+        let projected = GraphArtifact::from_graph_chunks(
+            ContentDigest::of(b"corpus"),
+            [GraphChunk::from_chunk(&first), GraphChunk::from_chunk(&second)],
+        )
+        .expect("projected graph");
+
+        assert_eq!(projected, full);
+    }
+
     fn graph_fixture_chunk(document: &NormalizedDocument) -> Chunk {
         Chunk::from_document(document, 0, document.content.clone(), Vec::new(), None)
             .expect("fixture chunk")
