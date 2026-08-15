@@ -117,7 +117,7 @@ pub use semantic::{
     embedding_text, semantic_query_text, sequence_bucket_plan,
 };
 #[cfg(feature = "semantic-fastembed")]
-pub use semantic::{DocumentWindowVectors, FastEmbedProvider};
+pub use semantic::{DocumentWindowVectors, FastEmbedProvider, bounded_document_windows};
 #[cfg(feature = "semantic-fastembed")]
 pub use semantic::{
     SemanticExecutionProvider, SemanticRuntimeDiagnostics, SequenceBucketCensus,

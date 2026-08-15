@@ -10,6 +10,8 @@ use gungraun::prelude::*;
 use gungraun::{Dhat, DhatMetric, Massif};
 use tempfile::{TempDir, tempdir};
 use vesc_knowledge_index::benchmark::embedding_chunk_ids;
+#[cfg(feature = "semantic-fastembed")]
+use vesc_knowledge_index::bounded_document_windows;
 use vesc_knowledge_index::corpus::git::{
     GitCorpusLimits, GitCorpusPolicy, GitCorpusSource, ingest_git_commit,
 };
@@ -229,10 +231,18 @@ fn fixture_git_many_tips() -> HistoryGitFixture {
     git(
         root.path(),
         &[
-            "clone",
-            "--mirror",
+            "init",
+            "--bare",
             "-q",
-            work.to_str().expect("UTF-8 worktree path"),
+            repository.to_str().expect("UTF-8 repository path"),
+        ],
+    );
+    git(
+        &work,
+        &[
+            "push",
+            "-q",
+            "--all",
             repository.to_str().expect("UTF-8 repository path"),
         ],
     );
@@ -508,7 +518,58 @@ fn bench_fake_vector_build(chunks: Vec<Chunk>) -> VectorArtifact {
         .expect("build vector artifact"),
     )
 }
+#[cfg(feature = "semantic-fastembed")]
+fn fixture_bounded_document_windows() -> (tokenizers::Tokenizer, Vec<String>) {
+    let tokenizer = tokenizers::Tokenizer::from_bytes(
+        br#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"Whitespace"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"fn":1,"update":2,"motor":3,"controller":4,"unicode":5,"oversized":6},"unk_token":"[UNK]"}}"#,
+    )
+    .expect("benchmark tokenizer");
+    let documents = vec![
+        "# Markdown\n\nfn update_motor_controller() { motor += 1; }\n".repeat(64),
+        "Unicode … naïve café Привет мир\n".repeat(128),
+        "oversized_identifier ".repeat(2048),
+    ];
+    (tokenizer, documents)
+}
 
+#[cfg(feature = "semantic-fastembed")]
+#[library_benchmark(setup = fixture_bounded_document_windows)]
+fn bench_bounded_document_windows(
+    (tokenizer, documents): (tokenizers::Tokenizer, Vec<String>),
+) -> usize {
+    let total = documents
+        .iter()
+        .map(|document| {
+            bounded_document_windows(&tokenizer, black_box(document.as_str()), 32)
+                .expect("bounded document windows")
+                .iter()
+                .map(|(_, token_count)| *token_count)
+                .sum::<usize>()
+        })
+        .sum();
+    black_box(total)
+}
+
+#[cfg(feature = "semantic-fastembed")]
+library_benchmark_group!(
+    name = corpus_pipeline,
+    benchmarks = [
+        bench_chunk_document,
+        bench_ingest_git_commit,
+        bench_ingest_many_mostly_shared_tips,
+        bench_incremental_many_divergent_tips,
+        bench_persisted_reconcile_removed_tips,
+        bench_persisted_cold_after_removed_tips,
+        bench_lexical_build,
+        bench_lexical_search,
+        bench_corpus_inventory,
+        bench_embedding_chunk_ids,
+        bench_fake_vector_build,
+        bench_bounded_document_windows,
+    ]
+);
+
+#[cfg(not(feature = "semantic-fastembed"))]
 library_benchmark_group!(
     name = corpus_pipeline,
     benchmarks = [

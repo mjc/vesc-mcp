@@ -1644,7 +1644,12 @@ fn migraphx_dimension_overrides(
 }
 
 #[cfg(feature = "semantic-fastembed")]
-fn bounded_document_windows(
+/// Split a document into token-bounded windows for semantic indexing.
+///
+/// # Errors
+///
+/// Returns an error when the tokenizer cannot encode the document.
+pub fn bounded_document_windows(
     tokenizer: &tokenizers::Tokenizer,
     text: &str,
     max_length: usize,
@@ -1692,7 +1697,7 @@ fn bounded_document_windows(
 
     let mut bounded = Vec::with_capacity(windows.len());
     let mut pending = windows;
-    while let Some(window) = pending.pop() {
+    while let Some(mut window) = pending.pop() {
         let length = tokenizer
             .encode(window.as_str(), true)
             .map_err(|error| EmbeddingError::Provider(error.to_string()))?
@@ -1712,8 +1717,10 @@ fn bounded_document_windows(
                 "model input cannot fit within the model limit of {max_length} tokens"
             )));
         }
-        pending.push(window[midpoint..].to_owned());
-        pending.push(window[..midpoint].to_owned());
+        // Keep the left half in the existing allocation; only the right half needs a new buffer.
+        let right = window.split_off(midpoint);
+        pending.push(right);
+        pending.push(window);
     }
     bounded.reverse();
     Ok(bounded)
@@ -6127,6 +6134,78 @@ mod tests {
         assert!(ascii_input_fits_model_window("VESC", 6, 2));
         assert!(!ascii_input_fits_model_window("VESC", 5, 2));
         assert!(!ascii_input_fits_model_window("VËSC", 8, 2));
+    }
+    #[cfg(feature = "semantic-fastembed")]
+    fn characterization_tokenizer() -> tokenizers::Tokenizer {
+        tokenizers::Tokenizer::from_bytes(
+            br#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"Whitespace"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"fn":1,"update":2,"motor":3,"controller":4},"unk_token":"[UNK]"}}"#,
+        )
+        .expect("characterization tokenizer")
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn bounded_windows_preserve_token_ids_and_offsets() {
+        let tokenizer = characterization_tokenizer();
+        let encoding = tokenizer
+            .encode("fn update motor", true)
+            .expect("tokenize characterization input");
+
+        assert_eq!(encoding.get_ids(), &[1, 2, 3]);
+        assert_eq!(encoding.get_offsets(), &[(0, 2), (3, 9), (10, 15)]);
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn bounded_windows_preserve_boundaries_and_token_weights() {
+        let tokenizer = characterization_tokenizer();
+        let windows = bounded_document_windows(&tokenizer, "fn update motor controller", 3)
+            .expect("bounded windows");
+
+        assert_eq!(
+            windows,
+            vec![
+                ("fn update motor".to_owned(), 3),
+                (" controller".to_owned(), 1),
+            ]
+        );
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn bounded_windows_keep_unicode_boundaries() {
+        let tokenizer = characterization_tokenizer();
+        let text = "é update α motor";
+        let windows =
+            bounded_document_windows(&tokenizer, text, 2).expect("unicode bounded windows");
+
+        assert_eq!(
+            windows
+                .iter()
+                .map(|(window, _)| window)
+                .cloned()
+                .collect::<String>(),
+            "é update α motor"
+        );
+        assert!(windows.iter().all(|(window, _)| {
+            text.is_char_boundary(text.find(window).expect("window in source"))
+        }));
+    }
+
+    #[cfg(feature = "semantic-fastembed")]
+    #[test]
+    fn bounded_windows_are_deterministic_across_thread_counts() {
+        let tokenizer = characterization_tokenizer();
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("thread pool")
+                .install(|| bounded_document_windows(&tokenizer, "fn update motor controller", 2))
+                .expect("bounded windows")
+        };
+
+        assert_eq!(run(1), run(4));
     }
 
     #[test]
