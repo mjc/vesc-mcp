@@ -38,7 +38,7 @@ tokenizers = { version = "0.22.2", default-features = false, features = ["onig"]
 rayon = "1.11"
 coz = "0.1.3"
 gungraun = "0.19.4"
-flate2 = "1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "net", "process"] }
 tokio-util = "0.7"
 tracing = "0.1"
