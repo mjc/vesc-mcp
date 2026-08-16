@@ -1290,16 +1290,13 @@ fn finish_git_history_lexical_stage(
     let graph_ids = graph.embedding_chunk_ids()?;
     let graph_id_count = graph_ids.len();
     let graph_id_set = graph_ids.iter().collect::<HashSet<_>>();
-    let mut graph_chunks = match LexicalIndex::read_graph_chunks(&lexical_path)? {
-        Some(chunks) => chunks
-            .into_iter()
-            .filter(|chunk| graph_id_set.contains(&chunk.chunk_id))
-            .collect::<Vec<_>>(),
-        None => {
-            let legacy_graph_ids = graph_ids.iter().cloned().collect::<BTreeSet<_>>();
-            graph.graph_chunks_by_id(&legacy_graph_ids)?
-        }
-    };
+    let mut graph_chunks = LexicalIndex::read_graph_chunks(&lexical_path)?
+        .ok_or_else(|| {
+            LifecycleError::Contract("lexical artifact is missing graph projection".into())
+        })?
+        .into_iter()
+        .filter(|chunk| graph_id_set.contains(&chunk.chunk_id))
+        .collect::<Vec<_>>();
     if graph_chunks.len() != graph_id_count {
         return Err(LifecycleError::Contract(
             "lexical artifact graph hydration is incomplete".into(),

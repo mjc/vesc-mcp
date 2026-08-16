@@ -1579,6 +1579,45 @@ fn corrupt_completed_lexical_stage_is_rebuilt() {
 }
 
 #[test]
+fn lexical_stage_without_graph_sidecar_rebuilds_cold() {
+    let (_root, work) = fixture();
+    let source = at_head(source(work.clone(), "fixture"), &work);
+    let artifacts = tempdir().expect("artifact root");
+    let mut failing = FailingEmbeddingProvider;
+    build_git_history_artifacts_incrementally(
+        artifacts.path(),
+        std::slice::from_ref(&source),
+        None,
+        None,
+        Some((&mut failing, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect_err("semantic failure");
+    let graph_sidecar = artifacts
+        .path()
+        .join("lexical-stage/lexical.json")
+        .with_extension("graph-input.json");
+    fs::remove_file(graph_sidecar).expect("remove legacy graph sidecar");
+
+    let mut retry = FakeEmbeddingProvider::new(8);
+    let summary = build_git_history_artifacts_incrementally(
+        artifacts.path(),
+        std::slice::from_ref(&source),
+        None,
+        None,
+        Some((&mut retry, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("cold rebuild without graph sidecar");
+
+    assert!(!summary.artifacts.observations.reused_lexical_stage);
+}
+
+#[test]
 fn changed_completed_lexical_sidecar_is_rebuilt() {
     let (_root, work) = fixture();
     let source = at_head(source(work.clone(), "fixture"), &work);
