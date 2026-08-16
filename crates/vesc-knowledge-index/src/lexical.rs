@@ -983,7 +983,7 @@ impl LexicalIndex {
         entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
 
         let mut digest = Sha256::new();
-        digest.update(b"vesc-mcp lexical sidecar v1\0");
+        digest.update(b"vesc-mcp lexical sidecar v2\0");
         let mut buffer = [0_u8; 8 * 1024];
         for entry in entries {
             let name = entry.file_name();
@@ -1009,6 +1009,35 @@ impl LexicalIndex {
             digest.update(metadata.len().to_le_bytes());
             let mut file = BufReader::new(
                 File::open(entry.path()).map_err(|error| LexicalError::Io(error.to_string()))?,
+            );
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|error| LexicalError::Io(error.to_string()))?;
+                if read == 0 {
+                    break;
+                }
+                digest.update(&buffer[..read]);
+            }
+        }
+        for path in [graph_input_path(path), history_input_path(path)] {
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    LexicalError::Artifact("persisted lexical sidecar filename is not UTF-8".into())
+                })?;
+            let metadata = path
+                .metadata()
+                .map_err(|error| LexicalError::Io(error.to_string()))?;
+            digest.update((name.len() as u64).to_le_bytes());
+            digest.update(name.as_bytes());
+            digest.update(metadata.len().to_le_bytes());
+            let mut file = BufReader::new(
+                File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?,
             );
             loop {
                 let read = file
@@ -3815,5 +3844,23 @@ mod tests {
             LexicalIndex::read_artifact_chunks(&path),
             Err(LexicalError::Artifact(_))
         ));
+    }
+
+    #[test]
+    fn sidecar_checksum_binds_compact_history_and_graph_inputs() {
+        let root = tempfile::tempdir().expect("artifact root");
+        let path = root.path().join("lexical.json");
+        let index_path = persisted_index_path(&path);
+        std::fs::create_dir(&index_path).expect("index directory");
+        std::fs::write(index_path.join("meta.json"), b"index").expect("index metadata");
+
+        let baseline = LexicalIndex::sidecar_checksum(&path).expect("baseline checksum");
+        std::fs::write(graph_input_path(&path), b"graph").expect("graph input");
+        let graph = LexicalIndex::sidecar_checksum(&path).expect("graph checksum");
+        assert_ne!(graph, baseline);
+
+        std::fs::write(history_input_path(&path), b"history").expect("history input");
+        let history = LexicalIndex::sidecar_checksum(&path).expect("history checksum");
+        assert_ne!(history, graph);
     }
 }
