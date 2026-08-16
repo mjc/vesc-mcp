@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use tempfile::tempdir;
 use vesc_knowledge_index::corpus::git::{GitCorpusLimits, GitCorpusPolicy, GitCorpusSource};
@@ -15,6 +16,8 @@ use vesc_knowledge_index::{
     build_git_history_artifacts_from_previous, build_git_history_artifacts_incrementally,
     fuse_candidate_metadata, ingest_git_history_fast_forward,
 };
+
+static GIT_CLONE_LOCK: Mutex<()> = Mutex::new(());
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -35,6 +38,7 @@ fn git(cwd: &Path, args: &[&str]) -> String {
 }
 
 fn clone_bare(source: &Path, destination: &Path) {
+    let _lock = GIT_CLONE_LOCK.lock().expect("Git clone fixture lock");
     let output = Command::new("git")
         .args(["clone", "--quiet", "--bare", "--no-local"])
         .arg(source)
