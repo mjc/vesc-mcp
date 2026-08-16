@@ -853,19 +853,21 @@ impl LexicalIndex {
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
-        let previous_graph_chunks = Self::read_graph_chunks(previous)?;
-        let mut graph_chunks = previous_graph_chunks.clone().unwrap_or_default();
-        let previous_history_records = Self::read_history_records(previous)?;
-        let mut history_records = previous_history_records.clone().unwrap_or_default();
+        let mut graph_chunks = Self::read_graph_chunks(previous)?;
+        let graph_sidecar_present = graph_chunks.is_some();
+        let mut graph_chunks = graph_chunks.take().unwrap_or_default();
+        let mut history_records = Self::read_history_records(previous)?;
+        let history_sidecar_present = history_records.is_some();
+        let mut history_records = history_records.take().unwrap_or_default();
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
-            if previous_graph_chunks.is_some() {
+            if graph_sidecar_present {
                 graph_chunks.push(GraphChunk::from_chunk(chunk));
             }
-            if previous_history_records.is_some() {
+            if history_sidecar_present {
                 history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
             }
             #[cfg(feature = "coz-profile")]
@@ -891,10 +893,10 @@ impl LexicalIndex {
                 .wait_merging_threads()
                 .map_err(LexicalError::Commit)?;
         }
-        if previous_graph_chunks.is_some() {
+        if graph_sidecar_present {
             Self::write_graph_input(path, &graph_chunks)?;
         }
-        if previous_history_records.is_some() {
+        if history_sidecar_present {
             Self::write_history_input(path, &history_records)?;
         }
         Self::write_descriptor(path, git_source_descriptors(sources))
