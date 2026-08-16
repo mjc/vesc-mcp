@@ -1281,7 +1281,13 @@ fn finish_git_history_lexical_stage(
     let graph = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
     let graph_ids = graph.embedding_chunk_ids()?;
     let graph_ids = graph_ids.into_iter().collect::<BTreeSet<_>>();
-    let mut graph_chunks = graph.graph_chunks_by_id(&graph_ids)?;
+    let mut graph_chunks = match LexicalIndex::read_graph_chunks(&lexical_path)? {
+        Some(chunks) => chunks
+            .into_iter()
+            .filter(|chunk| graph_ids.contains(&chunk.chunk_id))
+            .collect::<Vec<_>>(),
+        None => graph.graph_chunks_by_id(&graph_ids)?,
+    };
     if graph_chunks.len() != graph_ids.len() {
         return Err(LifecycleError::Contract(
             "lexical artifact graph hydration is incomplete".into(),

@@ -34,6 +34,7 @@ const INDEX_WRITER_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;
 const MAX_INCREMENTAL_SEGMENTS: usize = 32;
 const REACHABILITY_CACHE_SLOTS: usize = 256;
+const GRAPH_INPUT_SUFFIX: &str = "graph-input.json";
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -758,16 +759,22 @@ impl LexicalIndex {
         let mut writer = index
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
+        let mut graph_chunks = embedded
+            .iter()
+            .map(GraphChunk::from_chunk)
+            .collect::<Vec<_>>();
         for chunk in embedded {
             add_chunk(&writer, fields, chunk);
         }
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
+            graph_chunks.push(GraphChunk::from_chunk(chunk));
             #[cfg(feature = "coz-profile")]
             crate::profile_progress!("lexical_indexed_chunk");
         })
         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         writer.commit().map_err(LexicalError::Commit)?;
+        Self::write_graph_input(path, &graph_chunks)?;
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
 
@@ -840,11 +847,16 @@ impl LexicalIndex {
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
+        let previous_graph_chunks = Self::read_graph_chunks(previous)?;
+        let mut graph_chunks = previous_graph_chunks.clone().unwrap_or_default();
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
+            if previous_graph_chunks.is_some() {
+                graph_chunks.push(GraphChunk::from_chunk(chunk));
+            }
             #[cfg(feature = "coz-profile")]
             crate::profile_progress!("lexical_indexed_chunk");
         })
@@ -868,6 +880,9 @@ impl LexicalIndex {
                 .wait_merging_threads()
                 .map_err(LexicalError::Commit)?;
         }
+        if previous_graph_chunks.is_some() {
+            Self::write_graph_input(path, &graph_chunks)?;
+        }
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
 
@@ -882,6 +897,24 @@ impl LexicalIndex {
             reader: index.reader,
             fields: index.fields,
         })
+    }
+
+    pub(crate) fn read_graph_chunks(path: &Path) -> Result<Option<Vec<GraphChunk>>, LexicalError> {
+        let path = graph_input_path(path);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        serde_json::from_reader(BufReader::new(file))
+            .map(Some)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
+    fn write_graph_input(path: &Path, chunks: &[GraphChunk]) -> Result<(), LexicalError> {
+        let file = File::create(graph_input_path(path))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        serde_json::to_writer(BufWriter::new(file), chunks)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
 
     fn write_descriptor(
@@ -2772,6 +2805,10 @@ fn repository_revision_key(chunk: &Chunk) -> Vec<u8> {
 
 fn persisted_index_path(path: &Path) -> PathBuf {
     path.with_extension("tantivy")
+}
+
+fn graph_input_path(path: &Path) -> PathBuf {
+    path.with_extension(GRAPH_INPUT_SUFFIX)
 }
 
 fn managed_repositories_root(path: &Path) -> Option<PathBuf> {

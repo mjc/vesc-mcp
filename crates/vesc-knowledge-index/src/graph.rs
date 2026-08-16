@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 use crate::corpus::{
     Chunk, ChunkId, ContentDigest, RepositoryId, Revision, SchemaVersion, SourceSpan,
 };
@@ -107,7 +109,7 @@ pub struct GraphArtifact {
     pub reverse_edge_indices: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct GraphChunk {
     pub(crate) chunk_id: ChunkId,
     pub(crate) repository: RepositoryId,
@@ -1159,6 +1161,30 @@ mod tests {
         .expect("projected graph");
 
         assert_eq!(projected, full);
+    }
+
+    #[test]
+    fn projected_graph_metadata_round_trips_for_staging_sidecar() {
+        let repository = RepositoryId::try_from("fixture-repo").expect("repository");
+        let revision = Revision::try_from("fixture-revision").expect("revision");
+        let document = NormalizedDocument::new(
+            "sidecar",
+            SourceKind::EmbeddedCatalog,
+            repository,
+            revision,
+            "src/sidecar.rs",
+            "text/plain",
+            "sidecar",
+        )
+        .expect("document");
+        let chunk =
+            Chunk::from_document(&document, 0, "sidecar".into(), Vec::new(), None).expect("chunk");
+        let projected = GraphChunk::from_chunk(&chunk);
+        let encoded = serde_json::to_vec(&projected).expect("encode graph projection");
+        let decoded: GraphChunk =
+            serde_json::from_slice(&encoded).expect("decode graph projection");
+
+        assert_eq!(decoded, projected);
     }
 
     fn graph_fixture_chunk(document: &NormalizedDocument) -> Chunk {
