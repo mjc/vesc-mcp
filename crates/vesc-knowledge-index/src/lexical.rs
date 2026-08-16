@@ -853,12 +853,12 @@ impl LexicalIndex {
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
-        let mut graph_chunks = Self::read_graph_chunks(previous)?;
-        let graph_sidecar_present = graph_chunks.is_some();
-        let mut graph_chunks = graph_chunks.take().unwrap_or_default();
-        let mut history_records = Self::read_history_records(previous)?;
-        let history_sidecar_present = history_records.is_some();
-        let mut history_records = history_records.take().unwrap_or_default();
+        let graph_sidecar = graph_input_path(previous);
+        let graph_sidecar_present = graph_sidecar.is_file();
+        let history_sidecar = history_input_path(previous);
+        let history_sidecar_present = history_sidecar.is_file();
+        let mut graph_chunks = Vec::new();
+        let mut history_records = Vec::new();
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
@@ -894,10 +894,18 @@ impl LexicalIndex {
                 .map_err(LexicalError::Commit)?;
         }
         if graph_sidecar_present {
-            Self::write_graph_input(path, &graph_chunks)?;
+            Self::append_json_array_sidecar(
+                &graph_sidecar,
+                &graph_input_path(path),
+                &graph_chunks,
+            )?;
         }
         if history_sidecar_present {
-            Self::write_history_input(path, &history_records)?;
+            Self::append_json_array_sidecar(
+                &history_sidecar,
+                &history_input_path(path),
+                &history_records,
+            )?;
         }
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
@@ -954,6 +962,53 @@ impl LexicalIndex {
             .map_err(|error| LexicalError::Io(error.to_string()))?;
         serde_json::to_writer(BufWriter::new(file), records)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
+    fn append_json_array_sidecar<T: Serialize>(
+        previous: &Path,
+        destination: &Path,
+        additions: &[T],
+    ) -> Result<(), LexicalError> {
+        if additions.is_empty() {
+            fs::copy(previous, destination).map_err(|error| LexicalError::Io(error.to_string()))?;
+            return Ok(());
+        }
+        let previous = fs::read(previous).map_err(|error| LexicalError::Io(error.to_string()))?;
+        let end = previous
+            .iter()
+            .rposition(|byte| !byte.is_ascii_whitespace())
+            .ok_or_else(|| LexicalError::Artifact("compact sidecar is empty".into()))?;
+        if previous[end] != b']' {
+            return Err(LexicalError::Artifact(
+                "compact sidecar is not a JSON array".into(),
+            ));
+        }
+        let start = previous
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())
+            .ok_or_else(|| LexicalError::Artifact("compact sidecar is empty".into()))?;
+        if previous[start] != b'[' {
+            return Err(LexicalError::Artifact(
+                "compact sidecar is not a JSON array".into(),
+            ));
+        }
+        let has_items = previous[start + 1..end]
+            .iter()
+            .any(|byte| !byte.is_ascii_whitespace());
+        let mut output = previous;
+        output.truncate(end);
+        if has_items {
+            output.push(b',');
+        }
+        for (index, addition) in additions.iter().enumerate() {
+            if index > 0 {
+                output.push(b',');
+            }
+            serde_json::to_writer(&mut output, addition)
+                .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        }
+        output.push(b']');
+        fs::write(destination, output).map_err(|error| LexicalError::Io(error.to_string()))
     }
 
     fn write_descriptor(
