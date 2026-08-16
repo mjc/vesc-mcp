@@ -743,6 +743,15 @@ impl LexicalIndex {
     pub(crate) fn clone_search_artifact(previous: &Path, path: &Path) -> Result<(), LexicalError> {
         clone_persisted_index(previous, path)?;
         fs::copy(previous, path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        for (source, destination) in [
+            (graph_input_path(previous), graph_input_path(path)),
+            (history_input_path(previous), history_input_path(path)),
+        ] {
+            if source.is_file() {
+                fs::copy(source, destination)
+                    .map_err(|error| LexicalError::Io(error.to_string()))?;
+            }
+        }
         Ok(())
     }
 
@@ -3845,6 +3854,34 @@ mod tests {
             LexicalIndex::open_search_artifact(&path),
             Err(LexicalError::Io(_))
         ));
+    }
+
+    #[test]
+    fn cloned_search_artifact_keeps_compact_sidecars() {
+        let root = tempfile::tempdir().expect("artifact root");
+        let previous = root.path().join("previous.json");
+        let destination = root.path().join("destination.json");
+        let index_path = persisted_index_path(&previous);
+        std::fs::create_dir(&index_path).expect("index directory");
+        std::fs::write(index_path.join("meta.json"), b"index").expect("index metadata");
+        std::fs::write(&previous, b"descriptor").expect("descriptor");
+        std::fs::write(graph_input_path(&previous), b"graph").expect("graph sidecar");
+        std::fs::write(history_input_path(&previous), b"history").expect("history sidecar");
+
+        LexicalIndex::clone_search_artifact(&previous, &destination).expect("clone artifact");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("destination descriptor"),
+            b"descriptor"
+        );
+        assert_eq!(
+            std::fs::read(graph_input_path(&destination)).expect("destination graph sidecar"),
+            b"graph"
+        );
+        assert_eq!(
+            std::fs::read(history_input_path(&destination)).expect("destination history sidecar"),
+            b"history"
+        );
     }
 
     #[test]
