@@ -529,7 +529,7 @@ impl HistoryContentLookup {
         for (segment_ord, reader) in searcher.segment_readers().iter().enumerate() {
             let segment_ord = u32::try_from(segment_ord)
                 .map_err(|_| LexicalError::Artifact("too many lexical segments".into()))?;
-            for doc_id in reader.doc_ids_alive() {
+            for doc_id in history_doc_ids(reader, self.fields.source_kind)? {
                 let document = searcher
                     .doc::<TantivyDocument>(tantivy::DocAddress {
                         segment_ord,
@@ -629,6 +629,34 @@ impl HistoryContentLookup {
         }
         Ok(false)
     }
+}
+
+fn history_doc_ids(
+    reader: &tantivy::SegmentReader,
+    source_kind_field: tantivy::schema::Field,
+) -> Result<Vec<u32>, LexicalError> {
+    let source_index = reader
+        .inverted_index(source_kind_field)
+        .map_err(LexicalError::Search)?;
+    let mut doc_ids = Vec::new();
+    for source_kind in ["git_blob", "git_commit"] {
+        let term = Term::from_field_text(source_kind_field, source_kind);
+        let Some(mut postings) = source_index
+            .read_postings(&term, IndexRecordOption::Basic)
+            .map_err(|error| LexicalError::Io(error.to_string()))?
+        else {
+            continue;
+        };
+        while postings.doc() != TERMINATED {
+            let doc_id = postings.doc();
+            if !reader.is_deleted(doc_id) {
+                doc_ids.push(doc_id);
+            }
+            postings.advance();
+        }
+    }
+    doc_ids.sort_unstable();
+    Ok(doc_ids)
 }
 
 impl LexicalIndex {
