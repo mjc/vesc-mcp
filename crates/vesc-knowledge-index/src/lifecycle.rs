@@ -1304,7 +1304,7 @@ fn finish_git_history_lexical_stage(
         crate::GraphArtifact::from_graph_chunks(corpus.content_digest.clone(), graph_chunks)
             .map_err(|error| LifecycleError::Contract(error.to_string()))?;
     let (graph_checksum, graph_node_count, graph_edge_count) =
-        write_graph(&temp_root.join("graph.bin"), graph)?;
+        write_graph(&temp_root.join("graph.bin"), &graph)?;
 
     let (vector_checksum, vector_bytes) = if let Some((provider, model_id, model_revision)) =
         semantic
@@ -1736,12 +1736,12 @@ fn write_graph_artifact(
 ) -> Result<(ContentDigest, u64, u64), LifecycleError> {
     let graph = crate::GraphArtifact::from_chunks(corpus_digest.clone(), chunks)
         .map_err(|error| LifecycleError::Contract(error.to_string()))?;
-    write_graph(path, graph)
+    write_graph(path, &graph)
 }
 
 fn write_graph(
     path: &Path,
-    graph: crate::GraphArtifact,
+    graph: &crate::GraphArtifact,
 ) -> Result<(ContentDigest, u64, u64), LifecycleError> {
     let checksum = graph
         .write(path)
