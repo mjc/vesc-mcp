@@ -9,7 +9,10 @@ use std::sync::Mutex;
 use gungraun::prelude::*;
 use gungraun::{Dhat, DhatMetric, Massif};
 use tempfile::{TempDir, tempdir};
-use vesc_knowledge_index::benchmark::embedding_chunk_ids;
+use vesc_knowledge_index::benchmark::{
+    EmbeddingProjectionFixture, benchmark_embedding_projection_from_fixture, embedding_chunk_ids,
+    prepare_embedding_projection,
+};
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::bounded_document_windows;
 use vesc_knowledge_index::corpus::git::{
@@ -325,6 +328,17 @@ fn fixture_persisted_rewrite() -> PersistedRewriteFixture {
     }
 }
 
+fn fixture_embedding_projection() -> (PersistedRewriteFixture, EmbeddingProjectionFixture) {
+    let fixture = fixture_persisted_rewrite();
+    let previous = fixture.previous.as_ref().expect("persisted predecessor");
+    let projection = prepare_embedding_projection(
+        &previous.lexical_path,
+        std::slice::from_ref(&fixture.source),
+    )
+    .expect("prepare embedding projection fixture");
+    (fixture, projection)
+}
+
 #[library_benchmark(setup = fixture_document)]
 fn bench_chunk_document(document: NormalizedDocument) -> Vec<Chunk> {
     let document = black_box(document);
@@ -446,6 +460,34 @@ fn bench_persisted_reconcile_removed_tips(fixture: PersistedRewriteFixture) {
     *PERSISTED_FIXTURE_TEARDOWN
         .lock()
         .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_embedding_projection
+)]
+fn bench_embedding_projection(
+    (fixture, projection): (PersistedRewriteFixture, EmbeddingProjectionFixture),
+) {
+    black_box(
+        benchmark_embedding_projection_from_fixture(&projection, true)
+            .expect("projected embedding text reconstruction"),
+    );
+    drop(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_embedding_projection
+)]
+fn bench_embedding_projection_legacy(
+    (fixture, projection): (PersistedRewriteFixture, EmbeddingProjectionFixture),
+) {
+    black_box(
+        benchmark_embedding_projection_from_fixture(&projection, false)
+            .expect("legacy embedding text reconstruction"),
+    );
+    drop(fixture);
 }
 
 #[library_benchmark(
@@ -618,6 +660,8 @@ library_benchmark_group!(
         bench_ingest_git_commit,
         bench_ingest_many_mostly_shared_tips,
         bench_incremental_many_divergent_tips,
+        bench_embedding_projection,
+        bench_embedding_projection_legacy,
         bench_persisted_reconcile_removed_tips,
         bench_persisted_reconcile_removed_tips_embedding,
         bench_persisted_reconcile_removed_tips_embedding_legacy,
@@ -639,6 +683,8 @@ library_benchmark_group!(
         bench_ingest_git_commit,
         bench_ingest_many_mostly_shared_tips,
         bench_incremental_many_divergent_tips,
+        bench_embedding_projection,
+        bench_embedding_projection_legacy,
         bench_persisted_reconcile_removed_tips,
         bench_persisted_reconcile_removed_tips_embedding,
         bench_persisted_reconcile_removed_tips_embedding_legacy,

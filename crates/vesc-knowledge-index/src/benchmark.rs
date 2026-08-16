@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::corpus::git::GitCorpusSource;
 use crate::evaluation::{EvaluationMode, EvaluationReport};
+use crate::lexical::EmbeddingTextHydrator;
 use crate::{
     Chunk, ChunkId, ContentDigest, EmbeddingProvider, FusionConfig, LexicalError, LexicalFilters,
     LexicalIndex, TokenStatistics, VectorArtifact, VectorBuildObservations, VectorSearch,
@@ -22,6 +24,76 @@ use crate::{
 /// Returns [`LexicalError`] when the index's ID columns are invalid.
 pub fn embedding_chunk_ids(index: &LexicalIndex) -> Result<Vec<ChunkId>, LexicalError> {
     index.embedding_chunk_ids()
+}
+
+/// Prepared persisted inputs for an embedding-text projection benchmark.
+pub struct EmbeddingProjectionFixture {
+    index: LexicalIndex,
+    ids: Vec<ChunkId>,
+    inputs: Option<Vec<crate::lexical::EmbeddingLocatorRecord>>,
+}
+
+/// Loads the persisted inputs that should remain outside the measured region
+/// of an embedding-text projection benchmark.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the artifact, sidecar, or ID inventory
+/// cannot be read.
+pub fn prepare_embedding_projection(
+    path: &Path,
+    sources: &[GitCorpusSource],
+) -> Result<EmbeddingProjectionFixture, BenchmarkError> {
+    let index = LexicalIndex::open_git_search_artifact_with_sources(path, sources)?;
+    let ids = index.embedding_chunk_ids()?;
+    let inputs = LexicalIndex::read_embedding_inputs(path)?;
+    Ok(EmbeddingProjectionFixture { index, ids, inputs })
+}
+
+/// Runs only the persisted embedding-text projection, excluding vector
+/// construction, checkpoint I/O, and artifact opening from allocation and
+/// peak-memory captures.
+///
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the sidecar or Git hydration path cannot be
+/// read.
+pub fn benchmark_embedding_projection_from_fixture(
+    fixture: &EmbeddingProjectionFixture,
+    projected: bool,
+) -> Result<usize, BenchmarkError> {
+    let mut hydrator = EmbeddingTextHydrator::default();
+    let texts = if projected {
+        let inputs = fixture.inputs.as_deref().ok_or_else(|| {
+            LexicalError::Artifact("embedding projection sidecar is missing".into())
+        })?;
+        fixture
+            .index
+            .embedding_texts_by_id_from_inputs(&fixture.ids, inputs, &mut hydrator)?
+    } else {
+        fixture
+            .index
+            .embedding_texts_by_id(&fixture.ids, &mut hydrator)?
+    };
+    Ok(texts.iter().map(String::len).sum())
+}
+
+/// Runs a one-shot embedding projection benchmark, including artifact opening.
+/// Prefer [`prepare_embedding_projection`] and
+/// [`benchmark_embedding_projection_from_fixture`] for focused profiles.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the artifact, sidecar, ID inventory, or Git
+/// hydration path cannot be read.
+pub fn benchmark_embedding_projection(
+    path: &Path,
+    sources: &[GitCorpusSource],
+    projected: bool,
+) -> Result<usize, BenchmarkError> {
+    let fixture = prepare_embedding_projection(path, sources)?;
+    benchmark_embedding_projection_from_fixture(&fixture, projected)
 }
 
 /// A percentile summary over monotonic elapsed-time samples in microseconds.
