@@ -453,6 +453,62 @@ fn bench_persisted_reconcile_removed_tips(fixture: PersistedRewriteFixture) {
     setup = fixture_persisted_rewrite,
     teardown = teardown_persisted_fixture
 )]
+fn bench_persisted_reconcile_removed_tips_embedding(fixture: PersistedRewriteFixture) {
+    let mut fixture = black_box(fixture);
+    let previous = fixture.previous.take().expect("persisted predecessor");
+    let mut provider = FakeEmbeddingProvider::new(64);
+    black_box(
+        build_git_history_artifacts_from_previous(
+            fixture.output_root.path(),
+            std::slice::from_ref(&fixture.source),
+            Some(previous),
+            Some((&mut provider, "benchmark-model", "v1")),
+            None,
+            &mut |_| {},
+        )
+        .expect("persisted embedding reconciliation")
+        .artifacts
+        .chunk_count,
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_persisted_rewrite,
+    teardown = teardown_persisted_fixture
+)]
+fn bench_persisted_reconcile_removed_tips_embedding_legacy(mut fixture: PersistedRewriteFixture) {
+    let previous = fixture.previous.as_ref().expect("persisted predecessor");
+    let sidecar = previous.lexical_path.with_extension("embedding-input.json");
+    fs::remove_file(sidecar).expect("remove embedding sidecar for legacy baseline");
+    let previous = fixture.previous.take().expect("persisted predecessor");
+    let mut provider = FakeEmbeddingProvider::new(64);
+    black_box(
+        build_git_history_artifacts_from_previous(
+            fixture.output_root.path(),
+            std::slice::from_ref(&fixture.source),
+            Some(previous),
+            Some((&mut provider, "benchmark-model", "v1")),
+            None,
+            &mut |_| {},
+        )
+        .expect("legacy persisted embedding reconciliation")
+        .artifacts
+        .chunk_count,
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_persisted_rewrite,
+    teardown = teardown_persisted_fixture
+)]
 fn bench_persisted_cold_after_removed_tips(fixture: PersistedRewriteFixture) {
     let fixture = black_box(fixture);
     black_box(
@@ -563,6 +619,8 @@ library_benchmark_group!(
         bench_ingest_many_mostly_shared_tips,
         bench_incremental_many_divergent_tips,
         bench_persisted_reconcile_removed_tips,
+        bench_persisted_reconcile_removed_tips_embedding,
+        bench_persisted_reconcile_removed_tips_embedding_legacy,
         bench_persisted_cold_after_removed_tips,
         bench_lexical_build,
         bench_lexical_search,
@@ -582,6 +640,8 @@ library_benchmark_group!(
         bench_ingest_many_mostly_shared_tips,
         bench_incremental_many_divergent_tips,
         bench_persisted_reconcile_removed_tips,
+        bench_persisted_reconcile_removed_tips_embedding,
+        bench_persisted_reconcile_removed_tips_embedding_legacy,
         bench_persisted_cold_after_removed_tips,
         bench_lexical_build,
         bench_lexical_search,
