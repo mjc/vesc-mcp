@@ -464,7 +464,8 @@ fn bench_persisted_reconcile_removed_tips(fixture: PersistedRewriteFixture) {
 
 #[library_benchmark(
     config = history_memory_benchmark_config(),
-    setup = fixture_embedding_projection
+    setup = fixture_embedding_projection,
+    teardown = teardown_persisted_fixture
 )]
 fn bench_embedding_projection(
     (fixture, projection): (PersistedRewriteFixture, EmbeddingProjectionFixture),
@@ -473,12 +474,15 @@ fn bench_embedding_projection(
         benchmark_embedding_projection_from_fixture(&projection, true)
             .expect("projected embedding text reconstruction"),
     );
-    drop(fixture);
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
 }
 
 #[library_benchmark(
     config = history_memory_benchmark_config(),
-    setup = fixture_embedding_projection
+    setup = fixture_embedding_projection,
+    teardown = teardown_persisted_fixture
 )]
 fn bench_embedding_projection_legacy(
     (fixture, projection): (PersistedRewriteFixture, EmbeddingProjectionFixture),
@@ -487,7 +491,9 @@ fn bench_embedding_projection_legacy(
         benchmark_embedding_projection_from_fixture(&projection, false)
             .expect("legacy embedding text reconstruction"),
     );
-    drop(fixture);
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
 }
 
 #[library_benchmark(
