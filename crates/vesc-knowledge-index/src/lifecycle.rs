@@ -1327,6 +1327,7 @@ fn finish_git_history_lexical_stage(
         progress(BuildPhase::Inference);
         let vector_path = temp_root.join("vectors.bin");
         let index = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
+        let embedding_inputs = LexicalIndex::read_embedding_inputs(&lexical_path)?;
         let ids = index.embedding_chunk_ids()?;
         let mut hydrator = EmbeddingTextHydrator::default();
         let mut embedding_texts = |indices: &[usize]| {
@@ -1334,9 +1335,12 @@ fn finish_git_history_lexical_stage(
                 .iter()
                 .map(|&index| ids.get(index).cloned().ok_or(EmbeddingError::InvalidHeader))
                 .collect::<Result<Vec<_>, _>>()?;
-            index
-                .embedding_texts_by_id(&requested, &mut hydrator)
-                .map_err(|error| EmbeddingError::Provider(error.to_string()))
+            let result = if let Some(inputs) = embedding_inputs.as_deref() {
+                index.embedding_texts_by_id_from_inputs(&requested, inputs, &mut hydrator)
+            } else {
+                index.embedding_texts_by_id(&requested, &mut hydrator)
+            };
+            result.map_err(|error| EmbeddingError::Provider(error.to_string()))
         };
         let semantic_started = Instant::now();
         let (checksum, bytes, count, dimension, vector_build) =
@@ -1616,6 +1620,7 @@ fn stage_chunks(
             })?;
             let index =
                 LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
+            let embedding_inputs = LexicalIndex::read_embedding_inputs(&lexical_path)?;
             let ids = index.embedding_chunk_ids()?;
             let history_keys = chunks
                 .iter()
@@ -1643,9 +1648,12 @@ fn stage_chunks(
                     .iter()
                     .map(|&index| ids.get(index).cloned().ok_or(EmbeddingError::InvalidHeader))
                     .collect::<Result<Vec<_>, _>>()?;
-                index
-                    .embedding_texts_by_id(&requested, &mut hydrator)
-                    .map_err(|error| EmbeddingError::Provider(error.to_string()))
+                let result = if let Some(inputs) = embedding_inputs.as_deref() {
+                    index.embedding_texts_by_id_from_inputs(&requested, inputs, &mut hydrator)
+                } else {
+                    index.embedding_texts_by_id(&requested, &mut hydrator)
+                };
+                result.map_err(|error| EmbeddingError::Provider(error.to_string()))
             };
             let temporary_checkpoint = temp_root.join("vectors.checkpoint");
             let checkpoint_path = vector_checkpoint_path.unwrap_or(temporary_checkpoint.as_path());

@@ -38,6 +38,7 @@ const MAX_INCREMENTAL_SEGMENTS: usize = 32;
 const REACHABILITY_CACHE_SLOTS: usize = 256;
 const GRAPH_INPUT_SUFFIX: &str = "graph-input.json";
 const HISTORY_INPUT_SUFFIX: &str = "history-input.json";
+const EMBEDDING_INPUT_SUFFIX: &str = "embedding-input.json";
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -746,6 +747,7 @@ impl LexicalIndex {
         for (source, destination) in [
             (graph_input_path(previous), graph_input_path(path)),
             (history_input_path(previous), history_input_path(path)),
+            (embedding_input_path(previous), embedding_input_path(path)),
         ] {
             if source.is_file() {
                 fs::copy(source, destination)
@@ -776,6 +778,10 @@ impl LexicalIndex {
             .map(GraphChunk::from_chunk)
             .collect::<Vec<_>>();
         let mut history_records = Vec::new();
+        let mut embedding_inputs = embedded
+            .iter()
+            .map(|chunk| EmbeddingLocatorRecord::from_chunk(chunk, None))
+            .collect::<Vec<_>>();
         for chunk in embedded {
             add_chunk(&writer, fields, chunk);
         }
@@ -783,6 +789,7 @@ impl LexicalIndex {
             add_git_history_chunk(&writer, fields, chunk, blob);
             graph_chunks.push(GraphChunk::from_chunk(chunk));
             history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
+            embedding_inputs.push(EmbeddingLocatorRecord::from_chunk(chunk, Some(blob)));
             #[cfg(feature = "coz-profile")]
             crate::profile_progress!("lexical_indexed_chunk");
         })
@@ -790,6 +797,7 @@ impl LexicalIndex {
         writer.commit().map_err(LexicalError::Commit)?;
         Self::write_graph_input(path, &graph_chunks)?;
         Self::write_history_input(path, &history_records)?;
+        Self::write_embedding_inputs(path, &embedding_inputs)?;
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
 
@@ -866,8 +874,11 @@ impl LexicalIndex {
         let graph_sidecar_present = graph_sidecar.is_file();
         let history_sidecar = history_input_path(previous);
         let history_sidecar_present = history_sidecar.is_file();
+        let embedding_sidecar = embedding_input_path(previous);
+        let embedding_sidecar_present = embedding_sidecar.is_file();
         let mut graph_chunks = Vec::new();
         let mut history_records = Vec::new();
+        let mut embedding_inputs = Vec::new();
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
@@ -878,6 +889,9 @@ impl LexicalIndex {
             }
             if history_sidecar_present {
                 history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
+            }
+            if embedding_sidecar_present {
+                embedding_inputs.push(EmbeddingLocatorRecord::from_chunk(chunk, Some(blob)));
             }
             #[cfg(feature = "coz-profile")]
             crate::profile_progress!("lexical_indexed_chunk");
@@ -914,6 +928,13 @@ impl LexicalIndex {
                 &history_sidecar,
                 &history_input_path(path),
                 &history_records,
+            )?;
+        }
+        if embedding_sidecar_present {
+            Self::append_json_array_sidecar(
+                &embedding_sidecar,
+                &embedding_input_path(path),
+                &embedding_inputs,
             )?;
         }
         Self::write_descriptor(path, git_source_descriptors(sources))
@@ -956,6 +977,19 @@ impl LexicalIndex {
             .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
 
+    pub(crate) fn read_embedding_inputs(
+        path: &Path,
+    ) -> Result<Option<Vec<EmbeddingLocatorRecord>>, LexicalError> {
+        let path = embedding_input_path(path);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        serde_json::from_reader(BufReader::new(file))
+            .map(Some)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
     fn write_graph_input(path: &Path, chunks: &[GraphChunk]) -> Result<(), LexicalError> {
         let file = File::create(graph_input_path(path))
             .map_err(|error| LexicalError::Io(error.to_string()))?;
@@ -968,6 +1002,16 @@ impl LexicalIndex {
         records: &[CachedGitHistoryRecord],
     ) -> Result<(), LexicalError> {
         let file = File::create(history_input_path(path))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        serde_json::to_writer(BufWriter::new(file), records)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
+    fn write_embedding_inputs(
+        path: &Path,
+        records: &[EmbeddingLocatorRecord],
+    ) -> Result<(), LexicalError> {
+        let file = File::create(embedding_input_path(path))
             .map_err(|error| LexicalError::Io(error.to_string()))?;
         serde_json::to_writer(BufWriter::new(file), records)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
@@ -1086,7 +1130,11 @@ impl LexicalIndex {
                 digest.update(&buffer[..read]);
             }
         }
-        for path in [graph_input_path(path), history_input_path(path)] {
+        for path in [
+            graph_input_path(path),
+            history_input_path(path),
+            embedding_input_path(path),
+        ] {
             if !path.is_file() {
                 continue;
             }
@@ -1911,6 +1959,44 @@ impl LexicalIndex {
             .collect()
     }
 
+    pub(crate) fn embedding_texts_by_id_from_inputs(
+        &self,
+        ids: &[ChunkId],
+        inputs: &[EmbeddingLocatorRecord],
+        hydrator: &mut EmbeddingTextHydrator,
+    ) -> Result<Vec<String>, LexicalError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut records = BTreeMap::new();
+        for input in inputs {
+            records.insert(input.chunk_id.clone(), input);
+        }
+        ids.iter()
+            .map(|id| {
+                let input = records.get(id).ok_or_else(|| {
+                    LexicalError::Artifact(format!(
+                        "lexical embedding sidecar is missing requested chunk {id}"
+                    ))
+                })?;
+                let locator = (*input).clone().into_locator()?;
+                match locator.source_kind {
+                    SourceKind::EmbeddedCatalog => embedded_chunk(id)
+                        .map(|chunk| crate::semantic::embedding_text(&chunk))
+                        .ok_or_else(|| {
+                            LexicalError::Artifact(format!("embedded chunk {id} is unavailable"))
+                        }),
+                    SourceKind::GitBlob | SourceKind::GitCommit => {
+                        hydrator.git_embedding_text(self, &locator)
+                    }
+                    source_kind => Err(LexicalError::Artifact(format!(
+                        "persisted {source_kind:?} chunk {id} has no canonical Git source"
+                    ))),
+                }
+            })
+            .collect()
+    }
+
     /// Reads only the chunks belonging to one document from the persisted index.
     ///
     /// # Errors
@@ -2130,6 +2216,76 @@ struct ChunkLocator {
     next_chunk: Option<ChunkId>,
     content_digest: ContentDigest,
     git_object_id: Option<gix::ObjectId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct EmbeddingLocatorRecord {
+    chunk_id: ChunkId,
+    document_id: DocumentId,
+    title: String,
+    source_kind: SourceKind,
+    repository: RepositoryId,
+    revision: Revision,
+    path: String,
+    heading_path: Vec<String>,
+    source_span: Option<SourceSpan>,
+    identifiers: Vec<compact_str::CompactString>,
+    tags: BTreeSet<String>,
+    git_object_id: Option<String>,
+}
+
+impl EmbeddingLocatorRecord {
+    fn from_chunk(chunk: &Chunk, git_object_id: Option<gix::ObjectId>) -> Self {
+        Self {
+            chunk_id: chunk.chunk_id.clone(),
+            document_id: chunk.document_id.clone(),
+            title: chunk.title.clone(),
+            source_kind: chunk.source_kind,
+            repository: chunk.repository.clone(),
+            revision: chunk.revision.clone(),
+            path: chunk.path.clone(),
+            heading_path: chunk.heading_path.clone(),
+            source_span: chunk.source_span,
+            identifiers: chunk.identifiers.clone(),
+            tags: chunk.tags.clone(),
+            git_object_id: git_object_id.map(|object| object.to_string()),
+        }
+    }
+
+    fn into_locator(self) -> Result<ChunkLocator, LexicalError> {
+        let git_object_id = self
+            .git_object_id
+            .as_deref()
+            .map(|object| {
+                gix::ObjectId::from_hex(object.as_bytes()).map_err(|error| {
+                    LexicalError::Artifact(format!("invalid Git object id: {error}"))
+                })
+            })
+            .transpose()?;
+        Ok(ChunkLocator {
+            chunk_id: self.chunk_id,
+            document_id: self.document_id,
+            ordinal: 0,
+            title: self.title,
+            source_kind: self.source_kind,
+            repository: self.repository,
+            revision: self.revision,
+            path: self.path,
+            heading_path: self.heading_path,
+            source_span: self.source_span,
+            char_count: 0,
+            byte_count: 0,
+            category: None,
+            tags: self.tags,
+            identifiers: self.identifiers,
+            registered_id: None,
+            trust_tier: TrustTier::FirstParty,
+            previous_chunk: None,
+            next_chunk: None,
+            content_digest: ContentDigest::of(b"embedding-locator"),
+            git_object_id,
+        })
+    }
 }
 
 impl ChunkLocator {
@@ -2945,6 +3101,10 @@ fn graph_input_path(path: &Path) -> PathBuf {
 
 fn history_input_path(path: &Path) -> PathBuf {
     path.with_extension(HISTORY_INPUT_SUFFIX)
+}
+
+fn embedding_input_path(path: &Path) -> PathBuf {
+    path.with_extension(EMBEDDING_INPUT_SUFFIX)
 }
 
 fn managed_repositories_root(path: &Path) -> Option<PathBuf> {
@@ -3885,6 +4045,29 @@ mod tests {
     }
 
     #[test]
+    fn embedding_locator_sidecar_round_trips_only_embedding_metadata() {
+        let chunk = catalog_chunks(1).pop().expect("catalog chunk");
+        let record = EmbeddingLocatorRecord::from_chunk(&chunk, None);
+        let root = tempfile::tempdir().expect("artifact root");
+        let path = root.path().join("lexical.json");
+
+        LexicalIndex::write_embedding_inputs(&path, std::slice::from_ref(&record))
+            .expect("write embedding sidecar");
+        let records = LexicalIndex::read_embedding_inputs(&path)
+            .expect("read embedding sidecar")
+            .expect("embedding sidecar");
+
+        assert_eq!(records, vec![record]);
+        let locator = records[0].clone().into_locator().expect("locator");
+        assert_eq!(locator.chunk_id, chunk.chunk_id);
+        assert_eq!(locator.title, chunk.title);
+        assert_eq!(locator.heading_path, chunk.heading_path);
+        assert_eq!(locator.identifiers, chunk.identifiers);
+        assert_eq!(locator.tags, chunk.tags);
+        assert_eq!(locator.source_span, chunk.source_span);
+    }
+
+    #[test]
     fn persisted_index_reads_only_requested_chunks() {
         let chunks = catalog_chunks(3);
         let index = LexicalIndex::build(&chunks).expect("index");
@@ -3941,7 +4124,7 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_checksum_binds_compact_history_and_graph_inputs() {
+    fn sidecar_checksum_binds_compact_history_graph_and_embedding_inputs() {
         let root = tempfile::tempdir().expect("artifact root");
         let path = root.path().join("lexical.json");
         let index_path = persisted_index_path(&path);
@@ -3956,5 +4139,9 @@ mod tests {
         std::fs::write(history_input_path(&path), b"history").expect("history input");
         let history = LexicalIndex::sidecar_checksum(&path).expect("history checksum");
         assert_ne!(history, graph);
+
+        std::fs::write(embedding_input_path(&path), b"embedding").expect("embedding input");
+        let embedding = LexicalIndex::sidecar_checksum(&path).expect("embedding checksum");
+        assert_ne!(embedding, history);
     }
 }
