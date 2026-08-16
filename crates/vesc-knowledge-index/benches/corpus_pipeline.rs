@@ -153,6 +153,8 @@ fn fixture_git() -> GitFixture {
         &["config", "user.email", "benchmark@example.invalid"],
     );
     git(&work, &["config", "user.name", "Benchmark"]);
+    git(&work, &["config", "gc.auto", "0"]);
+    git(&work, &["config", "maintenance.auto", "false"]);
     for index in 0..32 {
         fs::write(
             work.join(format!("src/motor_{index:02}.c")),
@@ -200,6 +202,8 @@ fn fixture_git_many_tips() -> HistoryGitFixture {
         &["config", "user.email", "benchmark@example.invalid"],
     );
     git(&work, &["config", "user.name", "Benchmark"]);
+    git(&work, &["config", "gc.auto", "0"]);
+    git(&work, &["config", "maintenance.auto", "false"]);
     for directory in 0..DIRECTORY_COUNT {
         let path = work.join(format!("src/dir_{directory:02}"));
         fs::create_dir_all(&path).expect("source directory");
