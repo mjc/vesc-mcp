@@ -1328,6 +1328,12 @@ fn finish_git_history_lexical_stage(
         let vector_path = temp_root.join("vectors.bin");
         let index = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
         let embedding_inputs = LexicalIndex::read_embedding_inputs(&lexical_path)?;
+        let embedding_records = embedding_inputs.as_deref().map(|inputs| {
+            inputs
+                .iter()
+                .map(|input| (input.chunk_id().clone(), input))
+                .collect::<BTreeMap<_, _>>()
+        });
         let ids = index.embedding_chunk_ids()?;
         let mut hydrator = EmbeddingTextHydrator::default();
         let mut embedding_texts = |indices: &[usize]| {
@@ -1335,8 +1341,8 @@ fn finish_git_history_lexical_stage(
                 .iter()
                 .map(|&index| ids.get(index).cloned().ok_or(EmbeddingError::InvalidHeader))
                 .collect::<Result<Vec<_>, _>>()?;
-            let result = if let Some(inputs) = embedding_inputs.as_deref() {
-                index.embedding_texts_by_id_from_inputs(&requested, inputs, &mut hydrator)
+            let result = if let Some(records) = embedding_records.as_ref() {
+                index.embedding_texts_by_id_from_record_map(&requested, records, &mut hydrator)
             } else {
                 index.embedding_texts_by_id(&requested, &mut hydrator)
             };
@@ -1621,6 +1627,12 @@ fn stage_chunks(
             let index =
                 LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
             let embedding_inputs = LexicalIndex::read_embedding_inputs(&lexical_path)?;
+            let embedding_records = embedding_inputs.as_deref().map(|inputs| {
+                inputs
+                    .iter()
+                    .map(|input| (input.chunk_id().clone(), input))
+                    .collect::<BTreeMap<_, _>>()
+            });
             let ids = index.embedding_chunk_ids()?;
             let history_keys = chunks
                 .iter()
@@ -1648,8 +1660,8 @@ fn stage_chunks(
                     .iter()
                     .map(|&index| ids.get(index).cloned().ok_or(EmbeddingError::InvalidHeader))
                     .collect::<Result<Vec<_>, _>>()?;
-                let result = if let Some(inputs) = embedding_inputs.as_deref() {
-                    index.embedding_texts_by_id_from_inputs(&requested, inputs, &mut hydrator)
+                let result = if let Some(records) = embedding_records.as_ref() {
+                    index.embedding_texts_by_id_from_record_map(&requested, records, &mut hydrator)
                 } else {
                     index.embedding_texts_by_id(&requested, &mut hydrator)
                 };

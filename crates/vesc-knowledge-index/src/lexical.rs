@@ -1965,12 +1965,21 @@ impl LexicalIndex {
         inputs: &[EmbeddingLocatorRecord],
         hydrator: &mut EmbeddingTextHydrator,
     ) -> Result<Vec<String>, LexicalError> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = BTreeMap::new();
         for input in inputs {
             records.insert(input.chunk_id.clone(), input);
+        }
+        self.embedding_texts_by_id_from_record_map(ids, &records, hydrator)
+    }
+
+    pub(crate) fn embedding_texts_by_id_from_record_map(
+        &self,
+        ids: &[ChunkId],
+        records: &BTreeMap<ChunkId, &EmbeddingLocatorRecord>,
+        hydrator: &mut EmbeddingTextHydrator,
+    ) -> Result<Vec<String>, LexicalError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
         ids.iter()
             .map(|id| {
@@ -2235,6 +2244,10 @@ pub(crate) struct EmbeddingLocatorRecord {
 }
 
 impl EmbeddingLocatorRecord {
+    pub(crate) fn chunk_id(&self) -> &ChunkId {
+        &self.chunk_id
+    }
+
     fn from_chunk(chunk: &Chunk, git_object_id: Option<gix::ObjectId>) -> Self {
         Self {
             chunk_id: chunk.chunk_id.clone(),
