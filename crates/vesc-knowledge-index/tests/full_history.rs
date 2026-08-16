@@ -762,6 +762,53 @@ fn persisted_fast_forward_commit_message_budget_matches_cold_vectors() {
 }
 
 #[test]
+fn persisted_history_without_compact_sidecar_rebuilds_cold() {
+    let (_root, work) = fixture();
+    let source = at_head(source(work.clone(), "fixture"), &work);
+    let previous_root = tempdir().expect("previous artifacts");
+    let mut previous_provider = FakeEmbeddingProvider::new(8);
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&source),
+        None,
+        None,
+        Some((&mut previous_provider, "fake", "test-revision")),
+        None,
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("previous history");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let history_sidecar = previous_generation
+        .join("lexical.json")
+        .with_extension("history-input.json");
+    fs::remove_file(history_sidecar).expect("remove legacy history sidecar");
+
+    let mut provider = FakeEmbeddingProvider::new(8);
+    let rebuilt = build_git_history_artifacts_from_previous(
+        tempdir().expect("rebuilt artifacts").path(),
+        std::slice::from_ref(&source),
+        Some(PreviousGitHistoryArtifact {
+            tips: snapshot_tips(std::slice::from_ref(&source)),
+            lexical_path: previous_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: first.artifacts.manifest.vector_checksum,
+            vector_path: Some(previous_generation.join("vectors.bin")),
+            lexical_format_compatible: true,
+        }),
+        Some((&mut provider, "fake", "test-revision")),
+        None,
+        &mut ignore_build_phase,
+    )
+    .expect("cold rebuild without history sidecar");
+
+    assert!(!rebuilt.reused_snapshot);
+}
+
+#[test]
 fn persisted_rewrite_deletes_lost_history_and_reuses_unchanged_vectors() {
     let (_root, work) = fixture();
     let previous = at_head(source(work.clone(), "fixture"), &work);

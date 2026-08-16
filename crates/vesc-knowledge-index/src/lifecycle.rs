@@ -930,18 +930,17 @@ pub fn build_git_history_artifacts_from_previous(
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
     let mut cached_history = CachedGitHistory::default();
-    let history_sidecar = LexicalIndex::read_history_records(&previous.lexical_path)?;
-    let history_loaded = if let Some(records) = history_sidecar {
-        records.iter().try_for_each(|record| {
-            let chunk = record.as_chunk().map_err(LifecycleError::Contract)?;
-            cached_history.observe(chunk);
-            Ok::<(), LifecycleError>(())
-        })
-    } else {
-        lookup
-            .visit_git_history_chunks(|chunk| cached_history.observe(chunk))
-            .map_err(|error| LifecycleError::Contract(error.to_string()))
+    let Some(records) = LexicalIndex::read_history_records(&previous.lexical_path)? else {
+        // Legacy artifacts have no compact history projection. Rebuild them
+        // instead of hydrating every stored Tantivy document just to recover
+        // the reconciliation metadata.
+        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     };
+    let history_loaded = records.iter().try_for_each(|record| {
+        let chunk = record.as_chunk().map_err(LifecycleError::Contract)?;
+        cached_history.observe(chunk);
+        Ok::<(), LifecycleError>(())
+    });
     if history_loaded.is_err() {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }

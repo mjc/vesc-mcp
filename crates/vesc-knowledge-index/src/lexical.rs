@@ -19,9 +19,7 @@ use tantivy::schema::{
 use tantivy::termdict::TermMerger;
 use tantivy::{DocSet, Index, IndexReader, IndexWriter, TERMINATED, TantivyDocument, Term};
 
-use crate::corpus::full_history::{
-    CachedGitHistoryChunk, CachedGitHistoryRecord, GitHistoryBuildPlan,
-};
+use crate::corpus::full_history::{CachedGitHistoryRecord, GitHistoryBuildPlan};
 use crate::corpus::git::GitCorpusSource;
 use crate::corpus::{
     CORPUS_SCHEMA_V1, Chunk, ChunkId, ContentDigest, DocumentId, ResourceUri, RetrievalMetadata,
@@ -526,60 +524,6 @@ impl HistoryContentLookup {
         Ok(matches)
     }
 
-    pub(crate) fn visit_git_history_chunks(
-        &self,
-        mut visit: impl FnMut(CachedGitHistoryChunk<'_>),
-    ) -> Result<(), LexicalError> {
-        let searcher = self.reader.searcher();
-        for (segment_ord, reader) in searcher.segment_readers().iter().enumerate() {
-            let segment_ord = u32::try_from(segment_ord)
-                .map_err(|_| LexicalError::Artifact("too many lexical segments".into()))?;
-            for doc_id in history_doc_ids(reader, self.fields.source_kind)? {
-                let document = searcher
-                    .doc::<TantivyDocument>(tantivy::DocAddress {
-                        segment_ord,
-                        doc_id,
-                    })
-                    .map_err(LexicalError::Search)?;
-                let source_kind = parse_source_kind(required_text(
-                    &document,
-                    self.fields.source_kind,
-                    "source_kind",
-                )?)?;
-                if !matches!(source_kind, SourceKind::GitBlob | SourceKind::GitCommit) {
-                    continue;
-                }
-                let blob = document
-                    .get_first(self.fields.git_object_id)
-                    .and_then(|value| value.as_bytes())
-                    .map(gix::ObjectId::try_from)
-                    .transpose()
-                    .map_err(|_| invalid_field("git_object_id"))?;
-                visit(CachedGitHistoryChunk {
-                    document_id: required_text(&document, self.fields.document_id, "document_id")?,
-                    repository: required_text(&document, self.fields.repository, "repository")?,
-                    revision: required_text(&document, self.fields.revision, "revision")?,
-                    path: required_text(&document, self.fields.path, "path")?,
-                    ordinal: u32::try_from(required_u64(
-                        &document,
-                        self.fields.ordinal,
-                        "ordinal",
-                    )?)
-                    .map_err(|_| invalid_field("ordinal"))?,
-                    has_previous: optional_text(&document, self.fields.previous_chunk).is_some(),
-                    has_next: optional_text(&document, self.fields.next_chunk).is_some(),
-                    blob,
-                    source_kind,
-                    content_key: optional_text(&document, self.fields.history_content_key)
-                        .map(ContentDigest::try_from)
-                        .transpose()
-                        .map_err(|_| invalid_field("history_content_key"))?,
-                });
-            }
-        }
-        Ok(())
-    }
-
     /// Returns whether the previous lexical index already contains this history identity.
     ///
     /// # Errors
@@ -634,34 +578,6 @@ impl HistoryContentLookup {
         }
         Ok(false)
     }
-}
-
-fn history_doc_ids(
-    reader: &tantivy::SegmentReader,
-    source_kind_field: tantivy::schema::Field,
-) -> Result<Vec<u32>, LexicalError> {
-    let source_index = reader
-        .inverted_index(source_kind_field)
-        .map_err(LexicalError::Search)?;
-    let mut doc_ids = Vec::new();
-    for source_kind in ["git_blob", "git_commit"] {
-        let term = Term::from_field_text(source_kind_field, source_kind);
-        let Some(mut postings) = source_index
-            .read_postings(&term, IndexRecordOption::Basic)
-            .map_err(|error| LexicalError::Io(error.to_string()))?
-        else {
-            continue;
-        };
-        while postings.doc() != TERMINATED {
-            let doc_id = postings.doc();
-            if !reader.is_deleted(doc_id) {
-                doc_ids.push(doc_id);
-            }
-            postings.advance();
-        }
-    }
-    doc_ids.sort_unstable();
-    Ok(doc_ids)
 }
 
 impl LexicalIndex {
