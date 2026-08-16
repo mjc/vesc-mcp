@@ -1,6 +1,6 @@
 //! Reproducible corpus and lexical artifact lifecycle helpers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -1289,28 +1289,28 @@ fn finish_git_history_lexical_stage(
 
     let graph = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
     let graph_ids = graph.embedding_chunk_ids()?;
-    let graph_ids = graph_ids.into_iter().collect::<BTreeSet<_>>();
+    let graph_id_count = graph_ids.len();
+    let graph_id_set = graph_ids.iter().collect::<HashSet<_>>();
     let mut graph_chunks = match LexicalIndex::read_graph_chunks(&lexical_path)? {
         Some(chunks) => chunks
             .into_iter()
-            .filter(|chunk| graph_ids.contains(&chunk.chunk_id))
+            .filter(|chunk| graph_id_set.contains(&chunk.chunk_id))
             .collect::<Vec<_>>(),
-        None => graph.graph_chunks_by_id(&graph_ids)?,
+        None => {
+            let legacy_graph_ids = graph_ids.iter().cloned().collect::<BTreeSet<_>>();
+            graph.graph_chunks_by_id(&legacy_graph_ids)?
+        }
     };
-    if graph_chunks.len() != graph_ids.len() {
+    if graph_chunks.len() != graph_id_count {
         return Err(LifecycleError::Contract(
             "lexical artifact graph hydration is incomplete".into(),
         ));
     }
-    let graph_chunk_ids = graph_chunks
-        .iter()
-        .map(|chunk| chunk.chunk_id.clone())
-        .collect::<BTreeSet<_>>();
     for chunk in &mut graph_chunks {
         if chunk
             .next_chunk
             .as_ref()
-            .is_some_and(|next| !graph_chunk_ids.contains(next))
+            .is_some_and(|next| !graph_id_set.contains(next))
         {
             chunk.next_chunk = None;
         }
