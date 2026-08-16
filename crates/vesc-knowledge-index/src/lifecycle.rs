@@ -930,10 +930,19 @@ pub fn build_git_history_artifacts_from_previous(
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
     let mut cached_history = CachedGitHistory::default();
-    if lookup
-        .visit_git_history_chunks(|chunk| cached_history.observe(chunk))
-        .is_err()
-    {
+    let history_sidecar = LexicalIndex::read_history_records(&previous.lexical_path)?;
+    let history_loaded = if let Some(records) = history_sidecar {
+        records.iter().try_for_each(|record| {
+            let chunk = record.as_chunk().map_err(LifecycleError::Contract)?;
+            cached_history.observe(chunk);
+            Ok::<(), LifecycleError>(())
+        })
+    } else {
+        lookup
+            .visit_git_history_chunks(|chunk| cached_history.observe(chunk))
+            .map_err(|error| LifecycleError::Contract(error.to_string()))
+    };
+    if history_loaded.is_err() {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
     let ingestion_started = Instant::now();

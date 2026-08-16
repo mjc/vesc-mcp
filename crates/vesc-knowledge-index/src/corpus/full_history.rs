@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use gix::bstr::ByteSlice;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::chunking::{ChunkingConfig, chunk_document_drafts};
@@ -174,6 +175,58 @@ pub(crate) struct CachedGitHistoryChunk<'a> {
     pub blob: Option<gix::ObjectId>,
     pub source_kind: SourceKind,
     pub content_key: Option<ContentDigest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedGitHistoryRecord {
+    pub document_id: String,
+    pub repository: String,
+    pub revision: String,
+    pub path: String,
+    pub ordinal: u32,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub blob: Option<String>,
+    pub source_kind: SourceKind,
+    pub content_key: Option<ContentDigest>,
+}
+
+impl CachedGitHistoryRecord {
+    pub(crate) fn from_chunk(chunk: &Chunk, blob: gix::ObjectId) -> Self {
+        Self {
+            document_id: chunk.document_id.as_str().to_owned(),
+            repository: chunk.repository.as_str().to_owned(),
+            revision: chunk.revision.as_str().to_owned(),
+            path: chunk.path.clone(),
+            ordinal: chunk.ordinal,
+            has_previous: chunk.previous_chunk.is_some(),
+            has_next: chunk.next_chunk.is_some(),
+            blob: Some(blob.to_string()),
+            source_kind: chunk.source_kind,
+            content_key: crate::corpus::history_content_key_for_chunk(chunk),
+        }
+    }
+
+    pub(crate) fn as_chunk(&self) -> Result<CachedGitHistoryChunk<'_>, String> {
+        let blob = self
+            .blob
+            .as_deref()
+            .map(|value| gix::ObjectId::from_hex(value.as_bytes()))
+            .transpose()
+            .map_err(|error| format!("invalid Git object ID in history sidecar: {error}"))?;
+        Ok(CachedGitHistoryChunk {
+            document_id: &self.document_id,
+            repository: &self.repository,
+            revision: &self.revision,
+            path: &self.path,
+            ordinal: self.ordinal,
+            has_previous: self.has_previous,
+            has_next: self.has_next,
+            blob,
+            source_kind: self.source_kind,
+            content_key: self.content_key.clone(),
+        })
+    }
 }
 
 #[derive(Default)]

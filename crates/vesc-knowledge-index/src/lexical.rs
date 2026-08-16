@@ -19,7 +19,9 @@ use tantivy::schema::{
 use tantivy::termdict::TermMerger;
 use tantivy::{DocSet, Index, IndexReader, IndexWriter, TERMINATED, TantivyDocument, Term};
 
-use crate::corpus::full_history::{CachedGitHistoryChunk, GitHistoryBuildPlan};
+use crate::corpus::full_history::{
+    CachedGitHistoryChunk, CachedGitHistoryRecord, GitHistoryBuildPlan,
+};
 use crate::corpus::git::GitCorpusSource;
 use crate::corpus::{
     CORPUS_SCHEMA_V1, Chunk, ChunkId, ContentDigest, DocumentId, ResourceUri, RetrievalMetadata,
@@ -35,6 +37,7 @@ const IN_MEMORY_WRITER_MEMORY_BYTES: usize = 15_000_000;
 const MAX_INCREMENTAL_SEGMENTS: usize = 32;
 const REACHABILITY_CACHE_SLOTS: usize = 256;
 const GRAPH_INPUT_SUFFIX: &str = "graph-input.json";
+const HISTORY_INPUT_SUFFIX: &str = "history-input.json";
 
 /// Typed filters applied after Tantivy candidate retrieval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -763,18 +766,21 @@ impl LexicalIndex {
             .iter()
             .map(GraphChunk::from_chunk)
             .collect::<Vec<_>>();
+        let mut history_records = Vec::new();
         for chunk in embedded {
             add_chunk(&writer, fields, chunk);
         }
         plan.try_for_each_chunk(sources, |chunk, blob| {
             add_git_history_chunk(&writer, fields, chunk, blob);
             graph_chunks.push(GraphChunk::from_chunk(chunk));
+            history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
             #[cfg(feature = "coz-profile")]
             crate::profile_progress!("lexical_indexed_chunk");
         })
         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         writer.commit().map_err(LexicalError::Commit)?;
         Self::write_graph_input(path, &graph_chunks)?;
+        Self::write_history_input(path, &history_records)?;
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
 
@@ -849,6 +855,8 @@ impl LexicalIndex {
         writer.set_merge_policy(Box::new(NoMergePolicy));
         let previous_graph_chunks = Self::read_graph_chunks(previous)?;
         let mut graph_chunks = previous_graph_chunks.clone().unwrap_or_default();
+        let previous_history_records = Self::read_history_records(previous)?;
+        let mut history_records = previous_history_records.clone().unwrap_or_default();
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
@@ -856,6 +864,9 @@ impl LexicalIndex {
             add_git_history_chunk(&writer, fields, chunk, blob);
             if previous_graph_chunks.is_some() {
                 graph_chunks.push(GraphChunk::from_chunk(chunk));
+            }
+            if previous_history_records.is_some() {
+                history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
             }
             #[cfg(feature = "coz-profile")]
             crate::profile_progress!("lexical_indexed_chunk");
@@ -882,6 +893,9 @@ impl LexicalIndex {
         }
         if previous_graph_chunks.is_some() {
             Self::write_graph_input(path, &graph_chunks)?;
+        }
+        if previous_history_records.is_some() {
+            Self::write_history_input(path, &history_records)?;
         }
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
@@ -910,10 +924,33 @@ impl LexicalIndex {
             .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
 
+    pub(crate) fn read_history_records(
+        path: &Path,
+    ) -> Result<Option<Vec<CachedGitHistoryRecord>>, LexicalError> {
+        let path = history_input_path(path);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        serde_json::from_reader(BufReader::new(file))
+            .map(Some)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
     fn write_graph_input(path: &Path, chunks: &[GraphChunk]) -> Result<(), LexicalError> {
         let file = File::create(graph_input_path(path))
             .map_err(|error| LexicalError::Io(error.to_string()))?;
         serde_json::to_writer(BufWriter::new(file), chunks)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
+    fn write_history_input(
+        path: &Path,
+        records: &[CachedGitHistoryRecord],
+    ) -> Result<(), LexicalError> {
+        let file = File::create(history_input_path(path))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        serde_json::to_writer(BufWriter::new(file), records)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
 
@@ -2809,6 +2846,10 @@ fn persisted_index_path(path: &Path) -> PathBuf {
 
 fn graph_input_path(path: &Path) -> PathBuf {
     path.with_extension(GRAPH_INPUT_SUFFIX)
+}
+
+fn history_input_path(path: &Path) -> PathBuf {
+    path.with_extension(HISTORY_INPUT_SUFFIX)
 }
 
 fn managed_repositories_root(path: &Path) -> Option<PathBuf> {
