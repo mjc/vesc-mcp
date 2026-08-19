@@ -229,6 +229,109 @@ pub(crate) fn chunk_document_drafts(
     finish_drafts(document, descriptors)
 }
 
+/// Visit document drafts without retaining the complete draft vector.
+///
+/// Ingestion only needs each draft's text, headings, and ordinal. Keeping the
+/// neighboring-draft links is unnecessary there and can otherwise retain a
+/// large descriptor and draft allocation graph for the whole document.
+pub(crate) fn for_each_chunk_draft(
+    document: &NormalizedDocument,
+    config: ChunkingConfig,
+    mut visit: impl FnMut(&ChunkDraft<'_>),
+) -> Result<(), ChunkingError> {
+    validate_config(config)?;
+    let mut next_ordinal = 0_usize;
+    let mut emit = |text: Range<usize>,
+                    headings: HeadingRefs<'_>,
+                    source_span: Option<SourceSpan>|
+     -> Result<(), ChunkingError> {
+        let ordinal = u32::try_from(next_ordinal).map_err(|_| CorpusError::InvalidValue {
+            kind: "chunk ordinal",
+            value: next_ordinal.to_string(),
+        })?;
+        let content_digest = ContentDigest::of(document.content[text.clone()].as_bytes());
+        let chunk_identity = ChunkId::heading_identity_digest(
+            &document.document_id,
+            ordinal,
+            headings.as_slice(),
+            &content_digest,
+        );
+        let draft = ChunkDraft {
+            document,
+            text,
+            headings,
+            source_span,
+            ordinal,
+            content_digest,
+            chunk_identity,
+        };
+        visit(&draft);
+        next_ordinal = next_ordinal
+            .checked_add(1)
+            .ok_or_else(|| CorpusError::InvalidValue {
+                kind: "chunk ordinal",
+                value: "overflow".into(),
+            })?;
+        Ok(())
+    };
+
+    if document.content.trim().is_empty() {
+        return Ok(());
+    }
+    if document.media_type == "text/markdown" {
+        let mut source_spans = SourceSpanCursor::new(&document.content);
+        for block in markdown_blocks(&document.content) {
+            let text = &document.content[block.start..block.end];
+            if text.trim().is_empty() {
+                continue;
+            }
+            let mut callback_error = None;
+            visit_block_ranges(text, block.code, config, |piece| {
+                if callback_error.is_some() {
+                    return;
+                }
+                let text = block.start + piece.start..block.start + piece.end;
+                let span = Some(source_spans.span(text.start, text.end));
+                if let Err(error) = emit(text, block.headings.clone(), span) {
+                    callback_error = Some(error);
+                }
+            });
+            if let Some(error) = callback_error {
+                return Err(error);
+            }
+        }
+        return Ok(());
+    }
+
+    let headings = document
+        .path
+        .split_once('#')
+        .map_or_else(HeadingRefs::empty, |(_, anchor)| HeadingRefs::Inline {
+            titles: [anchor, "", "", "", "", ""],
+            len: 1,
+        });
+    if document.content.chars().count() <= config.hard_max_chars {
+        return emit(0..document.content.len(), headings, document.source_span);
+    }
+
+    let mut source_spans = SourceSpanCursor::new(&document.content);
+    let mut callback_error = None;
+    visit_block_ranges(&document.content, false, config, |text| {
+        if callback_error.is_some() {
+            return;
+        }
+        let span = if text.start == 0 && text.end == document.content.len() {
+            document.source_span
+        } else {
+            Some(source_spans.span(text.start, text.end))
+        };
+        if let Err(error) = emit(text, headings.clone(), span) {
+            callback_error = Some(error);
+        }
+    });
+    callback_error.map_or(Ok(()), Err)
+}
+
 fn chunk_markdown_drafts(
     document: &NormalizedDocument,
     config: ChunkingConfig,
@@ -395,31 +498,42 @@ fn visit_block_ranges(
         return;
     }
 
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
     let mut start_char = 0;
-    while start_char < chars.len() {
-        let remaining = chars.len() - start_char;
+    let mut start_byte = 0;
+    while start_char < char_count {
+        let remaining = char_count - start_char;
         let take = remaining.min(config.target_chars);
-        let mut end_char = start_char + take;
-        if end_char < chars.len() {
-            let candidate = chars[start_char..end_char]
-                .iter()
-                .rposition(|(_, character)| character.is_whitespace())
-                .map_or(end_char, |index| start_char + index + 1);
-            if candidate.saturating_sub(start_char) >= config.minimum_chars {
-                end_char = candidate;
+        let mut chars = text[start_byte..].char_indices();
+        let mut consumed = 0;
+        let mut end_byte = start_byte;
+        let mut whitespace_count = 0;
+        let mut whitespace_end_byte = None;
+        while consumed < take {
+            let Some((offset, character)) = chars.next() else {
+                break;
+            };
+            consumed += 1;
+            end_byte = start_byte + offset + character.len_utf8();
+            if character.is_whitespace() {
+                whitespace_count = consumed;
+                whitespace_end_byte = Some(end_byte);
             }
         }
-        let byte_start = chars[start_char].0;
-        let byte_end = if end_char == chars.len() {
-            text.len()
+        if consumed == 0 {
+            break;
+        }
+        let end_char = if start_char + take < char_count && whitespace_count >= config.minimum_chars
+        {
+            end_byte = whitespace_end_byte.expect("whitespace count has a byte boundary");
+            start_char + whitespace_count
         } else {
-            chars[end_char].0
+            start_char + consumed
         };
-        if !text[byte_start..byte_end].trim().is_empty() {
-            visit(byte_start..byte_end);
+        if !text[start_byte..end_byte].trim().is_empty() {
+            visit(start_byte..end_byte);
         }
         start_char = end_char;
+        start_byte = end_byte;
     }
 }
 
@@ -502,6 +616,56 @@ mod tests {
 
         assert_eq!(materialized.chunk_id, direct.chunk_id);
         assert_eq!(materialized.content_digest, direct.content_digest);
+    }
+
+    #[test]
+    fn streaming_drafts_match_retained_draft_metadata() {
+        let document = NormalizedDocument::new(
+            "Title",
+            SourceKind::GitBlob,
+            RepositoryId::try_from("repo").expect("repository"),
+            Revision::try_from("revision").expect("revision"),
+            "src/example.c",
+            "text/plain",
+            "one two three four five six seven eight nine ten eleven twelve",
+        )
+        .expect("document");
+        let config = ChunkingConfig {
+            target_chars: 12,
+            hard_max_chars: 24,
+            minimum_chars: 1,
+            overlap_chars: 0,
+        };
+        let retained = chunk_document_drafts(&document, config).expect("retained drafts");
+        let retained = (0..retained.len())
+            .map(|index| {
+                let draft = retained.get(index);
+                (
+                    draft.text().to_owned(),
+                    draft
+                        .headings()
+                        .iter()
+                        .map(|heading| (*heading).to_owned())
+                        .collect::<Vec<_>>(),
+                    draft.ordinal(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut streamed = Vec::new();
+        for_each_chunk_draft(&document, config, |draft| {
+            streamed.push((
+                draft.text().to_owned(),
+                draft
+                    .headings()
+                    .iter()
+                    .map(|heading| (*heading).to_owned())
+                    .collect::<Vec<_>>(),
+                draft.ordinal(),
+            ));
+        })
+        .expect("streamed drafts");
+
+        assert_eq!(streamed, retained);
     }
 
     #[test]
