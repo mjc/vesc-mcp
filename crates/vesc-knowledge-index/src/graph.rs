@@ -1,10 +1,12 @@
 //! Deterministic, bounded graph artifacts for immutable knowledge snapshots.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::corpus::{
     Chunk, ChunkId, ContentDigest, RepositoryId, Revision, SchemaVersion, SourceSpan,
@@ -15,7 +17,95 @@ const MAGIC: &[u8; 8] = b"VESCGRPH";
 const MAX_NODES: usize = 10_000_000;
 const MAX_EDGES: usize = 50_000_000;
 const MAX_STRING_BYTES: usize = 1 << 20;
-type NodeLocator = (ContentDigest, (u32, u32, u32, u32));
+type NodeLocator = (usize, (u32, u32, u32, u32), Option<ChunkId>);
+
+struct GraphChunkBuilder {
+    corpus_digest: ContentDigest,
+    nodes: Vec<GraphNode>,
+    node_by_chunk: HashMap<ChunkId, NodeLocator>,
+}
+
+impl GraphChunkBuilder {
+    #[allow(clippy::missing_const_for_fn)]
+    fn new(corpus_digest: ContentDigest) -> Self {
+        Self {
+            corpus_digest,
+            nodes: Vec::new(),
+            node_by_chunk: HashMap::new(),
+        }
+    }
+
+    fn push(&mut self, chunk: GraphChunk) -> Result<(), GraphArtifactError> {
+        if self.nodes.len() >= MAX_NODES {
+            return Err(GraphArtifactError::Contract(
+                "graph node count exceeds the configured limit".into(),
+            ));
+        }
+        let GraphChunk {
+            chunk_id,
+            repository,
+            revision,
+            path,
+            title,
+            ordinal,
+            source_span,
+            next_chunk,
+        } = chunk;
+        let span = graph_span(source_span)?;
+        let symbol = format!("{title}#{ordinal}");
+        let node = GraphNode::new(
+            repository.as_str(),
+            revision.as_str(),
+            &path,
+            span,
+            &symbol,
+            "chunk",
+        );
+        if self
+            .node_by_chunk
+            .insert(chunk_id, (self.nodes.len(), span, next_chunk))
+            .is_some()
+        {
+            return Err(GraphArtifactError::Contract(
+                "graph snapshot contains duplicate chunk identities".into(),
+            ));
+        }
+        self.nodes.push(node);
+        Ok(())
+    }
+
+    fn finish(self) -> Result<GraphArtifact, GraphArtifactError> {
+        let mut edges = Vec::new();
+        for (source_index, source_span, next) in self.node_by_chunk.values() {
+            let Some(next) = next else {
+                continue;
+            };
+            let Some(target_index) = self.node_by_chunk.get(next).map(|locator| locator.0) else {
+                return Err(GraphArtifactError::Contract(
+                    "chunk adjacency points outside the graph snapshot".into(),
+                ));
+            };
+            let source = &self.nodes[*source_index].id;
+            let target = &self.nodes[target_index].id;
+            edges.push(GraphEdge {
+                source: source.clone(),
+                target: target.clone(),
+                evidence: GraphEvidence {
+                    node: source.clone(),
+                    start_line: source_span.0,
+                    end_line: source_span.1,
+                    start_byte: source_span.2,
+                    end_byte: source_span.3,
+                },
+                relation: "adjacent-next".into(),
+                extractor: "chunk-adjacency-v1".into(),
+                confidence: u8::MAX,
+                verified: true,
+            });
+        }
+        GraphArtifact::new(self.corpus_digest, self.nodes, edges)
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -160,63 +250,62 @@ impl GraphArtifact {
         Self::from_graph_chunks(corpus_digest, chunks.iter().map(GraphChunk::from_chunk))
     }
 
+    pub(crate) fn from_graph_chunk_reader<R, F>(
+        corpus_digest: ContentDigest,
+        reader: R,
+        project: F,
+    ) -> Result<Self, GraphArtifactError>
+    where
+        R: Read,
+        F: FnMut(GraphChunk) -> Option<GraphChunk>,
+    {
+        struct GraphChunkVisitor<F> {
+            corpus_digest: ContentDigest,
+            project: F,
+        }
+
+        impl<'de, F> Visitor<'de> for GraphChunkVisitor<F>
+        where
+            F: FnMut(GraphChunk) -> Option<GraphChunk>,
+        {
+            type Value = GraphArtifact;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON array of projected graph chunks")
+            }
+
+            fn visit_seq<A>(mut self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut builder = GraphChunkBuilder::new(self.corpus_digest);
+                while let Some(chunk) = sequence.next_element::<GraphChunk>()? {
+                    if let Some(chunk) = (self.project)(chunk) {
+                        builder.push(chunk).map_err(de::Error::custom)?;
+                    }
+                }
+                builder.finish().map_err(de::Error::custom)
+            }
+        }
+
+        let mut deserializer = serde_json::Deserializer::from_reader(reader);
+        deserializer
+            .deserialize_seq(GraphChunkVisitor {
+                corpus_digest,
+                project,
+            })
+            .map_err(|error| GraphArtifactError::Contract(error.to_string()))
+    }
+
     pub(crate) fn from_graph_chunks(
         corpus_digest: ContentDigest,
         chunks: impl IntoIterator<Item = GraphChunk>,
     ) -> Result<Self, GraphArtifactError> {
-        let chunks = chunks.into_iter().collect::<Vec<_>>();
-        let mut nodes = Vec::with_capacity(chunks.len());
-        let mut node_by_chunk: BTreeMap<ChunkId, NodeLocator> = BTreeMap::new();
-        for chunk in &chunks {
-            let (start_line, end_line, start_byte, end_byte) = graph_span(chunk.source_span)?;
-            let symbol = format!("{}#{}", chunk.title, chunk.ordinal);
-            let node = GraphNode::new(
-                chunk.repository.as_str(),
-                chunk.revision.as_str(),
-                &chunk.path,
-                (start_line, end_line, start_byte, end_byte),
-                &symbol,
-                "chunk",
-            );
-            node_by_chunk.insert(
-                chunk.chunk_id.clone(),
-                (
-                    node.id.clone(),
-                    (start_line, end_line, start_byte, end_byte),
-                ),
-            );
-            nodes.push(node);
+        let mut builder = GraphChunkBuilder::new(corpus_digest);
+        for chunk in chunks {
+            builder.push(chunk)?;
         }
-        let mut edges = Vec::new();
-        for chunk in &chunks {
-            let Some(next) = &chunk.next_chunk else {
-                continue;
-            };
-            let Some((source, source_span)) = node_by_chunk.get(&chunk.chunk_id) else {
-                continue;
-            };
-            let Some((target, _)) = node_by_chunk.get(next) else {
-                return Err(GraphArtifactError::Contract(
-                    "chunk adjacency points outside the graph snapshot".into(),
-                ));
-            };
-            edges.push(GraphEdge {
-                source: source.clone(),
-                target: target.clone(),
-                evidence: GraphEvidence {
-                    node: source.clone(),
-                    start_line: source_span.0,
-                    end_line: source_span.1,
-                    start_byte: source_span.2,
-                    end_byte: source_span.3,
-                },
-                relation: "adjacent-next".into(),
-                extractor: "chunk-adjacency-v1".into(),
-                confidence: u8::MAX,
-                verified: true,
-            });
-        }
-        Self::new(corpus_digest, nodes, edges)
+        builder.finish()
     }
 
     /// Construct a canonical artifact. Input ordering does not affect bytes.
@@ -1161,6 +1250,37 @@ mod tests {
         .expect("projected graph");
 
         assert_eq!(projected, full);
+    }
+
+    #[test]
+    fn projected_graph_reader_streams_json_array() {
+        let repository = RepositoryId::try_from("fixture-repo").expect("repository");
+        let revision = Revision::try_from("fixture-revision").expect("revision");
+        let document = NormalizedDocument::new(
+            "streamed",
+            SourceKind::EmbeddedCatalog,
+            repository,
+            revision,
+            "src/streamed.rs",
+            "text/plain",
+            "streamed",
+        )
+        .expect("document");
+        let chunk =
+            Chunk::from_document(&document, 0, "streamed".into(), Vec::new(), None).expect("chunk");
+        let projected = GraphChunk::from_chunk(&chunk);
+        let bytes = serde_json::to_vec(std::slice::from_ref(&projected)).expect("encode");
+
+        let streamed = GraphArtifact::from_graph_chunk_reader(
+            ContentDigest::of(b"corpus"),
+            std::io::Cursor::new(bytes),
+            Some,
+        )
+        .expect("streamed graph");
+        let expected = GraphArtifact::from_graph_chunks(ContentDigest::of(b"corpus"), [projected])
+            .expect("expected graph");
+
+        assert_eq!(streamed, expected);
     }
 
     #[test]

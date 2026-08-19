@@ -1289,31 +1289,32 @@ fn finish_git_history_lexical_stage(
     let graph = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
     let graph_ids = graph.embedding_chunk_ids()?;
     let graph_id_count = graph_ids.len();
-    let graph_id_set = graph_ids.iter().collect::<HashSet<_>>();
-    let mut graph_chunks = LexicalIndex::read_graph_chunks(&lexical_path)?
-        .ok_or_else(|| {
-            LifecycleError::Contract("lexical artifact is missing graph projection".into())
-        })?
-        .into_iter()
-        .filter(|chunk| graph_id_set.contains(&chunk.chunk_id))
-        .collect::<Vec<_>>();
-    if graph_chunks.len() != graph_id_count {
+    let graph_id_set = graph_ids.into_iter().collect::<HashSet<_>>();
+    let graph = LexicalIndex::graph_from_sidecar(
+        &lexical_path,
+        corpus.content_digest.clone(),
+        |mut chunk| {
+            if !graph_id_set.contains(&chunk.chunk_id) {
+                return None;
+            }
+            if chunk
+                .next_chunk
+                .as_ref()
+                .is_some_and(|next| !graph_id_set.contains(next))
+            {
+                chunk.next_chunk = None;
+            }
+            Some(chunk)
+        },
+    )?
+    .ok_or_else(|| {
+        LifecycleError::Contract("lexical artifact is missing graph projection".into())
+    })?;
+    if graph.nodes.len() != graph_id_count {
         return Err(LifecycleError::Contract(
             "lexical artifact graph hydration is incomplete".into(),
         ));
     }
-    for chunk in &mut graph_chunks {
-        if chunk
-            .next_chunk
-            .as_ref()
-            .is_some_and(|next| !graph_id_set.contains(next))
-        {
-            chunk.next_chunk = None;
-        }
-    }
-    let graph =
-        crate::GraphArtifact::from_graph_chunks(corpus.content_digest.clone(), graph_chunks)
-            .map_err(|error| LifecycleError::Contract(error.to_string()))?;
     let (graph_checksum, graph_node_count, graph_edge_count) =
         write_graph(&temp_root.join("graph.bin"), &graph)?;
 

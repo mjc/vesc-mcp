@@ -25,7 +25,7 @@ use crate::corpus::{
     CORPUS_SCHEMA_V1, Chunk, ChunkId, ContentDigest, DocumentId, ResourceUri, RetrievalMetadata,
     SourceKind, SourceSpan, TrustTier, parse_prefixed_digest,
 };
-use crate::graph::GraphChunk;
+use crate::graph::{GraphArtifact, GraphChunk};
 use crate::{Category, RepositoryId, Revision};
 
 pub(crate) const LEXICAL_FORMAT_VERSION: &str = "tantivy-0.26-git-object-locators-v14";
@@ -1044,13 +1044,20 @@ impl LexicalIndex {
         })
     }
 
-    pub(crate) fn read_graph_chunks(path: &Path) -> Result<Option<Vec<GraphChunk>>, LexicalError> {
+    pub(crate) fn graph_from_sidecar<F>(
+        path: &Path,
+        corpus_digest: ContentDigest,
+        project: F,
+    ) -> Result<Option<GraphArtifact>, LexicalError>
+    where
+        F: FnMut(GraphChunk) -> Option<GraphChunk>,
+    {
         let path = graph_input_path(path);
         if !path.exists() {
             return Ok(None);
         }
         let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
-        serde_json::from_reader(BufReader::new(file))
+        GraphArtifact::from_graph_chunk_reader(corpus_digest, BufReader::new(file), project)
             .map(Some)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
