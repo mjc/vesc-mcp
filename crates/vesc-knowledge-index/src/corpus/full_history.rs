@@ -582,8 +582,8 @@ impl Default for CommitCoverage {
 
 #[derive(Debug)]
 struct GitHistoryDocument {
-    source_index: usize,
-    revision: gix::ObjectId,
+    source_index: u32,
+    revision: u32,
     object: gix::ObjectId,
     source_kind: SourceKind,
     path: u32,
@@ -616,6 +616,8 @@ struct HistoryChunkKey {
 #[derive(Debug, Default)]
 pub(crate) struct GitHistoryBuildPlan {
     documents: Vec<GitHistoryDocument>,
+    revisions: Vec<gix::ObjectId>,
+    revision_ids: HashMap<gix::ObjectId, u32>,
     paths: Vec<Arc<str>>,
     path_ids: HashMap<Arc<str>, u32>,
     chunks: HashMap<HistoryChunkKey, GitHistoryChunk>,
@@ -631,11 +633,24 @@ impl GitHistoryBuildPlan {
         self.removed_document_ids.iter().map(String::as_str)
     }
 
+    fn revision_id(&mut self, revision: gix::ObjectId) -> u32 {
+        if let Some(&revision_id) = self.revision_ids.get(&revision) {
+            return revision_id;
+        }
+        let revision_id = u32::try_from(self.revisions.len())
+            .expect("configured Git limits keep revision IDs in u32");
+        self.revisions.push(revision);
+        self.revision_ids.insert(revision, revision_id);
+        revision_id
+    }
+
     fn reconcile_documents(
         &mut self,
         source_index: usize,
         commits: &CommitAdmissions,
     ) -> Result<HistoryReconciliation, GitHistoryError> {
+        let source_index = u32::try_from(source_index)
+            .map_err(|_| GitHistoryError::Invalid("too many Git history sources".into()))?;
         let removed = self
             .documents
             .iter()
@@ -644,9 +659,10 @@ impl GitHistoryBuildPlan {
                 if document.source_index != source_index {
                     return None;
                 }
-                let keep = commits.is_reachable(&document.revision)
+                let revision = self.revisions[document.revision as usize];
+                let keep = commits.is_reachable(&revision)
                     && (document.source_kind != SourceKind::GitCommit
-                        || commits.message_is_admitted(&document.revision));
+                        || commits.message_is_admitted(&revision));
                 (!keep).then(|| Ok(u32::try_from(index).expect("document index fits in u32")))
             })
             .collect::<Result<HashSet<_>, GitHistoryError>>()?;
@@ -689,6 +705,9 @@ impl GitHistoryBuildPlan {
     ) -> Result<u32, GitHistoryError> {
         let index = u32::try_from(self.documents.len())
             .map_err(|_| GitHistoryError::Invalid("too many Git history documents".into()))?;
+        let source_index = u32::try_from(source_index)
+            .map_err(|_| GitHistoryError::Invalid("too many Git history sources".into()))?;
+        let revision = self.revision_id(revision);
         let path_id = if let Some(&path_id) = self.path_ids.get(path) {
             path_id
         } else {
@@ -732,6 +751,36 @@ impl GitHistoryBuildPlan {
         for chunk in self.chunks.values_mut() {
             chunk.document = remap[chunk.document as usize]
                 .expect("history chunk references a retained document");
+        }
+
+        let mut revision_remap = vec![None; self.revisions.len()];
+        for document in &self.documents {
+            revision_remap[document.revision as usize] = Some(0);
+        }
+        for (next, mapped) in revision_remap
+            .iter_mut()
+            .filter(|mapped| mapped.is_some())
+            .enumerate()
+        {
+            *mapped =
+                Some(u32::try_from(next).expect("selected history revision index fits in u32"));
+        }
+        for document in &mut self.documents {
+            document.revision = revision_remap[document.revision as usize]
+                .expect("history document references a retained revision");
+        }
+        let mut old_revision = 0_usize;
+        self.revisions.retain(|_| {
+            let keep = revision_remap[old_revision].is_some();
+            old_revision += 1;
+            keep
+        });
+        self.revision_ids.clear();
+        for (index, revision) in self.revisions.iter().enumerate() {
+            self.revision_ids.insert(
+                *revision,
+                u32::try_from(index).expect("selected history revision index fits in u32"),
+            );
         }
 
         let mut path_remap = vec![None; self.paths.len()];
@@ -902,20 +951,31 @@ impl GitHistoryBuildPlan {
             let path = self.paths.get(descriptor.path as usize).ok_or_else(|| {
                 GitHistoryError::Invalid("history document references an unknown path".into())
             })?;
-            let source = sources.get(descriptor.source_index).ok_or_else(|| {
-                GitHistoryError::Invalid("history document references an unknown source".into())
-            })?;
+            let source = sources
+                .get(descriptor.source_index as usize)
+                .ok_or_else(|| {
+                    GitHistoryError::Invalid("history document references an unknown source".into())
+                })?;
             if let std::collections::hash_map::Entry::Vacant(entry) =
-                repositories.entry(descriptor.source_index)
+                repositories.entry(descriptor.source_index as usize)
             {
                 let repository = gix::open(&source.repository_path)
                     .map_err(|error| GitHistoryError::Git(error.to_string()))?;
                 entry.insert(repository);
             }
             let repository = repositories
-                .get(&descriptor.source_index)
+                .get(&(descriptor.source_index as usize))
                 .expect("repository inserted above");
-            let revision = Revision::try_from(descriptor.revision.to_string())
+            let revision_id = self
+                .revisions
+                .get(descriptor.revision as usize)
+                .copied()
+                .ok_or_else(|| {
+                    GitHistoryError::Invalid(
+                        "history document references an unknown revision".into(),
+                    )
+                })?;
+            let revision = Revision::try_from(revision_id.to_string())
                 .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
             let document = match descriptor.source_kind {
                 SourceKind::GitBlob => {
@@ -2234,6 +2294,10 @@ mod tests {
 
     #[test]
     fn history_plan_document_is_only_a_git_locator() {
+        assert!(
+            std::mem::size_of::<GitHistoryDocument>() <= 40,
+            "history document locator grew beyond its compact representation"
+        );
         let fields = std::mem::size_of::<usize>()
             + 2 * std::mem::size_of::<gix::ObjectId>()
             + std::mem::size_of::<SourceKind>()
@@ -2244,6 +2308,38 @@ mod tests {
         assert!(
             std::mem::size_of::<GitHistoryDocument>() <= locator_bytes,
             "history documents must not retain candidate chunk recipes"
+        );
+    }
+
+    #[test]
+    fn history_plan_interns_repeated_revisions() {
+        let revision = gix::ObjectId::from_hex("a".repeat(40).as_bytes()).expect("revision");
+        let first_object = gix::ObjectId::from_hex("b".repeat(40).as_bytes()).expect("object");
+        let second_object = gix::ObjectId::from_hex("c".repeat(40).as_bytes()).expect("object");
+        let mut plan = GitHistoryBuildPlan::default();
+        let first = plan
+            .push_document(
+                0,
+                revision,
+                first_object,
+                SourceKind::GitBlob,
+                "src/first.rs",
+            )
+            .expect("first document");
+        let second = plan
+            .push_document(
+                0,
+                revision,
+                second_object,
+                SourceKind::GitBlob,
+                "src/second.rs",
+            )
+            .expect("second document");
+
+        assert_eq!(plan.revisions, vec![revision]);
+        assert_eq!(
+            plan.documents[first as usize].revision,
+            plan.documents[second as usize].revision
         );
     }
 
