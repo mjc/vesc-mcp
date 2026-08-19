@@ -1038,10 +1038,7 @@ impl HistoryContents<'_> {
     ) -> Result<bool, GitHistoryError> {
         let revision = Revision::try_from(locator.revision.to_string())
             .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
-        let key = HistoryChunkKey {
-            content,
-            revision: revision.clone(),
-        };
+        let key = HistoryChunkKey { content, revision };
         let inserted = match self {
             Self::All(plan) => {
                 if plan.chunks.contains_key(&key) {
@@ -1063,7 +1060,7 @@ impl HistoryContents<'_> {
                         locator.repository,
                         locator.path,
                         &key.content,
-                        &revision,
+                        &key.revision,
                         &plan.removed_document_ids,
                     )?
                 {
