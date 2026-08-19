@@ -611,13 +611,67 @@ struct HistoryChunkKey {
     revision: gix::ObjectId,
 }
 
+#[derive(Debug, Default)]
+struct HistoryRevisionPool {
+    values: Vec<gix::ObjectId>,
+    ids: HashMap<gix::ObjectId, u32>,
+}
+
+impl HistoryRevisionPool {
+    fn intern(&mut self, revision: gix::ObjectId) -> u32 {
+        if let Some(&revision_id) = self.ids.get(&revision) {
+            return revision_id;
+        }
+        let revision_id = u32::try_from(self.values.len())
+            .expect("configured Git limits keep revision IDs in u32");
+        self.values.push(revision);
+        self.ids.insert(revision, revision_id);
+        revision_id
+    }
+
+    fn get(&self, revision_id: u32) -> Option<gix::ObjectId> {
+        self.values.get(revision_id as usize).copied()
+    }
+
+    fn compact(&mut self, documents: &mut [GitHistoryDocument]) {
+        let mut remap = vec![None; self.values.len()];
+        for document in documents.iter() {
+            remap[document.revision as usize] = Some(0);
+        }
+        for (next, mapped) in remap
+            .iter_mut()
+            .filter(|mapped| mapped.is_some())
+            .enumerate()
+        {
+            *mapped =
+                Some(u32::try_from(next).expect("selected history revision index fits in u32"));
+        }
+        for document in documents {
+            document.revision = remap[document.revision as usize]
+                .expect("history document references a retained revision");
+        }
+        let mut old_revision = 0_usize;
+        self.values.retain(|_| {
+            let keep = remap[old_revision].is_some();
+            old_revision += 1;
+            keep
+        });
+        self.ids.clear();
+        for (index, revision) in self.values.iter().enumerate() {
+            self.ids.insert(
+                *revision,
+                u32::try_from(index).expect("selected history revision index fits in u32"),
+            );
+        }
+    }
+}
+
 /// Compact cold-build state. Git remains the source of passage text and
 /// per-chunk metadata until the exact chunk is written or embedded.
 #[derive(Debug, Default)]
 pub(crate) struct GitHistoryBuildPlan {
     documents: Vec<GitHistoryDocument>,
-    revisions: Vec<gix::ObjectId>,
-    revision_ids: HashMap<gix::ObjectId, u32>,
+    revisions: HistoryRevisionPool,
     paths: Vec<Arc<str>>,
     path_ids: HashMap<Arc<str>, u32>,
     chunks: HashMap<HistoryChunkKey, GitHistoryChunk>,
@@ -634,14 +688,7 @@ impl GitHistoryBuildPlan {
     }
 
     fn revision_id(&mut self, revision: gix::ObjectId) -> u32 {
-        if let Some(&revision_id) = self.revision_ids.get(&revision) {
-            return revision_id;
-        }
-        let revision_id = u32::try_from(self.revisions.len())
-            .expect("configured Git limits keep revision IDs in u32");
-        self.revisions.push(revision);
-        self.revision_ids.insert(revision, revision_id);
-        revision_id
+        self.revisions.intern(revision)
     }
 
     fn reconcile_documents(
@@ -659,7 +706,11 @@ impl GitHistoryBuildPlan {
                 if document.source_index != source_index {
                     return None;
                 }
-                let revision = self.revisions[document.revision as usize];
+                let Some(revision) = self.revisions.get(document.revision) else {
+                    return Some(Err(GitHistoryError::Invalid(
+                        "history document references an unknown revision".into(),
+                    )));
+                };
                 let keep = commits.is_reachable(&revision)
                     && (document.source_kind != SourceKind::GitCommit
                         || commits.message_is_admitted(&revision));
@@ -753,35 +804,7 @@ impl GitHistoryBuildPlan {
                 .expect("history chunk references a retained document");
         }
 
-        let mut revision_remap = vec![None; self.revisions.len()];
-        for document in &self.documents {
-            revision_remap[document.revision as usize] = Some(0);
-        }
-        for (next, mapped) in revision_remap
-            .iter_mut()
-            .filter(|mapped| mapped.is_some())
-            .enumerate()
-        {
-            *mapped =
-                Some(u32::try_from(next).expect("selected history revision index fits in u32"));
-        }
-        for document in &mut self.documents {
-            document.revision = revision_remap[document.revision as usize]
-                .expect("history document references a retained revision");
-        }
-        let mut old_revision = 0_usize;
-        self.revisions.retain(|_| {
-            let keep = revision_remap[old_revision].is_some();
-            old_revision += 1;
-            keep
-        });
-        self.revision_ids.clear();
-        for (index, revision) in self.revisions.iter().enumerate() {
-            self.revision_ids.insert(
-                *revision,
-                u32::try_from(index).expect("selected history revision index fits in u32"),
-            );
-        }
+        self.revisions.compact(&mut self.documents);
 
         let mut path_remap = vec![None; self.paths.len()];
         for document in &self.documents {
@@ -966,15 +989,9 @@ impl GitHistoryBuildPlan {
             let repository = repositories
                 .get(&(descriptor.source_index as usize))
                 .expect("repository inserted above");
-            let revision_id = self
-                .revisions
-                .get(descriptor.revision as usize)
-                .copied()
-                .ok_or_else(|| {
-                    GitHistoryError::Invalid(
-                        "history document references an unknown revision".into(),
-                    )
-                })?;
+            let revision_id = self.revisions.get(descriptor.revision).ok_or_else(|| {
+                GitHistoryError::Invalid("history document references an unknown revision".into())
+            })?;
             let revision = Revision::try_from(revision_id.to_string())
                 .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
             let document = match descriptor.source_kind {
@@ -2336,7 +2353,7 @@ mod tests {
             )
             .expect("second document");
 
-        assert_eq!(plan.revisions, vec![revision]);
+        assert_eq!(plan.revisions.values, vec![revision]);
         assert_eq!(
             plan.documents[first as usize].revision,
             plan.documents[second as usize].revision
