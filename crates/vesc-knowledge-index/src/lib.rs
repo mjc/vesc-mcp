@@ -29,6 +29,7 @@ static PROFILE_PROGRESS_LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 static PROFILE_PROGRESS_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Configure the profiling-only number of completed work units before exit.
+#[allow(clippy::missing_const_for_fn)]
 pub fn configure_profile_progress_limit(limit: Option<usize>) {
     #[cfg(feature = "coz-profile")]
     {

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -580,6 +580,208 @@ impl HistoryContentLookup {
     }
 }
 
+struct JsonArrayWriter {
+    writer: BufWriter<File>,
+    first: bool,
+}
+
+impl JsonArrayWriter {
+    fn create(path: &Path) -> Result<Self, LexicalError> {
+        let mut writer = BufWriter::new(
+            File::create(path).map_err(|error| LexicalError::Io(error.to_string()))?,
+        );
+        writer
+            .write_all(b"[")
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        Ok(Self {
+            writer,
+            first: true,
+        })
+    }
+
+    fn push<T: Serialize>(&mut self, value: &T) -> Result<(), LexicalError> {
+        if !self.first {
+            self.writer
+                .write_all(b",")
+                .map_err(|error| LexicalError::Io(error.to_string()))?;
+        }
+        serde_json::to_writer(&mut self.writer, value)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        self.first = false;
+        Ok(())
+    }
+
+    fn append(previous: &Path, destination: &Path) -> Result<Self, LexicalError> {
+        let mut source =
+            File::open(previous).map_err(|error| LexicalError::Io(error.to_string()))?;
+        let length = source
+            .metadata()
+            .map_err(|error| LexicalError::Io(error.to_string()))?
+            .len();
+        let start = first_non_whitespace(&mut source, length)?;
+        let mut byte = [0_u8; 1];
+        source
+            .seek(SeekFrom::Start(start))
+            .and_then(|_| source.read_exact(&mut byte))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        if byte[0] != b'[' {
+            return Err(LexicalError::Artifact(
+                "compact sidecar is not a JSON array".into(),
+            ));
+        }
+        let end = last_non_whitespace(&mut source, length)?;
+        source
+            .seek(SeekFrom::Start(end))
+            .and_then(|_| source.read_exact(&mut byte))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        if byte[0] != b']' {
+            return Err(LexicalError::Artifact(
+                "compact sidecar is not a JSON array".into(),
+            ));
+        }
+        let has_items = has_non_whitespace(&mut source, start + 1, end)?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        let mut writer = BufWriter::new(
+            File::create(destination).map_err(|error| LexicalError::Io(error.to_string()))?,
+        );
+        std::io::copy(&mut source.take(end), &mut writer)
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        Ok(Self {
+            writer,
+            first: !has_items,
+        })
+    }
+
+    fn finish(mut self) -> Result<(), LexicalError> {
+        self.writer
+            .write_all(b"]")
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        self.writer
+            .flush()
+            .map_err(|error| LexicalError::Io(error.to_string()))
+    }
+}
+
+fn first_non_whitespace(file: &mut File, length: u64) -> Result<u64, LexicalError> {
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| LexicalError::Io(error.to_string()))?;
+    let mut byte = [0_u8; 1];
+    for position in 0..length {
+        file.read_exact(&mut byte)
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        if !byte[0].is_ascii_whitespace() {
+            return Ok(position);
+        }
+    }
+    Err(LexicalError::Artifact("compact sidecar is empty".into()))
+}
+
+fn last_non_whitespace(file: &mut File, length: u64) -> Result<u64, LexicalError> {
+    let mut byte = [0_u8; 1];
+    for position in (0..length).rev() {
+        file.seek(SeekFrom::Start(position))
+            .and_then(|_| file.read_exact(&mut byte))
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        if !byte[0].is_ascii_whitespace() {
+            return Ok(position);
+        }
+    }
+    Err(LexicalError::Artifact("compact sidecar is empty".into()))
+}
+
+fn has_non_whitespace(file: &mut File, start: u64, end: u64) -> Result<bool, LexicalError> {
+    if start >= end {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(start))
+        .map_err(|error| LexicalError::Io(error.to_string()))?;
+    let mut remaining = end - start;
+    let mut buffer = [0_u8; 8192];
+    while remaining > 0 {
+        let requested = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        file.read_exact(&mut buffer[..requested])
+            .map_err(|error| LexicalError::Io(error.to_string()))?;
+        if buffer[..requested]
+            .iter()
+            .any(|byte| !byte.is_ascii_whitespace())
+        {
+            return Ok(true);
+        }
+        remaining -= requested as u64;
+    }
+    Ok(false)
+}
+
+struct GitHistorySidecars {
+    graph: Option<JsonArrayWriter>,
+    history: Option<JsonArrayWriter>,
+    embedding: Option<JsonArrayWriter>,
+}
+
+impl GitHistorySidecars {
+    fn create(path: &Path) -> Result<Self, LexicalError> {
+        Ok(Self {
+            graph: Some(JsonArrayWriter::create(&graph_input_path(path))?),
+            history: Some(JsonArrayWriter::create(&history_input_path(path))?),
+            embedding: Some(JsonArrayWriter::create(&embedding_input_path(path))?),
+        })
+    }
+
+    fn append(previous: &Path, path: &Path) -> Result<Self, LexicalError> {
+        let append = |suffix: fn(&Path) -> PathBuf| {
+            let source = suffix(previous);
+            source
+                .is_file()
+                .then(|| JsonArrayWriter::append(&source, &suffix(path)))
+                .transpose()
+        };
+        Ok(Self {
+            graph: append(graph_input_path)?,
+            history: append(history_input_path)?,
+            embedding: append(embedding_input_path)?,
+        })
+    }
+
+    fn push_embedded(&mut self, chunk: &Chunk) -> Result<(), LexicalError> {
+        self.graph
+            .as_mut()
+            .expect("cold graph sidecar")
+            .push(&GraphChunk::from_chunk(chunk))?;
+        self.embedding
+            .as_mut()
+            .expect("cold embedding sidecar")
+            .push(&EmbeddingLocatorRecord::from_chunk(chunk, None))
+    }
+
+    fn push_history(&mut self, chunk: &Chunk, blob: gix::ObjectId) -> Result<(), LexicalError> {
+        if let Some(graph) = self.graph.as_mut() {
+            graph.push(&GraphChunk::from_chunk(chunk))?;
+        }
+        if let Some(history) = self.history.as_mut() {
+            history.push(&CachedGitHistoryRecord::from_chunk(chunk, blob))?;
+        }
+        if let Some(embedding) = self.embedding.as_mut() {
+            embedding.push(&EmbeddingLocatorRecord::from_chunk(chunk, Some(blob)))?;
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<(), LexicalError> {
+        if let Some(graph) = self.graph {
+            graph.finish()?;
+        }
+        if let Some(history) = self.history {
+            history.finish()?;
+        }
+        if let Some(embedding) = self.embedding {
+            embedding.finish()?;
+        }
+        Ok(())
+    }
+}
+
 impl LexicalIndex {
     /// Builds an in-memory Tantivy index from chunks.
     ///
@@ -689,31 +891,30 @@ impl LexicalIndex {
         let mut writer = index
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
-        let mut graph_chunks = embedded
-            .iter()
-            .map(GraphChunk::from_chunk)
-            .collect::<Vec<_>>();
-        let mut history_records = Vec::new();
-        let mut embedding_inputs = embedded
-            .iter()
-            .map(|chunk| EmbeddingLocatorRecord::from_chunk(chunk, None))
-            .collect::<Vec<_>>();
+        let mut sidecars = GitHistorySidecars::create(path)?;
         for chunk in embedded {
             add_chunk(&writer, fields, chunk);
+            sidecars.push_embedded(chunk)?;
         }
+        let mut sidecar_error = None;
         plan.try_for_each_chunk(sources, |chunk, blob| {
-            add_git_history_chunk(&writer, fields, chunk, blob);
-            graph_chunks.push(GraphChunk::from_chunk(chunk));
-            history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
-            embedding_inputs.push(EmbeddingLocatorRecord::from_chunk(chunk, Some(blob)));
-            #[cfg(feature = "coz-profile")]
-            crate::profile_progress!("lexical_indexed_chunk");
+            if sidecar_error.is_none() {
+                add_git_history_chunk(&writer, fields, chunk, blob);
+                if let Err(error) = sidecars.push_history(chunk, blob) {
+                    sidecar_error = Some(error);
+                }
+                #[cfg(feature = "coz-profile")]
+                if sidecar_error.is_none() {
+                    crate::profile_progress!("lexical_indexed_chunk");
+                }
+            }
         })
         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        if let Some(error) = sidecar_error {
+            return Err(error);
+        }
         writer.commit().map_err(LexicalError::Commit)?;
-        Self::write_graph_input(path, &graph_chunks)?;
-        Self::write_history_input(path, &history_records)?;
-        Self::write_embedding_inputs(path, &embedding_inputs)?;
+        sidecars.finish()?;
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
 
@@ -786,33 +987,27 @@ impl LexicalIndex {
             .writer_with_num_threads(1, INDEX_WRITER_MEMORY_BYTES)
             .map_err(LexicalError::Writer)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
-        let graph_sidecar = graph_input_path(previous);
-        let graph_sidecar_present = graph_sidecar.is_file();
-        let history_sidecar = history_input_path(previous);
-        let history_sidecar_present = history_sidecar.is_file();
-        let embedding_sidecar = embedding_input_path(previous);
-        let embedding_sidecar_present = embedding_sidecar.is_file();
-        let mut graph_chunks = Vec::new();
-        let mut history_records = Vec::new();
-        let mut embedding_inputs = Vec::new();
+        let mut sidecars = GitHistorySidecars::append(previous, path)?;
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
+        let mut sidecar_error = None;
         plan.try_for_each_chunk(sources, |chunk, blob| {
-            add_git_history_chunk(&writer, fields, chunk, blob);
-            if graph_sidecar_present {
-                graph_chunks.push(GraphChunk::from_chunk(chunk));
+            if sidecar_error.is_none() {
+                add_git_history_chunk(&writer, fields, chunk, blob);
+                if let Err(error) = sidecars.push_history(chunk, blob) {
+                    sidecar_error = Some(error);
+                }
+                #[cfg(feature = "coz-profile")]
+                if sidecar_error.is_none() {
+                    crate::profile_progress!("lexical_indexed_chunk");
+                }
             }
-            if history_sidecar_present {
-                history_records.push(CachedGitHistoryRecord::from_chunk(chunk, blob));
-            }
-            if embedding_sidecar_present {
-                embedding_inputs.push(EmbeddingLocatorRecord::from_chunk(chunk, Some(blob)));
-            }
-            #[cfg(feature = "coz-profile")]
-            crate::profile_progress!("lexical_indexed_chunk");
         })
         .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        if let Some(error) = sidecar_error {
+            return Err(error);
+        }
         writer.commit().map_err(LexicalError::Commit)?;
         let mut segments = index
             .searchable_segment_metas()
@@ -832,27 +1027,7 @@ impl LexicalIndex {
                 .wait_merging_threads()
                 .map_err(LexicalError::Commit)?;
         }
-        if graph_sidecar_present {
-            Self::append_json_array_sidecar(
-                &graph_sidecar,
-                &graph_input_path(path),
-                &graph_chunks,
-            )?;
-        }
-        if history_sidecar_present {
-            Self::append_json_array_sidecar(
-                &history_sidecar,
-                &history_input_path(path),
-                &history_records,
-            )?;
-        }
-        if embedding_sidecar_present {
-            Self::append_json_array_sidecar(
-                &embedding_sidecar,
-                &embedding_input_path(path),
-                &embedding_inputs,
-            )?;
-        }
+        sidecars.finish()?;
         Self::write_descriptor(path, git_source_descriptors(sources))
     }
 
@@ -904,80 +1079,6 @@ impl LexicalIndex {
         serde_json::from_reader(BufReader::new(file))
             .map(Some)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
-    }
-
-    fn write_graph_input(path: &Path, chunks: &[GraphChunk]) -> Result<(), LexicalError> {
-        let file = File::create(graph_input_path(path))
-            .map_err(|error| LexicalError::Io(error.to_string()))?;
-        serde_json::to_writer(BufWriter::new(file), chunks)
-            .map_err(|error| LexicalError::Artifact(error.to_string()))
-    }
-
-    fn write_history_input(
-        path: &Path,
-        records: &[CachedGitHistoryRecord],
-    ) -> Result<(), LexicalError> {
-        let file = File::create(history_input_path(path))
-            .map_err(|error| LexicalError::Io(error.to_string()))?;
-        serde_json::to_writer(BufWriter::new(file), records)
-            .map_err(|error| LexicalError::Artifact(error.to_string()))
-    }
-
-    fn write_embedding_inputs(
-        path: &Path,
-        records: &[EmbeddingLocatorRecord],
-    ) -> Result<(), LexicalError> {
-        let file = File::create(embedding_input_path(path))
-            .map_err(|error| LexicalError::Io(error.to_string()))?;
-        serde_json::to_writer(BufWriter::new(file), records)
-            .map_err(|error| LexicalError::Artifact(error.to_string()))
-    }
-
-    fn append_json_array_sidecar<T: Serialize>(
-        previous: &Path,
-        destination: &Path,
-        additions: &[T],
-    ) -> Result<(), LexicalError> {
-        if additions.is_empty() {
-            fs::copy(previous, destination).map_err(|error| LexicalError::Io(error.to_string()))?;
-            return Ok(());
-        }
-        let previous = fs::read(previous).map_err(|error| LexicalError::Io(error.to_string()))?;
-        let end = previous
-            .iter()
-            .rposition(|byte| !byte.is_ascii_whitespace())
-            .ok_or_else(|| LexicalError::Artifact("compact sidecar is empty".into()))?;
-        if previous[end] != b']' {
-            return Err(LexicalError::Artifact(
-                "compact sidecar is not a JSON array".into(),
-            ));
-        }
-        let start = previous
-            .iter()
-            .position(|byte| !byte.is_ascii_whitespace())
-            .ok_or_else(|| LexicalError::Artifact("compact sidecar is empty".into()))?;
-        if previous[start] != b'[' {
-            return Err(LexicalError::Artifact(
-                "compact sidecar is not a JSON array".into(),
-            ));
-        }
-        let has_items = previous[start + 1..end]
-            .iter()
-            .any(|byte| !byte.is_ascii_whitespace());
-        let mut output = previous;
-        output.truncate(end);
-        if has_items {
-            output.push(b',');
-        }
-        for (index, addition) in additions.iter().enumerate() {
-            if index > 0 {
-                output.push(b',');
-            }
-            serde_json::to_writer(&mut output, addition)
-                .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        }
-        output.push(b']');
-        fs::write(destination, output).map_err(|error| LexicalError::Io(error.to_string()))
     }
 
     fn write_descriptor(
@@ -2134,7 +2235,7 @@ pub(crate) struct EmbeddingLocatorRecord {
 }
 
 impl EmbeddingLocatorRecord {
-    pub(crate) fn chunk_id(&self) -> &ChunkId {
+    pub(crate) const fn chunk_id(&self) -> &ChunkId {
         &self.chunk_id
     }
 
@@ -3278,6 +3379,43 @@ mod tests {
     }
 
     #[test]
+    fn compact_sidecar_writer_streams_a_valid_json_array() {
+        let root = tempfile::tempdir().expect("sidecar root");
+        let path = root.path().join("graph-input.json");
+        let mut writer = JsonArrayWriter::create(&path).expect("create sidecar");
+        writer
+            .push(&serde_json::json!({"chunk": 1}))
+            .expect("first record");
+        writer
+            .push(&serde_json::json!({"chunk": 2}))
+            .expect("second record");
+        writer.finish().expect("finish sidecar");
+
+        assert_eq!(
+            fs::read(path).expect("read sidecar"),
+            br#"[{"chunk":1},{"chunk":2}]"#
+        );
+    }
+
+    #[test]
+    fn compact_sidecar_appender_preserves_existing_records() {
+        let root = tempfile::tempdir().expect("sidecar root");
+        let previous = root.path().join("previous.json");
+        let destination = root.path().join("destination.json");
+        fs::write(&previous, br#"[{"chunk":1}]"#).expect("write previous sidecar");
+        let mut writer = JsonArrayWriter::append(&previous, &destination).expect("append sidecar");
+        writer
+            .push(&serde_json::json!({"chunk": 2}))
+            .expect("append record");
+        writer.finish().expect("finish sidecar");
+
+        assert_eq!(
+            fs::read(destination).expect("read sidecar"),
+            br#"[{"chunk":1},{"chunk":2}]"#
+        );
+    }
+
+    #[test]
     fn exact_identifier_is_top_one() {
         let index = LexicalIndex::build(&[
             chunk("NVM", "write persistent bytes", "write_nvm"),
@@ -3908,8 +4046,10 @@ mod tests {
         let root = tempfile::tempdir().expect("artifact root");
         let path = root.path().join("lexical.json");
 
-        LexicalIndex::write_embedding_inputs(&path, std::slice::from_ref(&record))
-            .expect("write embedding sidecar");
+        let mut writer =
+            JsonArrayWriter::create(&embedding_input_path(&path)).expect("write embedding sidecar");
+        writer.push(&record).expect("embedding record");
+        writer.finish().expect("finish embedding sidecar");
         let records = LexicalIndex::read_embedding_inputs(&path)
             .expect("read embedding sidecar")
             .expect("embedding sidecar");
