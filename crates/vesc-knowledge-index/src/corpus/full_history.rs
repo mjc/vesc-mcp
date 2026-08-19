@@ -7,7 +7,7 @@ use gix::bstr::ByteSlice;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::chunking::{ChunkingConfig, chunk_document_drafts};
+use super::chunking::{ChunkingConfig, chunk_document_drafts, for_each_chunk_draft};
 use super::git::{
     CachedGitBlob, Candidate, GitCorpusBudget, GitCorpusPolicy, GitCorpusSource, GitIngestionError,
     GitIngestionObservations, MAX_IDENTIFIERS, commit_message_size, document_from_git_blob,
@@ -460,6 +460,16 @@ impl HistoryBlobDeduper {
         self.content_keys.get(&(path_id, id)).map(Vec::as_slice)
     }
 
+    fn path_id(&mut self, path: &str) -> usize {
+        if let Some(&path_id) = self.path_ids.get(path) {
+            path_id
+        } else {
+            let path_id = self.path_ids.len();
+            self.path_ids.insert(path.to_owned(), path_id);
+            path_id
+        }
+    }
+
     fn insert_with_keys(
         &mut self,
         path: &str,
@@ -468,13 +478,7 @@ impl HistoryBlobDeduper {
         reusable: bool,
         keys: Vec<(ContentDigest, u32)>,
     ) {
-        let path_id = if let Some(&path_id) = self.path_ids.get(path) {
-            path_id
-        } else {
-            let path_id = self.path_ids.len();
-            self.path_ids.insert(path.to_owned(), path_id);
-            path_id
-        };
+        let path_id = self.path_id(path);
         self.insert_proof(path_id, id, revision, reusable);
         // Empty keys from a rejected blob are a negative cache entry. A
         // reusable cached blob with no keys remains lazy-hydratable.
@@ -1824,7 +1828,7 @@ fn ingest_commit_changes(
     pending.sort_by(|left, right| pending_path(left).cmp(pending_path(right)));
 
     for PendingChange { path, id, size } in pending {
-        let (reusable, keys) = ingest_upsert(
+        ingest_upsert(
             repo,
             source_index,
             source,
@@ -1832,10 +1836,10 @@ fn ingest_commit_changes(
             &path,
             id,
             size,
+            seen_blobs,
             contents,
             observations,
         )?;
-        seen_blobs.insert_with_keys(&path, id, commit.id, reusable, keys);
     }
     ingest_reused_blob_occurrences(
         repo,
@@ -1889,14 +1893,12 @@ fn ingest_reused_blob_occurrences(
             if !seen_blobs.contains(&path, id) {
                 continue;
             }
-            let keys = if let Some(keys) = seen_blobs.content_keys(&path, id) {
-                keys.to_vec()
-            } else {
+            if seen_blobs.content_keys(&path, id).is_none() {
                 let size = repo
                     .find_header(id)
                     .map_err(|error| GitHistoryError::Git(error.to_string()))?
                     .size();
-                let (inserted, keys) = ingest_upsert(
+                ingest_upsert(
                     repo,
                     source_index,
                     source,
@@ -1904,12 +1906,11 @@ fn ingest_reused_blob_occurrences(
                     &path,
                     id,
                     size,
+                    seen_blobs,
                     contents,
                     observations,
                 )?;
-                seen_blobs.insert_with_keys(&path, id, revision_id, inserted, keys.clone());
-                keys
-            };
+            }
             coverage.selected = true;
             coverage.reused_from_prior = false;
             let locator = GitHistoryDocumentLocator {
@@ -1921,10 +1922,10 @@ fn ingest_reused_blob_occurrences(
                 path: &path,
             };
             let mut document_index = None;
-            for (content, ordinal) in keys {
+            for (content, ordinal) in seen_blobs.content_keys(&path, id).unwrap_or(&[]) {
                 contents.insert_draft(
-                    content,
-                    ordinal,
+                    content.clone(),
+                    *ordinal,
                     locator,
                     &mut document_index,
                     observations,
@@ -1974,13 +1975,14 @@ fn ingest_commit_message(
         .flatten();
     if let Some(document) = document {
         coverage.selected = true;
-        let (inserted, _) = insert_document_drafts(
+        let inserted = insert_document_drafts(
             source_index,
             source,
             &document,
             commit_id,
             contents,
             observations,
+            None,
         )?;
         coverage.reused_from_prior &= !inserted;
         if inserted {
@@ -2006,9 +2008,10 @@ fn ingest_upsert(
     path: &str,
     id: gix::ObjectId,
     size: u64,
+    seen_blobs: &mut HistoryBlobDeduper,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
-) -> Result<(bool, Vec<(ContentDigest, u32)>), GitHistoryError> {
+) -> Result<(), GitHistoryError> {
     let candidate = Candidate {
         path: path.to_string(),
         id,
@@ -2024,7 +2027,7 @@ fn ingest_upsert(
         false,
     )?;
     if matches!(blob, CachedGitBlob::Rejected { .. }) {
-        return Ok((false, Vec::new()));
+        return Ok(());
     }
     observations.ingested_blobs = observations.ingested_blobs.saturating_add(1);
     let document = document_from_git_blob(
@@ -2035,11 +2038,33 @@ fn ingest_upsert(
         &source.license,
         blob,
     )?;
-    let (inserted, keys) =
-        insert_document_drafts(source_index, source, &document, id, contents, observations)?;
+    let revision_id = gix::ObjectId::from_hex(document.revision.as_str().as_bytes())
+        .map_err(|error| GitHistoryError::Git(error.to_string()))?;
+    let path_id = seen_blobs.path_id(path);
+    let inserted = {
+        let keys = seen_blobs.content_keys.entry((path_id, id)).or_default();
+        insert_document_drafts(
+            source_index,
+            source,
+            &document,
+            id,
+            contents,
+            observations,
+            Some(keys),
+        )?
+    };
+    if inserted
+        && seen_blobs
+            .content_keys
+            .get(&(path_id, id))
+            .is_some_and(Vec::is_empty)
+    {
+        seen_blobs.content_keys.remove(&(path_id, id));
+    }
+    seen_blobs.insert_proof(path_id, id, revision_id, inserted);
     #[cfg(feature = "coz-profile")]
     crate::profile_progress!("git_history_ingested_blob");
-    Ok((inserted, keys))
+    Ok(())
 }
 
 fn insert_document_drafts(
@@ -2049,9 +2074,8 @@ fn insert_document_drafts(
     object: gix::ObjectId,
     contents: &mut HistoryContents<'_>,
     observations: &mut GitHistoryRefreshObservations,
-) -> Result<(bool, Vec<(ContentDigest, u32)>), GitHistoryError> {
-    let drafts = chunk_document_drafts(document, ChunkingConfig::default())
-        .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
+    mut keys: Option<&mut Vec<(ContentDigest, u32)>>,
+) -> Result<bool, GitHistoryError> {
     let revision_id = gix::ObjectId::from_hex(document.revision.as_str().as_bytes())
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let locator = GitHistoryDocumentLocator {
@@ -2063,10 +2087,14 @@ fn insert_document_drafts(
         path: &document.path,
     };
     let mut document_index = None;
-    let mut all_inserted = drafts.len() != 0;
-    let mut keys = Vec::with_capacity(drafts.len());
-    for index in 0..drafts.len() {
-        let draft = drafts.get(index);
+    let mut all_inserted = true;
+    let mut saw_draft = false;
+    let mut ingest_error = None;
+    for_each_chunk_draft(document, ChunkingConfig::default(), |draft| {
+        if ingest_error.is_some() {
+            return;
+        }
+        saw_draft = true;
         let mut identifier_buffer = [""; MAX_IDENTIFIERS];
         let identifiers = identifier_refs(&document.path, draft.text(), &mut identifier_buffer);
         observations.candidate_chunks = observations.candidate_chunks.saturating_add(1);
@@ -2080,16 +2108,25 @@ fn insert_document_drafts(
             draft.text(),
         );
         let key = history_content_key(&source.repository_id, &document.path, &embedding_key);
-        keys.push((key.clone(), draft.ordinal()));
-        all_inserted &= contents.insert_draft(
+        if let Some(keys) = keys.as_mut() {
+            keys.push((key.clone(), draft.ordinal()));
+        }
+        match contents.insert_draft(
             key,
             draft.ordinal(),
             locator,
             &mut document_index,
             observations,
-        )?;
+        ) {
+            Ok(inserted) => all_inserted &= inserted,
+            Err(error) => ingest_error = Some(error),
+        }
+    })
+    .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
+    if let Some(error) = ingest_error {
+        return Err(error);
     }
-    Ok((all_inserted, keys))
+    Ok(saw_draft && all_inserted)
 }
 
 fn history_content_key(
