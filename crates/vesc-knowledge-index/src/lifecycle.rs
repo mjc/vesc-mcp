@@ -951,7 +951,7 @@ pub fn build_git_history_artifacts_from_previous(
             |repository: &RepositoryId,
              path: &str,
              key: &ContentDigest,
-             revision: &Revision,
+             revision: &gix::ObjectId,
              removed_document_ids: &BTreeSet<String>| {
                 lookup
                     .contains_retained(repository, path, key, Some(revision), removed_document_ids)

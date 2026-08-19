@@ -543,7 +543,7 @@ impl HistoryContentLookup {
         _repository: &RepositoryId,
         _path: &str,
         key: &ContentDigest,
-        revision: Option<&Revision>,
+        revision: Option<&gix::ObjectId>,
         removed_document_ids: &BTreeSet<String>,
     ) -> Result<bool, LexicalError> {
         let mut clauses = vec![(
@@ -554,10 +554,12 @@ impl HistoryContentLookup {
             )) as Box<dyn Query>,
         )];
         if let Some(revision) = revision {
+            let mut revision_hex = gix::hash::Kind::hex_buf();
+            let revision = revision.as_ref().hex_to_buf(&mut revision_hex);
             clauses.push((
                 Occur::Must,
                 Box::new(TermQuery::new(
-                    Term::from_field_text(self.fields.revision, revision.as_str()),
+                    Term::from_field_text(self.fields.revision, revision),
                     IndexRecordOption::Basic,
                 )),
             ));

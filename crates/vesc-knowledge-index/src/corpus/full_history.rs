@@ -1,6 +1,7 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
 use serde::{Deserialize, Serialize};
@@ -581,7 +582,7 @@ struct GitHistoryDocument {
     revision: gix::ObjectId,
     object: gix::ObjectId,
     source_kind: SourceKind,
-    path: Box<str>,
+    path: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -603,7 +604,7 @@ struct GitHistoryChunk {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct HistoryChunkKey {
     content: ContentDigest,
-    revision: Revision,
+    revision: gix::ObjectId,
 }
 
 /// Compact cold-build state. Git remains the source of passage text and
@@ -611,6 +612,8 @@ struct HistoryChunkKey {
 #[derive(Debug, Default)]
 pub(crate) struct GitHistoryBuildPlan {
     documents: Vec<GitHistoryDocument>,
+    paths: Vec<Arc<str>>,
+    path_ids: HashMap<Arc<str>, u32>,
     chunks: HashMap<HistoryChunkKey, GitHistoryChunk>,
     removed_document_ids: BTreeSet<String>,
 }
@@ -682,12 +685,22 @@ impl GitHistoryBuildPlan {
     ) -> Result<u32, GitHistoryError> {
         let index = u32::try_from(self.documents.len())
             .map_err(|_| GitHistoryError::Invalid("too many Git history documents".into()))?;
+        let path_id = if let Some(&path_id) = self.path_ids.get(path) {
+            path_id
+        } else {
+            let path_id = u32::try_from(self.paths.len())
+                .map_err(|_| GitHistoryError::Invalid("too many Git history paths".into()))?;
+            let path: Arc<str> = Arc::from(path);
+            self.paths.push(Arc::clone(&path));
+            self.path_ids.insert(path, path_id);
+            path_id
+        };
         self.documents.push(GitHistoryDocument {
             source_index,
             revision,
             object,
             source_kind,
-            path: path.into(),
+            path: path_id,
         });
         Ok(index)
     }
@@ -715,6 +728,35 @@ impl GitHistoryBuildPlan {
         for chunk in self.chunks.values_mut() {
             chunk.document = remap[chunk.document as usize]
                 .expect("history chunk references a retained document");
+        }
+
+        let mut path_remap = vec![None; self.paths.len()];
+        for document in &self.documents {
+            path_remap[document.path as usize] = Some(0);
+        }
+        for (next, mapped) in path_remap
+            .iter_mut()
+            .filter(|mapped| mapped.is_some())
+            .enumerate()
+        {
+            *mapped = Some(u32::try_from(next).expect("selected history path index fits in u32"));
+        }
+        for document in &mut self.documents {
+            document.path = path_remap[document.path as usize]
+                .expect("history document references a retained path");
+        }
+        let mut old_path = 0_usize;
+        self.paths.retain(|_| {
+            let keep = path_remap[old_path].is_some();
+            old_path += 1;
+            keep
+        });
+        self.path_ids.clear();
+        for (index, path) in self.paths.iter().enumerate() {
+            self.path_ids.insert(
+                Arc::clone(path),
+                u32::try_from(index).expect("selected history path index fits in u32"),
+            );
         }
         self
     }
@@ -816,7 +858,7 @@ impl GitHistoryBuildPlan {
             let key = HistoryChunkKey {
                 content: history_content_key_for_chunk(&chunk)
                     .expect("filtered Git-history chunk has a content key"),
-                revision: chunk.revision.clone(),
+                revision,
             };
             plan.chunks.insert(
                 key,
@@ -853,6 +895,9 @@ impl GitHistoryBuildPlan {
             let descriptor = self.documents.get(document_index as usize).ok_or_else(|| {
                 GitHistoryError::Invalid("history chunk references an unknown document".into())
             })?;
+            let path = self.paths.get(descriptor.path as usize).ok_or_else(|| {
+                GitHistoryError::Invalid("history document references an unknown path".into())
+            })?;
             let source = sources.get(descriptor.source_index).ok_or_else(|| {
                 GitHistoryError::Invalid("history document references an unknown source".into())
             })?;
@@ -875,7 +920,7 @@ impl GitHistoryBuildPlan {
                         .map_err(|error| GitHistoryError::Git(error.to_string()))?
                         .size();
                     let candidate = Candidate {
-                        path: descriptor.path.to_string(),
+                        path: path.to_string(),
                         id: descriptor.object,
                         size,
                     };
@@ -890,11 +935,11 @@ impl GitHistoryBuildPlan {
                     if let CachedGitBlob::Rejected { code, message } = &blob {
                         return Err(GitHistoryError::Invalid(format!(
                             "pinned Git blob {}:{} became {code}: {message}",
-                            source.repository_id, descriptor.path
+                            source.repository_id, path
                         )));
                     }
                     document_from_git_blob(
-                        &descriptor.path,
+                        path,
                         &source.repository_id,
                         &revision,
                         source.trust_tier,
@@ -933,7 +978,7 @@ impl GitHistoryBuildPlan {
                 if index >= drafts.len() {
                     return Err(GitHistoryError::Invalid(format!(
                         "pinned Git chunk ordinal {} is unavailable for {}:{}",
-                        selection.ordinal, source.repository_id, descriptor.path
+                        selection.ordinal, source.repository_id, path
                     )));
                 }
                 let draft = drafts.get(index);
@@ -952,11 +997,13 @@ impl GitHistoryBuildPlan {
                 );
                 let actual_key =
                     history_content_key(&source.repository_id, &document.path, &embedding_key);
-                if actual_key != expected_key.content || document.revision != expected_key.revision
-                {
+                let actual_revision =
+                    gix::ObjectId::from_hex(document.revision.as_str().as_bytes())
+                        .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
+                if actual_key != expected_key.content || actual_revision != expected_key.revision {
                     return Err(GitHistoryError::Invalid(format!(
                         "pinned Git chunk identity changed for {}:{}#{}",
-                        source.repository_id, descriptor.path, selection.ordinal
+                        source.repository_id, path, selection.ordinal
                     )));
                 }
                 let chunk = drafts
@@ -997,7 +1044,7 @@ type PreviousContentLookup<'a> = dyn FnMut(
         &RepositoryId,
         &str,
         &ContentDigest,
-        &Revision,
+        &gix::ObjectId,
         &BTreeSet<String>,
     ) -> Result<bool, GitHistoryError>
     + 'a;
@@ -1036,9 +1083,10 @@ impl HistoryContents<'_> {
         document: &mut Option<u32>,
         observations: &mut GitHistoryRefreshObservations,
     ) -> Result<bool, GitHistoryError> {
-        let revision = Revision::try_from(locator.revision.to_string())
-            .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
-        let key = HistoryChunkKey { content, revision };
+        let key = HistoryChunkKey {
+            content,
+            revision: locator.revision,
+        };
         let inserted = match self {
             Self::All(plan) => {
                 if plan.chunks.contains_key(&key) {
