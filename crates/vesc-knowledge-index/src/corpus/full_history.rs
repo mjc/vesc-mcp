@@ -46,6 +46,7 @@ pub struct GitHistoryRefreshObservations {
 }
 
 const MIN_DELTA_CHUNK_INDEX_RESERVE: usize = 4_096;
+const CHUNK_INDEX_RESERVE_BATCH: usize = 65_536;
 
 const fn delta_chunk_index_capacity(cached_chunks: usize) -> usize {
     if cached_chunks >= MIN_DELTA_CHUNK_INDEX_RESERVE {
@@ -59,9 +60,8 @@ const fn chunk_index_reserve_target(candidate_chunks: usize) -> usize {
     if candidate_chunks < MIN_DELTA_CHUNK_INDEX_RESERVE {
         0
     } else {
-        candidate_chunks.saturating_add(MIN_DELTA_CHUNK_INDEX_RESERVE - 1)
-            / MIN_DELTA_CHUNK_INDEX_RESERVE
-            * MIN_DELTA_CHUNK_INDEX_RESERVE
+        candidate_chunks.saturating_add(CHUNK_INDEX_RESERVE_BATCH - 1) / CHUNK_INDEX_RESERVE_BATCH
+            * CHUNK_INDEX_RESERVE_BATCH
     }
 }
 
@@ -2558,6 +2558,9 @@ mod tests {
 
     #[test]
     fn chunk_index_reserves_large_candidate_batches_only() {
+        assert_eq!(chunk_index_reserve_target(4_096), 65_536);
+        assert_eq!(chunk_index_reserve_target(65_537), 131_072);
+
         let mut plan = GitHistoryBuildPlan::default();
 
         plan.reserve_chunk_index_for_candidates(4_095);
