@@ -945,11 +945,7 @@ pub fn build_git_history_artifacts_from_previous(
     let membership = CachedGitHistoryMembership::new(&records);
     let ingestion_started = Instant::now();
     let mut previous_contains =
-        |_repository: &RepositoryId,
-         _path: &str,
-         key: &ContentDigest,
-         revision: &gix::ObjectId,
-         removed_document_ids: &BTreeSet<String>| {
+        |key: &ContentDigest, revision: &gix::ObjectId, removed_document_ids: &BTreeSet<String>| {
             Ok(membership.contains_retained(key, revision, removed_document_ids))
         };
     let incremental = plan_git_history_fast_forward_delta(

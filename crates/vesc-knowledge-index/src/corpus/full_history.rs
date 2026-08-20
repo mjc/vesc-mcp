@@ -769,7 +769,6 @@ impl GitHistoryDocument {
 #[derive(Clone, Copy)]
 struct GitHistoryDocumentLocator<'a> {
     source_index: usize,
-    repository: &'a RepositoryId,
     revision: gix::ObjectId,
     object: gix::ObjectId,
     source_kind: SourceKind,
@@ -1518,13 +1517,7 @@ impl GitHistoryBuildPlan {
     }
 }
 
-type PreviousContentLookup<'a> = dyn FnMut(
-        &RepositoryId,
-        &str,
-        &ContentDigest,
-        &gix::ObjectId,
-        &BTreeSet<String>,
-    ) -> Result<bool, GitHistoryError>
+type PreviousContentLookup<'a> = dyn FnMut(&ContentDigest, &gix::ObjectId, &BTreeSet<String>) -> Result<bool, GitHistoryError>
     + 'a;
 
 enum HistoryContents<'a> {
@@ -1593,8 +1586,6 @@ impl<'a> HistoryContents<'a> {
             } => {
                 if plan.chunks.contains_key(&key)
                     || previous_contains(
-                        locator.repository,
-                        locator.path,
                         &key.content,
                         &locator.revision,
                         &plan.removed_document_ids,
@@ -2402,7 +2393,6 @@ fn ingest_reused_blob_occurrences(
             coverage.reused_from_prior = false;
             let locator = GitHistoryDocumentLocator {
                 source_index,
-                repository: &source.repository_id,
                 revision: revision_id,
                 object: id,
                 source_kind: SourceKind::GitBlob,
@@ -2567,7 +2557,6 @@ fn insert_document_drafts(
         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
     let locator = GitHistoryDocumentLocator {
         source_index,
-        repository: &source.repository_id,
         revision: revision_id,
         object,
         source_kind: document.source_kind,
