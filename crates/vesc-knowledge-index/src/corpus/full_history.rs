@@ -807,7 +807,7 @@ type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
 #[derive(Debug, Default)]
 struct HistoryChunkEntries {
     blocks: Vec<Vec<HistoryChunkEntry>>,
-    offsets: Vec<usize>,
+    offsets: Vec<(usize, usize)>,
     len: usize,
 }
 
@@ -855,26 +855,29 @@ impl HistoryChunkEntries {
             .expect("history entry block reserved")
             .push(entry);
         self.len += 1;
+        if self.blocks.last().is_some_and(|block| block.len() == 1) {
+            self.rebuild_offsets();
+        }
     }
 
     fn get(&self, index: usize) -> Option<&HistoryChunkEntry> {
-        let block = self
+        let offset = self
             .offsets
-            .partition_point(|offset| *offset <= index)
+            .partition_point(|(offset, _)| *offset <= index)
             .checked_sub(1)?;
-        self.blocks
-            .get(block)?
-            .get(index.saturating_sub(self.offsets[block]))
+        let (start, block) = self.offsets[offset];
+        self.blocks.get(block)?.get(index.saturating_sub(start))
     }
 
     fn get_mut(&mut self, index: usize) -> Option<&mut HistoryChunkEntry> {
-        let block = self
+        let offset = self
             .offsets
-            .partition_point(|offset| *offset <= index)
+            .partition_point(|(offset, _)| *offset <= index)
             .checked_sub(1)?;
+        let (start, block) = self.offsets[offset];
         self.blocks
             .get_mut(block)?
-            .get_mut(index.saturating_sub(self.offsets[block]))
+            .get_mut(index.saturating_sub(start))
     }
 
     fn retain_mut(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
@@ -897,8 +900,10 @@ impl HistoryChunkEntries {
         self.offsets.clear();
         self.offsets.reserve(self.blocks.len());
         let mut offset = 0;
-        for block in &self.blocks {
-            self.offsets.push(offset);
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            if !block.is_empty() {
+                self.offsets.push((offset, block_index));
+            }
             offset += block.len();
         }
     }
@@ -3186,7 +3191,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_index_growth_keeps_entries_contiguous() {
+    fn chunk_index_growth_uses_fixed_storage_blocks() {
         let mut index = HistoryChunkIndex::default();
         for value in 0..=HISTORY_CHUNK_ENTRY_BLOCK {
             let mut digest = [0_u8; 32];
@@ -3232,7 +3237,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_index_append_after_retain_reuses_contiguous_capacity() {
+    fn chunk_index_append_after_retain_reuses_fixed_storage_capacity() {
         let mut index = HistoryChunkIndex::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
         let block = u32::try_from(HISTORY_CHUNK_ENTRY_BLOCK).expect("test block fits in u32");
         for value in 0..(HISTORY_CHUNK_ENTRY_BLOCK * 2) {
@@ -3267,6 +3272,37 @@ mod tests {
         );
 
         assert_eq!(index.storage_capacity(), capacity);
+    }
+
+    #[test]
+    fn chunk_index_lookup_skips_empty_storage_blocks_after_retain() {
+        let mut index = HistoryChunkIndex::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
+        for value in 0..=HISTORY_CHUNK_ENTRY_BLOCK {
+            let mut digest = [0_u8; 32];
+            digest[..8].copy_from_slice(&(value as u64).to_le_bytes());
+            index.insert(
+                HistoryChunkKey {
+                    content: ContentDigest::from_sha256(digest),
+                    revision: 0,
+                },
+                GitHistoryChunk {
+                    document: u32::try_from(value).expect("test document index fits in u32"),
+                    ordinal: 0,
+                },
+            );
+        }
+
+        index.retain(|_, chunk| {
+            chunk.document
+                == u32::try_from(HISTORY_CHUNK_ENTRY_BLOCK).expect("test block fits in u32")
+        });
+
+        assert_eq!(index.len(), 1);
+        let retained = index.values().next().expect("retained history chunk");
+        assert_eq!(
+            retained.document,
+            u32::try_from(HISTORY_CHUNK_ENTRY_BLOCK).expect("test block fits in u32")
+        );
     }
 
     #[test]
