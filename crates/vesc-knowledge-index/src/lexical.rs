@@ -3887,8 +3887,8 @@ mod tests {
     #[test]
     fn history_contains_does_not_require_a_stored_document_id() {
         let chunk = git_chunk("History", "history", "history_identifier");
-        let key = crate::corpus::history_content_key_for_chunk(&chunk)
-            .expect("history content key");
+        let key =
+            crate::corpus::history_content_key_for_chunk(&chunk).expect("history content key");
         let (schema, fields) = schema();
         let index = Index::create_in_ram(schema);
         let mut writer = index
@@ -3901,15 +3901,11 @@ mod tests {
         let reader = index.reader().expect("reader");
         let lookup = HistoryContentLookup { reader, fields };
 
-        assert!(lookup
-            .contains_retained(
-                &chunk.repository,
-                &chunk.path,
-                &key,
-                None,
-                &BTreeSet::new(),
-            )
-            .expect("contains"));
+        assert!(
+            lookup
+                .contains_retained(&chunk.repository, &chunk.path, &key, None, &BTreeSet::new(),)
+                .expect("contains")
+        );
     }
 
     #[test]

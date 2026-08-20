@@ -802,7 +802,60 @@ const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
 const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 64;
 const HISTORY_CHUNK_ENTRY_BLOCK: usize = 1_048_576;
 
-type HistoryChunkEntry = (ContentDigest, GitHistoryChunk);
+type HistoryChunkEntry = (u32, GitHistoryChunk);
+
+#[derive(Debug, Default)]
+struct HistoryContentPool {
+    values: Vec<ContentDigest>,
+    ids: HashMap<ContentDigest, u32>,
+}
+
+impl HistoryContentPool {
+    fn intern(&mut self, content: ContentDigest) -> u32 {
+        if let Some(&content_id) = self.ids.get(&content) {
+            return content_id;
+        }
+        let content_id = u32::try_from(self.values.len())
+            .expect("configured Git limits keep history content IDs in u32");
+        self.values.push(content.clone());
+        self.ids.insert(content, content_id);
+        content_id
+    }
+
+    fn get(&self, content_id: u32) -> Option<&ContentDigest> {
+        self.values.get(content_id as usize)
+    }
+
+    fn compact(&mut self, entries: &mut HistoryChunkEntries) {
+        let mut remap = vec![u32::MAX; self.values.len()];
+        for (content_id, _) in entries.iter() {
+            remap[*content_id as usize] = 0;
+        }
+        for (next, mapped) in remap
+            .iter_mut()
+            .filter(|mapped| **mapped != u32::MAX)
+            .enumerate()
+        {
+            *mapped = u32::try_from(next).expect("history content index fits in u32");
+        }
+        for (content_id, _) in entries.iter_mut() {
+            *content_id = remap[*content_id as usize];
+        }
+        let mut old_content = 0_usize;
+        self.values.retain(|_| {
+            let keep = remap[old_content] != u32::MAX;
+            old_content += 1;
+            keep
+        });
+        self.ids.clear();
+        for (index, content) in self.values.iter().enumerate() {
+            self.ids.insert(
+                content.clone(),
+                u32::try_from(index).expect("history content index fits in u32"),
+            );
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct HistoryChunkEntries {
@@ -882,9 +935,9 @@ impl HistoryChunkEntries {
             .get_mut(index.saturating_sub(start))
     }
 
-    fn retain_mut(&mut self, mut keep: impl FnMut(&ContentDigest, &mut GitHistoryChunk) -> bool) {
+    fn retain_mut(&mut self, mut keep: impl FnMut(&mut u32, &mut GitHistoryChunk) -> bool) {
         for block in &mut self.blocks {
-            block.retain_mut(|(key, chunk)| keep(key, chunk));
+            block.retain_mut(|(content_id, chunk)| keep(content_id, chunk));
         }
         let mut target = 0;
         for source in 0..self.blocks.len() {
@@ -1044,6 +1097,7 @@ impl HistoryChunkLookup {
         &self,
         key: &HistoryChunkKey,
         entries: &HistoryChunkEntries,
+        contents: &HistoryContentPool,
         documents: &[GitHistoryDocument],
     ) -> Option<usize> {
         let fingerprint = HistoryChunkIndex::fingerprint(key);
@@ -1063,7 +1117,7 @@ impl HistoryChunkLookup {
                 entries
                     .get(index)
                     .filter(|entry| {
-                        entry.0 == key.content
+                        contents.get(entry.0) == Some(&key.content)
                             && documents
                                 .get(entry.1.document as usize)
                                 .is_some_and(|document| document.revision == key.revision)
@@ -1084,6 +1138,7 @@ impl HistoryChunkLookup {
         index: u32,
         key: HistoryChunkKey,
         entries: &HistoryChunkEntries,
+        contents: &HistoryContentPool,
         documents: &[GitHistoryDocument],
     ) {
         match self.mutable.get(fingerprint).copied() {
@@ -1098,7 +1153,10 @@ impl HistoryChunkLookup {
                         let existing_entry =
                             entries.get(existing as usize).expect("history entry index");
                         let existing_key = HistoryChunkKey {
-                            content: existing_entry.0.clone(),
+                            content: contents
+                                .get(existing_entry.0)
+                                .expect("history content ID")
+                                .clone(),
                             revision: documents
                                 .get(existing_entry.1.document as usize)
                                 .expect("history document index")
@@ -1118,7 +1176,10 @@ impl HistoryChunkLookup {
                 self.mutable.insert(fingerprint, CHUNK_INDEX_COLLISION);
                 let existing_entry = entries.get(existing as usize).expect("history entry index");
                 let existing_key = HistoryChunkKey {
-                    content: existing_entry.0.clone(),
+                    content: contents
+                        .get(existing_entry.0)
+                        .expect("history content ID")
+                        .clone(),
                     revision: documents
                         .get(existing_entry.1.document as usize)
                         .expect("history document index")
@@ -1140,6 +1201,7 @@ impl HistoryChunkLookup {
 #[derive(Debug, Default)]
 struct HistoryChunkIndex {
     entries: HistoryChunkEntries,
+    contents: HistoryContentPool,
     lookup: HistoryChunkLookup,
 }
 
@@ -1147,6 +1209,7 @@ impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: HistoryChunkEntries::with_capacity(capacity),
+            contents: HistoryContentPool::default(),
             lookup: HistoryChunkLookup::with_capacity(capacity),
         }
     }
@@ -1171,7 +1234,8 @@ impl HistoryChunkIndex {
     }
 
     fn index_of(&self, key: &HistoryChunkKey, documents: &[GitHistoryDocument]) -> Option<usize> {
-        self.lookup.index_of(key, &self.entries, documents)
+        self.lookup
+            .index_of(key, &self.entries, &self.contents, documents)
     }
 
     fn contains_key(&self, key: &HistoryChunkKey, documents: &[GitHistoryDocument]) -> bool {
@@ -1193,7 +1257,8 @@ impl HistoryChunkIndex {
         let index = u32::try_from(self.entries.len())
             .expect("configured Git limits keep history chunk indices in u32");
         let fingerprint = Self::fingerprint(&key);
-        self.entries.push((key.content.clone(), chunk));
+        let content_id = self.contents.intern(key.content.clone());
+        self.entries.push((content_id, chunk));
         self.register_index(fingerprint, index, key, documents);
         None
     }
@@ -1209,8 +1274,14 @@ impl HistoryChunkIndex {
         key: HistoryChunkKey,
         documents: &[GitHistoryDocument],
     ) {
-        self.lookup
-            .register(fingerprint, index, key, &self.entries, documents);
+        self.lookup.register(
+            fingerprint,
+            index,
+            key,
+            &self.entries,
+            &self.contents,
+            documents,
+        );
     }
 
     fn retain(
@@ -1218,7 +1289,14 @@ impl HistoryChunkIndex {
         mut keep: impl FnMut(&ContentDigest, &mut GitHistoryChunk) -> bool,
         documents: &[GitHistoryDocument],
     ) {
-        self.entries.retain_mut(|key, chunk| keep(key, chunk));
+        let contents = &self.contents;
+        self.entries.retain_mut(|content_id, chunk| {
+            keep(
+                contents.get(*content_id).expect("history content ID"),
+                chunk,
+            )
+        });
+        self.contents.compact(&mut self.entries);
         self.rebuild_index(documents);
     }
 
@@ -1226,7 +1304,11 @@ impl HistoryChunkIndex {
         self.lookup.clear();
         for (index, entry) in self.entries.iter().enumerate() {
             let key = HistoryChunkKey {
-                content: entry.0.clone(),
+                content: self
+                    .contents
+                    .get(entry.0)
+                    .expect("history content ID")
+                    .clone(),
                 revision: documents
                     .get(entry.1.document as usize)
                     .expect("history document index")
@@ -1239,6 +1321,7 @@ impl HistoryChunkIndex {
                     .expect("configured Git limits keep history chunk indices in u32"),
                 key,
                 &self.entries,
+                &self.contents,
                 documents,
             );
         }
@@ -1260,6 +1343,11 @@ impl HistoryChunkIndex {
     #[cfg(test)]
     const fn storage_block_count(&self) -> usize {
         self.entries.blocks.len()
+    }
+
+    #[cfg(test)]
+    const fn content_count(&self) -> usize {
+        self.contents.values.len()
     }
 }
 
@@ -1807,7 +1895,9 @@ impl GitHistoryBuildPlan {
                 .is_some_and(|entry| entry.1.document == document_index)
             {
                 let entry = selected.next().expect("history entry peeked above");
-                let expected_content = &entry.0;
+                let expected_content = self.chunks.contents.get(entry.0).ok_or_else(|| {
+                    GitHistoryError::Invalid("history chunk references unknown content".into())
+                })?;
                 let selection = &entry.1;
                 let index = selection.ordinal as usize;
                 if index >= drafts.len() {
@@ -3085,9 +3175,37 @@ mod tests {
     #[test]
     fn history_chunk_entry_does_not_duplicate_document_revision() {
         assert!(
-            std::mem::size_of::<HistoryChunkEntry>() <= 40,
-            "history entries must keep the pooled revision only on their document locator"
+            std::mem::size_of::<HistoryChunkEntry>() <= 16,
+            "history entries must keep pooled content and revision IDs outside each row"
         );
+    }
+
+    #[test]
+    fn history_chunk_index_interns_shared_content_across_revisions() {
+        let mut index = HistoryChunkIndex::default();
+        let mut documents = test_documents(2);
+        documents[1].revision = 1;
+        let content = ContentDigest::of(b"shared content");
+        for (document, revision) in [(0, 0), (1, 1)] {
+            assert!(
+                index
+                    .insert(
+                        HistoryChunkKey {
+                            content: content.clone(),
+                            revision,
+                        },
+                        GitHistoryChunk {
+                            document,
+                            ordinal: 0,
+                        },
+                        &documents,
+                    )
+                    .is_none()
+            );
+        }
+
+        assert_eq!(index.len(), 2);
+        assert_eq!(index.content_count(), 1);
     }
 
     #[test]
