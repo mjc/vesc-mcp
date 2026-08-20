@@ -1033,6 +1033,7 @@ impl HistoryChunkIndex {
         self.entries.iter_mut()
     }
 
+    #[cfg(test)]
     fn storage_block_count(&self) -> usize {
         self.entries.blocks.len()
     }
