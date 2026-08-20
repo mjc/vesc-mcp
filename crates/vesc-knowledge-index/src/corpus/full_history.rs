@@ -967,18 +967,28 @@ impl HistoryChunkFingerprints {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct HistoryChunkIndex {
     entries: HistoryChunkEntries,
-    fingerprints: HistoryChunkFingerprints,
+    fingerprints: Option<HistoryChunkFingerprints>,
     collisions: HashMap<HistoryChunkKey, u32>,
+}
+
+impl Default for HistoryChunkIndex {
+    fn default() -> Self {
+        Self {
+            entries: HistoryChunkEntries::default(),
+            fingerprints: Some(HistoryChunkFingerprints::default()),
+            collisions: HashMap::new(),
+        }
+    }
 }
 
 impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: HistoryChunkEntries::with_capacity(capacity),
-            fingerprints: HistoryChunkFingerprints::with_capacity(capacity),
+            fingerprints: Some(HistoryChunkFingerprints::with_capacity(capacity)),
             collisions: HashMap::new(),
         }
     }
@@ -993,7 +1003,9 @@ impl HistoryChunkIndex {
 
     fn reserve(&mut self, additional: usize) {
         self.entries.reserve(additional);
-        self.fingerprints.reserve(additional);
+        if let Some(fingerprints) = &mut self.fingerprints {
+            fingerprints.reserve(additional);
+        }
     }
 
     fn fingerprint(key: &HistoryChunkKey) -> u64 {
@@ -1003,8 +1015,9 @@ impl HistoryChunkIndex {
     }
 
     fn index_of(&self, key: &HistoryChunkKey) -> Option<usize> {
+        let fingerprints = self.fingerprints.as_ref()?;
         let fingerprint = Self::fingerprint(key);
-        match self.fingerprints.get(fingerprint).copied() {
+        match fingerprints.get(fingerprint).copied() {
             Some(CHUNK_INDEX_COLLISION) => self
                 .collisions
                 .get(key)
@@ -1021,6 +1034,7 @@ impl HistoryChunkIndex {
         }
     }
 
+    #[cfg(test)]
     fn contains_key(&self, key: &HistoryChunkKey) -> bool {
         self.index_of(key).is_some()
     }
@@ -1036,20 +1050,36 @@ impl HistoryChunkIndex {
             .expect("configured Git limits keep history chunk indices in u32");
         let fingerprint = Self::fingerprint(&key);
         self.entries.push((key.clone(), chunk));
-        self.register_index(fingerprint, index, key);
+        if self.fingerprints.is_some() {
+            self.register_index(fingerprint, index, key);
+        }
         None
     }
 
+    fn insert_unique(&mut self, key: HistoryChunkKey, chunk: GitHistoryChunk) {
+        debug_assert!(self.fingerprints.is_none());
+        self.entries.push((key, chunk));
+    }
+
+    fn release_seed_lookup(&mut self) {
+        self.fingerprints = None;
+        self.collisions = HashMap::new();
+    }
+
     fn register_index(&mut self, fingerprint: u64, index: u32, key: HistoryChunkKey) {
-        match self.fingerprints.get(fingerprint).copied() {
+        let fingerprints = self
+            .fingerprints
+            .as_mut()
+            .expect("history seed lookup remains enabled while indexing");
+        match fingerprints.get(fingerprint).copied() {
             None => {
-                self.fingerprints.insert(fingerprint, index);
+                fingerprints.insert(fingerprint, index);
             }
             Some(CHUNK_INDEX_COLLISION) => {
                 self.collisions.insert(key, index);
             }
             Some(existing) => {
-                self.fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
+                fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
                 let existing_key = self
                     .entries
                     .get(existing as usize)
@@ -1068,7 +1098,10 @@ impl HistoryChunkIndex {
     }
 
     fn rebuild_index(&mut self) {
-        self.fingerprints.clear();
+        let Some(fingerprints) = &mut self.fingerprints else {
+            return;
+        };
+        fingerprints.clear();
         self.collisions.clear();
         for index in 0..self.entries.len() {
             let key = self
@@ -1530,6 +1563,7 @@ impl GitHistoryBuildPlan {
                 },
             );
         }
+        plan.chunks.release_seed_lookup();
         Ok((plan, cached_history))
     }
 
@@ -1729,11 +1763,13 @@ enum HistoryContents<'a> {
 
 impl<'a> HistoryContents<'a> {
     fn delta(previous_contains: &'a mut PreviousContentLookup<'a>, cached_chunks: usize) -> Self {
+        let mut plan = GitHistoryBuildPlan::with_chunk_index_capacity(delta_chunk_index_capacity(
+            cached_chunks,
+        ));
+        plan.chunks.release_seed_lookup();
         Self::Delta {
             previous_contains,
-            plan: GitHistoryBuildPlan::with_chunk_index_capacity(delta_chunk_index_capacity(
-                cached_chunks,
-            )),
+            plan,
         }
     }
 
@@ -1768,35 +1804,24 @@ impl<'a> HistoryContents<'a> {
         let key = HistoryChunkKey { content, revision };
         let inserted = match self {
             Self::All(plan) => {
-                if plan.chunks.contains_key(&key) {
-                    observations.reused_contents = observations.reused_contents.saturating_add(1);
-                    false
-                } else {
-                    plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
-                    let document = selected_document(plan, document, locator)?;
-                    plan.chunks
-                        .insert(key, GitHistoryChunk { document, ordinal });
-                    true
-                }
+                plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
+                let document = selected_document(plan, document, locator)?;
+                plan.chunks
+                    .insert_unique(key, GitHistoryChunk { document, ordinal });
+                true
             }
             Self::Delta {
                 previous_contains,
                 plan,
             } => {
-                if plan.chunks.contains_key(&key)
-                    || previous_contains(
-                        &key.content,
-                        &locator.revision,
-                        &plan.removed_document_ids,
-                    )?
-                {
+                if previous_contains(&key.content, &locator.revision, &plan.removed_document_ids)? {
                     observations.reused_contents = observations.reused_contents.saturating_add(1);
                     false
                 } else {
                     plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
                     let document = selected_document(plan, document, locator)?;
                     plan.chunks
-                        .insert(key, GitHistoryChunk { document, ordinal });
+                        .insert_unique(key, GitHistoryChunk { document, ordinal });
                     true
                 }
             }
@@ -2947,6 +2972,37 @@ mod tests {
             1
         );
         assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn history_chunk_index_can_release_seed_lookup_before_unique_appends() {
+        let mut index = HistoryChunkIndex::default();
+        let key = HistoryChunkKey {
+            content: ContentDigest::of(b"seed"),
+            revision: 1,
+        };
+        index.insert(
+            key.clone(),
+            GitHistoryChunk {
+                document: 1,
+                ordinal: 0,
+            },
+        );
+
+        index.release_seed_lookup();
+        index.insert_unique(
+            key,
+            GitHistoryChunk {
+                document: 2,
+                ordinal: 1,
+            },
+        );
+
+        assert_eq!(index.len(), 2);
+        assert!(!index.contains_key(&HistoryChunkKey {
+            content: ContentDigest::of(b"seed"),
+            revision: 1,
+        }));
     }
 
     #[test]
