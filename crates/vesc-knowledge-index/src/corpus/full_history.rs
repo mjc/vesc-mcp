@@ -965,12 +965,44 @@ impl HistoryChunkFingerprints {
             shard.clear();
         }
     }
+
+    fn freeze(self) -> FrozenHistoryChunkFingerprints {
+        FrozenHistoryChunkFingerprints {
+            shards: self
+                .shards
+                .into_iter()
+                .map(|shard| {
+                    let mut entries = shard.into_iter().collect::<Vec<_>>();
+                    entries.sort_unstable_by_key(|(fingerprint, _)| *fingerprint);
+                    entries
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FrozenHistoryChunkFingerprints {
+    shards: Vec<Vec<(u64, u32)>>,
+}
+
+impl FrozenHistoryChunkFingerprints {
+    fn get(&self, fingerprint: u64) -> Option<u32> {
+        let shard = self
+            .shards
+            .get(HistoryChunkFingerprints::shard(fingerprint))?;
+        shard
+            .binary_search_by_key(&fingerprint, |(value, _)| *value)
+            .ok()
+            .map(|index| shard[index].1)
+    }
 }
 
 #[derive(Debug, Default)]
 struct HistoryChunkIndex {
     entries: HistoryChunkEntries,
     fingerprints: HistoryChunkFingerprints,
+    seed_fingerprints: Option<FrozenHistoryChunkFingerprints>,
     collisions: HashMap<HistoryChunkKey, u32>,
 }
 
@@ -979,6 +1011,7 @@ impl HistoryChunkIndex {
         Self {
             entries: HistoryChunkEntries::with_capacity(capacity),
             fingerprints: HistoryChunkFingerprints::with_capacity(capacity),
+            seed_fingerprints: None,
             collisions: HashMap::new(),
         }
     }
@@ -1004,7 +1037,12 @@ impl HistoryChunkIndex {
 
     fn index_of(&self, key: &HistoryChunkKey) -> Option<usize> {
         let fingerprint = Self::fingerprint(key);
-        match self.fingerprints.get(fingerprint).copied() {
+        let index = self.fingerprints.get(fingerprint).copied().or_else(|| {
+            self.seed_fingerprints
+                .as_ref()
+                .and_then(|lookup| lookup.get(fingerprint))
+        });
+        match index {
             Some(CHUNK_INDEX_COLLISION) => self
                 .collisions
                 .get(key)
@@ -1040,10 +1078,32 @@ impl HistoryChunkIndex {
         None
     }
 
+    fn freeze_seed_lookup(&mut self) {
+        self.seed_fingerprints = Some(std::mem::take(&mut self.fingerprints).freeze());
+    }
+
     fn register_index(&mut self, fingerprint: u64, index: u32, key: HistoryChunkKey) {
         match self.fingerprints.get(fingerprint).copied() {
             None => {
-                self.fingerprints.insert(fingerprint, index);
+                if let Some(existing) = self
+                    .seed_fingerprints
+                    .as_ref()
+                    .and_then(|lookup| lookup.get(fingerprint))
+                {
+                    self.fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
+                    if existing != CHUNK_INDEX_COLLISION {
+                        let existing_key = self
+                            .entries
+                            .get(existing as usize)
+                            .expect("history entry index")
+                            .0
+                            .clone();
+                        self.collisions.insert(existing_key, existing);
+                    }
+                    self.collisions.insert(key, index);
+                } else {
+                    self.fingerprints.insert(fingerprint, index);
+                }
             }
             Some(CHUNK_INDEX_COLLISION) => {
                 self.collisions.insert(key, index);
@@ -1068,6 +1128,7 @@ impl HistoryChunkIndex {
     }
 
     fn rebuild_index(&mut self) {
+        self.seed_fingerprints = None;
         self.fingerprints.clear();
         self.collisions.clear();
         for index in 0..self.entries.len() {
@@ -1530,6 +1591,7 @@ impl GitHistoryBuildPlan {
                 },
             );
         }
+        plan.chunks.freeze_seed_lookup();
         Ok((plan, cached_history))
     }
 
@@ -2947,6 +3009,55 @@ mod tests {
             1
         );
         assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn frozen_seed_lookup_deduplicates_seed_and_new_keys() {
+        let mut index = HistoryChunkIndex::default();
+        let seed = HistoryChunkKey {
+            content: ContentDigest::of(b"seed"),
+            revision: 1,
+        };
+        index.insert(
+            seed.clone(),
+            GitHistoryChunk {
+                document: 1,
+                ordinal: 0,
+            },
+        );
+        index.freeze_seed_lookup();
+
+        assert_eq!(
+            index
+                .insert(
+                    seed,
+                    GitHistoryChunk {
+                        document: 2,
+                        ordinal: 1,
+                    },
+                )
+                .expect("frozen seed lookup finds an exact duplicate")
+                .document,
+            1
+        );
+
+        let new_key = HistoryChunkKey {
+            content: ContentDigest::of(b"new"),
+            revision: 2,
+        };
+        assert!(
+            index
+                .insert(
+                    new_key.clone(),
+                    GitHistoryChunk {
+                        document: 3,
+                        ordinal: 2,
+                    },
+                )
+                .is_none()
+        );
+        assert_eq!(index.len(), 2);
+        assert!(index.contains_key(&new_key));
     }
 
     #[test]
