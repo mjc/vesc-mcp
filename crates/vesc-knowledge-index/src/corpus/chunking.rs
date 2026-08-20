@@ -144,6 +144,18 @@ impl ChunkDraft<'_> {
     pub(crate) const fn ordinal(&self) -> u32 {
         self.ordinal
     }
+
+    pub(crate) const fn chunk_id(&self) -> ChunkId {
+        ChunkId::from_sha256(self.chunk_identity)
+    }
+
+    pub(crate) const fn content_digest(&self) -> &ContentDigest {
+        &self.content_digest
+    }
+
+    pub(crate) const fn source_span(&self) -> Option<super::SourceSpan> {
+        self.source_span
+    }
 }
 
 #[derive(Debug)]
@@ -158,6 +170,10 @@ impl ChunkDrafts<'_> {
 
     pub(crate) fn get(&self, index: usize) -> &ChunkDraft<'_> {
         &self.chunks[index]
+    }
+
+    pub(crate) fn get_optional(&self, index: usize) -> Option<&ChunkDraft<'_>> {
+        self.chunks.get(index)
     }
 
     pub(crate) fn materialize(

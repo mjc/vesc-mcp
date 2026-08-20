@@ -16,7 +16,10 @@ use super::git::{
     document_from_git_commit, identifier_refs, identifier_values, is_selected, load_git_blob,
     validate_policy,
 };
-use super::{Chunk, ContentDigest, DocumentId, RepositoryId, Revision, SourceKind};
+use super::{
+    Category, Chunk, ChunkId, ChunkIdentity, ContentDigest, CorpusError, DocumentId,
+    NormalizedDocument, RepositoryId, Revision, SourceKind, SourceSpan, TrustTier,
+};
 use crate::semantic::{embedding_text_digest_from_metadata, embedding_text_digest_from_parts};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +200,157 @@ impl TipAdmissions {
     }
 }
 
+/// Borrowed history projection used by lexical and sidecar writers.
+///
+/// It keeps the document and draft storage borrowed while exposing the exact
+/// fields those writers need. The public `Chunk` remains available through
+/// `try_for_each_chunk` for callers that need owned passages.
+pub(crate) struct GitHistoryChunkView<'a> {
+    document: &'a NormalizedDocument,
+    draft: &'a super::chunking::ChunkDraft<'a>,
+    chunk_id: ChunkId,
+    identifiers: Vec<compact_str::CompactString>,
+    previous_chunk: Option<ChunkId>,
+    next_chunk: Option<ChunkId>,
+}
+
+impl<'a> GitHistoryChunkView<'a> {
+    fn new(
+        drafts: &'a super::chunking::ChunkDrafts<'a>,
+        index: usize,
+        document: &'a NormalizedDocument,
+        identifiers: Vec<compact_str::CompactString>,
+    ) -> Self {
+        let draft = drafts.get(index);
+        Self {
+            document,
+            draft,
+            chunk_id: draft.chunk_id(),
+            identifiers,
+            previous_chunk: index
+                .checked_sub(1)
+                .map(|previous| drafts.get(previous).chunk_id()),
+            next_chunk: drafts
+                .get_optional(index + 1)
+                .map(super::chunking::ChunkDraft::chunk_id),
+        }
+    }
+
+    pub(crate) const fn chunk_id(&self) -> &ChunkId {
+        &self.chunk_id
+    }
+
+    pub(crate) const fn document_id(&self) -> &DocumentId {
+        &self.document.document_id
+    }
+
+    pub(crate) const fn ordinal(&self) -> u32 {
+        self.draft.ordinal()
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.document.title
+    }
+
+    pub(crate) const fn source_kind(&self) -> SourceKind {
+        self.document.source_kind
+    }
+
+    pub(crate) const fn repository(&self) -> &RepositoryId {
+        &self.document.repository
+    }
+
+    pub(crate) const fn revision(&self) -> &Revision {
+        &self.document.revision
+    }
+
+    pub(crate) fn path(&self) -> &str {
+        &self.document.path
+    }
+
+    pub(crate) fn headings(&self) -> &[&str] {
+        self.draft.headings()
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        self.draft.text()
+    }
+
+    pub(crate) const fn source_span(&self) -> Option<SourceSpan> {
+        self.draft.source_span()
+    }
+
+    pub(crate) fn identifiers(&self) -> &[compact_str::CompactString] {
+        &self.identifiers
+    }
+
+    pub(crate) const fn tags(&self) -> &BTreeSet<String> {
+        &self.document.tags
+    }
+
+    pub(crate) const fn category(&self) -> Option<Category> {
+        self.document.category
+    }
+
+    pub(crate) fn registered_id(&self) -> Option<&str> {
+        self.document.registered_id.as_deref()
+    }
+
+    pub(crate) const fn trust_tier(&self) -> TrustTier {
+        self.document.trust_tier
+    }
+
+    pub(crate) const fn previous_chunk(&self) -> Option<&ChunkId> {
+        self.previous_chunk.as_ref()
+    }
+
+    pub(crate) const fn next_chunk(&self) -> Option<&ChunkId> {
+        self.next_chunk.as_ref()
+    }
+
+    pub(crate) const fn content_digest(&self) -> &ContentDigest {
+        self.draft.content_digest()
+    }
+
+    pub(crate) fn char_count(&self) -> u32 {
+        u32::try_from(self.text().chars().count()).expect("chunking config bounds character count")
+    }
+
+    pub(crate) fn byte_count(&self) -> u64 {
+        self.text().len() as u64
+    }
+
+    pub(crate) fn history_content_key(&self) -> ContentDigest {
+        history_content_key_for_fields(
+            self.repository(),
+            self.path(),
+            self.title(),
+            self.headings().iter().copied(),
+            self.identifiers(),
+            self.tags(),
+            self.text(),
+        )
+    }
+
+    fn into_chunk(self) -> Result<Chunk, CorpusError> {
+        let mut chunk = Chunk::from_document_identity(
+            self.document,
+            self.ordinal(),
+            self.text().to_owned(),
+            self.headings()
+                .iter()
+                .map(|heading| (*heading).to_owned())
+                .collect(),
+            self.source_span(),
+            ChunkIdentity::from_sha256(self.content_digest().clone(), *self.chunk_id().as_bytes()),
+        )?;
+        chunk.identifiers = self.identifiers;
+        chunk.previous_chunk = self.previous_chunk;
+        chunk.next_chunk = self.next_chunk;
+        Ok(chunk)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CachedGitHistoryChunk<'a> {
     pub document_id: &'a str,
@@ -226,18 +380,18 @@ pub(crate) struct CachedGitHistoryRecord {
 }
 
 impl CachedGitHistoryRecord {
-    pub(crate) fn from_chunk(chunk: &Chunk, blob: gix::ObjectId) -> Self {
+    pub(crate) fn from_view(view: &GitHistoryChunkView<'_>, blob: gix::ObjectId) -> Self {
         Self {
-            document_id: chunk.document_id.as_str().to_owned(),
-            repository: chunk.repository.as_str().to_owned(),
-            revision: chunk.revision.as_str().to_owned(),
-            path: chunk.path.clone(),
-            ordinal: chunk.ordinal,
-            has_previous: chunk.previous_chunk.is_some(),
-            has_next: chunk.next_chunk.is_some(),
+            document_id: view.document_id().as_str().to_owned(),
+            repository: view.repository().as_str().to_owned(),
+            revision: view.revision().as_str().to_owned(),
+            path: view.path().to_owned(),
+            ordinal: view.ordinal(),
+            has_previous: view.previous_chunk().is_some(),
+            has_next: view.next_chunk().is_some(),
             blob: Some(blob.to_string()),
-            source_kind: chunk.source_kind,
-            content_key: crate::corpus::history_content_key_for_chunk(chunk),
+            source_kind: view.source_kind(),
+            content_key: Some(view.history_content_key()),
         }
     }
 
@@ -1791,11 +1945,31 @@ impl GitHistoryBuildPlan {
         Ok((plan, cached_history))
     }
 
-    #[allow(clippy::too_many_lines)] // One streaming pass shares repository and blob state.
     pub(crate) fn try_for_each_chunk(
         &self,
         sources: &[GitCorpusSource],
         mut visit: impl FnMut(Chunk, gix::ObjectId),
+    ) -> Result<(), GitHistoryError> {
+        let mut materialization_error = None;
+        self.try_for_each_history_view(sources, |view, object| {
+            if materialization_error.is_some() {
+                return;
+            }
+            match view.into_chunk() {
+                Ok(chunk) => visit(chunk, object),
+                Err(error) => materialization_error = Some(error),
+            }
+        })?;
+        materialization_error.map_or(Ok(()), |error| {
+            Err(GitHistoryError::Chunking(error.to_string()))
+        })
+    }
+
+    #[allow(clippy::too_many_lines)] // One streaming pass shares repository and blob state.
+    pub(crate) fn try_for_each_history_view(
+        &self,
+        sources: &[GitCorpusSource],
+        mut visit: impl FnMut(GitHistoryChunkView<'_>, gix::ObjectId),
     ) -> Result<(), GitHistoryError> {
         let mut repositories = HashMap::<usize, gix::Repository>::new();
         let mut selected = self.chunks.entries.iter().peekable();
@@ -1940,10 +2114,8 @@ impl GitHistoryBuildPlan {
                         source.repository_id, path, selection.ordinal
                     )));
                 }
-                let chunk = drafts
-                    .materialize(index, Some(identifiers))
-                    .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-                visit(chunk, object);
+                let view = GitHistoryChunkView::new(&drafts, index, &document, identifiers);
+                visit(view, object);
             }
         }
         Ok(())
@@ -3068,15 +3240,30 @@ fn history_content_key(
 
 pub(crate) fn history_content_key_for_chunk(chunk: &Chunk) -> Option<ContentDigest> {
     chunk.source_kind.is_git().then(|| {
-        let embedding_key = embedding_text_digest_from_metadata(
+        history_content_key_for_fields(
+            &chunk.repository,
+            &chunk.path,
             &chunk.title,
             chunk.heading_path.iter().map(String::as_str),
             &chunk.identifiers,
             &chunk.tags,
             &chunk.text,
-        );
-        history_content_key(&chunk.repository, &chunk.path, &embedding_key)
+        )
     })
+}
+
+fn history_content_key_for_fields<'heading>(
+    repository: &RepositoryId,
+    path: &str,
+    title: &str,
+    headings: impl Iterator<Item = &'heading str> + Clone,
+    identifiers: &[compact_str::CompactString],
+    tags: &BTreeSet<String>,
+    text: &str,
+) -> ContentDigest {
+    let embedding_key =
+        embedding_text_digest_from_metadata(title, headings, identifiers, tags, text);
+    history_content_key(repository, path, &embedding_key)
 }
 
 fn selected_change(
@@ -3397,6 +3584,20 @@ mod tests {
         }
 
         let _ = compile_owned_callback;
+    }
+
+    #[test]
+    fn history_chunk_stream_delivers_borrowed_projection() {
+        fn compile_projection_callback(
+            plan: &GitHistoryBuildPlan,
+            sources: &[GitCorpusSource],
+        ) -> Result<(), GitHistoryError> {
+            plan.try_for_each_history_view(sources, |view, _| {
+                let _ = (view.chunk_id(), view.text(), view.next_chunk());
+            })
+        }
+
+        let _ = compile_projection_callback;
     }
 
     #[test]
