@@ -19,7 +19,9 @@ use tantivy::schema::{
 use tantivy::termdict::TermMerger;
 use tantivy::{DocSet, Index, IndexReader, IndexWriter, TERMINATED, TantivyDocument, Term};
 
-use crate::corpus::full_history::{CachedGitHistoryRecord, GitHistoryBuildPlan};
+use crate::corpus::full_history::{
+    CachedGitHistoryRecord, GitHistoryBuildPlan, GitHistoryChunkView,
+};
 use crate::corpus::git::GitCorpusSource;
 use crate::corpus::{
     CORPUS_SCHEMA_V1, Chunk, ChunkId, ContentDigest, DocumentId, ResourceUri, RetrievalMetadata,
@@ -758,15 +760,28 @@ impl GitHistorySidecars {
             .push(&EmbeddingLocatorRecord::from_chunk(chunk, None))
     }
 
-    fn push_history(&mut self, chunk: &Chunk, blob: gix::ObjectId) -> Result<(), LexicalError> {
+    fn push_history(
+        &mut self,
+        view: &GitHistoryChunkView<'_>,
+        blob: gix::ObjectId,
+    ) -> Result<(), LexicalError> {
         if let Some(graph) = self.graph.as_mut() {
-            graph.push(&GraphChunk::from_chunk(chunk))?;
+            graph.push(&GraphChunk {
+                chunk_id: view.chunk_id().clone(),
+                repository: view.repository().clone(),
+                revision: view.revision().clone(),
+                path: view.path().to_owned(),
+                title: view.title().to_owned(),
+                ordinal: view.ordinal(),
+                source_span: view.source_span(),
+                next_chunk: view.next_chunk().cloned(),
+            })?;
         }
         if let Some(history) = self.history.as_mut() {
-            history.push(&CachedGitHistoryRecord::from_chunk(chunk, blob))?;
+            history.push(&CachedGitHistoryRecord::from_view(view, blob))?;
         }
         if let Some(embedding) = self.embedding.as_mut() {
-            embedding.push(&EmbeddingLocatorRecord::from_chunk(chunk, Some(blob)))?;
+            embedding.push(&EmbeddingLocatorRecord::from_history_view(view, Some(blob)))?;
         }
         Ok(())
     }
@@ -2217,6 +2232,30 @@ impl EmbeddingLocatorRecord {
         &self.chunk_id
     }
 
+    fn from_history_view(
+        view: &GitHistoryChunkView<'_>,
+        git_object_id: Option<gix::ObjectId>,
+    ) -> Self {
+        Self {
+            chunk_id: view.chunk_id().clone(),
+            document_id: view.document_id().clone(),
+            title: view.title().to_owned(),
+            source_kind: view.source_kind(),
+            repository: view.repository().clone(),
+            revision: view.revision().clone(),
+            path: view.path().to_owned(),
+            heading_path: view
+                .headings()
+                .iter()
+                .map(|heading| (*heading).to_owned())
+                .collect(),
+            source_span: view.source_span(),
+            identifiers: view.identifiers().to_vec(),
+            tags: view.tags().clone(),
+            git_object_id: git_object_id.map(|object| object.to_string()),
+        }
+    }
+
     fn from_chunk(chunk: &Chunk, git_object_id: Option<gix::ObjectId>) -> Self {
         Self {
             chunk_id: chunk.chunk_id.clone(),
@@ -2762,10 +2801,219 @@ fn add_chunk(writer: &IndexWriter, fields: LexicalFields, chunk: &Chunk) {
         .expect("in-memory lexical document is valid");
 }
 
+trait TantivyChunkFields {
+    fn chunk_id(&self) -> &ChunkId;
+    fn document_id(&self) -> &str;
+    fn ordinal(&self) -> u32;
+    fn title(&self) -> &str;
+    fn source_kind(&self) -> SourceKind;
+    fn repository(&self) -> &str;
+    fn revision(&self) -> &str;
+    fn path(&self) -> &str;
+    fn headings(&self) -> impl Iterator<Item = &str> + Clone;
+    fn text(&self) -> &str;
+    fn source_span(&self) -> Option<SourceSpan>;
+    fn category(&self) -> Option<Category>;
+    fn tags(&self) -> impl Iterator<Item = &str> + Clone;
+    fn identifiers(&self) -> impl Iterator<Item = &str> + Clone;
+    fn registered_id(&self) -> Option<&str>;
+    fn trust_tier(&self) -> TrustTier;
+    fn previous_chunk(&self) -> Option<&ChunkId>;
+    fn next_chunk(&self) -> Option<&ChunkId>;
+    fn content_digest(&self) -> &ContentDigest;
+    fn char_count(&self) -> u32;
+    fn byte_count(&self) -> u64;
+    fn history_content_key(&self) -> Option<ContentDigest>;
+}
+
+impl TantivyChunkFields for Chunk {
+    fn chunk_id(&self) -> &ChunkId {
+        &self.chunk_id
+    }
+
+    fn document_id(&self) -> &str {
+        self.document_id.as_str()
+    }
+
+    fn ordinal(&self) -> u32 {
+        self.ordinal
+    }
+
+    fn title(&self) -> &str {
+        &self.title
+    }
+
+    fn source_kind(&self) -> SourceKind {
+        self.source_kind
+    }
+
+    fn repository(&self) -> &str {
+        self.repository.as_str()
+    }
+
+    fn revision(&self) -> &str {
+        self.revision.as_str()
+    }
+
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn headings(&self) -> impl Iterator<Item = &str> + Clone {
+        self.heading_path.iter().map(String::as_str)
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn source_span(&self) -> Option<SourceSpan> {
+        self.source_span
+    }
+
+    fn category(&self) -> Option<Category> {
+        self.category
+    }
+
+    fn tags(&self) -> impl Iterator<Item = &str> + Clone {
+        self.tags.iter().map(String::as_str)
+    }
+
+    fn identifiers(&self) -> impl Iterator<Item = &str> + Clone {
+        self.identifiers
+            .iter()
+            .map(compact_str::CompactString::as_str)
+    }
+
+    fn registered_id(&self) -> Option<&str> {
+        self.registered_id.as_deref()
+    }
+
+    fn trust_tier(&self) -> TrustTier {
+        self.trust_tier
+    }
+
+    fn previous_chunk(&self) -> Option<&ChunkId> {
+        self.previous_chunk.as_ref()
+    }
+
+    fn next_chunk(&self) -> Option<&ChunkId> {
+        self.next_chunk.as_ref()
+    }
+
+    fn content_digest(&self) -> &ContentDigest {
+        &self.content_digest
+    }
+
+    fn char_count(&self) -> u32 {
+        self.char_count
+    }
+
+    fn byte_count(&self) -> u64 {
+        self.byte_count
+    }
+
+    fn history_content_key(&self) -> Option<ContentDigest> {
+        crate::corpus::history_content_key_for_chunk(self)
+    }
+}
+
+impl TantivyChunkFields for GitHistoryChunkView<'_> {
+    fn chunk_id(&self) -> &ChunkId {
+        self.chunk_id()
+    }
+
+    fn document_id(&self) -> &str {
+        self.document_id().as_str()
+    }
+
+    fn ordinal(&self) -> u32 {
+        self.ordinal()
+    }
+
+    fn title(&self) -> &str {
+        self.title()
+    }
+
+    fn source_kind(&self) -> SourceKind {
+        self.source_kind()
+    }
+
+    fn repository(&self) -> &str {
+        self.repository().as_str()
+    }
+
+    fn revision(&self) -> &str {
+        self.revision().as_str()
+    }
+
+    fn path(&self) -> &str {
+        self.path()
+    }
+
+    fn headings(&self) -> impl Iterator<Item = &str> + Clone {
+        self.headings().iter().copied()
+    }
+
+    fn text(&self) -> &str {
+        self.text()
+    }
+
+    fn source_span(&self) -> Option<SourceSpan> {
+        self.source_span()
+    }
+
+    fn category(&self) -> Option<Category> {
+        self.category()
+    }
+
+    fn tags(&self) -> impl Iterator<Item = &str> + Clone {
+        self.tags().iter().map(String::as_str)
+    }
+
+    fn identifiers(&self) -> impl Iterator<Item = &str> + Clone {
+        self.identifiers()
+            .iter()
+            .map(compact_str::CompactString::as_str)
+    }
+
+    fn registered_id(&self) -> Option<&str> {
+        self.registered_id()
+    }
+
+    fn trust_tier(&self) -> TrustTier {
+        self.trust_tier()
+    }
+
+    fn previous_chunk(&self) -> Option<&ChunkId> {
+        self.previous_chunk()
+    }
+
+    fn next_chunk(&self) -> Option<&ChunkId> {
+        self.next_chunk()
+    }
+
+    fn content_digest(&self) -> &ContentDigest {
+        self.content_digest()
+    }
+
+    fn char_count(&self) -> u32 {
+        self.char_count()
+    }
+
+    fn byte_count(&self) -> u64 {
+        self.byte_count()
+    }
+
+    fn history_content_key(&self) -> Option<ContentDigest> {
+        Some(GitHistoryChunkView::history_content_key(self))
+    }
+}
+
 fn add_git_history_chunk(
     writer: &IndexWriter,
     fields: LexicalFields,
-    chunk: &Chunk,
+    chunk: &GitHistoryChunkView<'_>,
     object: gix::ObjectId,
 ) {
     writer
@@ -2781,12 +3029,12 @@ fn write_git_history_chunks(
     sidecars: &mut GitHistorySidecars,
 ) -> Result<(), LexicalError> {
     let mut sidecar_error = None;
-    plan.try_for_each_chunk(sources, |chunk, blob| {
+    plan.try_for_each_history_view(sources, |view, blob| {
         if sidecar_error.is_some() {
             return;
         }
-        add_git_history_chunk(writer, fields, &chunk, blob);
-        if let Err(error) = sidecars.push_history(&chunk, blob) {
+        add_git_history_chunk(writer, fields, &view, blob);
+        if let Err(error) = sidecars.push_history(&view, blob) {
             sidecar_error = Some(error);
         }
         #[cfg(feature = "coz-profile")]
@@ -2799,97 +3047,79 @@ fn write_git_history_chunks(
 }
 
 #[allow(clippy::too_many_lines)] // Direct field writes avoid per-chunk builder abstractions.
-fn tantivy_document(
+fn tantivy_document<T: TantivyChunkFields>(
     fields: LexicalFields,
-    chunk: &Chunk,
+    chunk: &T,
     git_object_id: Option<gix::ObjectId>,
 ) -> TantivyDocument {
-    let history_content_key = crate::corpus::history_content_key_for_chunk(chunk);
-    let content_digest = chunk.content_digest.encoded();
+    let history_content_key = chunk.history_content_key();
+    let content_digest = chunk.content_digest().encoded();
     let history_content_key_encoded = history_content_key.as_ref().map(ContentDigest::encoded);
     let field_value_count = 20_usize
-        .saturating_add(chunk.identifiers.len().saturating_mul(2))
-        .saturating_add(chunk.tags.len())
-        .saturating_add(chunk.heading_path.len())
-        .saturating_add(usize::from(chunk.source_span.is_some()).saturating_mul(2))
+        .saturating_add(chunk.identifiers().clone().count().saturating_mul(2))
+        .saturating_add(chunk.tags().clone().count())
+        .saturating_add(chunk.headings().clone().count())
+        .saturating_add(usize::from(chunk.source_span().is_some()).saturating_mul(2))
         .saturating_add(usize::from(
             chunk
-                .source_span
+                .source_span()
                 .is_some_and(|span| span.start_byte.is_some()),
         ))
         .saturating_add(usize::from(
             chunk
-                .source_span
+                .source_span()
                 .is_some_and(|span| span.end_byte.is_some()),
         ))
-        .saturating_add(usize::from(chunk.registered_id.is_some()))
-        .saturating_add(usize::from(chunk.previous_chunk.is_some()))
-        .saturating_add(usize::from(chunk.next_chunk.is_some()))
+        .saturating_add(usize::from(chunk.registered_id().is_some()))
+        .saturating_add(usize::from(chunk.previous_chunk().is_some()))
+        .saturating_add(usize::from(chunk.next_chunk().is_some()))
         .saturating_add(usize::from(git_object_id.is_some()))
-        .saturating_add(usize::from(chunk.source_kind.is_git()))
+        .saturating_add(usize::from(chunk.source_kind().is_git()))
         .saturating_add(1);
-    let heading_bytes = chunk.heading_path.iter().map(String::len).sum::<usize>();
+    let heading_bytes = chunk.headings().map(str::len).sum::<usize>();
     let mut body = String::with_capacity(
         heading_bytes
-            .saturating_add(chunk.heading_path.len())
-            .saturating_add(chunk.text.len()),
+            .saturating_add(chunk.headings().count())
+            .saturating_add(chunk.text().len()),
     );
-    append_separated(
-        &mut body,
-        chunk.heading_path.iter().map(String::as_str),
-        " ",
-    );
+    append_separated(&mut body, chunk.headings(), " ");
     if !body.is_empty() {
         body.push(' ');
     }
-    body.push_str(&chunk.text);
+    body.push_str(chunk.text());
     append_morphology_aliases(
         &mut body,
-        chunk
-            .heading_path
-            .iter()
-            .map(String::as_str)
-            .chain(std::iter::once(chunk.text.as_str())),
+        chunk.headings().chain(std::iter::once(chunk.text())),
     );
     let mut tags = String::new();
-    append_separated(&mut tags, chunk.tags.iter().map(String::as_str), " ");
-    let category = chunk.category.map_or("", category_label);
-    let trust_tier = trust_label(chunk.trust_tier);
+    append_separated(&mut tags, chunk.tags(), " ");
+    let category = chunk.category().map_or("", category_label);
+    let trust_tier = trust_label(chunk.trust_tier());
     let identifier_bytes = chunk
-        .identifiers
-        .iter()
-        .map(compact_str::CompactString::len)
+        .identifiers()
+        .clone()
+        .map(str::len)
         .sum::<usize>()
         .saturating_mul(2);
     let node_data_capacity = field_value_count
         .saturating_mul(5)
-        .saturating_add(chunk.title.len())
-        .saturating_add(chunk.path.len().saturating_mul(2))
+        .saturating_add(chunk.title().len())
+        .saturating_add(chunk.path().len().saturating_mul(2))
         .saturating_add(identifier_bytes)
         .saturating_add(body.len())
         .saturating_add(tags.len())
         .saturating_add(ChunkId::ENCODED_LEN)
-        .saturating_add(chunk.document_id.as_str().len())
+        .saturating_add(chunk.document_id().len())
         .saturating_add(category.len())
-        .saturating_add(chunk.repository.as_str().len())
-        .saturating_add(chunk.revision.as_str().len())
-        .saturating_add(source_kind_label(chunk.source_kind).len())
+        .saturating_add(chunk.repository().len())
+        .saturating_add(chunk.revision().len())
+        .saturating_add(source_kind_label(chunk.source_kind()).len())
         .saturating_add(trust_tier.len())
         .saturating_add(heading_bytes)
-        .saturating_add(chunk.tags.iter().map(String::len).sum::<usize>())
-        .saturating_add(chunk.registered_id.as_ref().map_or(0, String::len))
-        .saturating_add(
-            chunk
-                .previous_chunk
-                .as_ref()
-                .map_or(0, |_| ChunkId::ENCODED_LEN),
-        )
-        .saturating_add(
-            chunk
-                .next_chunk
-                .as_ref()
-                .map_or(0, |_| ChunkId::ENCODED_LEN),
-        )
+        .saturating_add(chunk.tags().clone().map(str::len).sum::<usize>())
+        .saturating_add(chunk.registered_id().map_or(0, str::len))
+        .saturating_add(chunk.previous_chunk().map_or(0, |_| ChunkId::ENCODED_LEN))
+        .saturating_add(chunk.next_chunk().map_or(0, |_| ChunkId::ENCODED_LEN))
         .saturating_add(content_digest.as_str().len())
         .saturating_add(git_object_id.as_ref().map_or(0, |id| id.as_bytes().len()))
         .saturating_add(
@@ -2897,47 +3127,47 @@ fn tantivy_document(
                 .as_ref()
                 .map_or(0, |key| key.as_str().len()),
         )
-        .saturating_add(chunk.repository.as_str().len())
-        .saturating_add(chunk.revision.as_str().len())
+        .saturating_add(chunk.repository().len())
+        .saturating_add(chunk.revision().len())
         .saturating_add(2);
     let mut document = TantivyDocument::with_capacities(node_data_capacity, field_value_count);
-    document.add_text(fields.title, &chunk.title);
-    document.add_text(fields.path, &chunk.path);
-    document.add_text(fields.path_raw, &chunk.path);
-    for identifier in &chunk.identifiers {
+    document.add_text(fields.title, chunk.title());
+    document.add_text(fields.path, chunk.path());
+    document.add_text(fields.path_raw, chunk.path());
+    for identifier in chunk.identifiers() {
         document.add_text(fields.identifiers, identifier);
     }
-    for identifier in &chunk.identifiers {
+    for identifier in chunk.identifiers() {
         document.add_text(fields.identifiers_raw, identifier);
     }
     document.add_text(fields.body, body);
     document.add_text(fields.tags, tags);
-    for tag in &chunk.tags {
+    for tag in chunk.tags() {
         document.add_text(fields.tags_raw, tag);
     }
-    let chunk_id = chunk.chunk_id.encoded();
+    let chunk_id = chunk.chunk_id().encoded();
     document.add_text(fields.chunk_id, chunk_id.as_str());
-    document.add_text(fields.document_id, chunk.document_id.as_str());
+    document.add_text(fields.document_id, chunk.document_id());
     for (field, bytes) in fields
         .chunk_digest
         .into_iter()
-        .zip(chunk.chunk_id.as_bytes().chunks_exact(8))
+        .zip(chunk.chunk_id().as_bytes().chunks_exact(8))
     {
         document.add_u64(
             field,
             u64::from_be_bytes(bytes.try_into().expect("chunk digest part is eight bytes")),
         );
     }
-    document.add_u64(fields.ordinal, u64::from(chunk.ordinal));
+    document.add_u64(fields.ordinal, u64::from(chunk.ordinal()));
     document.add_text(fields.category, category);
-    document.add_text(fields.repository, chunk.repository.as_str());
-    document.add_text(fields.revision, chunk.revision.as_str());
-    document.add_text(fields.source_kind, source_kind_label(chunk.source_kind));
+    document.add_text(fields.repository, chunk.repository());
+    document.add_text(fields.revision, chunk.revision());
+    document.add_text(fields.source_kind, source_kind_label(chunk.source_kind()));
     document.add_text(fields.trust_tier, trust_tier);
-    for heading in &chunk.heading_path {
+    for heading in chunk.headings() {
         document.add_text(fields.heading_path, heading);
     }
-    if let Some(span) = chunk.source_span {
+    if let Some(span) = chunk.source_span() {
         document.add_u64(fields.start_line, u64::from(span.start_line));
         document.add_u64(fields.end_line, u64::from(span.end_line));
         if let Some(start_byte) = span.start_byte {
@@ -2947,27 +3177,30 @@ fn tantivy_document(
             document.add_u64(fields.end_byte, end_byte);
         }
     }
-    if let Some(registered_id) = &chunk.registered_id {
+    if let Some(registered_id) = chunk.registered_id() {
         document.add_text(fields.registered_id, registered_id);
     }
-    if let Some(previous_chunk) = &chunk.previous_chunk {
+    if let Some(previous_chunk) = chunk.previous_chunk() {
         let previous_chunk = previous_chunk.encoded();
         document.add_text(fields.previous_chunk, previous_chunk.as_str());
     }
-    if let Some(next_chunk) = &chunk.next_chunk {
+    if let Some(next_chunk) = chunk.next_chunk() {
         let next_chunk = next_chunk.encoded();
         document.add_text(fields.next_chunk, next_chunk.as_str());
     }
     document.add_text(fields.content_digest, content_digest.as_str());
-    document.add_u64(fields.char_count, u64::from(chunk.char_count));
-    document.add_u64(fields.byte_count, chunk.byte_count);
+    document.add_u64(fields.char_count, u64::from(chunk.char_count()));
+    document.add_u64(fields.byte_count, chunk.byte_count());
     if let Some(git_object_id) = git_object_id {
         document.add_bytes(fields.git_object_id, git_object_id.as_bytes());
     }
     if let Some(history_content_key) = history_content_key_encoded {
         document.add_text(fields.history_content_key, history_content_key.as_str());
     }
-    document.add_bytes(fields.repository_revision, &repository_revision_key(chunk));
+    document.add_bytes(
+        fields.repository_revision,
+        &repository_revision_key_values(chunk.source_kind(), chunk.repository(), chunk.revision()),
+    );
     document
 }
 
@@ -3036,19 +3269,21 @@ fn git_corpus_contract(source: &GitCorpusSource) -> ContentDigest {
     )
 }
 
-fn repository_revision_key(chunk: &Chunk) -> Vec<u8> {
+fn repository_revision_key_values(
+    source_kind: SourceKind,
+    repository: &str,
+    revision: &str,
+) -> Vec<u8> {
     let mut key = Vec::with_capacity(
-        chunk
-            .repository
-            .as_str()
+        repository
             .len()
-            .saturating_add(chunk.revision.as_str().len())
+            .saturating_add(revision.len())
             .saturating_add(2),
     );
-    key.push(u8::from(chunk.source_kind.is_git()));
-    key.extend_from_slice(chunk.repository.as_str().as_bytes());
+    key.push(u8::from(source_kind.is_git()));
+    key.extend_from_slice(repository.as_bytes());
     key.push(0);
-    key.extend_from_slice(chunk.revision.as_str().as_bytes());
+    key.extend_from_slice(revision.as_bytes());
     key
 }
 
