@@ -911,109 +911,16 @@ impl HistoryChunkEntries {
     }
 }
 
-const FINGERPRINT_EMPTY: u32 = u32::MAX - 1;
-const FINGERPRINT_LOAD_NUMERATOR: usize = 7;
-const FINGERPRINT_LOAD_DENOMINATOR: usize = 10;
-
-#[derive(Debug, Default)]
-struct HistoryChunkFingerprintTable {
-    fingerprints: Vec<u64>,
-    indices: Vec<u32>,
-    len: usize,
-}
-
-impl HistoryChunkFingerprintTable {
-    const fn capacity(&self) -> usize {
-        self.indices.len()
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    const fn slot(fingerprint: u64, mask: usize) -> usize {
-        // The table mask is a power of two; truncating the mixed hash keeps its low bits.
-        fingerprint
-            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            .rotate_left(17) as usize
-            & mask
-    }
-
-    fn reserve_to(&mut self, target: usize) {
-        let required = target
-            .saturating_mul(FINGERPRINT_LOAD_DENOMINATOR)
-            .saturating_add(FINGERPRINT_LOAD_NUMERATOR - 1)
-            / FINGERPRINT_LOAD_NUMERATOR;
-        let desired = required.max(8).next_power_of_two();
-        if desired <= self.capacity() {
-            return;
-        }
-
-        let old_fingerprints = std::mem::take(&mut self.fingerprints);
-        let old_indices = std::mem::take(&mut self.indices);
-        self.fingerprints = vec![0; desired];
-        self.indices = vec![FINGERPRINT_EMPTY; desired];
-        self.len = 0;
-        for (fingerprint, index) in old_fingerprints.into_iter().zip(old_indices) {
-            if index != FINGERPRINT_EMPTY {
-                self.insert_without_grow(fingerprint, index);
-            }
-        }
-    }
-
-    fn find_slot(&self, fingerprint: u64) -> usize {
-        let mask = self.capacity() - 1;
-        let mut slot = Self::slot(fingerprint, mask);
-        loop {
-            let index = self.indices[slot];
-            if index == FINGERPRINT_EMPTY || self.fingerprints[slot] == fingerprint {
-                return slot;
-            }
-            slot = (slot + 1) & mask;
-        }
-    }
-
-    fn insert_without_grow(&mut self, fingerprint: u64, index: u32) -> Option<u32> {
-        let slot = self.find_slot(fingerprint);
-        if self.indices[slot] == FINGERPRINT_EMPTY {
-            self.fingerprints[slot] = fingerprint;
-            self.indices[slot] = index;
-            self.len += 1;
-            None
-        } else {
-            Some(std::mem::replace(&mut self.indices[slot], index))
-        }
-    }
-
-    fn get(&self, fingerprint: u64) -> Option<&u32> {
-        (self.capacity() != 0)
-            .then(|| self.find_slot(fingerprint))
-            .and_then(|slot| (self.indices[slot] != FINGERPRINT_EMPTY).then(|| &self.indices[slot]))
-    }
-
-    fn insert(&mut self, fingerprint: u64, index: u32) -> Option<u32> {
-        if self.capacity() == 0
-            || self.len.saturating_add(1) * FINGERPRINT_LOAD_DENOMINATOR
-                >= self.capacity() * FINGERPRINT_LOAD_NUMERATOR
-        {
-            self.reserve_to(self.len.saturating_add(1));
-        }
-        self.insert_without_grow(fingerprint, index)
-    }
-
-    fn clear(&mut self) {
-        self.indices.fill(FINGERPRINT_EMPTY);
-        self.len = 0;
-    }
-}
-
 #[derive(Debug)]
 struct HistoryChunkFingerprints {
-    shards: Vec<HistoryChunkFingerprintTable>,
+    shards: Vec<HashMap<u64, u32>>,
 }
 
 impl Default for HistoryChunkFingerprints {
     fn default() -> Self {
         Self {
             shards: (0..HISTORY_CHUNK_FINGERPRINT_SHARDS)
-                .map(|_| HistoryChunkFingerprintTable::default())
+                .map(|_| HashMap::new())
                 .collect(),
         }
     }
@@ -1021,8 +928,12 @@ impl Default for HistoryChunkFingerprints {
 
 impl HistoryChunkFingerprints {
     fn with_capacity(capacity: usize) -> Self {
+        let per_shard = capacity.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+            / HISTORY_CHUNK_FINGERPRINT_SHARDS;
         let mut fingerprints = Self::default();
-        fingerprints.reserve_to(capacity);
+        for shard in &mut fingerprints.shards {
+            shard.reserve(per_shard);
+        }
         fingerprints
     }
 
@@ -1032,16 +943,16 @@ impl HistoryChunkFingerprints {
         (fingerprint & (HISTORY_CHUNK_FINGERPRINT_SHARDS as u64 - 1)) as usize
     }
 
-    fn reserve_to(&mut self, target: usize) {
-        let per_shard = target.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+    fn reserve(&mut self, additional: usize) {
+        let per_shard = additional.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
             / HISTORY_CHUNK_FINGERPRINT_SHARDS;
         for shard in &mut self.shards {
-            shard.reserve_to(per_shard);
+            shard.reserve(per_shard);
         }
     }
 
     fn get(&self, fingerprint: u64) -> Option<&u32> {
-        self.shards[Self::shard(fingerprint)].get(fingerprint)
+        self.shards[Self::shard(fingerprint)].get(&fingerprint)
     }
 
     fn insert(&mut self, fingerprint: u64, index: u32) -> Option<u32> {
@@ -1082,7 +993,7 @@ impl HistoryChunkIndex {
 
     fn reserve(&mut self, additional: usize) {
         self.entries.reserve(additional);
-        self.fingerprints.reserve_to(self.entries.capacity());
+        self.fingerprints.reserve(additional);
     }
 
     fn fingerprint(key: &HistoryChunkKey) -> u64 {
@@ -3205,27 +3116,6 @@ mod tests {
             tail_capacity
         );
         assert_eq!(entries.blocks.len(), 3);
-    }
-
-    #[test]
-    fn fingerprint_table_rehashes_without_losing_markers() {
-        let mut table = HistoryChunkFingerprintTable::default();
-        table.reserve_to(32);
-        for fingerprint in 0..32_u64 {
-            assert_eq!(
-                table.insert(
-                    fingerprint,
-                    u32::try_from(fingerprint).expect("test fingerprint fits in u32")
-                ),
-                None
-            );
-        }
-
-        table.insert(7, CHUNK_INDEX_COLLISION);
-        table.reserve_to(256);
-
-        assert_eq!(table.get(7).copied(), Some(CHUNK_INDEX_COLLISION));
-        assert_eq!(table.get(31).copied(), Some(31));
     }
 
     #[test]
