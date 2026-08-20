@@ -257,6 +257,14 @@ struct HistoryReconciliation {
 }
 
 impl CachedGitHistory {
+    fn chunk_count(&self) -> usize {
+        self.repositories
+            .values()
+            .flat_map(HashMap::values)
+            .map(|document| document.chunk_count as usize)
+            .sum()
+    }
+
     pub(crate) fn observe(&mut self, chunk: CachedGitHistoryChunk<'_>) {
         let documents = self
             .repositories
@@ -1397,7 +1405,9 @@ fn plan_git_history_fast_forward_from_chunks(
                 .iter()
                 .any(|tip| tip.repository == chunk.repository)
     });
-    let (plan, cached_history) = GitHistoryBuildPlan::from_chunks(sources, chunks, chunk_capacity)?;
+    let (mut plan, cached_history) =
+        GitHistoryBuildPlan::from_chunks(sources, chunks, chunk_capacity)?;
+    plan.chunks.reserve(cached_history.chunk_count());
     ingest_git_history_fast_forward_with_contents(
         sources,
         previous_tips,
@@ -2500,6 +2510,32 @@ mod tests {
         let plan = GitHistoryBuildPlan::with_chunk_index_capacity(32);
 
         assert!(plan.chunks.capacity() >= 32);
+    }
+
+    #[test]
+    fn cached_history_counts_observed_chunks() {
+        let mut history = CachedGitHistory::default();
+        let chunk = CachedGitHistoryChunk {
+            document_id: "doc",
+            repository: "repo",
+            revision: "revision",
+            path: "src/lib.rs",
+            ordinal: 0,
+            has_previous: false,
+            has_next: true,
+            blob: None,
+            source_kind: SourceKind::GitBlob,
+            content_key: None,
+        };
+        history.observe(chunk.clone());
+        history.observe(CachedGitHistoryChunk {
+            ordinal: 1,
+            has_previous: true,
+            has_next: false,
+            ..chunk
+        });
+
+        assert_eq!(history.chunk_count(), 2);
     }
 
     #[test]
