@@ -55,6 +55,16 @@ const fn delta_chunk_index_capacity(cached_chunks: usize) -> usize {
     }
 }
 
+const fn chunk_index_reserve_target(candidate_chunks: usize) -> usize {
+    if candidate_chunks < MIN_DELTA_CHUNK_INDEX_RESERVE {
+        0
+    } else {
+        candidate_chunks.saturating_add(MIN_DELTA_CHUNK_INDEX_RESERVE - 1)
+            / MIN_DELTA_CHUNK_INDEX_RESERVE
+            * MIN_DELTA_CHUNK_INDEX_RESERVE
+    }
+}
+
 impl Default for GitHistoryRefreshObservations {
     fn default() -> Self {
         Self {
@@ -787,6 +797,14 @@ impl GitHistoryBuildPlan {
         self.chunks.len()
     }
 
+    fn reserve_chunk_index_for_candidates(&mut self, candidate_chunks: usize) {
+        let target = chunk_index_reserve_target(candidate_chunks);
+        if target > self.chunks.capacity() {
+            self.chunks
+                .reserve(target.saturating_sub(self.chunks.len()));
+        }
+    }
+
     pub(crate) fn removed_document_ids(&self) -> impl Iterator<Item = &str> {
         self.removed_document_ids.iter().map(String::as_str)
     }
@@ -1295,6 +1313,11 @@ impl<'a> HistoryContents<'a> {
         document: &mut Option<u32>,
         observations: &mut GitHistoryRefreshObservations,
     ) -> Result<bool, GitHistoryError> {
+        match self {
+            Self::All(plan) | Self::Delta { plan, .. } => {
+                plan.reserve_chunk_index_for_candidates(observations.candidate_chunks);
+            }
+        }
         let key = HistoryChunkKey {
             content,
             revision: locator.revision,
@@ -2531,6 +2554,17 @@ mod tests {
     fn delta_chunk_index_reserve_is_adaptive() {
         assert_eq!(delta_chunk_index_capacity(4_095), 0);
         assert_eq!(delta_chunk_index_capacity(4_096), 4_096);
+    }
+
+    #[test]
+    fn chunk_index_reserves_large_candidate_batches_only() {
+        let mut plan = GitHistoryBuildPlan::default();
+
+        plan.reserve_chunk_index_for_candidates(4_095);
+        assert_eq!(plan.chunks.capacity(), 0);
+
+        plan.reserve_chunk_index_for_candidates(4_096);
+        assert!(plan.chunks.capacity() >= 4_096);
     }
 
     #[test]
