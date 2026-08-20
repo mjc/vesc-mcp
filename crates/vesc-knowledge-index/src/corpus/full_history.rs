@@ -422,6 +422,10 @@ struct CachedGitHistoryMembershipRecord {
 }
 
 impl CachedGitHistoryMembership {
+    pub(crate) const fn len(&self) -> usize {
+        self.records.len()
+    }
+
     fn push_owned(&mut self, record: CachedGitHistoryRecord) {
         self.records.push(CachedGitHistoryMembershipRecord {
             document_id: record.document_id,
@@ -559,6 +563,7 @@ mod history_membership_tests {
         let (history, membership) = projection.into_parts();
 
         assert_eq!(history.chunk_count(), 1);
+        assert_eq!(membership.len(), 1);
         assert!(membership.contains_retained(&key, &revision, &BTreeSet::new()));
     }
 

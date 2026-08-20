@@ -303,9 +303,10 @@ pub fn benchmark_history_inventory_from_fixture(
     projected: bool,
 ) -> Result<HistoryInventoryStats, BenchmarkError> {
     let (history_records, stored_documents_decoded, git_bodies_hydrated) = if projected {
-        let records = LexicalIndex::read_history_records(&fixture.path)?
+        let projection = LexicalIndex::read_history_projection(&fixture.path)?
             .ok_or_else(|| LexicalError::Artifact("history inventory sidecar is missing".into()))?;
-        (records.len(), 0, 0)
+        let (_, membership) = projection.into_parts();
+        (membership.len(), 0, 0)
     } else {
         let HistoryInventoryInputs::Legacy { index, ids } = &fixture.inputs else {
             return Err(LexicalError::Artifact(

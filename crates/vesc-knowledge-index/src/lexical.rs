@@ -20,7 +20,7 @@ use tantivy::termdict::TermMerger;
 use tantivy::{DocSet, Index, IndexReader, IndexWriter, TERMINATED, TantivyDocument, Term};
 
 use crate::corpus::full_history::{
-    CachedGitHistoryProjection, CachedGitHistoryRecord, GitHistoryBuildPlan, GitHistoryChunkView,
+    CachedGitHistoryProjection, GitHistoryBuildPlan, GitHistoryChunkView,
 };
 use crate::corpus::git::GitCorpusSource;
 use crate::corpus::{
@@ -1145,19 +1145,6 @@ impl LexicalIndex {
         }
         let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
         GraphArtifact::from_graph_chunk_reader(corpus_digest, BufReader::new(file), project)
-            .map(Some)
-            .map_err(|error| LexicalError::Artifact(error.to_string()))
-    }
-
-    pub(crate) fn read_history_records(
-        path: &Path,
-    ) -> Result<Option<Vec<CachedGitHistoryRecord>>, LexicalError> {
-        let path = history_input_path(path);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
-        serde_json::from_reader(BufReader::new(file))
             .map(Some)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
     }
@@ -3683,6 +3670,7 @@ const fn trust_label(trust: TrustTier) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::corpus::full_history::CachedGitHistoryRecord;
     use crate::corpus::{NormalizedDocument, RepositoryId, Revision, SourceKind};
 
     fn chunk(title: &str, text: &str, identifier: &str) -> Chunk {
