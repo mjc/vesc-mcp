@@ -899,23 +899,7 @@ impl LexicalIndex {
             add_chunk(&writer, fields, chunk);
             sidecars.push_embedded(chunk)?;
         }
-        let mut sidecar_error = None;
-        plan.try_for_each_chunk(sources, |chunk, blob| {
-            if sidecar_error.is_none() {
-                add_git_history_chunk(&writer, fields, &chunk, blob);
-                if let Err(error) = sidecars.push_history(&chunk, blob) {
-                    sidecar_error = Some(error);
-                }
-                #[cfg(feature = "coz-profile")]
-                if sidecar_error.is_none() {
-                    crate::profile_progress!("lexical_indexed_chunk");
-                }
-            }
-        })
-        .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        if let Some(error) = sidecar_error {
-            return Err(error);
-        }
+        write_git_history_chunks(plan, sources, &writer, fields, &mut sidecars)?;
         writer.commit().map_err(LexicalError::Commit)?;
         sidecars.finish()?;
         Self::write_descriptor(path, git_source_descriptors(sources))
@@ -994,23 +978,7 @@ impl LexicalIndex {
         for document_id in plan.removed_document_ids() {
             writer.delete_term(Term::from_field_text(fields.document_id, document_id));
         }
-        let mut sidecar_error = None;
-        plan.try_for_each_chunk(sources, |chunk, blob| {
-            if sidecar_error.is_none() {
-                add_git_history_chunk(&writer, fields, &chunk, blob);
-                if let Err(error) = sidecars.push_history(&chunk, blob) {
-                    sidecar_error = Some(error);
-                }
-                #[cfg(feature = "coz-profile")]
-                if sidecar_error.is_none() {
-                    crate::profile_progress!("lexical_indexed_chunk");
-                }
-            }
-        })
-        .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        if let Some(error) = sidecar_error {
-            return Err(error);
-        }
+        write_git_history_chunks(plan, sources, &writer, fields, &mut sidecars)?;
         writer.commit().map_err(LexicalError::Commit)?;
         let mut segments = index
             .searchable_segment_metas()
@@ -2803,6 +2771,31 @@ fn add_git_history_chunk(
     writer
         .add_document(tantivy_document(fields, chunk, Some(object)))
         .expect("in-memory lexical document is valid");
+}
+
+fn write_git_history_chunks(
+    plan: &GitHistoryBuildPlan,
+    sources: &[GitCorpusSource],
+    writer: &IndexWriter,
+    fields: LexicalFields,
+    sidecars: &mut GitHistorySidecars,
+) -> Result<(), LexicalError> {
+    let mut sidecar_error = None;
+    plan.try_for_each_chunk(sources, |chunk, blob| {
+        if sidecar_error.is_some() {
+            return;
+        }
+        add_git_history_chunk(writer, fields, &chunk, blob);
+        if let Err(error) = sidecars.push_history(&chunk, blob) {
+            sidecar_error = Some(error);
+        }
+        #[cfg(feature = "coz-profile")]
+        if sidecar_error.is_none() {
+            crate::profile_progress!("lexical_indexed_chunk");
+        }
+    })
+    .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+    sidecar_error.map_or(Ok(()), Err)
 }
 
 #[allow(clippy::too_many_lines)] // Direct field writes avoid per-chunk builder abstractions.
