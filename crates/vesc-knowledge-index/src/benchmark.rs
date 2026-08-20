@@ -99,11 +99,18 @@ pub fn benchmark_embedding_projection(
 /// Inputs held outside the measured region of a graph staging benchmark.
 pub struct GraphProjectionFixture {
     path: PathBuf,
-    index: Option<LexicalIndex>,
-    ids: Option<Vec<ChunkId>>,
+    inputs: GraphProjectionInputs,
     corpus_digest: ContentDigest,
     lexical_artifact_bytes: u64,
     live_documents: usize,
+}
+
+enum GraphProjectionInputs {
+    Projected,
+    Legacy {
+        index: Box<LexicalIndex>,
+        ids: Vec<ChunkId>,
+    },
 }
 
 /// Compact counters returned by the graph staging benchmark.
@@ -132,22 +139,14 @@ pub fn prepare_graph_projection(
     let index = LexicalIndex::open_git_search_artifact_with_sources(path, sources)?;
     let ids = index.embedding_chunk_ids()?;
     let (_, _, corpus_digest) = LexicalIndex::corpus_inventory(path)?;
-    let lexical_artifact_bytes = [
-        path.to_path_buf(),
-        path.with_extension("tantivy"),
-        path.with_extension("graph-input.json"),
-        path.with_extension("history-input.json"),
-        path.with_extension("embedding-input.json"),
-    ]
-    .iter()
-    .try_fold(0_u64, |total, path| {
-        Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
-    })?;
+    let lexical_artifact_bytes = graph_artifact_bytes(path)?;
     Ok(GraphProjectionFixture {
         path: path.to_owned(),
         live_documents: ids.len(),
-        index: Some(index),
-        ids: Some(ids),
+        inputs: GraphProjectionInputs::Legacy {
+            index: Box::new(index),
+            ids,
+        },
         corpus_digest,
         lexical_artifact_bytes,
     })
@@ -168,21 +167,10 @@ pub fn prepare_graph_projection_projected(
     _sources: &[GitCorpusSource],
 ) -> Result<GraphProjectionFixture, BenchmarkError> {
     let (live_documents, _, corpus_digest) = LexicalIndex::corpus_inventory(path)?;
-    let lexical_artifact_bytes = [
-        path.to_path_buf(),
-        path.with_extension("tantivy"),
-        path.with_extension("graph-input.json"),
-        path.with_extension("history-input.json"),
-        path.with_extension("embedding-input.json"),
-    ]
-    .iter()
-    .try_fold(0_u64, |total, path| {
-        Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
-    })?;
+    let lexical_artifact_bytes = graph_artifact_bytes(path)?;
     Ok(GraphProjectionFixture {
         path: path.to_owned(),
-        index: None,
-        ids: None,
+        inputs: GraphProjectionInputs::Projected,
         corpus_digest,
         lexical_artifact_bytes,
         live_documents,
@@ -208,17 +196,13 @@ pub fn benchmark_graph_projection_from_fixture(
         .ok_or_else(|| LexicalError::Artifact("graph projection sidecar is missing".into()))?;
         (graph, 0, 0)
     } else {
-        let ids = fixture
-            .ids
-            .as_ref()
-            .ok_or_else(|| LexicalError::Artifact("legacy graph fixture is missing IDs".into()))?
-            .iter()
-            .cloned()
-            .collect();
-        let index = fixture.index.as_ref().ok_or_else(|| {
-            LexicalError::Artifact("legacy graph fixture is missing index".into())
-        })?;
-        let chunks = index.chunks_by_id(&ids)?;
+        let GraphProjectionInputs::Legacy { index, ids } = &fixture.inputs else {
+            return Err(LexicalError::Artifact(
+                "projected graph fixture has no legacy input".into(),
+            )
+            .into());
+        };
+        let chunks = index.chunks_by_id(&ids.iter().cloned().collect())?;
         let decoded = chunks.len();
         let graph = GraphArtifact::from_chunks(
             fixture.corpus_digest.clone(),
@@ -241,10 +225,17 @@ pub fn benchmark_graph_projection_from_fixture(
 /// Inputs held outside the measured region of a history inventory benchmark.
 pub struct HistoryInventoryFixture {
     path: PathBuf,
-    index: Option<LexicalIndex>,
-    ids: Option<Vec<ChunkId>>,
+    inputs: HistoryInventoryInputs,
     lexical_artifact_bytes: u64,
     live_documents: usize,
+}
+
+enum HistoryInventoryInputs {
+    Projected,
+    Legacy {
+        index: Box<LexicalIndex>,
+        ids: Vec<ChunkId>,
+    },
 }
 
 /// Compact counters returned by the history inventory benchmark.
@@ -270,16 +261,14 @@ pub fn prepare_history_inventory(
 ) -> Result<HistoryInventoryFixture, BenchmarkError> {
     let index = LexicalIndex::open_git_search_artifact_with_sources(path, sources)?;
     let ids = index.embedding_chunk_ids()?;
-    let lexical_artifact_bytes = [path.to_path_buf(), path.with_extension("tantivy")]
-        .iter()
-        .try_fold(0_u64, |total, path| {
-            Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
-        })?;
+    let lexical_artifact_bytes = history_artifact_bytes(path)?;
     Ok(HistoryInventoryFixture {
         path: path.to_owned(),
         live_documents: ids.len(),
-        index: Some(index),
-        ids: Some(ids),
+        inputs: HistoryInventoryInputs::Legacy {
+            index: Box::new(index),
+            ids,
+        },
         lexical_artifact_bytes,
     })
 }
@@ -295,15 +284,10 @@ pub fn prepare_history_inventory_projected(
     _sources: &[GitCorpusSource],
 ) -> Result<HistoryInventoryFixture, BenchmarkError> {
     let (live_documents, _, _) = LexicalIndex::corpus_inventory(path)?;
-    let lexical_artifact_bytes = [path.to_path_buf(), path.with_extension("tantivy")]
-        .iter()
-        .try_fold(0_u64, |total, path| {
-            Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
-        })?;
+    let lexical_artifact_bytes = history_artifact_bytes(path)?;
     Ok(HistoryInventoryFixture {
         path: path.to_owned(),
-        index: None,
-        ids: None,
+        inputs: HistoryInventoryInputs::Projected,
         lexical_artifact_bytes,
         live_documents,
     })
@@ -323,17 +307,13 @@ pub fn benchmark_history_inventory_from_fixture(
             .ok_or_else(|| LexicalError::Artifact("history inventory sidecar is missing".into()))?;
         (records.len(), 0, 0)
     } else {
-        let ids = fixture
-            .ids
-            .as_ref()
-            .ok_or_else(|| LexicalError::Artifact("legacy history fixture is missing IDs".into()))?
-            .iter()
-            .cloned()
-            .collect();
-        let index = fixture.index.as_ref().ok_or_else(|| {
-            LexicalError::Artifact("legacy history fixture is missing index".into())
-        })?;
-        let chunks = index.chunks_by_id(&ids)?;
+        let HistoryInventoryInputs::Legacy { index, ids } = &fixture.inputs else {
+            return Err(LexicalError::Artifact(
+                "projected history fixture has no legacy input".into(),
+            )
+            .into());
+        };
+        let chunks = index.chunks_by_id(&ids.iter().cloned().collect())?;
         let decoded = chunks.len();
         (decoded, decoded, decoded)
     };
@@ -359,6 +339,30 @@ fn path_bytes(path: &Path) -> Result<u64, std::io::Error> {
     fs::read_dir(path)?.try_fold(0_u64, |total, entry| {
         Ok(total.saturating_add(path_bytes(&entry?.path())?))
     })
+}
+
+fn graph_artifact_bytes(path: &Path) -> Result<u64, BenchmarkError> {
+    [
+        path.to_path_buf(),
+        path.with_extension("tantivy"),
+        path.with_extension("graph-input.json"),
+        path.with_extension("history-input.json"),
+        path.with_extension("embedding-input.json"),
+    ]
+    .iter()
+    .try_fold(0_u64, |total, path| {
+        Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
+    })
+    .map_err(Into::into)
+}
+
+fn history_artifact_bytes(path: &Path) -> Result<u64, BenchmarkError> {
+    [path.to_path_buf(), path.with_extension("tantivy")]
+        .iter()
+        .try_fold(0_u64, |total, path| {
+            Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
+        })
+        .map_err(Into::into)
 }
 
 /// A percentile summary over monotonic elapsed-time samples in microseconds.
