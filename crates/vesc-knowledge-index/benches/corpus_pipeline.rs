@@ -10,8 +10,9 @@ use gungraun::prelude::*;
 use gungraun::{Dhat, DhatMetric, Massif};
 use tempfile::{TempDir, tempdir};
 use vesc_knowledge_index::benchmark::{
-    EmbeddingProjectionFixture, benchmark_embedding_projection_from_fixture, embedding_chunk_ids,
-    prepare_embedding_projection,
+    EmbeddingProjectionFixture, GraphProjectionFixture,
+    benchmark_embedding_projection_from_fixture, benchmark_graph_projection_from_fixture,
+    embedding_chunk_ids, prepare_embedding_projection, prepare_graph_projection,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::bounded_document_windows;
@@ -385,6 +386,17 @@ fn fixture_embedding_projection() -> (PersistedRewriteFixture, EmbeddingProjecti
     (fixture, projection)
 }
 
+fn fixture_graph_projection() -> (PersistedRewriteFixture, GraphProjectionFixture) {
+    let fixture = fixture_persisted_rewrite();
+    let previous = fixture.previous.as_ref().expect("persisted predecessor");
+    let projection = prepare_graph_projection(
+        &previous.lexical_path,
+        std::slice::from_ref(&fixture.source),
+    )
+    .expect("prepare graph projection fixture");
+    (fixture, projection)
+}
+
 #[library_benchmark(setup = fixture_document)]
 fn bench_chunk_document(document: NormalizedDocument) -> Vec<Chunk> {
     let document = black_box(document);
@@ -570,6 +582,39 @@ fn bench_embedding_projection_legacy(
 
 #[library_benchmark(
     config = history_memory_benchmark_config(),
+    setup = fixture_graph_projection,
+    teardown = teardown_persisted_fixture
+)]
+fn bench_graph_projection(
+    (fixture, projection): (PersistedRewriteFixture, GraphProjectionFixture),
+) {
+    black_box(
+        benchmark_graph_projection_from_fixture(&projection, true)
+            .expect("projected graph staging"),
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_graph_projection,
+    teardown = teardown_persisted_fixture
+)]
+fn bench_graph_projection_legacy(
+    (fixture, projection): (PersistedRewriteFixture, GraphProjectionFixture),
+) {
+    black_box(
+        benchmark_graph_projection_from_fixture(&projection, false).expect("legacy graph staging"),
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
     setup = fixture_persisted_rewrite,
     teardown = teardown_persisted_fixture
 )]
@@ -740,6 +785,8 @@ library_benchmark_group!(
         bench_incremental_many_divergent_tips,
         bench_embedding_projection,
         bench_embedding_projection_legacy,
+        bench_graph_projection,
+        bench_graph_projection_legacy,
         bench_persisted_reconcile_removed_tips,
         bench_persisted_reconcile_new_tips,
         bench_persisted_reconcile_removed_tips_embedding,
@@ -764,6 +811,8 @@ library_benchmark_group!(
         bench_incremental_many_divergent_tips,
         bench_embedding_projection,
         bench_embedding_projection_legacy,
+        bench_graph_projection,
+        bench_graph_projection_legacy,
         bench_persisted_reconcile_removed_tips,
         bench_persisted_reconcile_new_tips,
         bench_persisted_reconcile_removed_tips_embedding,

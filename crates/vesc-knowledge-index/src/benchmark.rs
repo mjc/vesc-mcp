@@ -12,9 +12,9 @@ use crate::corpus::git::GitCorpusSource;
 use crate::evaluation::{EvaluationMode, EvaluationReport};
 use crate::lexical::EmbeddingTextHydrator;
 use crate::{
-    Chunk, ChunkId, ContentDigest, EmbeddingProvider, FusionConfig, LexicalError, LexicalFilters,
-    LexicalIndex, TokenStatistics, VectorArtifact, VectorBuildObservations, VectorSearch,
-    embedded_entries, fuse_candidates,
+    Chunk, ChunkId, ContentDigest, EmbeddingProvider, FusionConfig, GraphArtifact, LexicalError,
+    LexicalFilters, LexicalIndex, TokenStatistics, VectorArtifact, VectorBuildObservations,
+    VectorSearch, embedded_entries, fuse_candidates,
 };
 
 /// Runs the persisted-index embedding inventory path for allocation benchmarks.
@@ -94,6 +94,117 @@ pub fn benchmark_embedding_projection(
 ) -> Result<usize, BenchmarkError> {
     let fixture = prepare_embedding_projection(path, sources)?;
     benchmark_embedding_projection_from_fixture(&fixture, projected)
+}
+
+/// Inputs held outside the measured region of a graph staging benchmark.
+pub struct GraphProjectionFixture {
+    path: PathBuf,
+    index: LexicalIndex,
+    ids: Vec<ChunkId>,
+    corpus_digest: ContentDigest,
+    lexical_artifact_bytes: u64,
+    live_documents: usize,
+}
+
+/// Compact counters returned by the graph staging benchmark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphProjectionStats {
+    pub live_documents: usize,
+    pub matching_history_documents: usize,
+    pub stored_documents_decoded: usize,
+    pub git_bodies_hydrated: usize,
+    pub graph_nodes: usize,
+    pub graph_edges: usize,
+    pub lexical_artifact_bytes: u64,
+}
+
+/// Loads a persisted Git artifact and its compact graph inputs before a
+/// focused graph projection measurement.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the artifact, source descriptors, or
+/// inventory cannot be read.
+pub fn prepare_graph_projection(
+    path: &Path,
+    sources: &[GitCorpusSource],
+) -> Result<GraphProjectionFixture, BenchmarkError> {
+    let index = LexicalIndex::open_git_search_artifact_with_sources(path, sources)?;
+    let ids = index.embedding_chunk_ids()?;
+    let (_, _, corpus_digest) = LexicalIndex::corpus_inventory(path)?;
+    let lexical_artifact_bytes = [
+        path.to_path_buf(),
+        path.with_extension("tantivy"),
+        path.with_extension("graph-input.json"),
+        path.with_extension("history-input.json"),
+        path.with_extension("embedding-input.json"),
+    ]
+    .iter()
+    .try_fold(0_u64, |total, path| {
+        Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
+    })?;
+    Ok(GraphProjectionFixture {
+        path: path.to_owned(),
+        live_documents: ids.len(),
+        index,
+        ids,
+        corpus_digest,
+        lexical_artifact_bytes,
+    })
+}
+
+/// Runs graph staging from compact sidecar metadata or the old full-chunk
+/// readback path. The latter is retained only as a matched benchmark baseline.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when graph inputs or persisted chunks are invalid.
+pub fn benchmark_graph_projection_from_fixture(
+    fixture: &GraphProjectionFixture,
+    projected: bool,
+) -> Result<GraphProjectionStats, BenchmarkError> {
+    let (graph, stored_documents_decoded, git_bodies_hydrated) = if projected {
+        let graph = LexicalIndex::graph_from_sidecar(
+            &fixture.path,
+            fixture.corpus_digest.clone(),
+            Some,
+        )?
+        .ok_or_else(|| LexicalError::Artifact("graph projection sidecar is missing".into()))?;
+        (graph, 0, 0)
+    } else {
+        let ids = fixture.ids.iter().cloned().collect();
+        let chunks = fixture.index.chunks_by_id(&ids)?;
+        let decoded = chunks.len();
+        let graph = GraphArtifact::from_chunks(
+            fixture.corpus_digest.clone(),
+            &chunks.into_values().collect::<Vec<_>>(),
+        )
+        .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        (graph, decoded, decoded)
+    };
+    Ok(GraphProjectionStats {
+        live_documents: fixture.live_documents,
+        matching_history_documents: graph.nodes.len(),
+        stored_documents_decoded,
+        git_bodies_hydrated,
+        graph_nodes: graph.nodes.len(),
+        graph_edges: graph.edges.len(),
+        lexical_artifact_bytes: fixture.lexical_artifact_bytes,
+    })
+}
+
+fn path_bytes(path: &Path) -> Result<u64, std::io::Error> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    fs::read_dir(path)?.try_fold(0_u64, |total, entry| {
+        Ok(total.saturating_add(path_bytes(&entry?.path())?))
+    })
 }
 
 /// A percentile summary over monotonic elapsed-time samples in microseconds.
@@ -1006,6 +1117,22 @@ mod tests {
         assert_eq!(summary.p50_us, 5);
         assert_eq!(summary.p95_us, 10);
         assert_eq!(summary.max_us, 10);
+    }
+
+    #[test]
+    fn graph_projection_stats_report_compact_result_shape() {
+        let stats = GraphProjectionStats {
+            live_documents: 12,
+            matching_history_documents: 9,
+            stored_documents_decoded: 0,
+            git_bodies_hydrated: 0,
+            graph_nodes: 9,
+            graph_edges: 8,
+            lexical_artifact_bytes: 123,
+        };
+        assert_eq!(stats.stored_documents_decoded, 0);
+        assert_eq!(stats.git_bodies_hydrated, 0);
+        assert_eq!(stats.graph_nodes, stats.matching_history_documents);
     }
 
     #[test]
