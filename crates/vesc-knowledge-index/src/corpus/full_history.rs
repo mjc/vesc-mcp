@@ -584,7 +584,7 @@ impl Default for CommitCoverage {
 struct GitHistoryDocument {
     source_index: u32,
     revision: u32,
-    object: gix::ObjectId,
+    object: u32,
     path: u32,
 }
 
@@ -696,12 +696,61 @@ impl HistoryRevisionPool {
     }
 }
 
+#[derive(Debug, Default)]
+struct HistoryObjectPool {
+    values: Vec<gix::ObjectId>,
+    ids: HashMap<gix::ObjectId, u32>,
+}
+
+impl HistoryObjectPool {
+    fn intern(&mut self, object: gix::ObjectId) -> u32 {
+        if let Some(&object_id) = self.ids.get(&object) {
+            return object_id;
+        }
+        let object_id =
+            u32::try_from(self.values.len()).expect("configured Git limits keep object IDs in u32");
+        self.values.push(object);
+        self.ids.insert(object, object_id);
+        object_id
+    }
+
+    fn get(&self, object_id: u32) -> Option<gix::ObjectId> {
+        self.values.get(object_id as usize).copied()
+    }
+
+    fn compact(&mut self, documents: &mut [GitHistoryDocument]) {
+        let mut remap = vec![None; self.values.len()];
+        for document in documents.iter() {
+            remap[document.object as usize] = Some(0);
+        }
+        for (next, mapped) in remap
+            .iter_mut()
+            .filter(|mapped| mapped.is_some())
+            .enumerate()
+        {
+            *mapped = Some(u32::try_from(next).expect("selected history object index fits in u32"));
+        }
+        for document in documents {
+            document.object = remap[document.object as usize]
+                .expect("history document references a retained object");
+        }
+        let mut old_object = 0_usize;
+        self.values.retain(|_| {
+            let keep = remap[old_object].is_some();
+            old_object += 1;
+            keep
+        });
+        self.ids.clear();
+    }
+}
+
 /// Compact cold-build state. Git remains the source of passage text and
 /// per-chunk metadata until the exact chunk is written or embedded.
 #[derive(Debug, Default)]
 pub(crate) struct GitHistoryBuildPlan {
     documents: Vec<GitHistoryDocument>,
     revisions: HistoryRevisionPool,
+    objects: HistoryObjectPool,
     paths: Vec<Arc<str>>,
     path_ids: HashMap<Arc<str>, u32>,
     chunks: HashMap<HistoryChunkKey, GitHistoryChunk>,
@@ -789,6 +838,7 @@ impl GitHistoryBuildPlan {
         let source_index = u32::try_from(source_index)
             .map_err(|_| GitHistoryError::Invalid("too many Git history sources".into()))?;
         let revision = self.revision_id(revision);
+        let object = self.objects.intern(object);
         let path_id = if let Some(&path_id) = self.path_ids.get(path) {
             path_id
         } else {
@@ -835,6 +885,7 @@ impl GitHistoryBuildPlan {
         }
 
         self.revisions.compact(&mut self.documents);
+        self.objects.compact(&mut self.documents);
 
         let mut path_remap = vec![None; self.paths.len()];
         for document in &self.documents {
@@ -946,6 +997,10 @@ impl GitHistoryBuildPlan {
                 document
             };
             let descriptor = &plan.documents[document as usize];
+            let object = plan
+                .objects
+                .get(descriptor.object)
+                .expect("history document references an object");
             if chunk.source_kind == SourceKind::GitBlob {
                 cached_history.observe(CachedGitHistoryChunk {
                     document_id: chunk.document_id.as_str(),
@@ -955,7 +1010,7 @@ impl GitHistoryBuildPlan {
                     ordinal: chunk.ordinal,
                     has_previous: chunk.previous_chunk.is_some(),
                     has_next: chunk.next_chunk.is_some(),
-                    blob: Some(descriptor.object),
+                    blob: Some(object),
                     source_kind: chunk.source_kind,
                     content_key: Some(
                         history_content_key_for_chunk(&chunk)
@@ -1029,15 +1084,18 @@ impl GitHistoryBuildPlan {
             })?;
             let revision = Revision::try_from(revision_id.to_string())
                 .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
+            let object = self.objects.get(descriptor.object).ok_or_else(|| {
+                GitHistoryError::Invalid("history document references an unknown object".into())
+            })?;
             let document = match descriptor.source_kind() {
                 SourceKind::GitBlob => {
                     let size = repository
-                        .find_header(descriptor.object)
+                        .find_header(object)
                         .map_err(|error| GitHistoryError::Git(error.to_string()))?
                         .size();
                     let candidate = Candidate {
                         path: path.to_string(),
-                        id: descriptor.object,
+                        id: object,
                         size,
                     };
                     let mut hydration = GitIngestionObservations::default();
@@ -1065,7 +1123,7 @@ impl GitHistoryBuildPlan {
                 }
                 SourceKind::GitCommit => {
                     let commit = repository
-                        .find_commit(descriptor.object)
+                        .find_commit(object)
                         .map_err(|error| GitHistoryError::Git(error.to_string()))?;
                     document_from_git_commit(
                         &commit,
@@ -1076,8 +1134,7 @@ impl GitHistoryBuildPlan {
                     )?
                     .ok_or_else(|| {
                         GitHistoryError::Invalid(format!(
-                            "pinned Git commit message {} became unavailable",
-                            descriptor.object
+                            "pinned Git commit message {object} became unavailable"
                         ))
                     })?
                 }
@@ -1125,7 +1182,7 @@ impl GitHistoryBuildPlan {
                 let chunk = drafts
                     .materialize(index, Some(identifiers))
                     .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-                visit(&chunk, descriptor.object);
+                visit(&chunk, object);
             }
             offset = end;
         }
@@ -2400,6 +2457,25 @@ mod tests {
         assert_eq!(
             plan.documents[second as usize].source_kind(),
             SourceKind::GitCommit
+        );
+    }
+
+    #[test]
+    fn history_plan_interns_repeated_objects() {
+        let revision = gix::ObjectId::from_hex("a".repeat(40).as_bytes()).expect("revision");
+        let object = gix::ObjectId::from_hex("b".repeat(40).as_bytes()).expect("object");
+        let mut plan = GitHistoryBuildPlan::default();
+        let first = plan
+            .push_document(0, revision, object, SourceKind::GitBlob, "src/lib.rs")
+            .expect("first document");
+        let second = plan
+            .push_document(0, revision, object, SourceKind::GitBlob, "src/lib.rs")
+            .expect("second document");
+
+        assert_eq!(plan.objects.values, vec![object]);
+        assert_eq!(
+            plan.documents[first as usize].object,
+            plan.documents[second as usize].object
         );
     }
 
