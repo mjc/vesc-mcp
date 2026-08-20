@@ -758,7 +758,7 @@ pub(crate) struct GitHistoryBuildPlan {
 }
 
 impl GitHistoryBuildPlan {
-    fn with_chunk_capacity(chunk_capacity: usize) -> Self {
+    fn with_chunk_index_capacity(chunk_capacity: usize) -> Self {
         Self {
             chunks: HashMap::with_capacity(chunk_capacity),
             ..Self::default()
@@ -934,7 +934,7 @@ impl GitHistoryBuildPlan {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn from_chunks_with_capacity(
+    fn from_chunks(
         sources: &[GitCorpusSource],
         chunks: impl IntoIterator<Item = Chunk>,
         chunk_capacity: usize,
@@ -946,7 +946,7 @@ impl GitHistoryBuildPlan {
             .collect::<HashMap<_, _>>();
         let mut repositories = HashMap::<usize, gix::Repository>::new();
         let mut documents = HashMap::<DocumentId, u32>::new();
-        let mut plan = Self::with_chunk_capacity(chunk_capacity);
+        let mut plan = Self::with_chunk_index_capacity(chunk_capacity);
         let mut cached_history = CachedGitHistory::default();
         for chunk in chunks {
             if !chunk.source_kind.is_git() {
@@ -1397,8 +1397,7 @@ fn plan_git_history_fast_forward_from_chunks(
                 .iter()
                 .any(|tip| tip.repository == chunk.repository)
     });
-    let (plan, cached_history) =
-        GitHistoryBuildPlan::from_chunks_with_capacity(sources, chunks, chunk_capacity)?;
+    let (plan, cached_history) = GitHistoryBuildPlan::from_chunks(sources, chunks, chunk_capacity)?;
     ingest_git_history_fast_forward_with_contents(
         sources,
         previous_tips,
@@ -2498,7 +2497,7 @@ mod tests {
 
     #[test]
     fn history_plan_preallocates_chunk_index() {
-        let plan = GitHistoryBuildPlan::with_chunk_capacity(32);
+        let plan = GitHistoryBuildPlan::with_chunk_index_capacity(32);
 
         assert!(plan.chunks.capacity() >= 32);
     }
