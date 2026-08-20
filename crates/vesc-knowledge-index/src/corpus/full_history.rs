@@ -1,6 +1,7 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
@@ -669,6 +670,129 @@ struct HistoryChunkKey {
     revision: u32,
 }
 
+const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
+
+#[derive(Debug, Default)]
+struct HistoryChunkIndex {
+    entries: Vec<(HistoryChunkKey, GitHistoryChunk)>,
+    fingerprints: HashMap<u64, u32>,
+    collisions: HashMap<HistoryChunkKey, u32>,
+}
+
+impl HistoryChunkIndex {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(capacity),
+            fingerprints: HashMap::with_capacity(capacity),
+            collisions: HashMap::new(),
+        }
+    }
+
+    const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    const fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.entries.reserve(additional);
+        self.fingerprints.reserve(additional);
+    }
+
+    fn fingerprint(key: &HistoryChunkKey) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn index_of(&self, key: &HistoryChunkKey) -> Option<usize> {
+        let fingerprint = Self::fingerprint(key);
+        match self.fingerprints.get(&fingerprint).copied() {
+            Some(CHUNK_INDEX_COLLISION) => self
+                .collisions
+                .get(key)
+                .copied()
+                .map(|index| index as usize),
+            Some(index) => {
+                let index = index as usize;
+                (self.entries[index].0 == *key).then_some(index)
+            }
+            None => None,
+        }
+    }
+
+    fn contains_key(&self, key: &HistoryChunkKey) -> bool {
+        self.index_of(key).is_some()
+    }
+
+    fn insert(&mut self, key: HistoryChunkKey, chunk: GitHistoryChunk) -> Option<GitHistoryChunk> {
+        if let Some(index) = self.index_of(&key) {
+            return Some(std::mem::replace(&mut self.entries[index].1, chunk));
+        }
+        let index = u32::try_from(self.entries.len())
+            .expect("configured Git limits keep history chunk indices in u32");
+        let fingerprint = Self::fingerprint(&key);
+        self.entries.push((key.clone(), chunk));
+        self.register_index(fingerprint, index, key);
+        None
+    }
+
+    fn register_index(&mut self, fingerprint: u64, index: u32, key: HistoryChunkKey) {
+        match self.fingerprints.get(&fingerprint).copied() {
+            None => {
+                self.fingerprints.insert(fingerprint, index);
+            }
+            Some(CHUNK_INDEX_COLLISION) => {
+                self.collisions.insert(key, index);
+            }
+            Some(existing) => {
+                self.fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
+                let existing_key = self.entries[existing as usize].0.clone();
+                self.collisions.insert(existing_key, existing);
+                self.collisions.insert(key, index);
+            }
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
+        self.entries.retain_mut(|(key, chunk)| keep(key, chunk));
+        self.rebuild_index();
+    }
+
+    fn rebuild_index(&mut self) {
+        self.fingerprints.clear();
+        self.collisions.clear();
+        for index in 0..self.entries.len() {
+            let key = self.entries[index].0.clone();
+            let fingerprint = Self::fingerprint(&key);
+            self.register_index(
+                fingerprint,
+                u32::try_from(index)
+                    .expect("configured Git limits keep history chunk indices in u32"),
+                key,
+            );
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&HistoryChunkKey, &GitHistoryChunk)> {
+        self.entries.iter().map(|(key, chunk)| (key, chunk))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &GitHistoryChunk> {
+        self.entries.iter().map(|(_, chunk)| chunk)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut GitHistoryChunk> {
+        self.entries.iter_mut().map(|(_, chunk)| chunk)
+    }
+
+    fn entries_mut(&mut self) -> impl Iterator<Item = &mut (HistoryChunkKey, GitHistoryChunk)> {
+        self.entries.iter_mut()
+    }
+}
+
 #[derive(Debug, Default)]
 struct HistoryRevisionPool {
     values: Vec<gix::ObjectId>,
@@ -691,11 +815,7 @@ impl HistoryRevisionPool {
         self.values.get(revision_id as usize).copied()
     }
 
-    fn compact(
-        &mut self,
-        documents: &mut [GitHistoryDocument],
-        chunks: &mut HashMap<HistoryChunkKey, GitHistoryChunk>,
-    ) {
+    fn compact(&mut self, documents: &mut [GitHistoryDocument], chunks: &mut HistoryChunkIndex) {
         let mut remap = vec![u32::MAX; self.values.len()];
         for document in documents.iter() {
             remap[document.revision as usize] = 0;
@@ -728,12 +848,10 @@ impl HistoryRevisionPool {
             .enumerate()
             .any(|(old, &new)| new != u32::try_from(old).expect("revision pool index fits in u32"))
         {
-            let old_chunks = std::mem::take(chunks);
-            *chunks = HashMap::with_capacity(old_chunks.len());
-            for (mut key, chunk) in old_chunks {
+            for (key, _) in chunks.entries_mut() {
                 key.revision = remap[key.revision as usize];
-                chunks.insert(key, chunk);
             }
+            chunks.rebuild_index();
         }
     }
 }
@@ -795,19 +913,19 @@ pub(crate) struct GitHistoryBuildPlan {
     objects: HistoryObjectPool,
     paths: Vec<Arc<str>>,
     path_ids: HashMap<Arc<str>, u32>,
-    chunks: HashMap<HistoryChunkKey, GitHistoryChunk>,
+    chunks: HistoryChunkIndex,
     removed_document_ids: BTreeSet<String>,
 }
 
 impl GitHistoryBuildPlan {
     fn with_chunk_index_capacity(chunk_capacity: usize) -> Self {
         Self {
-            chunks: HashMap::with_capacity(chunk_capacity),
+            chunks: HistoryChunkIndex::with_capacity(chunk_capacity),
             ..Self::default()
         }
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.chunks.len()
     }
 
@@ -2489,6 +2607,41 @@ mod tests {
             std::mem::size_of::<HistoryChunkKey>(),
             std::mem::size_of::<ContentDigest>() + std::mem::size_of::<u32>()
         );
+    }
+
+    #[test]
+    fn history_chunk_index_deduplicates_exact_keys() {
+        let mut index = HistoryChunkIndex::default();
+        let key = HistoryChunkKey {
+            content: ContentDigest::of(b"chunk"),
+            revision: 3,
+        };
+        assert!(
+            index
+                .insert(
+                    key.clone(),
+                    GitHistoryChunk {
+                        document: 1,
+                        ordinal: 2,
+                    }
+                )
+                .is_none()
+        );
+        assert!(index.contains_key(&key));
+        assert_eq!(
+            index
+                .insert(
+                    key,
+                    GitHistoryChunk {
+                        document: 4,
+                        ordinal: 5,
+                    }
+                )
+                .expect("duplicate returns the previous value")
+                .document,
+            1
+        );
+        assert_eq!(index.len(), 1);
     }
 
     #[test]
