@@ -20,7 +20,7 @@ use tantivy::termdict::TermMerger;
 use tantivy::{DocSet, Index, IndexReader, IndexWriter, TERMINATED, TantivyDocument, Term};
 
 use crate::corpus::full_history::{
-    CachedGitHistoryRecord, GitHistoryBuildPlan, GitHistoryChunkView,
+    CachedGitHistoryProjection, CachedGitHistoryRecord, GitHistoryBuildPlan, GitHistoryChunkView,
 };
 use crate::corpus::git::GitCorpusSource;
 use crate::corpus::{
@@ -1160,6 +1160,17 @@ impl LexicalIndex {
         serde_json::from_reader(BufReader::new(file))
             .map(Some)
             .map_err(|error| LexicalError::Artifact(error.to_string()))
+    }
+
+    pub(crate) fn read_history_projection(
+        path: &Path,
+    ) -> Result<Option<CachedGitHistoryProjection>, LexicalError> {
+        let Some(records) = Self::read_history_records(path)? else {
+            return Ok(None);
+        };
+        CachedGitHistoryProjection::from_records(records)
+            .map(Some)
+            .map_err(LexicalError::Artifact)
     }
 
     pub(crate) fn read_embedding_inputs(
@@ -3749,6 +3760,35 @@ mod tests {
         }
 
         let _ = compile_borrowed_writer;
+    }
+
+    #[test]
+    fn read_history_projection_loads_the_compact_sidecar() {
+        let root = tempfile::tempdir().expect("sidecar root");
+        let path = root.path().join("lexical.json");
+        let record = CachedGitHistoryRecord {
+            document_id: "document".into(),
+            repository: "repo".into(),
+            revision: "0123456789012345678901234567890123456789".into(),
+            path: "file.c".into(),
+            ordinal: 0,
+            has_previous: false,
+            has_next: false,
+            blob: None,
+            source_kind: SourceKind::GitBlob,
+            content_key: Some(ContentDigest::of(b"content")),
+        };
+        fs::write(
+            history_input_path(&path),
+            serde_json::to_vec(&[record]).expect("serialize history sidecar"),
+        )
+        .expect("write history sidecar");
+
+        assert!(
+            LexicalIndex::read_history_projection(&path)
+                .expect("read history projection")
+                .is_some()
+        );
     }
 
     #[test]
