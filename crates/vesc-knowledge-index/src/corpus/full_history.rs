@@ -1397,9 +1397,7 @@ fn plan_git_history_fast_forward_from_chunks(
                 .iter()
                 .any(|tip| tip.repository == chunk.repository)
     });
-    let (mut plan, cached_history) =
-        GitHistoryBuildPlan::from_chunks(sources, chunks, chunk_capacity)?;
-    plan.chunks.reserve(cached_history.chunk_count());
+    let (plan, cached_history) = GitHistoryBuildPlan::from_chunks(sources, chunks, chunk_capacity)?;
     ingest_git_history_fast_forward_with_contents(
         sources,
         previous_tips,
