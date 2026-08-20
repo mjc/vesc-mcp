@@ -1396,6 +1396,25 @@ impl GitHistoryBuildPlan {
         self.chunks.len()
     }
 
+    fn contains_history_chunk(&self, key: &HistoryChunkKey) -> bool {
+        self.chunks.contains_key(key, &self.documents)
+    }
+
+    fn insert_history_chunk(
+        &mut self,
+        key: HistoryChunkKey,
+        chunk: GitHistoryChunk,
+    ) -> Option<GitHistoryChunk> {
+        self.chunks.insert(key, chunk, &self.documents)
+    }
+
+    fn retain_history_chunks(
+        &mut self,
+        keep: impl FnMut(&ContentDigest, &mut GitHistoryChunk) -> bool,
+    ) {
+        self.chunks.retain(keep, &self.documents);
+    }
+
     fn reserve_chunk_index_for_candidates(&mut self, candidate_chunks: usize) {
         let target = chunk_index_reserve_target(candidate_chunks);
         if target > self.chunks.capacity() {
@@ -1444,10 +1463,7 @@ impl GitHistoryBuildPlan {
                 (!keep).then(|| Ok(u32::try_from(index).expect("document index fits in u32")))
             })
             .collect::<Result<HashSet<_>, GitHistoryError>>()?;
-        self.chunks.retain(
-            |_, chunk| !removed.contains(&chunk.document),
-            &self.documents,
-        );
+        self.retain_history_chunks(|_, chunk| !removed.contains(&chunk.document));
         let reused_commit_messages = self
             .documents
             .iter()
@@ -1675,13 +1691,12 @@ impl GitHistoryBuildPlan {
                     .expect("filtered Git-history chunk has a content key"),
                 revision: plan.revision_id(revision),
             };
-            plan.chunks.insert(
+            plan.insert_history_chunk(
                 key,
                 GitHistoryChunk {
                     document,
                     ordinal: chunk.ordinal,
                 },
-                &plan.documents,
             );
         }
         plan.chunks.freeze_seed_lookup();
@@ -1920,14 +1935,13 @@ impl<'a> HistoryContents<'a> {
         let key = HistoryChunkKey { content, revision };
         let inserted = match self {
             Self::All(plan) => {
-                if plan.chunks.contains_key(&key, &plan.documents) {
+                if plan.contains_history_chunk(&key) {
                     observations.reused_contents = observations.reused_contents.saturating_add(1);
                     false
                 } else {
                     plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
                     let document = selected_document(plan, document, locator)?;
-                    plan.chunks
-                        .insert(key, GitHistoryChunk { document, ordinal }, &plan.documents);
+                    plan.insert_history_chunk(key, GitHistoryChunk { document, ordinal });
                     true
                 }
             }
@@ -1935,7 +1949,7 @@ impl<'a> HistoryContents<'a> {
                 previous_contains,
                 plan,
             } => {
-                if plan.chunks.contains_key(&key, &plan.documents)
+                if plan.contains_history_chunk(&key)
                     || previous_contains(
                         &key.content,
                         &locator.revision,
@@ -1947,8 +1961,7 @@ impl<'a> HistoryContents<'a> {
                 } else {
                     plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
                     let document = selected_document(plan, document, locator)?;
-                    plan.chunks
-                        .insert(key, GitHistoryChunk { document, ordinal }, &plan.documents);
+                    plan.insert_history_chunk(key, GitHistoryChunk { document, ordinal });
                     true
                 }
             }
