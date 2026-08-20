@@ -193,6 +193,81 @@ pub fn benchmark_graph_projection_from_fixture(
     })
 }
 
+/// Inputs held outside the measured region of a history inventory benchmark.
+pub struct HistoryInventoryFixture {
+    path: PathBuf,
+    index: LexicalIndex,
+    ids: Vec<ChunkId>,
+    lexical_artifact_bytes: u64,
+    live_documents: usize,
+}
+
+/// Compact counters returned by the history inventory benchmark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryInventoryStats {
+    pub live_documents: usize,
+    pub matching_history_documents: usize,
+    pub stored_documents_decoded: usize,
+    pub git_bodies_hydrated: usize,
+    pub history_records: usize,
+    pub lexical_artifact_bytes: u64,
+}
+
+/// Loads persisted inputs before a focused history inventory measurement.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the artifact, source descriptors, or
+/// inventory cannot be read.
+pub fn prepare_history_inventory(
+    path: &Path,
+    sources: &[GitCorpusSource],
+) -> Result<HistoryInventoryFixture, BenchmarkError> {
+    let index = LexicalIndex::open_git_search_artifact_with_sources(path, sources)?;
+    let ids = index.embedding_chunk_ids()?;
+    let lexical_artifact_bytes = [path.to_path_buf(), path.with_extension("tantivy")]
+        .iter()
+        .try_fold(0_u64, |total, path| {
+            Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
+        })?;
+    Ok(HistoryInventoryFixture {
+        path: path.to_owned(),
+        live_documents: ids.len(),
+        index,
+        ids,
+        lexical_artifact_bytes,
+    })
+}
+
+/// Runs history inventory from compact records or the old full-document readback.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the history sidecar or persisted chunks are invalid.
+pub fn benchmark_history_inventory_from_fixture(
+    fixture: &HistoryInventoryFixture,
+    projected: bool,
+) -> Result<HistoryInventoryStats, BenchmarkError> {
+    let (history_records, stored_documents_decoded, git_bodies_hydrated) = if projected {
+        let records = LexicalIndex::read_history_records(&fixture.path)?
+            .ok_or_else(|| LexicalError::Artifact("history inventory sidecar is missing".into()))?;
+        (records.len(), 0, 0)
+    } else {
+        let ids = fixture.ids.iter().cloned().collect();
+        let chunks = fixture.index.chunks_by_id(&ids)?;
+        let decoded = chunks.len();
+        (decoded, decoded, decoded)
+    };
+    Ok(HistoryInventoryStats {
+        live_documents: fixture.live_documents,
+        matching_history_documents: history_records,
+        stored_documents_decoded,
+        git_bodies_hydrated,
+        history_records,
+        lexical_artifact_bytes: fixture.lexical_artifact_bytes,
+    })
+}
+
 fn path_bytes(path: &Path) -> Result<u64, std::io::Error> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -1133,6 +1208,21 @@ mod tests {
         assert_eq!(stats.stored_documents_decoded, 0);
         assert_eq!(stats.git_bodies_hydrated, 0);
         assert_eq!(stats.graph_nodes, stats.matching_history_documents);
+    }
+
+    #[test]
+    fn history_inventory_stats_report_zero_legacy_hydration_for_projection() {
+        let stats = HistoryInventoryStats {
+            live_documents: 12,
+            matching_history_documents: 9,
+            stored_documents_decoded: 0,
+            git_bodies_hydrated: 0,
+            history_records: 9,
+            lexical_artifact_bytes: 123,
+        };
+        assert_eq!(stats.history_records, stats.matching_history_documents);
+        assert_eq!(stats.stored_documents_decoded, 0);
+        assert_eq!(stats.git_bodies_hydrated, 0);
     }
 
     #[test]

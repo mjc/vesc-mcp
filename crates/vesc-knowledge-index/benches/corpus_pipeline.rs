@@ -10,9 +10,10 @@ use gungraun::prelude::*;
 use gungraun::{Dhat, DhatMetric, Massif};
 use tempfile::{TempDir, tempdir};
 use vesc_knowledge_index::benchmark::{
-    EmbeddingProjectionFixture, GraphProjectionFixture,
+    EmbeddingProjectionFixture, GraphProjectionFixture, HistoryInventoryFixture,
     benchmark_embedding_projection_from_fixture, benchmark_graph_projection_from_fixture,
-    embedding_chunk_ids, prepare_embedding_projection, prepare_graph_projection,
+    benchmark_history_inventory_from_fixture, embedding_chunk_ids, prepare_embedding_projection,
+    prepare_graph_projection, prepare_history_inventory,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::bounded_document_windows;
@@ -124,8 +125,15 @@ struct PersistedRewriteFixture {
     previous: Option<PreviousGitHistoryArtifact>,
 }
 
+struct HistoryInventoryBenchFixture {
+    _history: HistoryGitFixture,
+    _artifact_root: TempDir,
+    inventory: HistoryInventoryFixture,
+}
+
 static HISTORY_FIXTURE_TEARDOWN: Mutex<Option<HistoryGitFixture>> = Mutex::new(None);
 static PERSISTED_FIXTURE_TEARDOWN: Mutex<Option<PersistedRewriteFixture>> = Mutex::new(None);
+static HISTORY_INVENTORY_TEARDOWN: Mutex<Option<HistoryInventoryBenchFixture>> = Mutex::new(None);
 
 fn git(cwd: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -397,6 +405,34 @@ fn fixture_graph_projection() -> (PersistedRewriteFixture, GraphProjectionFixtur
     (fixture, projection)
 }
 
+fn fixture_history_inventory() -> HistoryInventoryBenchFixture {
+    let history = fixture_git_many_tips();
+    let artifact_root = tempdir().expect("history inventory artifact root");
+    let summary = build_git_history_artifacts_incrementally(
+        artifact_root.path(),
+        std::slice::from_ref(&history.source),
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut |_| {},
+    )
+    .expect("build history inventory artifact");
+    let lexical_path = artifact_root
+        .path()
+        .join("generations")
+        .join(&summary.artifacts.generation)
+        .join("lexical.json");
+    let inventory = prepare_history_inventory(&lexical_path, std::slice::from_ref(&history.source))
+        .expect("prepare history inventory fixture");
+    HistoryInventoryBenchFixture {
+        _history: history,
+        _artifact_root: artifact_root,
+        inventory,
+    }
+}
+
 #[library_benchmark(setup = fixture_document)]
 fn bench_chunk_document(document: NormalizedDocument) -> Vec<Chunk> {
     let document = black_box(document);
@@ -448,6 +484,15 @@ fn teardown_persisted_fixture(_: ()) {
         PERSISTED_FIXTURE_TEARDOWN
             .lock()
             .expect("persisted fixture teardown mutex")
+            .take(),
+    );
+}
+
+fn teardown_history_inventory(_: ()) {
+    drop(
+        HISTORY_INVENTORY_TEARDOWN
+            .lock()
+            .expect("history inventory teardown mutex")
             .take(),
     );
 }
@@ -611,6 +656,36 @@ fn bench_graph_projection_legacy(
     *PERSISTED_FIXTURE_TEARDOWN
         .lock()
         .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_history_inventory,
+    teardown = teardown_history_inventory
+)]
+fn bench_history_inventory(fixture: HistoryInventoryBenchFixture) {
+    black_box(
+        benchmark_history_inventory_from_fixture(&fixture.inventory, true)
+            .expect("projected history inventory"),
+    );
+    *HISTORY_INVENTORY_TEARDOWN
+        .lock()
+        .expect("history inventory teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_history_inventory,
+    teardown = teardown_history_inventory
+)]
+fn bench_history_inventory_legacy(fixture: HistoryInventoryBenchFixture) {
+    black_box(
+        benchmark_history_inventory_from_fixture(&fixture.inventory, false)
+            .expect("legacy history inventory"),
+    );
+    *HISTORY_INVENTORY_TEARDOWN
+        .lock()
+        .expect("history inventory teardown mutex") = Some(fixture);
 }
 
 #[library_benchmark(
@@ -787,6 +862,8 @@ library_benchmark_group!(
         bench_embedding_projection_legacy,
         bench_graph_projection,
         bench_graph_projection_legacy,
+        bench_history_inventory,
+        bench_history_inventory_legacy,
         bench_persisted_reconcile_removed_tips,
         bench_persisted_reconcile_new_tips,
         bench_persisted_reconcile_removed_tips_embedding,
@@ -813,6 +890,8 @@ library_benchmark_group!(
         bench_embedding_projection_legacy,
         bench_graph_projection,
         bench_graph_projection_legacy,
+        bench_history_inventory,
+        bench_history_inventory_legacy,
         bench_persisted_reconcile_removed_tips,
         bench_persisted_reconcile_new_tips,
         bench_persisted_reconcile_removed_tips_embedding,
