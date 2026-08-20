@@ -902,8 +902,8 @@ impl LexicalIndex {
         let mut sidecar_error = None;
         plan.try_for_each_chunk(sources, |chunk, blob| {
             if sidecar_error.is_none() {
-                add_git_history_chunk(&writer, fields, chunk, blob);
-                if let Err(error) = sidecars.push_history(chunk, blob) {
+                add_git_history_chunk(&writer, fields, &chunk, blob);
+                if let Err(error) = sidecars.push_history(&chunk, blob) {
                     sidecar_error = Some(error);
                 }
                 #[cfg(feature = "coz-profile")]
@@ -997,8 +997,8 @@ impl LexicalIndex {
         let mut sidecar_error = None;
         plan.try_for_each_chunk(sources, |chunk, blob| {
             if sidecar_error.is_none() {
-                add_git_history_chunk(&writer, fields, chunk, blob);
-                if let Err(error) = sidecars.push_history(chunk, blob) {
+                add_git_history_chunk(&writer, fields, &chunk, blob);
+                if let Err(error) = sidecars.push_history(&chunk, blob) {
                     sidecar_error = Some(error);
                 }
                 #[cfg(feature = "coz-profile")]

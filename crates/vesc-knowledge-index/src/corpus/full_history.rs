@@ -1795,7 +1795,7 @@ impl GitHistoryBuildPlan {
     pub(crate) fn try_for_each_chunk(
         &self,
         sources: &[GitCorpusSource],
-        mut visit: impl FnMut(&Chunk, gix::ObjectId),
+        mut visit: impl FnMut(Chunk, gix::ObjectId),
     ) -> Result<(), GitHistoryError> {
         let mut repositories = HashMap::<usize, gix::Repository>::new();
         let mut selected = self.chunks.entries.iter().peekable();
@@ -1943,7 +1943,7 @@ impl GitHistoryBuildPlan {
                 let chunk = drafts
                     .materialize(index, Some(identifiers))
                     .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-                visit(&chunk, object);
+                visit(chunk, object);
             }
         }
         Ok(())
@@ -1961,7 +1961,7 @@ impl GitHistoryBuildPlan {
                 observations.materialized_identifier_count_histogram[chunk.identifiers.len()]
                     .saturating_add(1);
             observations.materialized_chunks = observations.materialized_chunks.saturating_add(1);
-            chunks.push(chunk.clone());
+            chunks.push(chunk);
         })?;
         for chunk in &mut chunks {
             chunk
@@ -3383,6 +3383,20 @@ mod tests {
             plan.documents[first as usize].object,
             plan.documents[second as usize].object
         );
+    }
+
+    #[test]
+    fn history_chunk_stream_delivers_owned_chunks() {
+        fn compile_owned_callback(
+            plan: &GitHistoryBuildPlan,
+            sources: &[GitCorpusSource],
+        ) -> Result<(), GitHistoryError> {
+            plan.try_for_each_chunk(sources, |chunk: Chunk, _| {
+                let _ = chunk;
+            })
+        }
+
+        let _ = compile_owned_callback;
     }
 
     #[test]
