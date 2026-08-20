@@ -13,7 +13,8 @@ use vesc_knowledge_index::benchmark::{
     EmbeddingProjectionFixture, GraphProjectionFixture, HistoryInventoryFixture,
     benchmark_embedding_projection_from_fixture, benchmark_graph_projection_from_fixture,
     benchmark_history_inventory_from_fixture, embedding_chunk_ids, prepare_embedding_projection,
-    prepare_graph_projection, prepare_history_inventory,
+    prepare_graph_projection, prepare_graph_projection_projected, prepare_history_inventory,
+    prepare_history_inventory_projected,
 };
 #[cfg(feature = "semantic-fastembed")]
 use vesc_knowledge_index::bounded_document_windows;
@@ -397,11 +398,22 @@ fn fixture_embedding_projection() -> (PersistedRewriteFixture, EmbeddingProjecti
 fn fixture_graph_projection() -> (PersistedRewriteFixture, GraphProjectionFixture) {
     let fixture = fixture_persisted_rewrite();
     let previous = fixture.previous.as_ref().expect("persisted predecessor");
-    let projection = prepare_graph_projection(
+    let projection = prepare_graph_projection_projected(
         &previous.lexical_path,
         std::slice::from_ref(&fixture.source),
     )
     .expect("prepare graph projection fixture");
+    (fixture, projection)
+}
+
+fn fixture_graph_projection_legacy() -> (PersistedRewriteFixture, GraphProjectionFixture) {
+    let fixture = fixture_persisted_rewrite();
+    let previous = fixture.previous.as_ref().expect("persisted predecessor");
+    let projection = prepare_graph_projection(
+        &previous.lexical_path,
+        std::slice::from_ref(&fixture.source),
+    )
+    .expect("prepare legacy graph projection fixture");
     (fixture, projection)
 }
 
@@ -426,6 +438,35 @@ fn fixture_history_inventory() -> HistoryInventoryBenchFixture {
         .join("lexical.json");
     let inventory = prepare_history_inventory(&lexical_path, std::slice::from_ref(&history.source))
         .expect("prepare history inventory fixture");
+    HistoryInventoryBenchFixture {
+        _history: history,
+        _artifact_root: artifact_root,
+        inventory,
+    }
+}
+
+fn fixture_history_inventory_projected() -> HistoryInventoryBenchFixture {
+    let history = fixture_git_many_tips();
+    let artifact_root = tempdir().expect("history inventory artifact root");
+    let summary = build_git_history_artifacts_incrementally(
+        artifact_root.path(),
+        std::slice::from_ref(&history.source),
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut |_| {},
+    )
+    .expect("build history inventory artifact");
+    let lexical_path = artifact_root
+        .path()
+        .join("generations")
+        .join(&summary.artifacts.generation)
+        .join("lexical.json");
+    let inventory =
+        prepare_history_inventory_projected(&lexical_path, std::slice::from_ref(&history.source))
+            .expect("prepare projected history inventory fixture");
     HistoryInventoryBenchFixture {
         _history: history,
         _artifact_root: artifact_root,
@@ -644,7 +685,7 @@ fn bench_graph_projection(
 
 #[library_benchmark(
     config = history_memory_benchmark_config(),
-    setup = fixture_graph_projection,
+    setup = fixture_graph_projection_legacy,
     teardown = teardown_persisted_fixture
 )]
 fn bench_graph_projection_legacy(
@@ -660,7 +701,7 @@ fn bench_graph_projection_legacy(
 
 #[library_benchmark(
     config = history_memory_benchmark_config(),
-    setup = fixture_history_inventory,
+    setup = fixture_history_inventory_projected,
     teardown = teardown_history_inventory
 )]
 fn bench_history_inventory(fixture: HistoryInventoryBenchFixture) {

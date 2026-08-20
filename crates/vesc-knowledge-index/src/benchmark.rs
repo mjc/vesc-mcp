@@ -99,8 +99,8 @@ pub fn benchmark_embedding_projection(
 /// Inputs held outside the measured region of a graph staging benchmark.
 pub struct GraphProjectionFixture {
     path: PathBuf,
-    index: LexicalIndex,
-    ids: Vec<ChunkId>,
+    index: Option<LexicalIndex>,
+    ids: Option<Vec<ChunkId>>,
     corpus_digest: ContentDigest,
     lexical_artifact_bytes: u64,
     live_documents: usize,
@@ -146,10 +146,46 @@ pub fn prepare_graph_projection(
     Ok(GraphProjectionFixture {
         path: path.to_owned(),
         live_documents: ids.len(),
-        index,
-        ids,
+        index: Some(index),
+        ids: Some(ids),
         corpus_digest,
         lexical_artifact_bytes,
+    })
+}
+
+/// Loads only the compact graph inputs for a projected measurement.
+///
+/// The projected operation does not need a Tantivy reader or an embedding-ID
+/// inventory; retaining either in the fixture would make Massif measure setup
+/// state instead of the graph projection itself.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the persisted inventory or artifact files
+/// cannot be read.
+pub fn prepare_graph_projection_projected(
+    path: &Path,
+    _sources: &[GitCorpusSource],
+) -> Result<GraphProjectionFixture, BenchmarkError> {
+    let (live_documents, _, corpus_digest) = LexicalIndex::corpus_inventory(path)?;
+    let lexical_artifact_bytes = [
+        path.to_path_buf(),
+        path.with_extension("tantivy"),
+        path.with_extension("graph-input.json"),
+        path.with_extension("history-input.json"),
+        path.with_extension("embedding-input.json"),
+    ]
+    .iter()
+    .try_fold(0_u64, |total, path| {
+        Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
+    })?;
+    Ok(GraphProjectionFixture {
+        path: path.to_owned(),
+        index: None,
+        ids: None,
+        corpus_digest,
+        lexical_artifact_bytes,
+        live_documents,
     })
 }
 
@@ -172,8 +208,17 @@ pub fn benchmark_graph_projection_from_fixture(
         .ok_or_else(|| LexicalError::Artifact("graph projection sidecar is missing".into()))?;
         (graph, 0, 0)
     } else {
-        let ids = fixture.ids.iter().cloned().collect();
-        let chunks = fixture.index.chunks_by_id(&ids)?;
+        let ids = fixture
+            .ids
+            .as_ref()
+            .ok_or_else(|| LexicalError::Artifact("legacy graph fixture is missing IDs".into()))?
+            .iter()
+            .cloned()
+            .collect();
+        let index = fixture.index.as_ref().ok_or_else(|| {
+            LexicalError::Artifact("legacy graph fixture is missing index".into())
+        })?;
+        let chunks = index.chunks_by_id(&ids)?;
         let decoded = chunks.len();
         let graph = GraphArtifact::from_chunks(
             fixture.corpus_digest.clone(),
@@ -196,8 +241,8 @@ pub fn benchmark_graph_projection_from_fixture(
 /// Inputs held outside the measured region of a history inventory benchmark.
 pub struct HistoryInventoryFixture {
     path: PathBuf,
-    index: LexicalIndex,
-    ids: Vec<ChunkId>,
+    index: Option<LexicalIndex>,
+    ids: Option<Vec<ChunkId>>,
     lexical_artifact_bytes: u64,
     live_documents: usize,
 }
@@ -233,9 +278,34 @@ pub fn prepare_history_inventory(
     Ok(HistoryInventoryFixture {
         path: path.to_owned(),
         live_documents: ids.len(),
-        index,
-        ids,
+        index: Some(index),
+        ids: Some(ids),
         lexical_artifact_bytes,
+    })
+}
+
+/// Loads only the history sidecar inputs for a projected measurement.
+///
+/// # Errors
+///
+/// Returns [`BenchmarkError`] when the persisted inventory or artifact files
+/// cannot be read.
+pub fn prepare_history_inventory_projected(
+    path: &Path,
+    _sources: &[GitCorpusSource],
+) -> Result<HistoryInventoryFixture, BenchmarkError> {
+    let (live_documents, _, _) = LexicalIndex::corpus_inventory(path)?;
+    let lexical_artifact_bytes = [path.to_path_buf(), path.with_extension("tantivy")]
+        .iter()
+        .try_fold(0_u64, |total, path| {
+            Ok::<_, std::io::Error>(total.saturating_add(path_bytes(path)?))
+        })?;
+    Ok(HistoryInventoryFixture {
+        path: path.to_owned(),
+        index: None,
+        ids: None,
+        lexical_artifact_bytes,
+        live_documents,
     })
 }
 
@@ -253,8 +323,17 @@ pub fn benchmark_history_inventory_from_fixture(
             .ok_or_else(|| LexicalError::Artifact("history inventory sidecar is missing".into()))?;
         (records.len(), 0, 0)
     } else {
-        let ids = fixture.ids.iter().cloned().collect();
-        let chunks = fixture.index.chunks_by_id(&ids)?;
+        let ids = fixture
+            .ids
+            .as_ref()
+            .ok_or_else(|| LexicalError::Artifact("legacy history fixture is missing IDs".into()))?
+            .iter()
+            .cloned()
+            .collect();
+        let index = fixture.index.as_ref().ok_or_else(|| {
+            LexicalError::Artifact("legacy history fixture is missing index".into())
+        })?;
+        let chunks = index.chunks_by_id(&ids)?;
         let decoded = chunks.len();
         (decoded, decoded, decoded)
     };
@@ -1223,6 +1302,18 @@ mod tests {
         assert_eq!(stats.history_records, stats.matching_history_documents);
         assert_eq!(stats.stored_documents_decoded, 0);
         assert_eq!(stats.git_bodies_hydrated, 0);
+    }
+
+    #[test]
+    fn projected_graph_fixture_has_a_setup_without_legacy_index_state() {
+        fn compile_projected_preparation(
+            path: &Path,
+            sources: &[GitCorpusSource],
+        ) -> Result<GraphProjectionFixture, BenchmarkError> {
+            prepare_graph_projection_projected(path, sources)
+        }
+
+        let _ = compile_projected_preparation;
     }
 
     #[test]
