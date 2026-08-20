@@ -525,6 +525,32 @@ mod history_membership_tests {
             &BTreeSet::from(["removed".to_owned(), "retained".to_owned()]),
         ));
     }
+
+    #[test]
+    fn persisted_history_projection_builds_cache_and_membership_together() {
+        let key = ContentDigest::of(b"content");
+        let revision =
+            gix::ObjectId::from_hex(b"0123456789012345678901234567890123456789").expect("revision");
+        let records = vec![CachedGitHistoryRecord {
+            document_id: "document".into(),
+            repository: "repo".into(),
+            revision: revision.to_string(),
+            path: "file.c".into(),
+            ordinal: 0,
+            has_previous: false,
+            has_next: false,
+            blob: None,
+            source_kind: SourceKind::GitBlob,
+            content_key: Some(key.clone()),
+        }];
+
+        let projection = CachedGitHistoryProjection::from_records(records)
+            .expect("valid persisted history projection");
+        let (history, membership) = projection.into_parts();
+
+        assert_eq!(history.chunk_count(), 1);
+        assert!(membership.contains_retained(&key, &revision, &BTreeSet::new()));
+    }
 }
 
 #[derive(Default)]
@@ -703,6 +729,35 @@ impl CachedGitHistory {
         }
         reconciliation.removed_documents = removed.len();
         Ok((removed, reconciliation))
+    }
+}
+
+/// Owned projections used by persisted-history reconciliation.
+///
+/// Build the reusable-history cache and compact membership index while the
+/// sidecar records are available, then release the full records together.
+pub(crate) struct CachedGitHistoryProjection {
+    history: CachedGitHistory,
+    membership: CachedGitHistoryMembership,
+}
+
+impl CachedGitHistoryProjection {
+    pub(crate) fn from_records(records: Vec<CachedGitHistoryRecord>) -> Result<Self, String> {
+        let mut history = CachedGitHistory::default();
+        records.iter().try_for_each(|record| {
+            let chunk = record.as_chunk()?;
+            history.observe(chunk);
+            Ok::<(), String>(())
+        })?;
+        let membership = CachedGitHistoryMembership::from_records(records);
+        Ok(Self {
+            history,
+            membership,
+        })
+    }
+
+    pub(crate) fn into_parts(self) -> (CachedGitHistory, CachedGitHistoryMembership) {
+        (self.history, self.membership)
     }
 }
 

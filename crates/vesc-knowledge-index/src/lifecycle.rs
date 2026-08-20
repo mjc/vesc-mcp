@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize, de::IgnoredAny};
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document, chunk_document_drafts};
 use crate::corpus::full_history::{
-    CachedGitHistory, CachedGitHistoryMembership, GitHistoryBuildPlan, GitHistoryError,
+    CachedGitHistoryProjection, GitHistoryBuildPlan, GitHistoryError,
     GitHistoryRefreshObservations, GitHistoryTip, plan_git_history_fast_forward_delta,
     plan_git_history_fast_forward_owned,
 };
@@ -927,22 +927,16 @@ pub fn build_git_history_artifacts_from_previous(
     ) {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
-    let mut cached_history = CachedGitHistory::default();
     let Some(records) = LexicalIndex::read_history_records(&previous.lexical_path)? else {
         // Legacy artifacts have no compact history projection. Rebuild them
         // instead of hydrating every stored Tantivy document just to recover
         // the reconciliation metadata.
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     };
-    let history_loaded = records.iter().try_for_each(|record| {
-        let chunk = record.as_chunk().map_err(LifecycleError::Contract)?;
-        cached_history.observe(chunk);
-        Ok::<(), LifecycleError>(())
-    });
-    if history_loaded.is_err() {
+    let Ok(projection) = CachedGitHistoryProjection::from_records(records) else {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
-    }
-    let membership = CachedGitHistoryMembership::from_records(records);
+    };
+    let (cached_history, membership) = projection.into_parts();
     let ingestion_started = Instant::now();
     let mut previous_contains =
         |key: &ContentDigest, revision: &gix::ObjectId, removed_document_ids: &BTreeSet<String>| {
