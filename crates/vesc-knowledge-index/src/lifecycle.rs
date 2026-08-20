@@ -1,6 +1,6 @@
 //! Reproducible corpus and lexical artifact lifecycle helpers.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -1269,9 +1269,7 @@ fn finish_git_history_lexical_stage(
     observations.documents = corpus.document_count();
 
     let graph = LexicalIndex::open_git_search_artifact_with_sources(&lexical_path, sources)?;
-    let graph_ids = graph.embedding_chunk_ids()?;
-    let graph_id_count = graph_ids.len();
-    let graph_id_set = graph_ids.into_iter().collect::<HashSet<_>>();
+    let (graph_id_set, graph_id_count) = graph.embedding_chunk_id_set()?;
     let graph = LexicalIndex::graph_from_sidecar(
         &lexical_path,
         corpus.content_digest.clone(),

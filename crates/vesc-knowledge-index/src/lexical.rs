@@ -1,6 +1,6 @@
 //! Fielded lexical retrieval over normalized chunks.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -1361,10 +1361,30 @@ impl LexicalIndex {
     }
 
     pub(crate) fn embedding_chunk_ids(&self) -> Result<Vec<ChunkId>, LexicalError> {
+        let document_count = usize::try_from(self.reader.searcher().num_docs())
+            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
+        let mut chunks = Vec::with_capacity(document_count);
+        self.for_each_embedding_chunk_id(|chunk_id| chunks.push(chunk_id.clone()))?;
+        Ok(chunks)
+    }
+
+    pub(crate) fn embedding_chunk_id_set(&self) -> Result<(HashSet<ChunkId>, usize), LexicalError> {
+        let document_count = usize::try_from(self.reader.searcher().num_docs())
+            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
+        let mut chunks = HashSet::with_capacity(document_count);
+        let count = self.for_each_embedding_chunk_id(|chunk_id| {
+            chunks.insert(chunk_id.clone());
+        })?;
+        Ok((chunks, count))
+    }
+
+    fn for_each_embedding_chunk_id(
+        &self,
+        mut visit: impl FnMut(&ChunkId),
+    ) -> Result<usize, LexicalError> {
         let searcher = self.reader.searcher();
         let document_count = usize::try_from(searcher.num_docs())
             .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
-        let mut chunks = Vec::with_capacity(document_count);
         let segment_readers = searcher.segment_readers();
         let document_indexes = segment_readers
             .iter()
@@ -1391,6 +1411,7 @@ impl LexicalIndex {
             .map_err(|error| LexicalError::Artifact(error.to_string()))?;
         let mut documents = TermMerger::new(streams);
         let mut document_chunks = Vec::new();
+        let mut count = 0_usize;
 
         while documents.advance() {
             document_chunks.clear();
@@ -1427,14 +1448,18 @@ impl LexicalIndex {
                 }
             }
             document_chunks.sort_unstable();
-            chunks.extend(document_chunks.iter().cloned());
+            for chunk_id in &document_chunks {
+                count = count.saturating_add(1);
+                visit(chunk_id);
+            }
+            document_chunks.clear();
         }
-        if chunks.len() != document_count {
+        if count != document_count {
             return Err(LexicalError::Artifact(
                 "lexical index document inventory is incomplete".into(),
             ));
         }
-        Ok(chunks)
+        Ok(count)
     }
 
     /// Streams the sorted unique document and chunk IDs from a persisted index.
@@ -4023,6 +4048,17 @@ mod tests {
                 .map(|(_, chunk_id)| chunk_id)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn embedding_inventory_set_matches_ordered_inventory() {
+        let index = LexicalIndex::build(&catalog_chunks(2)).expect("index");
+        let ordered = index.embedding_chunk_ids().expect("ordered inventory");
+        let (set, count) = index.embedding_chunk_id_set().expect("set inventory");
+
+        assert_eq!(count, ordered.len());
+        assert_eq!(set.len(), ordered.len());
+        assert!(ordered.iter().all(|chunk_id| set.contains(chunk_id)));
     }
 
     #[test]
