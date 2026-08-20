@@ -67,6 +67,17 @@ const fn chunk_index_reserve_target(candidate_chunks: usize) -> usize {
     }
 }
 
+fn join_tree_path(prefix: &str, filename: &str) -> String {
+    if prefix.is_empty() {
+        return filename.to_owned();
+    }
+    let mut path = String::with_capacity(prefix.len() + 1 + filename.len());
+    path.push_str(prefix);
+    path.push('/');
+    path.push_str(filename);
+    path
+}
+
 impl Default for GitHistoryRefreshObservations {
     fn default() -> Self {
         Self {
@@ -2033,11 +2044,7 @@ fn reserve_tip_blobs(
         for entry in tree.iter() {
             let entry = entry.map_err(|error| GitHistoryError::Git(error.to_string()))?;
             let filename = entry.filename().to_str_lossy();
-            let path = if prefix.is_empty() {
-                filename.into_owned()
-            } else {
-                format!("{prefix}/{filename}")
-            };
+            let path = join_tree_path(&prefix, filename.as_ref());
             let id = entry.object_id();
             if entry.mode().is_tree() {
                 trees.push((path, id));
@@ -2355,11 +2362,7 @@ fn ingest_reused_blob_occurrences(
         for entry in tree.iter() {
             let entry = entry.map_err(|error| GitHistoryError::Git(error.to_string()))?;
             let filename = entry.filename().to_str_lossy();
-            let path = if prefix.is_empty() {
-                filename.into_owned()
-            } else {
-                format!("{prefix}/{filename}")
-            };
+            let path = join_tree_path(&prefix, filename.as_ref());
             let id = entry.object_id();
             if entry.mode().is_tree() {
                 trees.push((path, id));
@@ -2674,6 +2677,13 @@ fn pending_path(change: &PendingChange) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn join_tree_path_preserves_root_and_nested_paths() {
+        assert_eq!(join_tree_path("", "main.rs"), "main.rs");
+        assert_eq!(join_tree_path("src", "main.rs"), "src/main.rs");
+        assert_eq!(join_tree_path("src/é", "文件.rs"), "src/é/文件.rs");
+    }
 
     #[test]
     fn source_history_state_does_not_retain_complete_revision_sets() {
