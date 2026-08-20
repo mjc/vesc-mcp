@@ -1334,11 +1334,6 @@ impl<'a> HistoryContents<'a> {
         document: &mut Option<u32>,
         observations: &mut GitHistoryRefreshObservations,
     ) -> Result<bool, GitHistoryError> {
-        match self {
-            Self::All(plan) | Self::Delta { plan, .. } => {
-                plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
-            }
-        }
         let revision = match self {
             Self::All(plan) | Self::Delta { plan, .. } => plan.revision_id(locator.revision),
         };
@@ -1349,6 +1344,7 @@ impl<'a> HistoryContents<'a> {
                     observations.reused_contents = observations.reused_contents.saturating_add(1);
                     false
                 } else {
+                    plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
                     let document = selected_document(plan, document, locator)?;
                     plan.chunks
                         .insert(key, GitHistoryChunk { document, ordinal });
@@ -1371,6 +1367,7 @@ impl<'a> HistoryContents<'a> {
                     observations.reused_contents = observations.reused_contents.saturating_add(1);
                     false
                 } else {
+                    plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
                     let document = selected_document(plan, document, locator)?;
                     plan.chunks
                         .insert(key, GitHistoryChunk { document, ordinal });
