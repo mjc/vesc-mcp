@@ -1361,16 +1361,14 @@ impl LexicalIndex {
     }
 
     pub(crate) fn embedding_chunk_ids(&self) -> Result<Vec<ChunkId>, LexicalError> {
-        let document_count = usize::try_from(self.reader.searcher().num_docs())
-            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
+        let document_count = self.embedding_document_count()?;
         let mut chunks = Vec::with_capacity(document_count);
         self.for_each_embedding_chunk_id(|chunk_id| chunks.push(chunk_id.clone()))?;
         Ok(chunks)
     }
 
     pub(crate) fn embedding_chunk_id_set(&self) -> Result<(HashSet<ChunkId>, usize), LexicalError> {
-        let document_count = usize::try_from(self.reader.searcher().num_docs())
-            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
+        let document_count = self.embedding_document_count()?;
         let mut chunks = HashSet::with_capacity(document_count);
         let count = self.for_each_embedding_chunk_id(|chunk_id| {
             chunks.insert(chunk_id.clone());
@@ -1378,13 +1376,17 @@ impl LexicalIndex {
         Ok((chunks, count))
     }
 
+    fn embedding_document_count(&self) -> Result<usize, LexicalError> {
+        usize::try_from(self.reader.searcher().num_docs())
+            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))
+    }
+
     fn for_each_embedding_chunk_id(
         &self,
         mut visit: impl FnMut(&ChunkId),
     ) -> Result<usize, LexicalError> {
         let searcher = self.reader.searcher();
-        let document_count = usize::try_from(searcher.num_docs())
-            .map_err(|_| LexicalError::Artifact("lexical document count is too large".into()))?;
+        let document_count = self.embedding_document_count()?;
         let segment_readers = searcher.segment_readers();
         let document_indexes = segment_readers
             .iter()
@@ -1449,10 +1451,9 @@ impl LexicalIndex {
             }
             document_chunks.sort_unstable();
             for chunk_id in &document_chunks {
-                count = count.saturating_add(1);
+                count += 1;
                 visit(chunk_id);
             }
-            document_chunks.clear();
         }
         if count != document_count {
             return Err(LexicalError::Artifact(
