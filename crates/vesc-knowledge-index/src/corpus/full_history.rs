@@ -1258,7 +1258,16 @@ enum HistoryContents<'a> {
     },
 }
 
-impl HistoryContents<'_> {
+impl<'a> HistoryContents<'a> {
+    fn delta(previous_contains: &'a mut PreviousContentLookup<'a>, cached_chunks: usize) -> Self {
+        Self::Delta {
+            previous_contains,
+            plan: GitHistoryBuildPlan::with_chunk_index_capacity(delta_chunk_index_capacity(
+                cached_chunks,
+            )),
+        }
+    }
+
     fn reconcile_documents(
         &mut self,
         cached_history: &mut CachedGitHistory,
@@ -1428,15 +1437,12 @@ pub(crate) fn plan_git_history_fast_forward_delta(
     cached_history: CachedGitHistory,
     previous_contains: &mut PreviousContentLookup<'_>,
 ) -> Result<Option<(GitHistoryBuildPlan, GitHistoryRefreshObservations)>, GitHistoryError> {
-    let chunk_capacity = delta_chunk_index_capacity(cached_history.chunk_count());
+    let cached_chunks = cached_history.chunk_count();
     ingest_git_history_fast_forward_with_contents(
         sources,
         previous_tips,
         cached_history,
-        HistoryContents::Delta {
-            previous_contains,
-            plan: GitHistoryBuildPlan::with_chunk_index_capacity(chunk_capacity),
-        },
+        HistoryContents::delta(previous_contains, cached_chunks),
     )
 }
 
