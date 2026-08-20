@@ -800,7 +800,7 @@ struct HistoryChunkKey {
 
 const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
 const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
-const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 64;
+const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 256;
 
 type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
 
