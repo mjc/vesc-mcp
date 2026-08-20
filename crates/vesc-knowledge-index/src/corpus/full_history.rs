@@ -2,11 +2,16 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::io::Read;
 use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{Deserializer, SeqAccess, Visitor},
+};
 use sha2::{Digest, Sha256};
 
 use super::chunking::{ChunkingConfig, chunk_document_drafts, for_each_chunk_draft};
@@ -417,21 +422,20 @@ struct CachedGitHistoryMembershipRecord {
 }
 
 impl CachedGitHistoryMembership {
-    pub(crate) fn from_records(records: Vec<CachedGitHistoryRecord>) -> Self {
-        let mut records = records
-            .into_iter()
-            .map(|record| CachedGitHistoryMembershipRecord {
-                document_id: record.document_id,
-                revision: record.revision,
-                content_key: record.content_key,
-            })
-            .collect::<Vec<_>>();
-        records.sort_unstable_by(|left, right| {
+    fn push_owned(&mut self, record: CachedGitHistoryRecord) {
+        self.records.push(CachedGitHistoryMembershipRecord {
+            document_id: record.document_id,
+            revision: record.revision,
+            content_key: record.content_key,
+        });
+    }
+
+    fn sort(&mut self) {
+        self.records.sort_unstable_by(|left, right| {
             left.content_key
                 .cmp(&right.content_key)
                 .then_with(|| left.revision.cmp(&right.revision))
         });
-        Self { records }
     }
 
     pub(crate) fn contains_retained(
@@ -512,7 +516,11 @@ mod history_membership_tests {
                 content_key: Some(key.clone()),
             },
         ];
-        let membership = CachedGitHistoryMembership::from_records(records);
+        let json = serde_json::to_vec(&records).expect("serialize history records");
+        let projection = CachedGitHistoryProjection::from_json_reader(std::io::Cursor::new(json))
+            .expect("valid history JSON")
+            .expect("valid history records");
+        let (_, membership) = projection.into_parts();
 
         assert!(membership.contains_retained(
             &key,
@@ -544,12 +552,38 @@ mod history_membership_tests {
             content_key: Some(key.clone()),
         }];
 
-        let projection = CachedGitHistoryProjection::from_records(records)
-            .expect("valid persisted history projection");
+        let json = serde_json::to_vec(&records).expect("serialize history records");
+        let projection = CachedGitHistoryProjection::from_json_reader(std::io::Cursor::new(json))
+            .expect("valid history JSON")
+            .expect("valid history record");
         let (history, membership) = projection.into_parts();
 
         assert_eq!(history.chunk_count(), 1);
         assert!(membership.contains_retained(&key, &revision, &BTreeSet::new()));
+    }
+
+    #[test]
+    fn persisted_history_projection_streams_json_records() {
+        let record = CachedGitHistoryRecord {
+            document_id: "document".into(),
+            repository: "repo".into(),
+            revision: "0123456789012345678901234567890123456789".into(),
+            path: "file.c".into(),
+            ordinal: 0,
+            has_previous: false,
+            has_next: false,
+            blob: None,
+            source_kind: SourceKind::GitBlob,
+            content_key: Some(ContentDigest::of(b"content")),
+        };
+        let json = serde_json::to_vec(&[record]).expect("serialize history records");
+
+        let projection = CachedGitHistoryProjection::from_json_reader(std::io::Cursor::new(json))
+            .expect("valid history JSON")
+            .expect("valid history record");
+
+        let (history, _) = projection.into_parts();
+        assert_eq!(history.chunk_count(), 1);
     }
 }
 
@@ -742,22 +776,58 @@ pub(crate) struct CachedGitHistoryProjection {
 }
 
 impl CachedGitHistoryProjection {
-    pub(crate) fn from_records(records: Vec<CachedGitHistoryRecord>) -> Result<Self, String> {
-        let mut history = CachedGitHistory::default();
-        records.iter().try_for_each(|record| {
-            let chunk = record.as_chunk()?;
-            history.observe(chunk);
-            Ok::<(), String>(())
-        })?;
-        let membership = CachedGitHistoryMembership::from_records(records);
-        Ok(Self {
-            history,
-            membership,
-        })
+    pub(crate) fn from_json_reader<R: Read>(
+        reader: R,
+    ) -> Result<Result<Self, String>, serde_json::Error> {
+        let mut deserializer = serde_json::Deserializer::from_reader(reader);
+        deserializer.deserialize_seq(HistoryProjectionVisitor)
+    }
+
+    fn push_record(&mut self, record: CachedGitHistoryRecord) -> Result<(), String> {
+        let chunk = record.as_chunk()?;
+        self.history.observe(chunk);
+        self.membership.push_owned(record);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Self {
+        self.membership.sort();
+        self
     }
 
     pub(crate) fn into_parts(self) -> (CachedGitHistory, CachedGitHistoryMembership) {
         (self.history, self.membership)
+    }
+}
+
+struct HistoryProjectionVisitor;
+
+impl<'de> Visitor<'de> for HistoryProjectionVisitor {
+    type Value = Result<CachedGitHistoryProjection, String>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON array of persisted Git-history records")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut projection = CachedGitHistoryProjection {
+            history: CachedGitHistory::default(),
+            membership: CachedGitHistoryMembership {
+                records: Vec::new(),
+            },
+        };
+        let mut invalid_record = None;
+        while let Some(record) = sequence.next_element::<CachedGitHistoryRecord>()? {
+            if invalid_record.is_none()
+                && let Err(error) = projection.push_record(record)
+            {
+                invalid_record = Some(error);
+            }
+        }
+        Ok(invalid_record.map_or_else(|| Ok(projection.finish()), Err))
     }
 }
 

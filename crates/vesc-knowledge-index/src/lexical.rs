@@ -1165,12 +1165,14 @@ impl LexicalIndex {
     pub(crate) fn read_history_projection(
         path: &Path,
     ) -> Result<Option<CachedGitHistoryProjection>, LexicalError> {
-        let Some(records) = Self::read_history_records(path)? else {
+        let path = history_input_path(path);
+        if !path.exists() {
             return Ok(None);
-        };
-        CachedGitHistoryProjection::from_records(records)
-            .map(Some)
-            .map_err(LexicalError::Artifact)
+        }
+        let file = File::open(path).map_err(|error| LexicalError::Io(error.to_string()))?;
+        let projection = CachedGitHistoryProjection::from_json_reader(BufReader::new(file))
+            .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+        Ok(projection.ok())
     }
 
     pub(crate) fn read_embedding_inputs(
@@ -3788,6 +3790,35 @@ mod tests {
             LexicalIndex::read_history_projection(&path)
                 .expect("read history projection")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn read_history_projection_treats_invalid_blob_ids_as_a_cold_rebuild() {
+        let root = tempfile::tempdir().expect("sidecar root");
+        let path = root.path().join("lexical.json");
+        let record = CachedGitHistoryRecord {
+            document_id: "document".into(),
+            repository: "repo".into(),
+            revision: "0123456789012345678901234567890123456789".into(),
+            path: "file.c".into(),
+            ordinal: 0,
+            has_previous: false,
+            has_next: false,
+            blob: Some("not-a-git-object".into()),
+            source_kind: SourceKind::GitBlob,
+            content_key: Some(ContentDigest::of(b"content")),
+        };
+        fs::write(
+            history_input_path(&path),
+            serde_json::to_vec(&[record]).expect("serialize history sidecar"),
+        )
+        .expect("write history sidecar");
+
+        assert!(
+            LexicalIndex::read_history_projection(&path)
+                .expect("read history projection")
+                .is_none()
         );
     }
 
