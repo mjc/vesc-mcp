@@ -808,6 +808,7 @@ type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
 struct HistoryChunkEntries {
     blocks: Vec<Vec<HistoryChunkEntry>>,
     offsets: Vec<usize>,
+    active_blocks: usize,
     len: usize,
 }
 
@@ -843,11 +844,19 @@ impl HistoryChunkEntries {
     }
 
     fn push(&mut self, entry: HistoryChunkEntry) {
-        self.reserve(1);
-        self.blocks
-            .last_mut()
-            .expect("history entry block reserved")
-            .push(entry);
+        if self.active_blocks == 0 {
+            self.reserve(1);
+            self.active_blocks = 1;
+            self.offsets.push(0);
+        } else if self.blocks[self.active_blocks - 1].len() >= HISTORY_CHUNK_ENTRY_BLOCK {
+            if self.active_blocks == self.blocks.len() {
+                self.blocks
+                    .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
+            }
+            self.offsets.push(self.len);
+            self.active_blocks += 1;
+        }
+        self.blocks[self.active_blocks - 1].push(entry);
         self.len += 1;
     }
 
@@ -872,26 +881,30 @@ impl HistoryChunkEntries {
     }
 
     fn retain_mut(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
-        for block in &mut self.blocks {
+        for block in &mut self.blocks[..self.active_blocks] {
             block.retain_mut(|(key, chunk)| keep(key, chunk));
         }
-        self.len = self.blocks.iter().map(Vec::len).sum();
+        self.len = self.blocks[..self.active_blocks].iter().map(Vec::len).sum();
         self.rebuild_offsets();
     }
 
     fn iter(&self) -> impl Iterator<Item = &HistoryChunkEntry> {
-        self.blocks.iter().flat_map(|block| block.iter())
+        self.blocks[..self.active_blocks]
+            .iter()
+            .flat_map(|block| block.iter())
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut HistoryChunkEntry> {
-        self.blocks.iter_mut().flat_map(|block| block.iter_mut())
+        self.blocks[..self.active_blocks]
+            .iter_mut()
+            .flat_map(|block| block.iter_mut())
     }
 
     fn rebuild_offsets(&mut self) {
         self.offsets.clear();
-        self.offsets.reserve(self.blocks.len());
+        self.offsets.reserve(self.active_blocks);
         let mut offset = 0;
-        for block in &self.blocks {
+        for block in &self.blocks[..self.active_blocks] {
             self.offsets.push(offset);
             offset += block.len();
         }
@@ -3059,6 +3072,50 @@ mod tests {
 
         assert_eq!(index.storage_block_count(), 2);
         assert_eq!(index.len(), HISTORY_CHUNK_ENTRY_BLOCK + 1);
+    }
+
+    #[test]
+    fn chunk_index_append_after_retaining_a_full_tail_allocates_a_new_block() {
+        let mut entries = HistoryChunkEntries::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
+        for value in 0..(HISTORY_CHUNK_ENTRY_BLOCK * 2) {
+            let mut digest = [0_u8; 32];
+            digest[..8].copy_from_slice(&(value as u64).to_le_bytes());
+            entries.push((
+                HistoryChunkKey {
+                    content: ContentDigest::from_sha256(digest),
+                    revision: 0,
+                },
+                GitHistoryChunk {
+                    document: value as u32,
+                    ordinal: 0,
+                },
+            ));
+        }
+
+        entries.retain_mut(|_, chunk| {
+            chunk.document < (HISTORY_CHUNK_ENTRY_BLOCK / 2) as u32
+                || chunk.document >= HISTORY_CHUNK_ENTRY_BLOCK as u32
+        });
+        let tail_capacity = entries.blocks.last().expect("tail block").capacity();
+
+        let mut digest = [0_u8; 32];
+        digest[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+        entries.push((
+            HistoryChunkKey {
+                content: ContentDigest::from_sha256(digest),
+                revision: 0,
+            },
+            GitHistoryChunk {
+                document: u32::MAX,
+                ordinal: 0,
+            },
+        ));
+
+        assert_eq!(
+            entries.blocks.last().expect("tail block").capacity(),
+            tail_capacity
+        );
+        assert_eq!(entries.blocks.len(), 3);
     }
 
     #[test]
