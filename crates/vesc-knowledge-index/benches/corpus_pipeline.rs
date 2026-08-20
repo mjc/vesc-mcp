@@ -328,6 +328,52 @@ fn fixture_persisted_rewrite() -> PersistedRewriteFixture {
     }
 }
 
+fn fixture_persisted_fast_forward() -> PersistedRewriteFixture {
+    let history = fixture_git_many_tips();
+    let current_source = history.source.clone();
+    let mut previous_source = current_source.clone();
+    previous_source.history_tips.truncate(1);
+    previous_source.revision = previous_source.history_tips[0].clone();
+    let previous_root = tempdir().expect("previous artifact root");
+    let first = build_git_history_artifacts_incrementally(
+        previous_root.path(),
+        std::slice::from_ref(&previous_source),
+        None,
+        None,
+        None,
+        None,
+        None,
+        &mut |_| {},
+    )
+    .expect("build persisted predecessor");
+    let previous_generation = previous_root
+        .path()
+        .join("generations")
+        .join(&first.artifacts.generation);
+    let previous_repository = previous_source.repository_id.clone();
+    PersistedRewriteFixture {
+        _history: history,
+        _previous_root: previous_root,
+        output_root: tempdir().expect("output artifact root"),
+        source: current_source,
+        previous: Some(PreviousGitHistoryArtifact {
+            tips: previous_source
+                .history_tips
+                .into_iter()
+                .map(|revision| GitHistoryTip {
+                    repository: previous_repository.clone(),
+                    revision,
+                })
+                .collect(),
+            lexical_path: previous_generation.join("lexical.json"),
+            corpus_digest: first.artifacts.manifest.corpus.content_digest,
+            vector_checksum: None,
+            vector_path: None,
+            lexical_format_compatible: true,
+        }),
+    }
+}
+
 fn fixture_embedding_projection() -> (PersistedRewriteFixture, EmbeddingProjectionFixture) {
     let fixture = fixture_persisted_rewrite();
     let previous = fixture.previous.as_ref().expect("persisted predecessor");
@@ -454,6 +500,32 @@ fn bench_persisted_reconcile_removed_tips(fixture: PersistedRewriteFixture) {
             &mut |_| {},
         )
         .expect("persisted rewrite reconciliation")
+        .artifacts
+        .chunk_count,
+    );
+    *PERSISTED_FIXTURE_TEARDOWN
+        .lock()
+        .expect("persisted fixture teardown mutex") = Some(fixture);
+}
+
+#[library_benchmark(
+    config = history_memory_benchmark_config(),
+    setup = fixture_persisted_fast_forward,
+    teardown = teardown_persisted_fixture
+)]
+fn bench_persisted_reconcile_new_tips(fixture: PersistedRewriteFixture) {
+    let mut fixture = black_box(fixture);
+    let previous = fixture.previous.take().expect("persisted predecessor");
+    black_box(
+        build_git_history_artifacts_from_previous(
+            fixture.output_root.path(),
+            std::slice::from_ref(&fixture.source),
+            Some(previous),
+            None,
+            None,
+            &mut |_| {},
+        )
+        .expect("persisted fast-forward reconciliation")
         .artifacts
         .chunk_count,
     );
@@ -669,6 +741,7 @@ library_benchmark_group!(
         bench_embedding_projection,
         bench_embedding_projection_legacy,
         bench_persisted_reconcile_removed_tips,
+        bench_persisted_reconcile_new_tips,
         bench_persisted_reconcile_removed_tips_embedding,
         bench_persisted_reconcile_removed_tips_embedding_legacy,
         bench_persisted_cold_after_removed_tips,
@@ -692,6 +765,7 @@ library_benchmark_group!(
         bench_embedding_projection,
         bench_embedding_projection_legacy,
         bench_persisted_reconcile_removed_tips,
+        bench_persisted_reconcile_new_tips,
         bench_persisted_reconcile_removed_tips_embedding,
         bench_persisted_reconcile_removed_tips_embedding_legacy,
         bench_persisted_cold_after_removed_tips,
