@@ -380,21 +380,6 @@ pub(crate) struct CachedGitHistoryRecord {
 }
 
 impl CachedGitHistoryRecord {
-    pub(crate) fn from_view(view: &GitHistoryChunkView<'_>, blob: gix::ObjectId) -> Self {
-        Self {
-            document_id: view.document_id().as_str().to_owned(),
-            repository: view.repository().as_str().to_owned(),
-            revision: view.revision().as_str().to_owned(),
-            path: view.path().to_owned(),
-            ordinal: view.ordinal(),
-            has_previous: view.previous_chunk().is_some(),
-            has_next: view.next_chunk().is_some(),
-            blob: Some(blob.to_string()),
-            source_kind: view.source_kind(),
-            content_key: Some(view.history_content_key()),
-        }
-    }
-
     pub(crate) fn as_chunk(&self) -> Result<CachedGitHistoryChunk<'_>, String> {
         let blob = self
             .blob

@@ -2333,30 +2333,6 @@ impl EmbeddingLocatorRecord {
         &self.chunk_id
     }
 
-    fn from_history_view(
-        view: &GitHistoryChunkView<'_>,
-        git_object_id: Option<gix::ObjectId>,
-    ) -> Self {
-        Self {
-            chunk_id: view.chunk_id().clone(),
-            document_id: view.document_id().clone(),
-            title: view.title().to_owned(),
-            source_kind: view.source_kind(),
-            repository: view.repository().clone(),
-            revision: view.revision().clone(),
-            path: view.path().to_owned(),
-            heading_path: view
-                .headings()
-                .iter()
-                .map(|heading| (*heading).to_owned())
-                .collect(),
-            source_span: view.source_span(),
-            identifiers: view.identifiers().to_vec(),
-            tags: view.tags().clone(),
-            git_object_id: git_object_id.map(|object| object.to_string()),
-        }
-    }
-
     fn from_chunk(chunk: &Chunk, git_object_id: Option<gix::ObjectId>) -> Self {
         Self {
             chunk_id: chunk.chunk_id.clone(),
