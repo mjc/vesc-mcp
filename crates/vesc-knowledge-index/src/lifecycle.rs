@@ -942,7 +942,7 @@ pub fn build_git_history_artifacts_from_previous(
     if history_loaded.is_err() {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
-    let membership = CachedGitHistoryMembership::new(&records);
+    let membership = CachedGitHistoryMembership::from_records(records);
     let ingestion_started = Instant::now();
     let mut previous_contains =
         |key: &ContentDigest, revision: &gix::ObjectId, removed_document_ids: &BTreeSet<String>| {

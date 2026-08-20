@@ -404,26 +404,34 @@ impl CachedGitHistoryRecord {
 
 /// Compact membership index over the persisted history projection.
 ///
-/// The sidecar already contains the exact identity needed during an
-/// incremental refresh. Keeping a sorted index of record positions avoids a
-/// second owned key/value map while allowing logarithmic lookups without
-/// hydrating Tantivy stored documents.
-pub(crate) struct CachedGitHistoryMembership<'a> {
-    records: &'a [CachedGitHistoryRecord],
-    order: Vec<usize>,
+/// Keep only the identity fields needed during an incremental refresh. The
+/// full sidecar records can then be released before Git planning starts.
+pub(crate) struct CachedGitHistoryMembership {
+    records: Vec<CachedGitHistoryMembershipRecord>,
 }
 
-impl<'a> CachedGitHistoryMembership<'a> {
-    pub(crate) fn new(records: &'a [CachedGitHistoryRecord]) -> Self {
-        let mut order = (0..records.len()).collect::<Vec<_>>();
-        order.sort_unstable_by(|left, right| {
-            let left = &records[*left];
-            let right = &records[*right];
+struct CachedGitHistoryMembershipRecord {
+    document_id: String,
+    revision: String,
+    content_key: Option<ContentDigest>,
+}
+
+impl CachedGitHistoryMembership {
+    pub(crate) fn from_records(records: Vec<CachedGitHistoryRecord>) -> Self {
+        let mut records = records
+            .into_iter()
+            .map(|record| CachedGitHistoryMembershipRecord {
+                document_id: record.document_id,
+                revision: record.revision,
+                content_key: record.content_key,
+            })
+            .collect::<Vec<_>>();
+        records.sort_unstable_by(|left, right| {
             left.content_key
                 .cmp(&right.content_key)
                 .then_with(|| left.revision.cmp(&right.revision))
         });
-        Self { records, order }
+        Self { records }
     }
 
     pub(crate) fn contains_retained(
@@ -435,19 +443,19 @@ impl<'a> CachedGitHistoryMembership<'a> {
         let mut revision_hex = gix::hash::Kind::hex_buf();
         let revision = revision.as_ref().hex_to_buf(&mut revision_hex);
         let compare = |index: usize| {
-            let record = &self.records[self.order[index]];
+            let record = &self.records[index];
             record
                 .content_key
                 .as_ref()
                 .cmp(&Some(key))
                 .then_with(|| record.revision.as_bytes().cmp(revision.as_bytes()))
         };
-        let first = self.order.partition_point(|index| {
-            compare_index(&self.records[*index], key, revision.as_bytes()) == Ordering::Less
+        let first = self.records.partition_point(|record| {
+            compare_index(record, key, revision.as_bytes()) == Ordering::Less
         });
         let mut cursor = first;
-        while cursor < self.order.len() && compare(cursor) == Ordering::Equal {
-            let record = &self.records[self.order[cursor]];
+        while cursor < self.records.len() && compare(cursor) == Ordering::Equal {
+            let record = &self.records[cursor];
             if !removed_document_ids.contains(&record.document_id) {
                 return true;
             }
@@ -458,7 +466,7 @@ impl<'a> CachedGitHistoryMembership<'a> {
 }
 
 fn compare_index(
-    record: &CachedGitHistoryRecord,
+    record: &CachedGitHistoryMembershipRecord,
     key: &ContentDigest,
     revision: &[u8],
 ) -> Ordering {
@@ -504,7 +512,7 @@ mod history_membership_tests {
                 content_key: Some(key.clone()),
             },
         ];
-        let membership = CachedGitHistoryMembership::new(&records);
+        let membership = CachedGitHistoryMembership::from_records(records);
 
         assert!(membership.contains_retained(
             &key,
