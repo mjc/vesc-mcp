@@ -1079,31 +1079,16 @@ impl HistoryChunkIndex {
         }
     }
 
-    fn get(&self, index: u32) -> Option<(&HistoryChunkKey, &GitHistoryChunk)> {
+    fn sort_by_document(&mut self) {
         self.entries
-            .get(index as usize)
-            .map(|(key, chunk)| (key, chunk))
-    }
-
-    fn sorted_indices_by_document(&self) -> Vec<u32> {
-        let mut selected = self
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                u32::try_from(index).expect("configured Git limits keep history indices in u32")
-            })
-            .collect::<Vec<_>>();
-        selected.sort_unstable_by(|left, right| {
-            let (left_key, left_chunk) = self.get(*left).expect("history entry index");
-            let (right_key, right_chunk) = self.get(*right).expect("history entry index");
-            left_chunk
-                .document
-                .cmp(&right_chunk.document)
-                .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
-                .then_with(|| left_key.cmp(right_key))
-        });
-        selected
+            .sort_unstable_by(|(left_key, left_chunk), (right_key, right_chunk)| {
+                left_chunk
+                    .document
+                    .cmp(&right_chunk.document)
+                    .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
+                    .then_with(|| left_key.cmp(right_key))
+            });
+        self.rebuild_index();
     }
 
     fn values(&self) -> impl Iterator<Item = &GitHistoryChunk> {
@@ -1551,31 +1536,19 @@ impl GitHistoryBuildPlan {
 
     #[allow(clippy::too_many_lines)] // One streaming pass shares repository and blob state.
     pub(crate) fn try_for_each_chunk(
-        &self,
+        &mut self,
         sources: &[GitCorpusSource],
         mut visit: impl FnMut(&Chunk, gix::ObjectId),
     ) -> Result<(), GitHistoryError> {
-        let selected = self.chunks.sorted_indices_by_document();
+        self.chunks.sort_by_document();
         let mut repositories = HashMap::<usize, gix::Repository>::new();
         let mut offset = 0;
-        while offset < selected.len() {
-            let document_index = self
-                .chunks
-                .get(selected[offset])
-                .expect("history entry index")
-                .1
-                .document;
-            let end = selected[offset..]
+        while offset < self.chunks.entries.len() {
+            let document_index = self.chunks.entries[offset].1.document;
+            let end = self.chunks.entries[offset..]
                 .iter()
-                .position(|index| {
-                    self.chunks
-                        .get(*index)
-                        .expect("history entry index")
-                        .1
-                        .document
-                        != document_index
-                })
-                .map_or(selected.len(), |relative| offset + relative);
+                .position(|(_, chunk)| chunk.document != document_index)
+                .map_or(self.chunks.entries.len(), |relative| offset + relative);
             let descriptor = self.documents.get(document_index as usize).ok_or_else(|| {
                 GitHistoryError::Invalid("history chunk references an unknown document".into())
             })?;
@@ -1665,9 +1638,7 @@ impl GitHistoryBuildPlan {
             };
             let drafts = chunk_document_drafts(&document, ChunkingConfig::default())
                 .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-            for index in &selected[offset..end] {
-                let (expected_key, selection) =
-                    self.chunks.get(*index).expect("history entry index");
+            for (expected_key, selection) in &self.chunks.entries[offset..end] {
                 let index = selection.ordinal as usize;
                 if index >= drafts.len() {
                     return Err(GitHistoryError::Invalid(format!(
@@ -1717,7 +1688,7 @@ impl GitHistoryBuildPlan {
     }
 
     fn into_chunks(
-        self,
+        mut self,
         sources: &[GitCorpusSource],
         observations: &mut GitHistoryRefreshObservations,
         spare_capacity: usize,
@@ -3150,7 +3121,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_index_sorts_compact_indices_by_document_and_ordinal() {
+    fn chunk_index_sorts_entries_by_document_and_ordinal() {
         let mut index = HistoryChunkIndex::default();
         for (value, document, ordinal) in [(0_u64, 2, 1), (1, 1, 2), (2, 1, 0)] {
             let mut digest = [0_u8; 32];
@@ -3164,7 +3135,13 @@ mod tests {
             );
         }
 
-        assert_eq!(index.sorted_indices_by_document(), vec![2, 1, 0]);
+        index.sort_by_document();
+        let sorted = index
+            .entries
+            .iter()
+            .map(|(_, chunk)| (chunk.document, chunk.ordinal))
+            .collect::<Vec<_>>();
+        assert_eq!(sorted, vec![(1, 0), (1, 2), (2, 1)]);
     }
 
     #[test]

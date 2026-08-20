@@ -1167,7 +1167,7 @@ fn stage_git_history_plan(
 fn persist_git_history_lexical_stage(
     root: &Path,
     sources: &[GitCorpusSource],
-    history_plan: GitHistoryBuildPlan,
+    mut history_plan: GitHistoryBuildPlan,
     incremental: Option<&IncrementalStage>,
     refresh: &GitHistoryRefreshObservations,
     reused_snapshot: bool,
@@ -1193,13 +1193,13 @@ fn persist_git_history_lexical_stage(
     let (lexical_checksum, lexical_bytes) = if let Some(previous) = incremental {
         LexicalIndex::write_incremental_git_history_search_artifact_with_digest(
             &previous.lexical_path,
-            &history_plan,
+            &mut history_plan,
             sources,
             &lexical_path,
         )?
     } else {
         LexicalIndex::write_git_history_search_artifact_with_digest(
-            &history_plan,
+            &mut history_plan,
             sources,
             &embedded,
             &lexical_path,
