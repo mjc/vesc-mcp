@@ -800,10 +800,109 @@ struct HistoryChunkKey {
 
 const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
 const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 64;
-#[cfg(test)]
-const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
+const HISTORY_CHUNK_ENTRY_BLOCK: usize = 1_048_576;
 
 type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
+
+#[derive(Debug, Default)]
+struct HistoryChunkEntries {
+    blocks: Vec<Vec<HistoryChunkEntry>>,
+    offsets: Vec<usize>,
+    len: usize,
+}
+
+impl HistoryChunkEntries {
+    fn with_capacity(capacity: usize) -> Self {
+        let mut entries = Self::default();
+        entries.reserve(capacity);
+        entries
+    }
+
+    const fn len(&self) -> usize {
+        self.len
+    }
+
+    const fn capacity(&self) -> usize {
+        self.blocks.len() * HISTORY_CHUNK_ENTRY_BLOCK
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        let required = self.len.saturating_add(additional);
+        let required_blocks =
+            required.saturating_add(HISTORY_CHUNK_ENTRY_BLOCK - 1) / HISTORY_CHUNK_ENTRY_BLOCK;
+        if required_blocks <= self.blocks.len() {
+            return;
+        }
+        self.blocks
+            .reserve(required_blocks.saturating_sub(self.blocks.len()));
+        while self.blocks.len() < required_blocks {
+            self.blocks
+                .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
+        }
+        self.rebuild_offsets();
+    }
+
+    fn push(&mut self, entry: HistoryChunkEntry) {
+        if self
+            .blocks
+            .last()
+            .is_none_or(|block| block.len() == HISTORY_CHUNK_ENTRY_BLOCK)
+        {
+            self.reserve(1);
+        }
+        self.blocks
+            .last_mut()
+            .expect("history entry block reserved")
+            .push(entry);
+        self.len += 1;
+    }
+
+    fn get(&self, index: usize) -> Option<&HistoryChunkEntry> {
+        let block = self
+            .offsets
+            .partition_point(|offset| *offset <= index)
+            .checked_sub(1)?;
+        self.blocks
+            .get(block)?
+            .get(index.saturating_sub(self.offsets[block]))
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut HistoryChunkEntry> {
+        let block = self
+            .offsets
+            .partition_point(|offset| *offset <= index)
+            .checked_sub(1)?;
+        self.blocks
+            .get_mut(block)?
+            .get_mut(index.saturating_sub(self.offsets[block]))
+    }
+
+    fn retain_mut(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
+        for block in &mut self.blocks {
+            block.retain_mut(|(key, chunk)| keep(key, chunk));
+        }
+        self.len = self.blocks.iter().map(Vec::len).sum();
+        self.rebuild_offsets();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &HistoryChunkEntry> {
+        self.blocks.iter().flat_map(|block| block.iter())
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut HistoryChunkEntry> {
+        self.blocks.iter_mut().flat_map(|block| block.iter_mut())
+    }
+
+    fn rebuild_offsets(&mut self) {
+        self.offsets.clear();
+        self.offsets.reserve(self.blocks.len());
+        let mut offset = 0;
+        for block in &self.blocks {
+            self.offsets.push(offset);
+            offset += block.len();
+        }
+    }
+}
 
 #[derive(Debug)]
 struct HistoryChunkFingerprints {
@@ -911,7 +1010,7 @@ impl HistoryChunkLookup {
         self.mutable.reserve(additional);
     }
 
-    fn index_of(&self, key: &HistoryChunkKey, entries: &[HistoryChunkEntry]) -> Option<usize> {
+    fn index_of(&self, key: &HistoryChunkKey, entries: &HistoryChunkEntries) -> Option<usize> {
         let fingerprint = HistoryChunkIndex::fingerprint(key);
         let index = self.mutable.get(fingerprint).copied().or_else(|| {
             self.frozen_seed
@@ -944,7 +1043,7 @@ impl HistoryChunkLookup {
         fingerprint: u64,
         index: u32,
         key: HistoryChunkKey,
-        entries: &[HistoryChunkEntry],
+        entries: &HistoryChunkEntries,
     ) {
         match self.mutable.get(fingerprint).copied() {
             None => {
@@ -992,14 +1091,14 @@ impl HistoryChunkLookup {
 
 #[derive(Debug, Default)]
 struct HistoryChunkIndex {
-    entries: Vec<HistoryChunkEntry>,
+    entries: HistoryChunkEntries,
     lookup: HistoryChunkLookup,
 }
 
 impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            entries: Vec::with_capacity(capacity),
+            entries: HistoryChunkEntries::with_capacity(capacity),
             lookup: HistoryChunkLookup::with_capacity(capacity),
         }
     }
@@ -1055,19 +1154,14 @@ impl HistoryChunkIndex {
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
-        self.entries.retain_mut(|(key, chunk)| keep(key, chunk));
+        self.entries.retain_mut(|key, chunk| keep(key, chunk));
         self.rebuild_index();
     }
 
     fn rebuild_index(&mut self) {
         self.lookup.clear();
-        for index in 0..self.entries.len() {
-            let key = self
-                .entries
-                .get(index)
-                .expect("history entry index")
-                .0
-                .clone();
+        for (index, entry) in self.entries.iter().enumerate() {
+            let key = entry.0.clone();
             let fingerprint = Self::fingerprint(&key);
             self.lookup.register(
                 fingerprint,
@@ -1077,18 +1171,6 @@ impl HistoryChunkIndex {
                 &self.entries,
             );
         }
-    }
-
-    fn sort_by_document(&mut self) {
-        self.entries
-            .sort_unstable_by(|(left_key, left_chunk), (right_key, right_chunk)| {
-                left_chunk
-                    .document
-                    .cmp(&right_chunk.document)
-                    .then_with(|| left_chunk.ordinal.cmp(&right_chunk.ordinal))
-                    .then_with(|| left_key.cmp(right_key))
-            });
-        self.rebuild_index();
     }
 
     fn values(&self) -> impl Iterator<Item = &GitHistoryChunk> {
@@ -1106,6 +1188,11 @@ impl HistoryChunkIndex {
     #[cfg(test)]
     const fn storage_capacity(&self) -> usize {
         self.entries.capacity()
+    }
+
+    #[cfg(test)]
+    const fn storage_block_count(&self) -> usize {
+        self.entries.blocks.len()
     }
 }
 
@@ -1536,19 +1623,14 @@ impl GitHistoryBuildPlan {
 
     #[allow(clippy::too_many_lines)] // One streaming pass shares repository and blob state.
     pub(crate) fn try_for_each_chunk(
-        &mut self,
+        &self,
         sources: &[GitCorpusSource],
         mut visit: impl FnMut(&Chunk, gix::ObjectId),
     ) -> Result<(), GitHistoryError> {
-        self.chunks.sort_by_document();
         let mut repositories = HashMap::<usize, gix::Repository>::new();
-        let mut offset = 0;
-        while offset < self.chunks.entries.len() {
-            let document_index = self.chunks.entries[offset].1.document;
-            let end = self.chunks.entries[offset..]
-                .iter()
-                .position(|(_, chunk)| chunk.document != document_index)
-                .map_or(self.chunks.entries.len(), |relative| offset + relative);
+        let mut selected = self.chunks.entries.iter().peekable();
+        while let Some(entry) = selected.peek() {
+            let document_index = entry.1.document;
             let descriptor = self.documents.get(document_index as usize).ok_or_else(|| {
                 GitHistoryError::Invalid("history chunk references an unknown document".into())
             })?;
@@ -1638,7 +1720,13 @@ impl GitHistoryBuildPlan {
             };
             let drafts = chunk_document_drafts(&document, ChunkingConfig::default())
                 .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
-            for (expected_key, selection) in &self.chunks.entries[offset..end] {
+            while selected
+                .peek()
+                .is_some_and(|entry| entry.1.document == document_index)
+            {
+                let entry = selected.next().expect("history entry peeked above");
+                let expected_key = &entry.0;
+                let selection = &entry.1;
                 let index = selection.ordinal as usize;
                 if index >= drafts.len() {
                     return Err(GitHistoryError::Invalid(format!(
@@ -1682,13 +1770,12 @@ impl GitHistoryBuildPlan {
                     .map_err(|error| GitHistoryError::Chunking(error.to_string()))?;
                 visit(&chunk, object);
             }
-            offset = end;
         }
         Ok(())
     }
 
     fn into_chunks(
-        mut self,
+        self,
         sources: &[GitCorpusSource],
         observations: &mut GitHistoryRefreshObservations,
         spare_capacity: usize,
@@ -3118,12 +3205,13 @@ mod tests {
 
         assert!(index.storage_capacity() >= index.len());
         assert_eq!(index.len(), HISTORY_CHUNK_ENTRY_BLOCK + 1);
+        assert_eq!(index.storage_block_count(), 2);
     }
 
     #[test]
-    fn chunk_index_sorts_entries_by_document_and_ordinal() {
+    fn chunk_index_keeps_entries_in_document_order() {
         let mut index = HistoryChunkIndex::default();
-        for (value, document, ordinal) in [(0_u64, 2, 1), (1, 1, 2), (2, 1, 0)] {
+        for (value, document, ordinal) in [(0_u64, 1, 0), (1, 1, 2), (2, 2, 1)] {
             let mut digest = [0_u8; 32];
             digest[..8].copy_from_slice(&value.to_le_bytes());
             index.insert(
@@ -3135,7 +3223,6 @@ mod tests {
             );
         }
 
-        index.sort_by_document();
         let sorted = index
             .entries
             .iter()

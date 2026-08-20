@@ -878,7 +878,7 @@ impl LexicalIndex {
     }
 
     pub(crate) fn write_git_history_search_artifact_with_digest(
-        plan: &mut GitHistoryBuildPlan,
+        plan: &GitHistoryBuildPlan,
         sources: &[GitCorpusSource],
         embedded: &[Chunk],
         path: &Path,
@@ -973,7 +973,7 @@ impl LexicalIndex {
 
     pub(crate) fn write_incremental_git_history_search_artifact_with_digest(
         previous: &Path,
-        plan: &mut GitHistoryBuildPlan,
+        plan: &GitHistoryBuildPlan,
         sources: &[GitCorpusSource],
         path: &Path,
     ) -> Result<(ContentDigest, u64), LexicalError> {
