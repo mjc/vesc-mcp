@@ -822,22 +822,23 @@ impl HistoryChunkEntries {
         self.len
     }
 
-    const fn capacity(&self) -> usize {
-        self.blocks.len() * HISTORY_CHUNK_ENTRY_BLOCK
+    fn capacity(&self) -> usize {
+        let mut capacity = 0;
+        let mut index = 0;
+        while index < self.blocks.len() {
+            capacity += self.blocks[index].capacity();
+            index += 1;
+        }
+        capacity
     }
 
     fn reserve(&mut self, additional: usize) {
         let required = self.len.saturating_add(additional);
-        let required_blocks =
-            required.saturating_add(HISTORY_CHUNK_ENTRY_BLOCK - 1) / HISTORY_CHUNK_ENTRY_BLOCK;
-        if required_blocks <= self.blocks.len() {
-            return;
-        }
-        self.blocks
-            .reserve(required_blocks.saturating_sub(self.blocks.len()));
-        while self.blocks.len() < required_blocks {
-            self.blocks
-                .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
+        let mut capacity = self.capacity();
+        while capacity < required {
+            let block_capacity = (required - capacity).min(HISTORY_CHUNK_ENTRY_BLOCK);
+            self.blocks.push(Vec::with_capacity(block_capacity));
+            capacity += block_capacity;
         }
         self.rebuild_offsets();
     }
@@ -846,9 +847,10 @@ impl HistoryChunkEntries {
         if self
             .blocks
             .last()
-            .is_none_or(|block| block.len() == HISTORY_CHUNK_ENTRY_BLOCK)
+            .is_none_or(|block| block.len() == block.capacity())
         {
-            self.reserve(1);
+            self.blocks
+                .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
         }
         self.blocks
             .last_mut()
@@ -884,6 +886,29 @@ impl HistoryChunkEntries {
         for block in &mut self.blocks {
             block.retain_mut(|(key, chunk)| keep(key, chunk));
         }
+        let mut target = 0;
+        for source in 0..self.blocks.len() {
+            if self.blocks[source].is_empty() {
+                continue;
+            }
+            loop {
+                while target < source && self.blocks[target].len() == self.blocks[target].capacity()
+                {
+                    target += 1;
+                }
+                if target >= source {
+                    break;
+                }
+                let available = self.blocks[target].capacity() - self.blocks[target].len();
+                let to_move = available.min(self.blocks[source].len());
+                let (before_source, source_and_after) = self.blocks.split_at_mut(source);
+                before_source[target].extend(source_and_after[0].drain(..to_move));
+                if source_and_after[0].is_empty() {
+                    break;
+                }
+            }
+        }
+        self.blocks.retain(|block| !block.is_empty());
         self.len = self.blocks.iter().map(Vec::len).sum();
         self.rebuild_offsets();
     }
@@ -1112,7 +1137,7 @@ impl HistoryChunkIndex {
         self.entries.len()
     }
 
-    const fn capacity(&self) -> usize {
+    fn capacity(&self) -> usize {
         self.entries.capacity()
     }
 
@@ -1191,7 +1216,7 @@ impl HistoryChunkIndex {
     }
 
     #[cfg(test)]
-    const fn storage_capacity(&self) -> usize {
+    fn storage_capacity(&self) -> usize {
         self.entries.capacity()
     }
 
@@ -3188,6 +3213,13 @@ mod tests {
 
         plan.reserve_chunk_index_for_candidates(4_096);
         assert!(plan.chunks.capacity() >= 4_096);
+    }
+
+    #[test]
+    fn chunk_index_small_reserve_does_not_allocate_a_full_block() {
+        let index = HistoryChunkIndex::with_capacity(32);
+
+        assert_eq!(index.capacity(), 32);
     }
 
     #[test]
