@@ -564,21 +564,22 @@ impl HistoryContentLookup {
                 )),
             ));
         }
+        if !removed_document_ids.is_empty() {
+            clauses.push((
+                Occur::MustNot,
+                Box::new(TermSetQuery::new(removed_document_ids.iter().map(
+                    |document_id| {
+                        Term::from_field_text(self.fields.document_id, document_id.as_str())
+                    },
+                ))) as Box<dyn Query>,
+            ));
+        }
         let query = BooleanQuery::new(clauses);
         let searcher = self.reader.searcher();
-        let matches = searcher
-            .search(&query, &TopDocs::with_limit(1).order_by_score())
+        let count = searcher
+            .search(&query, &Count)
             .map_err(LexicalError::Search)?;
-        for (_, address) in matches {
-            let document = searcher
-                .doc::<TantivyDocument>(address)
-                .map_err(LexicalError::Search)?;
-            let document_id = required_text(&document, self.fields.document_id, "document_id")?;
-            if !removed_document_ids.contains(document_id) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(count > 0)
     }
 }
 
@@ -3881,6 +3882,34 @@ mod tests {
                 .expect("matching chunk IDs"),
             BTreeMap::from([(underscored_key, underscored.chunk_id)])
         );
+    }
+
+    #[test]
+    fn history_contains_does_not_require_a_stored_document_id() {
+        let chunk = git_chunk("History", "history", "history_identifier");
+        let key = crate::corpus::history_content_key_for_chunk(&chunk)
+            .expect("history content key");
+        let (schema, fields) = schema();
+        let index = Index::create_in_ram(schema);
+        let mut writer = index
+            .writer_with_num_threads(1, IN_MEMORY_WRITER_MEMORY_BYTES)
+            .expect("writer");
+        let mut document = TantivyDocument::default();
+        document.add_text(fields.history_content_key, key.encoded().as_str());
+        writer.add_document(document).expect("malformed document");
+        writer.commit().expect("commit");
+        let reader = index.reader().expect("reader");
+        let lookup = HistoryContentLookup { reader, fields };
+
+        assert!(lookup
+            .contains_retained(
+                &chunk.repository,
+                &chunk.path,
+                &key,
+                None,
+                &BTreeSet::new(),
+            )
+            .expect("contains"));
     }
 
     #[test]
