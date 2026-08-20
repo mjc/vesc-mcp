@@ -45,6 +45,14 @@ pub struct GitHistoryRefreshObservations {
     pub git: GitIngestionObservations,
 }
 
+const MIN_DELTA_CHUNK_INDEX_RESERVE: usize = 4_096;
+
+fn delta_chunk_index_capacity(cached_chunks: usize) -> usize {
+    (cached_chunks >= MIN_DELTA_CHUNK_INDEX_RESERVE)
+        .then_some(cached_chunks)
+        .unwrap_or(0)
+}
+
 impl Default for GitHistoryRefreshObservations {
     fn default() -> Self {
         Self {
@@ -257,6 +265,14 @@ struct HistoryReconciliation {
 }
 
 impl CachedGitHistory {
+    fn chunk_count(&self) -> usize {
+        self.repositories
+            .values()
+            .flat_map(HashMap::values)
+            .map(|document| document.chunk_count as usize)
+            .fold(0, usize::saturating_add)
+    }
+
     pub(crate) fn observe(&mut self, chunk: CachedGitHistoryChunk<'_>) {
         let documents = self
             .repositories
@@ -1412,13 +1428,14 @@ pub(crate) fn plan_git_history_fast_forward_delta(
     cached_history: CachedGitHistory,
     previous_contains: &mut PreviousContentLookup<'_>,
 ) -> Result<Option<(GitHistoryBuildPlan, GitHistoryRefreshObservations)>, GitHistoryError> {
+    let chunk_capacity = delta_chunk_index_capacity(cached_history.chunk_count());
     ingest_git_history_fast_forward_with_contents(
         sources,
         previous_tips,
         cached_history,
         HistoryContents::Delta {
             previous_contains,
-            plan: GitHistoryBuildPlan::default(),
+            plan: GitHistoryBuildPlan::with_chunk_index_capacity(chunk_capacity),
         },
     )
 }
@@ -2500,6 +2517,12 @@ mod tests {
         let plan = GitHistoryBuildPlan::with_chunk_index_capacity(32);
 
         assert!(plan.chunks.capacity() >= 32);
+    }
+
+    #[test]
+    fn delta_chunk_index_reserve_is_adaptive() {
+        assert_eq!(delta_chunk_index_capacity(4_095), 0);
+        assert_eq!(delta_chunk_index_capacity(4_096), 4_096);
     }
 
     #[test]
