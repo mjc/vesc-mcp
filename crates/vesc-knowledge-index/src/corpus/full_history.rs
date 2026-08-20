@@ -928,12 +928,8 @@ impl Default for HistoryChunkFingerprints {
 
 impl HistoryChunkFingerprints {
     fn with_capacity(capacity: usize) -> Self {
-        let per_shard = capacity.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
-            / HISTORY_CHUNK_FINGERPRINT_SHARDS;
         let mut fingerprints = Self::default();
-        for shard in &mut fingerprints.shards {
-            shard.reserve(per_shard);
-        }
+        fingerprints.reserve_to(capacity);
         fingerprints
     }
 
@@ -941,9 +937,17 @@ impl HistoryChunkFingerprints {
         (fingerprint as usize) & (HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
     }
 
-    fn reserve(&mut self, additional: usize) {
+    fn capacity(&self) -> usize {
+        self.shards.iter().map(HashMap::capacity).sum()
+    }
+
+    fn reserve_to(&mut self, target: usize) {
+        let additional = target.saturating_sub(self.capacity());
         let per_shard = additional.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
             / HISTORY_CHUNK_FINGERPRINT_SHARDS;
+        if per_shard == 0 {
+            return;
+        }
         for shard in &mut self.shards {
             shard.reserve(per_shard);
         }
@@ -991,7 +995,7 @@ impl HistoryChunkIndex {
 
     fn reserve(&mut self, additional: usize) {
         self.entries.reserve(additional);
-        self.fingerprints.reserve(additional);
+        self.fingerprints.reserve_to(self.entries.capacity());
     }
 
     fn fingerprint(key: &HistoryChunkKey) -> u64 {
@@ -3116,6 +3120,17 @@ mod tests {
             tail_capacity
         );
         assert_eq!(entries.blocks.len(), 3);
+    }
+
+    #[test]
+    fn history_chunk_fingerprint_reserve_to_is_idempotent() {
+        let mut fingerprints = HistoryChunkFingerprints::default();
+        fingerprints.reserve_to(4_096);
+        let capacity = fingerprints.capacity();
+
+        fingerprints.reserve_to(4_096);
+
+        assert_eq!(fingerprints.capacity(), capacity);
     }
 
     #[test]
