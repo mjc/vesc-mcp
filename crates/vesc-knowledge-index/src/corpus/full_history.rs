@@ -770,6 +770,12 @@ impl GitHistoryBuildPlan {
         self.revisions.intern(revision)
     }
 
+    fn object(&self, object_id: u32) -> Result<gix::ObjectId, GitHistoryError> {
+        self.objects.get(object_id).ok_or_else(|| {
+            GitHistoryError::Invalid("history document references an unknown object".into())
+        })
+    }
+
     fn reconcile_documents(
         &mut self,
         source_index: usize,
@@ -1084,9 +1090,7 @@ impl GitHistoryBuildPlan {
             })?;
             let revision = Revision::try_from(revision_id.to_string())
                 .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
-            let object = self.objects.get(descriptor.object).ok_or_else(|| {
-                GitHistoryError::Invalid("history document references an unknown object".into())
-            })?;
+            let object = self.object(descriptor.object)?;
             let document = match descriptor.source_kind() {
                 SourceKind::GitBlob => {
                     let size = repository
