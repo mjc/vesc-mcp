@@ -675,8 +675,7 @@ fn bench_graph_projection(
     (fixture, projection): (PersistedRewriteFixture, GraphProjectionFixture),
 ) {
     black_box(
-        benchmark_graph_projection_from_fixture(&projection, true)
-            .expect("projected graph staging"),
+        benchmark_graph_projection_from_fixture(&projection).expect("projected graph staging"),
     );
     *PERSISTED_FIXTURE_TEARDOWN
         .lock()
@@ -691,9 +690,7 @@ fn bench_graph_projection(
 fn bench_graph_projection_legacy(
     (fixture, projection): (PersistedRewriteFixture, GraphProjectionFixture),
 ) {
-    black_box(
-        benchmark_graph_projection_from_fixture(&projection, false).expect("legacy graph staging"),
-    );
+    black_box(benchmark_graph_projection_from_fixture(&projection).expect("legacy graph staging"));
     *PERSISTED_FIXTURE_TEARDOWN
         .lock()
         .expect("persisted fixture teardown mutex") = Some(fixture);
@@ -706,7 +703,7 @@ fn bench_graph_projection_legacy(
 )]
 fn bench_history_inventory(fixture: HistoryInventoryBenchFixture) {
     black_box(
-        benchmark_history_inventory_from_fixture(&fixture.inventory, true)
+        benchmark_history_inventory_from_fixture(&fixture.inventory)
             .expect("projected history inventory"),
     );
     *HISTORY_INVENTORY_TEARDOWN
@@ -721,7 +718,7 @@ fn bench_history_inventory(fixture: HistoryInventoryBenchFixture) {
 )]
 fn bench_history_inventory_legacy(fixture: HistoryInventoryBenchFixture) {
     black_box(
-        benchmark_history_inventory_from_fixture(&fixture.inventory, false)
+        benchmark_history_inventory_from_fixture(&fixture.inventory)
             .expect("legacy history inventory"),
     );
     *HISTORY_INVENTORY_TEARDOWN

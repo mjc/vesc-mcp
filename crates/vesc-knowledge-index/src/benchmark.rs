@@ -185,31 +185,27 @@ pub fn prepare_graph_projection_projected(
 /// Returns [`BenchmarkError`] when graph inputs or persisted chunks are invalid.
 pub fn benchmark_graph_projection_from_fixture(
     fixture: &GraphProjectionFixture,
-    projected: bool,
 ) -> Result<GraphProjectionStats, BenchmarkError> {
-    let (graph, stored_documents_decoded, git_bodies_hydrated) = if projected {
-        let graph = LexicalIndex::graph_from_sidecar(
-            &fixture.path,
-            fixture.corpus_digest.clone(),
-            Some,
-        )?
-        .ok_or_else(|| LexicalError::Artifact("graph projection sidecar is missing".into()))?;
-        (graph, 0, 0)
-    } else {
-        let GraphProjectionInputs::Legacy { index, ids } = &fixture.inputs else {
-            return Err(LexicalError::Artifact(
-                "projected graph fixture has no legacy input".into(),
+    let (graph, stored_documents_decoded, git_bodies_hydrated) = match &fixture.inputs {
+        GraphProjectionInputs::Projected => {
+            let graph = LexicalIndex::graph_from_sidecar(
+                &fixture.path,
+                fixture.corpus_digest.clone(),
+                Some,
+            )?
+            .ok_or_else(|| LexicalError::Artifact("graph projection sidecar is missing".into()))?;
+            (graph, 0, 0)
+        }
+        GraphProjectionInputs::Legacy { index, ids } => {
+            let chunks = index.chunks_by_id(&ids.iter().cloned().collect())?;
+            let decoded = chunks.len();
+            let graph = GraphArtifact::from_chunks(
+                fixture.corpus_digest.clone(),
+                &chunks.into_values().collect::<Vec<_>>(),
             )
-            .into());
-        };
-        let chunks = index.chunks_by_id(&ids.iter().cloned().collect())?;
-        let decoded = chunks.len();
-        let graph = GraphArtifact::from_chunks(
-            fixture.corpus_digest.clone(),
-            &chunks.into_values().collect::<Vec<_>>(),
-        )
-        .map_err(|error| LexicalError::Artifact(error.to_string()))?;
-        (graph, decoded, decoded)
+            .map_err(|error| LexicalError::Artifact(error.to_string()))?;
+            (graph, decoded, decoded)
+        }
     };
     Ok(GraphProjectionStats {
         live_documents: fixture.live_documents,
@@ -300,23 +296,21 @@ pub fn prepare_history_inventory_projected(
 /// Returns [`BenchmarkError`] when the history sidecar or persisted chunks are invalid.
 pub fn benchmark_history_inventory_from_fixture(
     fixture: &HistoryInventoryFixture,
-    projected: bool,
 ) -> Result<HistoryInventoryStats, BenchmarkError> {
-    let (history_records, stored_documents_decoded, git_bodies_hydrated) = if projected {
-        let projection = LexicalIndex::read_history_projection(&fixture.path)?
-            .ok_or_else(|| LexicalError::Artifact("history inventory sidecar is missing".into()))?;
-        let (_, membership) = projection.into_parts();
-        (membership.len(), 0, 0)
-    } else {
-        let HistoryInventoryInputs::Legacy { index, ids } = &fixture.inputs else {
-            return Err(LexicalError::Artifact(
-                "projected history fixture has no legacy input".into(),
-            )
-            .into());
-        };
-        let chunks = index.chunks_by_id(&ids.iter().cloned().collect())?;
-        let decoded = chunks.len();
-        (decoded, decoded, decoded)
+    let (history_records, stored_documents_decoded, git_bodies_hydrated) = match &fixture.inputs {
+        HistoryInventoryInputs::Projected => {
+            let projection =
+                LexicalIndex::read_history_projection(&fixture.path)?.ok_or_else(|| {
+                    LexicalError::Artifact("history inventory sidecar is missing".into())
+                })?;
+            let (_, membership) = projection.into_parts();
+            (membership.len(), 0, 0)
+        }
+        HistoryInventoryInputs::Legacy { index, ids } => {
+            let chunks = index.chunks_by_id(&ids.iter().cloned().collect())?;
+            let decoded = chunks.len();
+            (decoded, decoded, decoded)
+        }
     };
     Ok(HistoryInventoryStats {
         live_documents: fixture.live_documents,
@@ -1319,6 +1313,19 @@ mod tests {
         }
 
         let _ = compile_projected_preparation;
+    }
+
+    #[test]
+    fn projection_benchmarks_select_their_mode_from_fixture_inputs() {
+        fn compile_graph(fixture: &GraphProjectionFixture) {
+            let _ = benchmark_graph_projection_from_fixture(fixture);
+        }
+
+        fn compile_history(fixture: &HistoryInventoryFixture) {
+            let _ = benchmark_history_inventory_from_fixture(fixture);
+        }
+
+        let _ = (compile_graph, compile_history);
     }
 
     #[test]
