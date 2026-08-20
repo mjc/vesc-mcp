@@ -1174,6 +1174,17 @@ mod tests {
     }
 
     #[test]
+    fn streamed_write_preserves_artifact_bytes_and_checksum() {
+        let graph = fixture();
+        let root = tempfile::tempdir().expect("graph tempdir");
+        let path = root.path().join("graph.bin");
+        let checksum = graph.write(&path).expect("write graph");
+        let encoded = graph.encode().expect("encode graph");
+        assert_eq!(fs::read(&path).expect("read graph"), encoded);
+        assert_eq!(checksum, ContentDigest::of(&encoded));
+    }
+
+    #[test]
     fn round_trip_preserves_csr_edges_and_provenance() {
         let graph = fixture();
         let decoded = GraphArtifact::decode(&graph.encode().expect("encode")).expect("decode");
