@@ -799,10 +799,107 @@ struct HistoryChunkKey {
 }
 
 const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
+const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
+
+type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
+
+#[derive(Debug, Default)]
+struct HistoryChunkEntries {
+    blocks: Vec<Vec<HistoryChunkEntry>>,
+    offsets: Vec<usize>,
+    len: usize,
+}
+
+impl HistoryChunkEntries {
+    fn with_capacity(capacity: usize) -> Self {
+        let mut entries = Self::default();
+        entries.reserve(capacity);
+        entries
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.blocks.len() * HISTORY_CHUNK_ENTRY_BLOCK
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        let required = self.len.saturating_add(additional);
+        let required_blocks =
+            required.saturating_add(HISTORY_CHUNK_ENTRY_BLOCK - 1) / HISTORY_CHUNK_ENTRY_BLOCK;
+        if required_blocks <= self.blocks.len() {
+            return;
+        }
+        self.blocks
+            .reserve(required_blocks.saturating_sub(self.blocks.len()));
+        while self.blocks.len() < required_blocks {
+            self.blocks
+                .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
+        }
+        self.rebuild_offsets();
+    }
+
+    fn push(&mut self, entry: HistoryChunkEntry) {
+        self.reserve(1);
+        self.blocks
+            .last_mut()
+            .expect("history entry block reserved")
+            .push(entry);
+        self.len += 1;
+    }
+
+    fn get(&self, index: usize) -> Option<&HistoryChunkEntry> {
+        let block = self
+            .offsets
+            .partition_point(|offset| *offset <= index)
+            .checked_sub(1)?;
+        self.blocks
+            .get(block)?
+            .get(index.saturating_sub(self.offsets[block]))
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut HistoryChunkEntry> {
+        let block = self
+            .offsets
+            .partition_point(|offset| *offset <= index)
+            .checked_sub(1)?;
+        self.blocks
+            .get_mut(block)?
+            .get_mut(index.saturating_sub(self.offsets[block]))
+    }
+
+    fn retain_mut(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
+        for block in &mut self.blocks {
+            block.retain_mut(|(key, chunk)| keep(key, chunk));
+        }
+        self.len = self.blocks.iter().map(Vec::len).sum();
+        self.rebuild_offsets();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &HistoryChunkEntry> {
+        self.blocks.iter().flat_map(|block| block.iter())
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut HistoryChunkEntry> {
+        self.blocks.iter_mut().flat_map(|block| block.iter_mut())
+    }
+
+    fn rebuild_offsets(&mut self) {
+        self.offsets.clear();
+        self.offsets.reserve(self.blocks.len());
+        let mut offset = 0;
+        for block in &self.blocks {
+            self.offsets.push(offset);
+            offset += block.len();
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 struct HistoryChunkIndex {
-    entries: Vec<(HistoryChunkKey, GitHistoryChunk)>,
+    entries: HistoryChunkEntries,
     fingerprints: HashMap<u64, u32>,
     collisions: HashMap<HistoryChunkKey, u32>,
 }
@@ -810,17 +907,17 @@ struct HistoryChunkIndex {
 impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            entries: Vec::with_capacity(capacity),
+            entries: HistoryChunkEntries::with_capacity(capacity),
             fingerprints: HashMap::with_capacity(capacity),
             collisions: HashMap::new(),
         }
     }
 
-    const fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.entries.len()
     }
 
-    const fn capacity(&self) -> usize {
+    fn capacity(&self) -> usize {
         self.entries.capacity()
     }
 
@@ -845,7 +942,10 @@ impl HistoryChunkIndex {
                 .map(|index| index as usize),
             Some(index) => {
                 let index = index as usize;
-                (self.entries[index].0 == *key).then_some(index)
+                self.entries
+                    .get(index)
+                    .filter(|entry| entry.0 == *key)
+                    .map(|_| index)
             }
             None => None,
         }
@@ -857,7 +957,10 @@ impl HistoryChunkIndex {
 
     fn insert(&mut self, key: HistoryChunkKey, chunk: GitHistoryChunk) -> Option<GitHistoryChunk> {
         if let Some(index) = self.index_of(&key) {
-            return Some(std::mem::replace(&mut self.entries[index].1, chunk));
+            return Some(std::mem::replace(
+                &mut self.entries.get_mut(index).expect("history entry index").1,
+                chunk,
+            ));
         }
         let index = u32::try_from(self.entries.len())
             .expect("configured Git limits keep history chunk indices in u32");
@@ -877,7 +980,12 @@ impl HistoryChunkIndex {
             }
             Some(existing) => {
                 self.fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
-                let existing_key = self.entries[existing as usize].0.clone();
+                let existing_key = self
+                    .entries
+                    .get(existing as usize)
+                    .expect("history entry index")
+                    .0
+                    .clone();
                 self.collisions.insert(existing_key, existing);
                 self.collisions.insert(key, index);
             }
@@ -885,7 +993,7 @@ impl HistoryChunkIndex {
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
-        self.entries.retain_mut(|(key, chunk)| keep(key, chunk));
+        self.entries.retain_mut(|key, chunk| keep(key, chunk));
         self.rebuild_index();
     }
 
@@ -893,7 +1001,12 @@ impl HistoryChunkIndex {
         self.fingerprints.clear();
         self.collisions.clear();
         for index in 0..self.entries.len() {
-            let key = self.entries[index].0.clone();
+            let key = self
+                .entries
+                .get(index)
+                .expect("history entry index")
+                .0
+                .clone();
             let fingerprint = Self::fingerprint(&key);
             self.register_index(
                 fingerprint,
@@ -918,6 +1031,10 @@ impl HistoryChunkIndex {
 
     fn entries_mut(&mut self) -> impl Iterator<Item = &mut (HistoryChunkKey, GitHistoryChunk)> {
         self.entries.iter_mut()
+    }
+
+    fn storage_block_count(&self) -> usize {
+        self.entries.blocks.len()
     }
 }
 
@@ -1053,7 +1170,7 @@ impl GitHistoryBuildPlan {
         }
     }
 
-    pub(crate) const fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.chunks.len()
     }
 
@@ -2864,6 +2981,28 @@ mod tests {
 
         plan.reserve_chunk_index_for_candidates(4_096);
         assert!(plan.chunks.capacity() >= 4_096);
+    }
+
+    #[test]
+    fn chunk_index_growth_keeps_entries_in_fixed_storage_blocks() {
+        let mut index = HistoryChunkIndex::default();
+        for value in 0..=HISTORY_CHUNK_ENTRY_BLOCK {
+            let mut digest = [0_u8; 32];
+            digest[..8].copy_from_slice(&(value as u64).to_le_bytes());
+            index.insert(
+                HistoryChunkKey {
+                    content: ContentDigest::from_sha256(digest),
+                    revision: 0,
+                },
+                GitHistoryChunk {
+                    document: value as u32,
+                    ordinal: 0,
+                },
+            );
+        }
+
+        assert_eq!(index.storage_block_count(), 2);
+        assert_eq!(index.len(), HISTORY_CHUNK_ENTRY_BLOCK + 1);
     }
 
     #[test]
