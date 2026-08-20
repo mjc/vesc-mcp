@@ -47,10 +47,12 @@ pub struct GitHistoryRefreshObservations {
 
 const MIN_DELTA_CHUNK_INDEX_RESERVE: usize = 4_096;
 
-fn delta_chunk_index_capacity(cached_chunks: usize) -> usize {
-    (cached_chunks >= MIN_DELTA_CHUNK_INDEX_RESERVE)
-        .then_some(cached_chunks)
-        .unwrap_or(0)
+const fn delta_chunk_index_capacity(cached_chunks: usize) -> usize {
+    if cached_chunks >= MIN_DELTA_CHUNK_INDEX_RESERVE {
+        cached_chunks
+    } else {
+        0
+    }
 }
 
 impl Default for GitHistoryRefreshObservations {
