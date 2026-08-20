@@ -591,6 +591,21 @@ struct GitHistoryDocument {
 const HISTORY_DOCUMENT_COMMIT_PATH_BIT: u32 = 1 << 31;
 
 impl GitHistoryDocument {
+    fn packed_path(path_id: u32, source_kind: SourceKind) -> Result<u32, GitHistoryError> {
+        if path_id >= HISTORY_DOCUMENT_COMMIT_PATH_BIT {
+            return Err(GitHistoryError::Invalid(
+                "too many Git history paths for the packed document locator".into(),
+            ));
+        }
+        match source_kind {
+            SourceKind::GitBlob => Ok(path_id),
+            SourceKind::GitCommit => Ok(path_id | HISTORY_DOCUMENT_COMMIT_PATH_BIT),
+            _ => Err(GitHistoryError::Invalid(
+                "history document must be a Git source".into(),
+            )),
+        }
+    }
+
     const fn source_kind(&self) -> SourceKind {
         if self.path & HISTORY_DOCUMENT_COMMIT_PATH_BIT == 0 {
             SourceKind::GitBlob
@@ -779,23 +794,17 @@ impl GitHistoryBuildPlan {
         } else {
             let path_id = u32::try_from(self.paths.len())
                 .map_err(|_| GitHistoryError::Invalid("too many Git history paths".into()))?;
-            if path_id >= HISTORY_DOCUMENT_COMMIT_PATH_BIT {
-                return Err(GitHistoryError::Invalid(
-                    "too many Git history paths for the packed document locator".into(),
-                ));
-            }
             let path: Arc<str> = Arc::from(path);
             self.paths.push(Arc::clone(&path));
             self.path_ids.insert(path, path_id);
             path_id
         };
+        let path = GitHistoryDocument::packed_path(path_id, source_kind)?;
         self.documents.push(GitHistoryDocument {
             source_index,
             revision,
             object,
-            path: path_id
-                | (u32::from(source_kind == SourceKind::GitCommit)
-                    * HISTORY_DOCUMENT_COMMIT_PATH_BIT),
+            path,
         });
         Ok(index)
     }
