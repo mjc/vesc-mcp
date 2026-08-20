@@ -725,6 +725,103 @@ struct GitHistorySidecars {
     embedding: Option<JsonArrayWriter>,
 }
 
+#[derive(Serialize)]
+struct BorrowedGraphChunk<'a> {
+    chunk_id: &'a ChunkId,
+    repository: &'a RepositoryId,
+    revision: &'a Revision,
+    path: &'a str,
+    title: &'a str,
+    ordinal: u32,
+    source_span: Option<SourceSpan>,
+    next_chunk: Option<&'a ChunkId>,
+}
+
+impl<'a> BorrowedGraphChunk<'a> {
+    fn from_view(view: &'a GitHistoryChunkView<'a>) -> Self {
+        Self {
+            chunk_id: view.chunk_id(),
+            repository: view.repository(),
+            revision: view.revision(),
+            path: view.path(),
+            title: view.title(),
+            ordinal: view.ordinal(),
+            source_span: view.source_span(),
+            next_chunk: view.next_chunk(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedCachedGitHistoryRecord<'a> {
+    document_id: &'a DocumentId,
+    repository: &'a RepositoryId,
+    revision: &'a Revision,
+    path: &'a str,
+    ordinal: u32,
+    has_previous: bool,
+    has_next: bool,
+    blob: Option<&'a str>,
+    source_kind: SourceKind,
+    content_key: Option<ContentDigest>,
+}
+
+impl<'a> BorrowedCachedGitHistoryRecord<'a> {
+    fn from_view(
+        view: &'a GitHistoryChunkView<'a>,
+        blob: &'a str,
+        content_key: ContentDigest,
+    ) -> Self {
+        Self {
+            document_id: view.document_id(),
+            repository: view.repository(),
+            revision: view.revision(),
+            path: view.path(),
+            ordinal: view.ordinal(),
+            has_previous: view.previous_chunk().is_some(),
+            has_next: view.next_chunk().is_some(),
+            blob: Some(blob),
+            source_kind: view.source_kind(),
+            content_key: Some(content_key),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedEmbeddingLocatorRecord<'a> {
+    chunk_id: &'a ChunkId,
+    document_id: &'a DocumentId,
+    title: &'a str,
+    source_kind: SourceKind,
+    repository: &'a RepositoryId,
+    revision: &'a Revision,
+    path: &'a str,
+    heading_path: &'a [&'a str],
+    source_span: Option<SourceSpan>,
+    identifiers: &'a [compact_str::CompactString],
+    tags: &'a BTreeSet<String>,
+    git_object_id: Option<&'a str>,
+}
+
+impl<'a> BorrowedEmbeddingLocatorRecord<'a> {
+    fn from_view(view: &'a GitHistoryChunkView<'a>, blob: &'a str) -> Self {
+        Self {
+            chunk_id: view.chunk_id(),
+            document_id: view.document_id(),
+            title: view.title(),
+            source_kind: view.source_kind(),
+            repository: view.repository(),
+            revision: view.revision(),
+            path: view.path(),
+            heading_path: view.headings(),
+            source_span: view.source_span(),
+            identifiers: view.identifiers(),
+            tags: view.tags(),
+            git_object_id: Some(blob),
+        }
+    }
+}
+
 impl GitHistorySidecars {
     fn create(path: &Path) -> Result<Self, LexicalError> {
         Ok(Self {
@@ -765,23 +862,27 @@ impl GitHistorySidecars {
         view: &GitHistoryChunkView<'_>,
         blob: gix::ObjectId,
     ) -> Result<(), LexicalError> {
+        self.push_history_borrowed(view, blob)
+    }
+
+    fn push_history_borrowed(
+        &mut self,
+        view: &GitHistoryChunkView<'_>,
+        blob: gix::ObjectId,
+    ) -> Result<(), LexicalError> {
+        let blob = blob.to_string();
         if let Some(graph) = self.graph.as_mut() {
-            graph.push(&GraphChunk {
-                chunk_id: view.chunk_id().clone(),
-                repository: view.repository().clone(),
-                revision: view.revision().clone(),
-                path: view.path().to_owned(),
-                title: view.title().to_owned(),
-                ordinal: view.ordinal(),
-                source_span: view.source_span(),
-                next_chunk: view.next_chunk().cloned(),
-            })?;
+            graph.push(&BorrowedGraphChunk::from_view(view))?;
         }
         if let Some(history) = self.history.as_mut() {
-            history.push(&CachedGitHistoryRecord::from_view(view, blob))?;
+            history.push(&BorrowedCachedGitHistoryRecord::from_view(
+                view,
+                &blob,
+                view.history_content_key(),
+            ))?;
         }
         if let Some(embedding) = self.embedding.as_mut() {
-            embedding.push(&EmbeddingLocatorRecord::from_history_view(view, Some(blob)))?;
+            embedding.push(&BorrowedEmbeddingLocatorRecord::from_view(view, &blob))?;
         }
         Ok(())
     }
@@ -3633,6 +3734,19 @@ mod tests {
             fs::read(path).expect("read sidecar"),
             br#"[{"chunk":1},{"chunk":2}]"#
         );
+    }
+
+    #[test]
+    fn history_sidecars_accept_one_borrowed_projection() {
+        fn compile_borrowed_writer(
+            sidecars: &mut GitHistorySidecars,
+            view: &GitHistoryChunkView<'_>,
+            blob: gix::ObjectId,
+        ) -> Result<(), LexicalError> {
+            sidecars.push_history_borrowed(view, blob)
+        }
+
+        let _ = compile_borrowed_writer;
     }
 
     #[test]
