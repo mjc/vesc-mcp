@@ -799,6 +799,7 @@ struct HistoryChunkKey {
 }
 
 const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
+const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 64;
 const HISTORY_CHUNK_ENTRY_BLOCK: usize = 1_048_576;
 
 type HistoryChunkEntry = (u32, GitHistoryChunk);
@@ -986,52 +987,90 @@ impl HistoryChunkEntries {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct HistoryChunkFingerprints {
-    values: HashMap<u64, u32>,
+    shards: Vec<HashMap<u64, u32>>,
+}
+
+impl Default for HistoryChunkFingerprints {
+    fn default() -> Self {
+        Self {
+            shards: (0..HISTORY_CHUNK_FINGERPRINT_SHARDS)
+                .map(|_| HashMap::new())
+                .collect(),
+        }
+    }
 }
 
 impl HistoryChunkFingerprints {
     fn with_capacity(capacity: usize) -> Self {
+        let per_shard = capacity.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+            / HISTORY_CHUNK_FINGERPRINT_SHARDS;
         let mut fingerprints = Self::default();
-        fingerprints.values.reserve(capacity);
+        for shard in &mut fingerprints.shards {
+            shard.reserve(per_shard);
+        }
         fingerprints
     }
 
+    #[allow(clippy::cast_possible_truncation)]
+    const fn shard(fingerprint: u64) -> usize {
+        // The mask leaves only the 6-bit shard number before this cast.
+        (fingerprint & (HISTORY_CHUNK_FINGERPRINT_SHARDS as u64 - 1)) as usize
+    }
+
     fn reserve(&mut self, additional: usize) {
-        self.values.reserve(additional);
+        let per_shard = additional.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+            / HISTORY_CHUNK_FINGERPRINT_SHARDS;
+        for shard in &mut self.shards {
+            shard.reserve(per_shard);
+        }
     }
 
     fn get(&self, fingerprint: u64) -> Option<&u32> {
-        self.values.get(&fingerprint)
+        self.shards[Self::shard(fingerprint)].get(&fingerprint)
     }
 
     fn insert(&mut self, fingerprint: u64, index: u32) -> Option<u32> {
-        self.values.insert(fingerprint, index)
+        let shard = Self::shard(fingerprint);
+        self.shards[shard].insert(fingerprint, index)
     }
 
     fn clear(&mut self) {
-        self.values.clear();
+        for shard in &mut self.shards {
+            shard.clear();
+        }
     }
 
     fn freeze(self) -> FrozenHistoryChunkFingerprints {
-        let mut values = self.values.into_iter().collect::<Vec<_>>();
-        values.sort_unstable_by_key(|(fingerprint, _)| *fingerprint);
-        FrozenHistoryChunkFingerprints { values }
+        FrozenHistoryChunkFingerprints {
+            shards: self
+                .shards
+                .into_iter()
+                .map(|shard| {
+                    let mut entries = shard.into_iter().collect::<Vec<_>>();
+                    entries.sort_unstable_by_key(|(fingerprint, _)| *fingerprint);
+                    entries
+                })
+                .collect(),
+        }
     }
 }
 
 #[derive(Debug)]
 struct FrozenHistoryChunkFingerprints {
-    values: Vec<(u64, u32)>,
+    shards: Vec<Vec<(u64, u32)>>,
 }
 
 impl FrozenHistoryChunkFingerprints {
     fn get(&self, fingerprint: u64) -> Option<u32> {
-        self.values
+        let shard = self
+            .shards
+            .get(HistoryChunkFingerprints::shard(fingerprint))?;
+        shard
             .binary_search_by_key(&fingerprint, |(value, _)| *value)
             .ok()
-            .map(|index| self.values[index].1)
+            .map(|index| shard[index].1)
     }
 }
 
