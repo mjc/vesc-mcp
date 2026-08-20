@@ -585,8 +585,23 @@ struct GitHistoryDocument {
     source_index: u32,
     revision: u32,
     object: gix::ObjectId,
-    source_kind: SourceKind,
     path: u32,
+}
+
+const HISTORY_DOCUMENT_COMMIT_PATH_BIT: u32 = 1 << 31;
+
+impl GitHistoryDocument {
+    const fn source_kind(&self) -> SourceKind {
+        if self.path & HISTORY_DOCUMENT_COMMIT_PATH_BIT == 0 {
+            SourceKind::GitBlob
+        } else {
+            SourceKind::GitCommit
+        }
+    }
+
+    const fn path_id(&self) -> u32 {
+        self.path & !HISTORY_DOCUMENT_COMMIT_PATH_BIT
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -712,7 +727,7 @@ impl GitHistoryBuildPlan {
                     )));
                 };
                 let keep = commits.is_reachable(&revision)
-                    && (document.source_kind != SourceKind::GitCommit
+                    && (document.source_kind() != SourceKind::GitCommit
                         || commits.message_is_admitted(&revision));
                 (!keep).then(|| Ok(u32::try_from(index).expect("document index fits in u32")))
             })
@@ -725,18 +740,18 @@ impl GitHistoryBuildPlan {
             .enumerate()
             .filter(|(index, document)| {
                 document.source_index == source_index
-                    && document.source_kind == SourceKind::GitCommit
+                    && document.source_kind() == SourceKind::GitCommit
                     && !removed
                         .contains(&u32::try_from(*index).expect("document index fits in u32"))
             })
             .count();
         let removed_commit_messages = removed
             .iter()
-            .filter(|index| self.documents[**index as usize].source_kind == SourceKind::GitCommit)
+            .filter(|index| self.documents[**index as usize].source_kind() == SourceKind::GitCommit)
             .count();
         let removed_blob_documents = removed
             .iter()
-            .filter(|index| self.documents[**index as usize].source_kind == SourceKind::GitBlob)
+            .filter(|index| self.documents[**index as usize].source_kind() == SourceKind::GitBlob)
             .count();
         Ok(HistoryReconciliation {
             removed_documents: removed.len(),
@@ -764,6 +779,11 @@ impl GitHistoryBuildPlan {
         } else {
             let path_id = u32::try_from(self.paths.len())
                 .map_err(|_| GitHistoryError::Invalid("too many Git history paths".into()))?;
+            if path_id >= HISTORY_DOCUMENT_COMMIT_PATH_BIT {
+                return Err(GitHistoryError::Invalid(
+                    "too many Git history paths for the packed document locator".into(),
+                ));
+            }
             let path: Arc<str> = Arc::from(path);
             self.paths.push(Arc::clone(&path));
             self.path_ids.insert(path, path_id);
@@ -773,8 +793,9 @@ impl GitHistoryBuildPlan {
             source_index,
             revision,
             object,
-            source_kind,
-            path: path_id,
+            path: path_id
+                | (u32::from(source_kind == SourceKind::GitCommit)
+                    * HISTORY_DOCUMENT_COMMIT_PATH_BIT),
         });
         Ok(index)
     }
@@ -808,7 +829,7 @@ impl GitHistoryBuildPlan {
 
         let mut path_remap = vec![None; self.paths.len()];
         for document in &self.documents {
-            path_remap[document.path as usize] = Some(0);
+            path_remap[document.path_id() as usize] = Some(0);
         }
         for (next, mapped) in path_remap
             .iter_mut()
@@ -818,8 +839,10 @@ impl GitHistoryBuildPlan {
             *mapped = Some(u32::try_from(next).expect("selected history path index fits in u32"));
         }
         for document in &mut self.documents {
-            document.path = path_remap[document.path as usize]
-                .expect("history document references a retained path");
+            let kind_bit = document.path & HISTORY_DOCUMENT_COMMIT_PATH_BIT;
+            document.path = path_remap[document.path_id() as usize]
+                .expect("history document references a retained path")
+                | kind_bit;
         }
         let mut old_path = 0_usize;
         self.paths.retain(|_| {
@@ -971,9 +994,12 @@ impl GitHistoryBuildPlan {
             let descriptor = self.documents.get(document_index as usize).ok_or_else(|| {
                 GitHistoryError::Invalid("history chunk references an unknown document".into())
             })?;
-            let path = self.paths.get(descriptor.path as usize).ok_or_else(|| {
-                GitHistoryError::Invalid("history document references an unknown path".into())
-            })?;
+            let path = self
+                .paths
+                .get(descriptor.path_id() as usize)
+                .ok_or_else(|| {
+                    GitHistoryError::Invalid("history document references an unknown path".into())
+                })?;
             let source = sources
                 .get(descriptor.source_index as usize)
                 .ok_or_else(|| {
@@ -994,7 +1020,7 @@ impl GitHistoryBuildPlan {
             })?;
             let revision = Revision::try_from(revision_id.to_string())
                 .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
-            let document = match descriptor.source_kind {
+            let document = match descriptor.source_kind() {
                 SourceKind::GitBlob => {
                     let size = repository
                         .find_header(descriptor.object)
@@ -2312,7 +2338,7 @@ mod tests {
     #[test]
     fn history_plan_document_is_only_a_git_locator() {
         assert!(
-            std::mem::size_of::<GitHistoryDocument>() <= 40,
+            std::mem::size_of::<GitHistoryDocument>() <= 32,
             "history document locator grew beyond its compact representation"
         );
         let fields = std::mem::size_of::<usize>()
@@ -2348,7 +2374,7 @@ mod tests {
                 0,
                 revision,
                 second_object,
-                SourceKind::GitBlob,
+                SourceKind::GitCommit,
                 "src/second.rs",
             )
             .expect("second document");
@@ -2357,6 +2383,14 @@ mod tests {
         assert_eq!(
             plan.documents[first as usize].revision,
             plan.documents[second as usize].revision
+        );
+        assert_eq!(
+            plan.documents[first as usize].source_kind(),
+            SourceKind::GitBlob
+        );
+        assert_eq!(
+            plan.documents[second as usize].source_kind(),
+            SourceKind::GitCommit
         );
     }
 
