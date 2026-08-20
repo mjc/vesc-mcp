@@ -691,7 +691,11 @@ impl HistoryRevisionPool {
         self.values.get(revision_id as usize).copied()
     }
 
-    fn compact(&mut self, documents: &mut [GitHistoryDocument]) -> Vec<u32> {
+    fn compact(
+        &mut self,
+        documents: &mut [GitHistoryDocument],
+        chunks: &mut HashMap<HistoryChunkKey, GitHistoryChunk>,
+    ) {
         let mut remap = vec![u32::MAX; self.values.len()];
         for document in documents.iter() {
             remap[document.revision as usize] = 0;
@@ -719,7 +723,18 @@ impl HistoryRevisionPool {
                 u32::try_from(index).expect("selected history revision index fits in u32"),
             );
         }
-        remap
+        if remap
+            .iter()
+            .enumerate()
+            .any(|(old, &new)| new != u32::try_from(old).expect("revision pool index fits in u32"))
+        {
+            let old_chunks = std::mem::take(chunks);
+            *chunks = HashMap::with_capacity(old_chunks.len());
+            for (mut key, chunk) in old_chunks {
+                key.revision = remap[key.revision as usize];
+                chunks.insert(key, chunk);
+            }
+        }
     }
 }
 
@@ -932,19 +947,8 @@ impl GitHistoryBuildPlan {
                 .expect("history chunk references a retained document");
         }
 
-        let revision_remap = self.revisions.compact(&mut self.documents);
-        if revision_remap
-            .iter()
-            .enumerate()
-            .any(|(old, &new)| new != u32::try_from(old).expect("revision pool index fits in u32"))
-        {
-            let chunks = std::mem::take(&mut self.chunks);
-            self.chunks = HashMap::with_capacity(chunks.len());
-            for (mut key, chunk) in chunks {
-                key.revision = revision_remap[key.revision as usize];
-                self.chunks.insert(key, chunk);
-            }
-        }
+        self.revisions
+            .compact(&mut self.documents, &mut self.chunks);
         self.objects.compact(&mut self.documents);
 
         let mut path_remap = vec![None; self.paths.len()];
