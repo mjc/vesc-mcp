@@ -800,6 +800,7 @@ struct HistoryChunkKey {
 
 const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
 const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
+const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 64;
 
 type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
 
@@ -897,10 +898,64 @@ impl HistoryChunkEntries {
     }
 }
 
+#[derive(Debug)]
+struct HistoryChunkFingerprints {
+    shards: Vec<HashMap<u64, u32>>,
+}
+
+impl Default for HistoryChunkFingerprints {
+    fn default() -> Self {
+        Self {
+            shards: (0..HISTORY_CHUNK_FINGERPRINT_SHARDS)
+                .map(|_| HashMap::new())
+                .collect(),
+        }
+    }
+}
+
+impl HistoryChunkFingerprints {
+    fn with_capacity(capacity: usize) -> Self {
+        let per_shard = capacity.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+            / HISTORY_CHUNK_FINGERPRINT_SHARDS;
+        let mut fingerprints = Self::default();
+        for shard in &mut fingerprints.shards {
+            shard.reserve(per_shard);
+        }
+        fingerprints
+    }
+
+    fn shard(&self, fingerprint: u64) -> usize {
+        (fingerprint as usize) & (HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        let per_shard = additional.saturating_add(HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+            / HISTORY_CHUNK_FINGERPRINT_SHARDS;
+        for shard in &mut self.shards {
+            shard.reserve(per_shard);
+        }
+    }
+
+    fn get(&self, fingerprint: &u64) -> Option<&u32> {
+        self.shards[self.shard(*fingerprint)].get(fingerprint)
+    }
+
+    fn insert(&mut self, fingerprint: u64, index: u32) -> Option<u32> {
+        let shard = self.shard(fingerprint);
+        self.shards[shard].insert(fingerprint, index)
+    }
+
+    fn clear(&mut self) {
+        for shard in &mut self.shards {
+            shard.clear();
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct HistoryChunkIndex {
     entries: HistoryChunkEntries,
-    fingerprints: HashMap<u64, u32>,
+    fingerprints: HistoryChunkFingerprints,
     collisions: HashMap<HistoryChunkKey, u32>,
 }
 
@@ -908,7 +963,7 @@ impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: HistoryChunkEntries::with_capacity(capacity),
-            fingerprints: HashMap::with_capacity(capacity),
+            fingerprints: HistoryChunkFingerprints::with_capacity(capacity),
             collisions: HashMap::new(),
         }
     }
