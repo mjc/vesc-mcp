@@ -1315,7 +1315,7 @@ impl<'a> HistoryContents<'a> {
     ) -> Result<bool, GitHistoryError> {
         match self {
             Self::All(plan) | Self::Delta { plan, .. } => {
-                plan.reserve_chunk_index_for_candidates(observations.candidate_chunks);
+                plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
             }
         }
         let key = HistoryChunkKey {
