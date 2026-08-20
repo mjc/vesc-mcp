@@ -2,11 +2,12 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::Read;
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::corpus::{
     Chunk, ChunkId, ContentDigest, RepositoryId, Revision, SchemaVersion, SourceSpan,
@@ -628,10 +629,13 @@ impl GraphArtifact {
     ///
     /// Returns an error when encoding or writing fails.
     pub fn write(&self, path: &Path) -> Result<ContentDigest, GraphArtifactError> {
-        let bytes = self.encode()?;
-        let digest = ContentDigest::of(&bytes);
-        fs::write(path, bytes)?;
-        Ok(digest)
+        self.validate()?;
+        let file = fs::File::create(path)?;
+        let mut writer = GraphDigestWriter::new(BufWriter::new(file));
+        self.write_payload_to(&mut writer)?;
+        let payload_digest: [u8; 32] = writer.payload_digest.clone().finalize().into();
+        writer.write_unhashed(&payload_digest)?;
+        writer.finish()
     }
 
     /// Open and validate a graph artifact from disk.
@@ -675,28 +679,33 @@ impl GraphArtifact {
 
     fn encode_payload(&self) -> Result<Vec<u8>, GraphArtifactError> {
         let mut payload = Vec::new();
-        payload.extend_from_slice(MAGIC);
-        payload.extend_from_slice(&GRAPH_ARTIFACT_SCHEMA_V1.major.to_le_bytes());
-        payload.extend_from_slice(&GRAPH_ARTIFACT_SCHEMA_V1.minor.to_le_bytes());
-        payload.extend_from_slice(
+        self.write_payload_to(&mut payload)?;
+        Ok(payload)
+    }
+
+    fn write_payload_to<W: Write>(&self, writer: &mut W) -> Result<(), GraphArtifactError> {
+        writer.write_all(MAGIC)?;
+        writer.write_all(&GRAPH_ARTIFACT_SCHEMA_V1.major.to_le_bytes())?;
+        writer.write_all(&GRAPH_ARTIFACT_SCHEMA_V1.minor.to_le_bytes())?;
+        writer.write_all(
             &u32::try_from(self.nodes.len())
                 .map_err(|_| {
                     GraphArtifactError::Contract("graph node count overflows wire".into())
                 })?
                 .to_le_bytes(),
-        );
-        payload.extend_from_slice(
+        )?;
+        writer.write_all(
             &u32::try_from(self.edges.len())
                 .map_err(|_| {
                     GraphArtifactError::Contract("graph edge count overflows wire".into())
                 })?
                 .to_le_bytes(),
-        );
-        payload.extend_from_slice(self.corpus_digest.as_bytes());
+        )?;
+        writer.write_all(self.corpus_digest.as_bytes())?;
         for node in &self.nodes {
-            payload.extend_from_slice(node.id.as_bytes());
+            writer.write_all(node.id.as_bytes())?;
             for value in [&node.repository, &node.revision, &node.path] {
-                put_string(&mut payload, value)?;
+                put_string(writer, value)?;
             }
             for value in [
                 node.start_line,
@@ -704,33 +713,32 @@ impl GraphArtifact {
                 node.start_byte,
                 node.end_byte,
             ] {
-                payload.extend_from_slice(&value.to_le_bytes());
+                writer.write_all(&value.to_le_bytes())?;
             }
-            put_string(&mut payload, &node.symbol)?;
-            put_string(&mut payload, &node.kind)?;
+            put_string(writer, &node.symbol)?;
+            put_string(writer, &node.kind)?;
         }
         for offset in &self.forward_offsets {
-            payload.extend_from_slice(&offset.to_le_bytes());
+            writer.write_all(&offset.to_le_bytes())?;
         }
         for edge in &self.edges {
-            payload.extend_from_slice(edge.target.as_bytes());
-            payload.extend_from_slice(edge.evidence.node.as_bytes());
-            payload.extend_from_slice(&edge.evidence.start_line.to_le_bytes());
-            payload.extend_from_slice(&edge.evidence.end_line.to_le_bytes());
-            payload.extend_from_slice(&edge.evidence.start_byte.to_le_bytes());
-            payload.extend_from_slice(&edge.evidence.end_byte.to_le_bytes());
-            put_string(&mut payload, &edge.relation)?;
-            put_string(&mut payload, &edge.extractor)?;
-            payload.push(edge.confidence);
-            payload.push(u8::from(edge.verified));
+            writer.write_all(edge.target.as_bytes())?;
+            writer.write_all(edge.evidence.node.as_bytes())?;
+            writer.write_all(&edge.evidence.start_line.to_le_bytes())?;
+            writer.write_all(&edge.evidence.end_line.to_le_bytes())?;
+            writer.write_all(&edge.evidence.start_byte.to_le_bytes())?;
+            writer.write_all(&edge.evidence.end_byte.to_le_bytes())?;
+            put_string(writer, &edge.relation)?;
+            put_string(writer, &edge.extractor)?;
+            writer.write_all(&[edge.confidence, u8::from(edge.verified)])?;
         }
         for offset in &self.reverse_offsets {
-            payload.extend_from_slice(&offset.to_le_bytes());
+            writer.write_all(&offset.to_le_bytes())?;
         }
         for edge_index in &self.reverse_edge_indices {
-            payload.extend_from_slice(&edge_index.to_le_bytes());
+            writer.write_all(&edge_index.to_le_bytes())?;
         }
-        Ok(payload)
+        Ok(())
     }
 
     fn build_forward_index(&self) -> Result<Vec<u32>, GraphArtifactError> {
@@ -984,19 +992,61 @@ fn validate_node(node: &GraphNode) -> Result<(), GraphArtifactError> {
     Ok(())
 }
 
-fn put_string(bytes: &mut Vec<u8>, value: &str) -> Result<(), GraphArtifactError> {
+fn put_string<W: Write>(writer: &mut W, value: &str) -> Result<(), GraphArtifactError> {
     if value.len() > MAX_STRING_BYTES {
         return Err(GraphArtifactError::Contract(
             "graph string is too large".into(),
         ));
     }
-    bytes.extend_from_slice(
+    writer.write_all(
         &u32::try_from(value.len())
             .map_err(|_| GraphArtifactError::Contract("graph string length overflows wire".into()))?
             .to_le_bytes(),
-    );
-    bytes.extend_from_slice(value.as_bytes());
+    )?;
+    writer.write_all(value.as_bytes())?;
     Ok(())
+}
+
+struct GraphDigestWriter<W> {
+    writer: W,
+    payload_digest: Sha256,
+    artifact_digest: Sha256,
+}
+
+impl<W: Write> GraphDigestWriter<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            writer,
+            payload_digest: Sha256::new(),
+            artifact_digest: Sha256::new(),
+        }
+    }
+
+    fn write_unhashed(&mut self, bytes: &[u8]) -> Result<(), GraphArtifactError> {
+        self.writer.write_all(bytes)?;
+        self.artifact_digest.update(bytes);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<ContentDigest, GraphArtifactError> {
+        self.writer.flush()?;
+        Ok(ContentDigest::from_sha256(
+            self.artifact_digest.finalize().into(),
+        ))
+    }
+}
+
+impl<W: Write> Write for GraphDigestWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.writer.write(bytes)?;
+        self.payload_digest.update(&bytes[..written]);
+        self.artifact_digest.update(&bytes[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 fn bounded_count(value: u32, max: usize, name: &str) -> Result<usize, GraphArtifactError> {
@@ -1109,6 +1159,18 @@ mod tests {
         let first = fixture().encode().expect("encode");
         let second = fixture().encode().expect("encode");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn streaming_payload_matches_the_encoded_payload() {
+        let graph = fixture();
+        let mut streamed = Vec::new();
+        graph
+            .write_payload_to(&mut streamed)
+            .expect("stream graph payload");
+        let mut encoded = graph.encode().expect("encode");
+        encoded.truncate(encoded.len() - 32);
+        assert_eq!(streamed, encoded);
     }
 
     #[test]
