@@ -819,11 +819,11 @@ impl HistoryChunkEntries {
         entries
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         self.len
     }
 
-    fn capacity(&self) -> usize {
+    const fn capacity(&self) -> usize {
         self.blocks.len() * HISTORY_CHUNK_ENTRY_BLOCK
     }
 
@@ -937,8 +937,10 @@ impl HistoryChunkFingerprints {
         fingerprints
     }
 
-    fn shard(&self, fingerprint: u64) -> usize {
-        (fingerprint as usize) & (HISTORY_CHUNK_FINGERPRINT_SHARDS - 1)
+    #[allow(clippy::cast_possible_truncation)]
+    const fn shard(fingerprint: u64) -> usize {
+        // The mask leaves only the 6-bit shard number before this cast.
+        (fingerprint & (HISTORY_CHUNK_FINGERPRINT_SHARDS as u64 - 1)) as usize
     }
 
     fn reserve(&mut self, additional: usize) {
@@ -949,12 +951,12 @@ impl HistoryChunkFingerprints {
         }
     }
 
-    fn get(&self, fingerprint: &u64) -> Option<&u32> {
-        self.shards[self.shard(*fingerprint)].get(fingerprint)
+    fn get(&self, fingerprint: u64) -> Option<&u32> {
+        self.shards[Self::shard(fingerprint)].get(&fingerprint)
     }
 
     fn insert(&mut self, fingerprint: u64, index: u32) -> Option<u32> {
-        let shard = self.shard(fingerprint);
+        let shard = Self::shard(fingerprint);
         self.shards[shard].insert(fingerprint, index)
     }
 
@@ -981,11 +983,11 @@ impl HistoryChunkIndex {
         }
     }
 
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         self.entries.len()
     }
 
-    fn capacity(&self) -> usize {
+    const fn capacity(&self) -> usize {
         self.entries.capacity()
     }
 
@@ -1002,7 +1004,7 @@ impl HistoryChunkIndex {
 
     fn index_of(&self, key: &HistoryChunkKey) -> Option<usize> {
         let fingerprint = Self::fingerprint(key);
-        match self.fingerprints.get(&fingerprint).copied() {
+        match self.fingerprints.get(fingerprint).copied() {
             Some(CHUNK_INDEX_COLLISION) => self
                 .collisions
                 .get(key)
@@ -1039,7 +1041,7 @@ impl HistoryChunkIndex {
     }
 
     fn register_index(&mut self, fingerprint: u64, index: u32, key: HistoryChunkKey) {
-        match self.fingerprints.get(&fingerprint).copied() {
+        match self.fingerprints.get(fingerprint).copied() {
             None => {
                 self.fingerprints.insert(fingerprint, index);
             }
@@ -1102,7 +1104,7 @@ impl HistoryChunkIndex {
     }
 
     #[cfg(test)]
-    fn storage_block_count(&self) -> usize {
+    const fn storage_block_count(&self) -> usize {
         self.entries.blocks.len()
     }
 }
@@ -1239,7 +1241,7 @@ impl GitHistoryBuildPlan {
         }
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.chunks.len()
     }
 
@@ -3064,7 +3066,7 @@ mod tests {
                     revision: 0,
                 },
                 GitHistoryChunk {
-                    document: value as u32,
+                    document: u32::try_from(value).expect("test document index fits in u32"),
                     ordinal: 0,
                 },
             );
@@ -3077,6 +3079,7 @@ mod tests {
     #[test]
     fn chunk_index_append_after_retaining_a_full_tail_allocates_a_new_block() {
         let mut entries = HistoryChunkEntries::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
+        let block = u32::try_from(HISTORY_CHUNK_ENTRY_BLOCK).expect("test block fits in u32");
         for value in 0..(HISTORY_CHUNK_ENTRY_BLOCK * 2) {
             let mut digest = [0_u8; 32];
             digest[..8].copy_from_slice(&(value as u64).to_le_bytes());
@@ -3086,16 +3089,13 @@ mod tests {
                     revision: 0,
                 },
                 GitHistoryChunk {
-                    document: value as u32,
+                    document: u32::try_from(value).expect("test document index fits in u32"),
                     ordinal: 0,
                 },
             ));
         }
 
-        entries.retain_mut(|_, chunk| {
-            chunk.document < (HISTORY_CHUNK_ENTRY_BLOCK / 2) as u32
-                || chunk.document >= HISTORY_CHUNK_ENTRY_BLOCK as u32
-        });
+        entries.retain_mut(|_, chunk| chunk.document < block / 2 || chunk.document >= block);
         let tail_capacity = entries.blocks.last().expect("tail block").capacity();
 
         let mut digest = [0_u8; 32];
