@@ -666,7 +666,7 @@ struct GitHistoryChunk {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct HistoryChunkKey {
     content: ContentDigest,
-    revision: gix::ObjectId,
+    revision: u32,
 }
 
 #[derive(Debug, Default)]
@@ -691,26 +691,24 @@ impl HistoryRevisionPool {
         self.values.get(revision_id as usize).copied()
     }
 
-    fn compact(&mut self, documents: &mut [GitHistoryDocument]) {
-        let mut remap = vec![None; self.values.len()];
+    fn compact(&mut self, documents: &mut [GitHistoryDocument]) -> Vec<u32> {
+        let mut remap = vec![u32::MAX; self.values.len()];
         for document in documents.iter() {
-            remap[document.revision as usize] = Some(0);
+            remap[document.revision as usize] = 0;
         }
         for (next, mapped) in remap
             .iter_mut()
-            .filter(|mapped| mapped.is_some())
+            .filter(|mapped| **mapped != u32::MAX)
             .enumerate()
         {
-            *mapped =
-                Some(u32::try_from(next).expect("selected history revision index fits in u32"));
+            *mapped = u32::try_from(next).expect("selected history revision index fits in u32");
         }
         for document in documents {
-            document.revision = remap[document.revision as usize]
-                .expect("history document references a retained revision");
+            document.revision = remap[document.revision as usize];
         }
         let mut old_revision = 0_usize;
         self.values.retain(|_| {
-            let keep = remap[old_revision].is_some();
+            let keep = remap[old_revision] != u32::MAX;
             old_revision += 1;
             keep
         });
@@ -721,6 +719,7 @@ impl HistoryRevisionPool {
                 u32::try_from(index).expect("selected history revision index fits in u32"),
             );
         }
+        remap
     }
 }
 
@@ -933,7 +932,19 @@ impl GitHistoryBuildPlan {
                 .expect("history chunk references a retained document");
         }
 
-        self.revisions.compact(&mut self.documents);
+        let revision_remap = self.revisions.compact(&mut self.documents);
+        if revision_remap
+            .iter()
+            .enumerate()
+            .any(|(old, &new)| new != u32::try_from(old).expect("revision pool index fits in u32"))
+        {
+            let chunks = std::mem::take(&mut self.chunks);
+            self.chunks = HashMap::with_capacity(chunks.len());
+            for (mut key, chunk) in chunks {
+                key.revision = revision_remap[key.revision as usize];
+                self.chunks.insert(key, chunk);
+            }
+        }
         self.objects.compact(&mut self.documents);
 
         let mut path_remap = vec![None; self.paths.len()];
@@ -1071,7 +1082,7 @@ impl GitHistoryBuildPlan {
             let key = HistoryChunkKey {
                 content: history_content_key_for_chunk(&chunk)
                     .expect("filtered Git-history chunk has a content key"),
-                revision,
+                revision: plan.revision_id(revision),
             };
             plan.chunks.insert(
                 key,
@@ -1221,7 +1232,13 @@ impl GitHistoryBuildPlan {
                 let actual_revision =
                     gix::ObjectId::from_hex(document.revision.as_str().as_bytes())
                         .map_err(|error| GitHistoryError::Invalid(error.to_string()))?;
-                if actual_key != expected_key.content || actual_revision != expected_key.revision {
+                let expected_revision =
+                    self.revisions.get(expected_key.revision).ok_or_else(|| {
+                        GitHistoryError::Invalid(
+                            "history chunk references an unknown revision".into(),
+                        )
+                    })?;
+                if actual_key != expected_key.content || actual_revision != expected_revision {
                     return Err(GitHistoryError::Invalid(format!(
                         "pinned Git chunk identity changed for {}:{}#{}",
                         source.repository_id, path, selection.ordinal
@@ -1318,10 +1335,10 @@ impl<'a> HistoryContents<'a> {
                 plan.reserve_chunk_index_for_candidates(plan.chunks.len().saturating_add(1));
             }
         }
-        let key = HistoryChunkKey {
-            content,
-            revision: locator.revision,
+        let revision = match self {
+            Self::All(plan) | Self::Delta { plan, .. } => plan.revision_id(locator.revision),
         };
+        let key = HistoryChunkKey { content, revision };
         let inserted = match self {
             Self::All(plan) => {
                 if plan.chunks.contains_key(&key) {
@@ -1343,7 +1360,7 @@ impl<'a> HistoryContents<'a> {
                         locator.repository,
                         locator.path,
                         &key.content,
-                        &key.revision,
+                        &locator.revision,
                         &plan.removed_document_ids,
                     )?
                 {
@@ -2463,6 +2480,14 @@ mod tests {
     #[test]
     fn history_plan_selection_is_only_a_document_and_ordinal() {
         assert_eq!(std::mem::size_of::<GitHistoryChunk>(), 8);
+    }
+
+    #[test]
+    fn history_chunk_key_uses_a_pooled_revision_id() {
+        assert_eq!(
+            std::mem::size_of::<HistoryChunkKey>(),
+            std::mem::size_of::<ContentDigest>() + std::mem::size_of::<u32>()
+        );
     }
 
     #[test]
