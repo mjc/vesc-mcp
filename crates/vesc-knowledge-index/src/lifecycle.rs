@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize, de::IgnoredAny};
 
 use crate::corpus::chunking::{ChunkingConfig, chunk_document, chunk_document_drafts};
 use crate::corpus::full_history::{
-    CachedGitHistory, GitHistoryBuildPlan, GitHistoryError, GitHistoryRefreshObservations,
-    GitHistoryTip, plan_git_history_fast_forward_delta, plan_git_history_fast_forward_owned,
+    CachedGitHistory, CachedGitHistoryMembership, GitHistoryBuildPlan, GitHistoryError,
+    GitHistoryRefreshObservations, GitHistoryTip, plan_git_history_fast_forward_delta,
+    plan_git_history_fast_forward_owned,
 };
 use crate::corpus::git::{
     GitCorpusSource, GitIngestionError, GitIngestionObservations, MAX_IDENTIFIERS,
@@ -920,9 +921,6 @@ pub fn build_git_history_artifacts_from_previous(
         );
     }
 
-    let Ok(lookup) = LexicalIndex::open_history_content_lookup(&previous.lexical_path) else {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
-    };
     if !matches!(
         LexicalIndex::corpus_inventory(&previous.lexical_path),
         Ok((_documents, _chunks, digest)) if digest == previous.corpus_digest
@@ -944,37 +942,25 @@ pub fn build_git_history_artifacts_from_previous(
     if history_loaded.is_err() {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     }
+    let membership = CachedGitHistoryMembership::new(&records);
     let ingestion_started = Instant::now();
-    let (incremental, lookup_failed) = {
-        let mut lookup_failed = false;
-        let mut previous_contains =
-            |repository: &RepositoryId,
-             path: &str,
-             key: &ContentDigest,
-             revision: &gix::ObjectId,
-             removed_document_ids: &BTreeSet<String>| {
-                lookup
-                    .contains_retained(repository, path, key, Some(revision), removed_document_ids)
-                    .map_err(|error| {
-                        lookup_failed = true;
-                        GitHistoryError::Invalid(error.to_string())
-                    })
-            };
-        let incremental = plan_git_history_fast_forward_delta(
-            sources,
-            &previous.tips,
-            cached_history,
-            &mut previous_contains,
-        );
-        (incremental, lookup_failed)
-    };
-    if lookup_failed {
-        return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
-    }
+    let mut previous_contains =
+        |_repository: &RepositoryId,
+         _path: &str,
+         key: &ContentDigest,
+         revision: &gix::ObjectId,
+         removed_document_ids: &BTreeSet<String>| {
+            Ok(membership.contains_retained(key, revision, removed_document_ids))
+        };
+    let incremental = plan_git_history_fast_forward_delta(
+        sources,
+        &previous.tips,
+        cached_history,
+        &mut previous_contains,
+    );
     let Some((delta, refresh)) = incremental? else {
         return build_git_history_cold(root, sources, semantic, vector_checkpoint_path, progress);
     };
-    drop(lookup);
     let mut observations = BuildObservations::default();
     observations.record_duration(BuildPhase::Ingestion, elapsed_us(ingestion_started));
     observations.git_ingestion = Some(refresh.git.clone());

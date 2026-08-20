@@ -1,5 +1,6 @@
 //! Incremental, content-addressed ingestion of complete reachable Git history.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -248,6 +249,123 @@ impl CachedGitHistoryRecord {
             source_kind: self.source_kind,
             content_key: self.content_key.clone(),
         })
+    }
+}
+
+/// Compact membership index over the persisted history projection.
+///
+/// The sidecar already contains the exact identity needed during an
+/// incremental refresh. Keeping a sorted index of record positions avoids a
+/// second owned key/value map while allowing logarithmic lookups without
+/// hydrating Tantivy stored documents.
+pub(crate) struct CachedGitHistoryMembership<'a> {
+    records: &'a [CachedGitHistoryRecord],
+    order: Vec<usize>,
+}
+
+impl<'a> CachedGitHistoryMembership<'a> {
+    pub(crate) fn new(records: &'a [CachedGitHistoryRecord]) -> Self {
+        let mut order = (0..records.len()).collect::<Vec<_>>();
+        order.sort_unstable_by(|left, right| {
+            let left = &records[*left];
+            let right = &records[*right];
+            left.content_key
+                .cmp(&right.content_key)
+                .then_with(|| left.revision.cmp(&right.revision))
+        });
+        Self { records, order }
+    }
+
+    pub(crate) fn contains_retained(
+        &self,
+        key: &ContentDigest,
+        revision: &gix::ObjectId,
+        removed_document_ids: &BTreeSet<String>,
+    ) -> bool {
+        let mut revision_hex = gix::hash::Kind::hex_buf();
+        let revision = revision.as_ref().hex_to_buf(&mut revision_hex);
+        let compare = |index: usize| {
+            let record = &self.records[self.order[index]];
+            record
+                .content_key
+                .as_ref()
+                .cmp(&Some(key))
+                .then_with(|| record.revision.as_bytes().cmp(revision.as_bytes()))
+        };
+        let first = self.order.partition_point(|index| {
+            compare_index(&self.records[*index], key, revision.as_bytes()) == Ordering::Less
+        });
+        let mut cursor = first;
+        while cursor < self.order.len() && compare(cursor) == Ordering::Equal {
+            let record = &self.records[self.order[cursor]];
+            if !removed_document_ids.contains(&record.document_id) {
+                return true;
+            }
+            cursor += 1;
+        }
+        false
+    }
+}
+
+fn compare_index(
+    record: &CachedGitHistoryRecord,
+    key: &ContentDigest,
+    revision: &[u8],
+) -> Ordering {
+    record
+        .content_key
+        .as_ref()
+        .cmp(&Some(key))
+        .then_with(|| record.revision.as_bytes().cmp(revision))
+}
+
+#[cfg(test)]
+mod history_membership_tests {
+    use super::*;
+
+    #[test]
+    fn history_membership_finds_retained_content_without_document_hydration() {
+        let key = ContentDigest::of(b"content");
+        let revision =
+            gix::ObjectId::from_hex(b"0123456789012345678901234567890123456789").expect("revision");
+        let records = vec![
+            CachedGitHistoryRecord {
+                document_id: "removed".into(),
+                repository: "repo".into(),
+                revision: revision.to_string(),
+                path: "removed.c".into(),
+                ordinal: 0,
+                has_previous: false,
+                has_next: false,
+                blob: None,
+                source_kind: SourceKind::GitBlob,
+                content_key: Some(key.clone()),
+            },
+            CachedGitHistoryRecord {
+                document_id: "retained".into(),
+                repository: "repo".into(),
+                revision: revision.to_string(),
+                path: "retained.c".into(),
+                ordinal: 0,
+                has_previous: false,
+                has_next: false,
+                blob: None,
+                source_kind: SourceKind::GitBlob,
+                content_key: Some(key.clone()),
+            },
+        ];
+        let membership = CachedGitHistoryMembership::new(&records);
+
+        assert!(membership.contains_retained(
+            &key,
+            &revision,
+            &BTreeSet::from(["removed".to_owned()]),
+        ));
+        assert!(!membership.contains_retained(
+            &key,
+            &revision,
+            &BTreeSet::from(["removed".to_owned(), "retained".to_owned()]),
+        ));
     }
 }
 
