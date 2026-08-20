@@ -799,115 +799,58 @@ struct HistoryChunkKey {
 }
 
 const CHUNK_INDEX_COLLISION: u32 = u32::MAX;
-const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
 const HISTORY_CHUNK_FINGERPRINT_SHARDS: usize = 64;
+#[cfg(test)]
+const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
 
 type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
 
 #[derive(Debug, Default)]
 struct HistoryChunkEntries {
-    blocks: Vec<Vec<HistoryChunkEntry>>,
-    offsets: Vec<usize>,
-    active_blocks: usize,
-    len: usize,
+    values: Vec<HistoryChunkEntry>,
 }
 
 impl HistoryChunkEntries {
     fn with_capacity(capacity: usize) -> Self {
-        let mut entries = Self::default();
-        entries.reserve(capacity);
-        entries
+        Self {
+            values: Vec::with_capacity(capacity),
+        }
     }
 
     const fn len(&self) -> usize {
-        self.len
+        self.values.len()
     }
 
     const fn capacity(&self) -> usize {
-        self.blocks.len() * HISTORY_CHUNK_ENTRY_BLOCK
+        self.values.capacity()
     }
 
     fn reserve(&mut self, additional: usize) {
-        let required = self.len.saturating_add(additional);
-        let required_blocks =
-            required.saturating_add(HISTORY_CHUNK_ENTRY_BLOCK - 1) / HISTORY_CHUNK_ENTRY_BLOCK;
-        if required_blocks <= self.blocks.len() {
-            return;
-        }
-        self.blocks
-            .reserve(required_blocks.saturating_sub(self.blocks.len()));
-        while self.blocks.len() < required_blocks {
-            self.blocks
-                .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
-        }
-        self.rebuild_offsets();
+        self.values.reserve(additional);
     }
 
     fn push(&mut self, entry: HistoryChunkEntry) {
-        if self.active_blocks == 0 {
-            self.reserve(1);
-            self.active_blocks = 1;
-            self.offsets.push(0);
-        } else if self.blocks[self.active_blocks - 1].len() >= HISTORY_CHUNK_ENTRY_BLOCK {
-            if self.active_blocks == self.blocks.len() {
-                self.blocks
-                    .push(Vec::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK));
-            }
-            self.offsets.push(self.len);
-            self.active_blocks += 1;
-        }
-        self.blocks[self.active_blocks - 1].push(entry);
-        self.len += 1;
+        self.values.push(entry);
     }
 
     fn get(&self, index: usize) -> Option<&HistoryChunkEntry> {
-        let block = self
-            .offsets
-            .partition_point(|offset| *offset <= index)
-            .checked_sub(1)?;
-        self.blocks
-            .get(block)?
-            .get(index.saturating_sub(self.offsets[block]))
+        self.values.get(index)
     }
 
     fn get_mut(&mut self, index: usize) -> Option<&mut HistoryChunkEntry> {
-        let block = self
-            .offsets
-            .partition_point(|offset| *offset <= index)
-            .checked_sub(1)?;
-        self.blocks
-            .get_mut(block)?
-            .get_mut(index.saturating_sub(self.offsets[block]))
+        self.values.get_mut(index)
     }
 
     fn retain_mut(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
-        for block in &mut self.blocks[..self.active_blocks] {
-            block.retain_mut(|(key, chunk)| keep(key, chunk));
-        }
-        self.len = self.blocks[..self.active_blocks].iter().map(Vec::len).sum();
-        self.rebuild_offsets();
+        self.values.retain_mut(|(key, chunk)| keep(key, chunk));
     }
 
     fn iter(&self) -> impl Iterator<Item = &HistoryChunkEntry> {
-        self.blocks[..self.active_blocks]
-            .iter()
-            .flat_map(|block| block.iter())
+        self.values.iter()
     }
 
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut HistoryChunkEntry> {
-        self.blocks[..self.active_blocks]
-            .iter_mut()
-            .flat_map(|block| block.iter_mut())
-    }
-
-    fn rebuild_offsets(&mut self) {
-        self.offsets.clear();
-        self.offsets.reserve(self.active_blocks);
-        let mut offset = 0;
-        for block in &self.blocks[..self.active_blocks] {
-            self.offsets.push(offset);
-            offset += block.len();
-        }
+        self.values.iter_mut()
     }
 }
 
@@ -1202,8 +1145,8 @@ impl HistoryChunkIndex {
     }
 
     #[cfg(test)]
-    const fn storage_block_count(&self) -> usize {
-        self.entries.blocks.len()
+    const fn storage_capacity(&self) -> usize {
+        self.entries.capacity()
     }
 }
 
@@ -3203,7 +3146,7 @@ mod tests {
     }
 
     #[test]
-    fn chunk_index_growth_keeps_entries_in_fixed_storage_blocks() {
+    fn chunk_index_growth_keeps_entries_contiguous() {
         let mut index = HistoryChunkIndex::default();
         for value in 0..=HISTORY_CHUNK_ENTRY_BLOCK {
             let mut digest = [0_u8; 32];
@@ -3220,12 +3163,12 @@ mod tests {
             );
         }
 
-        assert_eq!(index.storage_block_count(), 2);
+        assert!(index.storage_capacity() >= index.len());
         assert_eq!(index.len(), HISTORY_CHUNK_ENTRY_BLOCK + 1);
     }
 
     #[test]
-    fn chunk_index_append_after_retaining_a_full_tail_allocates_a_new_block() {
+    fn chunk_index_append_after_retain_reuses_contiguous_capacity() {
         let mut entries = HistoryChunkEntries::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
         let block = u32::try_from(HISTORY_CHUNK_ENTRY_BLOCK).expect("test block fits in u32");
         for value in 0..(HISTORY_CHUNK_ENTRY_BLOCK * 2) {
@@ -3244,7 +3187,7 @@ mod tests {
         }
 
         entries.retain_mut(|_, chunk| chunk.document < block / 2 || chunk.document >= block);
-        let tail_capacity = entries.blocks.last().expect("tail block").capacity();
+        let capacity = entries.values.capacity();
 
         let mut digest = [0_u8; 32];
         digest[..8].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -3259,11 +3202,7 @@ mod tests {
             },
         ));
 
-        assert_eq!(
-            entries.blocks.last().expect("tail block").capacity(),
-            tail_capacity
-        );
-        assert_eq!(entries.blocks.len(), 3);
+        assert_eq!(entries.values.capacity(), capacity);
     }
 
     #[test]
