@@ -805,55 +805,6 @@ const HISTORY_CHUNK_ENTRY_BLOCK: usize = 8_192;
 
 type HistoryChunkEntry = (HistoryChunkKey, GitHistoryChunk);
 
-#[derive(Debug, Default)]
-struct HistoryChunkEntries {
-    values: Vec<HistoryChunkEntry>,
-}
-
-impl HistoryChunkEntries {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(capacity),
-        }
-    }
-
-    const fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    const fn capacity(&self) -> usize {
-        self.values.capacity()
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        self.values.reserve(additional);
-    }
-
-    fn push(&mut self, entry: HistoryChunkEntry) {
-        self.values.push(entry);
-    }
-
-    fn get(&self, index: usize) -> Option<&HistoryChunkEntry> {
-        self.values.get(index)
-    }
-
-    fn get_mut(&mut self, index: usize) -> Option<&mut HistoryChunkEntry> {
-        self.values.get_mut(index)
-    }
-
-    fn retain_mut(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
-        self.values.retain_mut(|(key, chunk)| keep(key, chunk));
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &HistoryChunkEntry> {
-        self.values.iter()
-    }
-
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut HistoryChunkEntry> {
-        self.values.iter_mut()
-    }
-}
-
 #[derive(Debug)]
 struct HistoryChunkFingerprints {
     shards: Vec<HashMap<u64, u32>>,
@@ -960,7 +911,7 @@ impl HistoryChunkLookup {
         self.mutable.reserve(additional);
     }
 
-    fn index_of(&self, key: &HistoryChunkKey, entries: &HistoryChunkEntries) -> Option<usize> {
+    fn index_of(&self, key: &HistoryChunkKey, entries: &[HistoryChunkEntry]) -> Option<usize> {
         let fingerprint = HistoryChunkIndex::fingerprint(key);
         let index = self.mutable.get(fingerprint).copied().or_else(|| {
             self.frozen_seed
@@ -993,7 +944,7 @@ impl HistoryChunkLookup {
         fingerprint: u64,
         index: u32,
         key: HistoryChunkKey,
-        entries: &HistoryChunkEntries,
+        entries: &[HistoryChunkEntry],
     ) {
         match self.mutable.get(fingerprint).copied() {
             None => {
@@ -1041,14 +992,14 @@ impl HistoryChunkLookup {
 
 #[derive(Debug, Default)]
 struct HistoryChunkIndex {
-    entries: HistoryChunkEntries,
+    entries: Vec<HistoryChunkEntry>,
     lookup: HistoryChunkLookup,
 }
 
 impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            entries: HistoryChunkEntries::with_capacity(capacity),
+            entries: Vec::with_capacity(capacity),
             lookup: HistoryChunkLookup::with_capacity(capacity),
         }
     }
@@ -1104,7 +1055,7 @@ impl HistoryChunkIndex {
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
-        self.entries.retain_mut(|key, chunk| keep(key, chunk));
+        self.entries.retain_mut(|(key, chunk)| keep(key, chunk));
         self.rebuild_index();
     }
 
@@ -3169,12 +3120,12 @@ mod tests {
 
     #[test]
     fn chunk_index_append_after_retain_reuses_contiguous_capacity() {
-        let mut entries = HistoryChunkEntries::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
+        let mut index = HistoryChunkIndex::with_capacity(HISTORY_CHUNK_ENTRY_BLOCK * 2);
         let block = u32::try_from(HISTORY_CHUNK_ENTRY_BLOCK).expect("test block fits in u32");
         for value in 0..(HISTORY_CHUNK_ENTRY_BLOCK * 2) {
             let mut digest = [0_u8; 32];
             digest[..8].copy_from_slice(&(value as u64).to_le_bytes());
-            entries.push((
+            index.insert(
                 HistoryChunkKey {
                     content: ContentDigest::from_sha256(digest),
                     revision: 0,
@@ -3183,15 +3134,15 @@ mod tests {
                     document: u32::try_from(value).expect("test document index fits in u32"),
                     ordinal: 0,
                 },
-            ));
+            );
         }
 
-        entries.retain_mut(|_, chunk| chunk.document < block / 2 || chunk.document >= block);
-        let capacity = entries.values.capacity();
+        index.retain(|_, chunk| chunk.document < block / 2 || chunk.document >= block);
+        let capacity = index.storage_capacity();
 
         let mut digest = [0_u8; 32];
         digest[..8].copy_from_slice(&u64::MAX.to_le_bytes());
-        entries.push((
+        index.insert(
             HistoryChunkKey {
                 content: ContentDigest::from_sha256(digest),
                 revision: 0,
@@ -3200,9 +3151,9 @@ mod tests {
                 document: u32::MAX,
                 ordinal: 0,
             },
-        ));
+        );
 
-        assert_eq!(entries.values.capacity(), capacity);
+        assert_eq!(index.storage_capacity(), capacity);
     }
 
     #[test]
