@@ -999,20 +999,114 @@ impl FrozenHistoryChunkFingerprints {
 }
 
 #[derive(Debug, Default)]
+struct HistoryChunkLookup {
+    mutable: HistoryChunkFingerprints,
+    frozen_seed: Option<FrozenHistoryChunkFingerprints>,
+    collisions: HashMap<HistoryChunkKey, u32>,
+}
+
+impl HistoryChunkLookup {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            mutable: HistoryChunkFingerprints::with_capacity(capacity),
+            ..Self::default()
+        }
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        self.mutable.reserve(additional);
+    }
+
+    fn index_of(&self, key: &HistoryChunkKey, entries: &HistoryChunkEntries) -> Option<usize> {
+        let fingerprint = HistoryChunkIndex::fingerprint(key);
+        let index = self.mutable.get(fingerprint).copied().or_else(|| {
+            self.frozen_seed
+                .as_ref()
+                .and_then(|lookup| lookup.get(fingerprint))
+        });
+        match index {
+            Some(CHUNK_INDEX_COLLISION) => self
+                .collisions
+                .get(key)
+                .copied()
+                .map(|index| index as usize),
+            Some(index) => {
+                let index = index as usize;
+                entries
+                    .get(index)
+                    .filter(|entry| entry.0 == *key)
+                    .map(|_| index)
+            }
+            None => None,
+        }
+    }
+
+    fn freeze_seed(&mut self) {
+        self.frozen_seed = Some(std::mem::take(&mut self.mutable).freeze());
+    }
+
+    fn register(
+        &mut self,
+        fingerprint: u64,
+        index: u32,
+        key: HistoryChunkKey,
+        entries: &HistoryChunkEntries,
+    ) {
+        match self.mutable.get(fingerprint).copied() {
+            None => {
+                if let Some(existing) = self
+                    .frozen_seed
+                    .as_ref()
+                    .and_then(|lookup| lookup.get(fingerprint))
+                {
+                    self.mutable.insert(fingerprint, CHUNK_INDEX_COLLISION);
+                    if existing != CHUNK_INDEX_COLLISION {
+                        let existing_key = entries
+                            .get(existing as usize)
+                            .expect("history entry index")
+                            .0
+                            .clone();
+                        self.collisions.insert(existing_key, existing);
+                    }
+                    self.collisions.insert(key, index);
+                } else {
+                    self.mutable.insert(fingerprint, index);
+                }
+            }
+            Some(CHUNK_INDEX_COLLISION) => {
+                self.collisions.insert(key, index);
+            }
+            Some(existing) => {
+                self.mutable.insert(fingerprint, CHUNK_INDEX_COLLISION);
+                let existing_key = entries
+                    .get(existing as usize)
+                    .expect("history entry index")
+                    .0
+                    .clone();
+                self.collisions.insert(existing_key, existing);
+                self.collisions.insert(key, index);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.frozen_seed = None;
+        self.mutable.clear();
+        self.collisions.clear();
+    }
+}
+
+#[derive(Debug, Default)]
 struct HistoryChunkIndex {
     entries: HistoryChunkEntries,
-    fingerprints: HistoryChunkFingerprints,
-    seed_fingerprints: Option<FrozenHistoryChunkFingerprints>,
-    collisions: HashMap<HistoryChunkKey, u32>,
+    lookup: HistoryChunkLookup,
 }
 
 impl HistoryChunkIndex {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             entries: HistoryChunkEntries::with_capacity(capacity),
-            fingerprints: HistoryChunkFingerprints::with_capacity(capacity),
-            seed_fingerprints: None,
-            collisions: HashMap::new(),
+            lookup: HistoryChunkLookup::with_capacity(capacity),
         }
     }
 
@@ -1026,7 +1120,7 @@ impl HistoryChunkIndex {
 
     fn reserve(&mut self, additional: usize) {
         self.entries.reserve(additional);
-        self.fingerprints.reserve(additional);
+        self.lookup.reserve(additional);
     }
 
     fn fingerprint(key: &HistoryChunkKey) -> u64 {
@@ -1036,27 +1130,7 @@ impl HistoryChunkIndex {
     }
 
     fn index_of(&self, key: &HistoryChunkKey) -> Option<usize> {
-        let fingerprint = Self::fingerprint(key);
-        let index = self.fingerprints.get(fingerprint).copied().or_else(|| {
-            self.seed_fingerprints
-                .as_ref()
-                .and_then(|lookup| lookup.get(fingerprint))
-        });
-        match index {
-            Some(CHUNK_INDEX_COLLISION) => self
-                .collisions
-                .get(key)
-                .copied()
-                .map(|index| index as usize),
-            Some(index) => {
-                let index = index as usize;
-                self.entries
-                    .get(index)
-                    .filter(|entry| entry.0 == *key)
-                    .map(|_| index)
-            }
-            None => None,
-        }
+        self.lookup.index_of(key, &self.entries)
     }
 
     fn contains_key(&self, key: &HistoryChunkKey) -> bool {
@@ -1079,47 +1153,11 @@ impl HistoryChunkIndex {
     }
 
     fn freeze_seed_lookup(&mut self) {
-        self.seed_fingerprints = Some(std::mem::take(&mut self.fingerprints).freeze());
+        self.lookup.freeze_seed();
     }
 
     fn register_index(&mut self, fingerprint: u64, index: u32, key: HistoryChunkKey) {
-        match self.fingerprints.get(fingerprint).copied() {
-            None => {
-                if let Some(existing) = self
-                    .seed_fingerprints
-                    .as_ref()
-                    .and_then(|lookup| lookup.get(fingerprint))
-                {
-                    self.fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
-                    if existing != CHUNK_INDEX_COLLISION {
-                        let existing_key = self
-                            .entries
-                            .get(existing as usize)
-                            .expect("history entry index")
-                            .0
-                            .clone();
-                        self.collisions.insert(existing_key, existing);
-                    }
-                    self.collisions.insert(key, index);
-                } else {
-                    self.fingerprints.insert(fingerprint, index);
-                }
-            }
-            Some(CHUNK_INDEX_COLLISION) => {
-                self.collisions.insert(key, index);
-            }
-            Some(existing) => {
-                self.fingerprints.insert(fingerprint, CHUNK_INDEX_COLLISION);
-                let existing_key = self
-                    .entries
-                    .get(existing as usize)
-                    .expect("history entry index")
-                    .0
-                    .clone();
-                self.collisions.insert(existing_key, existing);
-                self.collisions.insert(key, index);
-            }
-        }
+        self.lookup.register(fingerprint, index, key, &self.entries);
     }
 
     fn retain(&mut self, mut keep: impl FnMut(&HistoryChunkKey, &mut GitHistoryChunk) -> bool) {
@@ -1128,9 +1166,7 @@ impl HistoryChunkIndex {
     }
 
     fn rebuild_index(&mut self) {
-        self.seed_fingerprints = None;
-        self.fingerprints.clear();
-        self.collisions.clear();
+        self.lookup.clear();
         for index in 0..self.entries.len() {
             let key = self
                 .entries
@@ -1139,11 +1175,12 @@ impl HistoryChunkIndex {
                 .0
                 .clone();
             let fingerprint = Self::fingerprint(&key);
-            self.register_index(
+            self.lookup.register(
                 fingerprint,
                 u32::try_from(index)
                     .expect("configured Git limits keep history chunk indices in u32"),
                 key,
+                &self.entries,
             );
         }
     }
