@@ -4,7 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -29,7 +32,7 @@
         inherit system;
         overlays = [(import rust-overlay)];
       };
-      rustToolchain = pkgs.rust-bin.stable."1.97.1".default;
+      rustToolchain = pkgs.rust-bin.stable.latest.default;
       craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
       semanticModelId = "jinaai/jina-embeddings-v2-base-code";
       semanticModelRepository = semanticModelId;
@@ -176,7 +179,7 @@
       system: let
         overlays = [(import rust-overlay)];
         pkgs = import nixpkgs {inherit system overlays;};
-        rustToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [
             "rust-src"
             "rust-analyzer"
@@ -185,7 +188,7 @@
             "rustfmt"
           ];
         };
-        ciRustToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
+        ciRustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [
             "clippy"
             "rustfmt"
